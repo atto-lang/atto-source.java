@@ -13,7 +13,8 @@ public final class Lexer {
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE);
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
-        KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
+        // `fi` and `end` are distinct surface spellings but both close the current grammar scope.
+        KEYWORDS.put("end", END); KEYWORDS.put("fi", END); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("done", DONE);
         KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC);
         KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("switch", SWITCH);
