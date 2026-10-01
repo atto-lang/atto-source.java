@@ -1,9 +1,11 @@
 package dev.oreslang;
 
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.nodes.OresEvalRootNode;
+import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.types.TypeChecker;
@@ -34,6 +36,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     protected CallTarget parse(ParsingRequest request) {
         String text = request.getSource().getCharacters().toString();
         Ast.Program program = TypeChecker.check(Parser.parse(text));
-        return new OresEvalRootNode(this, program).getCallTarget();
+        RootCallTarget evaluator = new OresEvalRootNode(this, program).getCallTarget();
+        return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
 }
