@@ -11,43 +11,16 @@ public final class Lexer {
     private static final Map<String, Token.Type> KEYWORDS = new HashMap<>();
 
     static {
-        KEYWORDS.put("define", DEFINE);
-        KEYWORDS.put("class", CLASS);
-        KEYWORDS.put("module", MODULE);
-        KEYWORDS.put("try", TRY);
-        KEYWORDS.put("catch", CATCH);
-        KEYWORDS.put("finally", FINALLY);
-        KEYWORDS.put("end", END);
-        KEYWORDS.put("if", IF);
-        KEYWORDS.put("do", DO);
-        KEYWORDS.put("else", ELSE);
-        KEYWORDS.put("then", THEN);
-        KEYWORDS.put("new", NEW);
-        KEYWORDS.put("done", DONE);
-        KEYWORDS.put("await", AWAIT);
-        KEYWORDS.put("async", ASYNC);
-        KEYWORDS.put("def", DEF);
-        KEYWORDS.put("fnc", FNC);
-        KEYWORDS.put("yield", YIELD);
-        KEYWORDS.put("super", SUPER);
-        KEYWORDS.put("elseif", ELSEIF);
-        KEYWORDS.put("switch", SWITCH);
-        KEYWORDS.put("type", TYPE);
-        KEYWORDS.put("interface", INTERFACE);
-        KEYWORDS.put("impl", IMPL);
-        KEYWORDS.put("abstract", ABSTRACT);
-        KEYWORDS.put("void", VOID);
-        KEYWORDS.put("static", STATIC);
-        KEYWORDS.put("pub", PUB);
-        KEYWORDS.put("private", PRIVATE);
-        KEYWORDS.put("return", RETURN);
-        KEYWORDS.put("defer", DEFER);
-        KEYWORDS.put("val", VAL);
-        KEYWORDS.put("const", CONST);
-        KEYWORDS.put("let", LET);
-        KEYWORDS.put("self", SELF);
-        KEYWORDS.put("true", TRUE);
-        KEYWORDS.put("false", FALSE);
+        KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE);
+        KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
+        KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
+        KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("done", DONE);
+        KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC);
+        KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("switch", SWITCH);
+        KEYWORDS.put("type", TYPE); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
+        KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
+        KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
+        KEYWORDS.put("let", LET); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
         KEYWORDS.put("null", NULL);
     }
 
@@ -59,9 +32,7 @@ public final class Lexer {
     private int column = 1;
     private int startColumn = 1;
 
-    public Lexer(String source) {
-        this.source = source == null ? "" : source;
-    }
+    public Lexer(String source) { this.source = source == null ? "" : source; }
 
     public List<Token> scan() {
         while (!isAtEnd()) {
@@ -76,34 +47,18 @@ public final class Lexer {
     private void scanToken() {
         char c = advance();
         switch (c) {
-            case '(' -> add(LPAREN);
-            case ')' -> add(RPAREN);
-            case '{' -> add(LBRACE);
-            case '}' -> add(RBRACE);
-            case '[' -> add(LBRACKET);
-            case ']' -> add(RBRACKET);
-            case ',' -> add(COMMA);
-            case '.' -> add(DOT);
-            case ';' -> add(SEMICOLON);
-            case ':' -> add(COLON);
-            case '@' -> add(AT);
-            case '+' -> add(PLUS);
-            case '*' -> add(STAR);
-            case '%' -> add(PERCENT);
-            case '|' -> add(PIPE);
+            case '(' -> add(LPAREN); case ')' -> add(RPAREN); case '{' -> add(LBRACE); case '}' -> add(RBRACE);
+            case '[' -> add(LBRACKET); case ']' -> add(RBRACKET); case ',' -> add(COMMA); case '.' -> add(DOT);
+            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '@' -> add(AT); case '+' -> add(PLUS);
+            case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE);
             case '-' -> add(match('>') ? ARROW : MINUS);
             case '!' -> add(match('=') ? BANG_EQUAL : BANG);
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
-            case '<' -> add(match('=') ? LTE : LT);
-            case '>' -> add(match('=') ? GTE : GT);
+            case '<' -> add(match('=') ? LTE : LT); case '>' -> add(match('=') ? GTE : GT);
             case '/' -> {
-                if (match('/')) {
-                    while (peek() != '\n' && !isAtEnd()) advance();
-                } else if (match('*')) {
-                    blockComment();
-                } else {
-                    add(SLASH);
-                }
+                if (match('/')) while (peek() != '\n' && !isAtEnd()) advance();
+                else if (match('*')) blockComment();
+                else add(SLASH);
             }
             case ' ', '\r', '\t' -> { }
             case '\n' -> newline();
@@ -131,25 +86,14 @@ public final class Lexer {
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != '"') {
             char c = advance();
-            if (c == '\n') {
-                newline();
-                value.append('\n');
-                continue;
-            }
+            if (c == '\n') { newline(); value.append('\n'); continue; }
             if (c == '\\') {
                 if (isAtEnd()) throw error("unterminated string escape");
                 char escaped = advance();
                 value.append(switch (escaped) {
-                    case 'n' -> '\n';
-                    case 'r' -> '\r';
-                    case 't' -> '\t';
-                    case '"' -> '"';
-                    case '\\' -> '\\';
-                    default -> escaped;
+                    case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\\' -> '\\'; default -> escaped;
                 });
-            } else {
-                value.append(c);
-            }
+            } else value.append(c);
         }
         if (isAtEnd()) throw error("unterminated string");
         advance();
@@ -160,23 +104,17 @@ public final class Lexer {
         while (isDigit(peek()) || peek() == '_') advance();
         boolean floating = false;
         if (peek() == '.' && isDigit(peekNext())) {
-            floating = true;
-            advance();
+            floating = true; advance();
             while (isDigit(peek()) || peek() == '_') advance();
         }
         if (peek() == 'e' || peek() == 'E') {
-            floating = true;
-            advance();
+            floating = true; advance();
             if (peek() == '+' || peek() == '-') advance();
             if (!isDigit(peek())) throw error("malformed exponent");
             while (isDigit(peek()) || peek() == '_') advance();
         }
-        if (peek() == 'i') {
-            advance();
-            add(IMAG);
-        } else {
-            add(floating ? FLOAT : INT);
-        }
+        if (peek() == 'i') { advance(); add(IMAG); }
+        else add(floating ? FLOAT : INT);
     }
 
     private void identifier() {
@@ -185,52 +123,19 @@ public final class Lexer {
         add(KEYWORDS.getOrDefault(text, IDENT));
     }
 
-    private boolean isAtEnd() {
-        return current >= source.length();
-    }
-
-    private char advance() {
-        char c = source.charAt(current++);
-        column++;
-        return c;
-    }
-
+    private boolean isAtEnd() { return current >= source.length(); }
+    private char advance() { char c = source.charAt(current++); column++; return c; }
     private boolean match(char expected) {
         if (isAtEnd() || source.charAt(current) != expected) return false;
-        current++;
-        column++;
-        return true;
+        current++; column++; return true;
     }
-
-    private char peek() {
-        return isAtEnd() ? '\0' : source.charAt(current);
-    }
-
-    private char peekNext() {
-        return current + 1 >= source.length() ? '\0' : source.charAt(current + 1);
-    }
-
-    private void newline() {
-        line++;
-        column = 1;
-    }
-
-    private void add(Token.Type type) {
-        tokens.add(new Token(type, source.substring(start, current), line, startColumn));
-    }
-
-    private boolean isDigit(char c) {
-        return c >= '0' && c <= '9';
-    }
-
-    private boolean isIdentStart(char c) {
-        return Character.isLetter(c) || c == '_';
-    }
-
-    private boolean isIdentPart(char c) {
-        return isIdentStart(c) || isDigit(c);
-    }
-
+    private char peek() { return isAtEnd() ? '\0' : source.charAt(current); }
+    private char peekNext() { return current + 1 >= source.length() ? '\0' : source.charAt(current + 1); }
+    private void newline() { line++; column = 1; }
+    private void add(Token.Type type) { tokens.add(new Token(type, source.substring(start, current), line, startColumn)); }
+    private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
+    private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
+    private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
     private IllegalArgumentException error(String message) {
         return new IllegalArgumentException("Oreslang lexer error at " + line + ":" + startColumn + ": " + message);
     }
