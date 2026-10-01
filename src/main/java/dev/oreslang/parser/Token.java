@@ -8,7 +8,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         IMAG,
         STRING,
 
-        DEFINE, CLASS, MODULE, TRY, CATCH, FINALLY, END, IF, DO, ELSE, THEN,
+        DEFINE, CLASS, MODULE, TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
         NEW, DONE, AWAIT, ASYNC, DEF, FNC, YIELD, SUPER, ELSEIF, SWITCH, TYPE,
         INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, RETURN, DEFER,
         VAL, CONST, LET, SELF, TRUE, FALSE, NULL,
