@@ -1,0 +1,38 @@
+define module math
+  fnc add(int a, int b) => int {
+    return a + b;
+  }
+
+  fnc impedance() => complex {
+    return 3 + 4i;
+  }
+end
+
+define module model
+  define class Box<T>
+    val T value;
+
+    @Ret<self>
+    identity() {
+      return self;
+    }
+  end
+end
+
+define module app
+  pub fnc main() => void {
+    const answer = 40 + 2;
+    val complex z = 3 + 4i;
+    [const first, let second] = [1, 2];
+
+    if answer == 42, first == 1 | false; do
+      stdio.println("oreslang-ok");
+    else
+      stdio.println("unexpected");
+    fi
+
+    stdio.println("complex value follows");
+    stdio.println(z);
+    return;
+  }
+end
