@@ -330,6 +330,26 @@ public final class OwnershipChecker {
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
         if (call.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr builtin
+                && builtin.name().equals("process")) {
+            checkExpr(member.receiver(), scope, false);
+            return switch (member.member()) {
+                case "share_readonly" -> {
+                    for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("Shared"), ValueKind.COPY, null);
+                }
+                case "gc" -> {
+                    for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
+                }
+                default -> {
+                    for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
+                    yield new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                }
+            };
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr builtin
                 && builtin.name().equals("actor")) {
             checkExpr(member.receiver(), scope, false);
             return switch (member.member()) {
@@ -764,7 +784,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","ActorRef","MonitorRef" -> true;
+                    "bool","Bool","string","String","void","ActorRef","MonitorRef","Shared" -> true;
             default -> false;
         };
     }
