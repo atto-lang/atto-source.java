@@ -6,6 +6,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ExecutionTerminated;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.OresValues.Complex;
 import dev.oreslang.runtime.OresValues.OptionValue;
@@ -458,6 +459,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 try { executeBlock(tried.body(), env); }
                 catch (ReturnSignal signal) { throw signal; }
+                catch (ExecutionTerminated signal) { throw signal; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
