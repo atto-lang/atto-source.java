@@ -5,6 +5,7 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.gpu.GpuRuntime;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -106,7 +107,7 @@ public final class OresEvalRootNode extends RootNode {
                 String module = functionOwners.getOrDefault(fn, "__root__");
                 String callable = module + "." + fn.name();
                 context.requireCapability(IsolatePolicy.Capability.GPU, "gpu callable " + callable);
-                return context.gpu().dispatch(callable, fn.kind().name().toLowerCase(), args);
+                return context.gpu().dispatch(callable, GpuRuntime.CallableKind.valueOf(fn.kind().name()), args);
             }
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
