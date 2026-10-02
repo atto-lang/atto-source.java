@@ -494,6 +494,7 @@ public final class TypeChecker {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
                     String label = "function " + functionName.name();
+                    validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     return checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
@@ -530,6 +531,7 @@ public final class TypeChecker {
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
+                    validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + klass.name() + "." + fn.name());
                     List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
                     callableGenerics.addAll(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
@@ -565,6 +567,7 @@ public final class TypeChecker {
                     if (klass != null) {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
+                        validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + klass.name() + "." + method.name());
                         List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
                         callableGenerics.addAll(method.genericParameters());
                         String label = "method " + klass.name() + "." + method.name();
@@ -582,7 +585,7 @@ public final class TypeChecker {
                     }
                 }
             }
-            if (!call.typeArguments().isEmpty()) {
+            if (call.typeArgumentsPresent()) {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
@@ -1200,6 +1203,12 @@ public final class TypeChecker {
         return bindings;
     }
 
+    private void validateCallTypeArgumentMarker(Ast.CallExpr call, List<String> genericNames, String label) {
+        if (call.typeArgumentsPresent() && genericNames.isEmpty()) {
+            throw new IllegalArgumentException(label + " is not generic and cannot be called with <...> or <>");
+        }
+    }
+
     private Map<String, Type> explicitGenericBindings(
             List<String> genericNames,
             List<Ast.TypeRef> typeArguments,
@@ -1273,26 +1282,26 @@ public final class TypeChecker {
             return;
         }
         if (pattern instanceof Borrow p && actual instanceof Borrow a) {
-            inferGenericBindings(p.target(), a.target(), bindings, label);
+            inferGenericBindings(p.target(), a.target(), bindings, fixedBindings, label);
             return;
         }
         if (pattern instanceof ListType p && actual instanceof ListType a) {
-            inferGenericBindings(p.element(), a.element(), bindings, label);
+            inferGenericBindings(p.element(), a.element(), bindings, fixedBindings, label);
             return;
         }
         if (pattern instanceof Tuple p && actual instanceof Tuple a && p.elements().size() == a.elements().size()) {
-            for (int i = 0; i < p.elements().size(); i++) inferGenericBindings(p.elements().get(i), a.elements().get(i), bindings, label);
+            for (int i = 0; i < p.elements().size(); i++) inferGenericBindings(p.elements().get(i), a.elements().get(i), bindings, fixedBindings, label);
             return;
         }
         if (pattern instanceof Named p && actual instanceof Named a
                 && p.name().equals(a.name()) && p.arguments().size() == a.arguments().size()) {
-            for (int i = 0; i < p.arguments().size(); i++) inferGenericBindings(p.arguments().get(i), a.arguments().get(i), bindings, label);
+            for (int i = 0; i < p.arguments().size(); i++) inferGenericBindings(p.arguments().get(i), a.arguments().get(i), bindings, fixedBindings, label);
             return;
         }
         if (pattern instanceof Function p && actual instanceof Function a
                 && p.parameters().size() == a.parameters().size()) {
-            for (int i = 0; i < p.parameters().size(); i++) inferGenericBindings(p.parameters().get(i), a.parameters().get(i), bindings, label);
-            inferGenericBindings(p.result(), a.result(), bindings, label);
+            for (int i = 0; i < p.parameters().size(); i++) inferGenericBindings(p.parameters().get(i), a.parameters().get(i), bindings, fixedBindings, label);
+            inferGenericBindings(p.result(), a.result(), bindings, fixedBindings, label);
         }
     }
 
