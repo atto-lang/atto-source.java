@@ -116,22 +116,24 @@ Wildcard imports always require a namespace alias. This avoids silently injectin
 
 ## Module interfaces / OCaml-style module signatures
 
-Interfaces are storage-free function contracts and can also describe the callable public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
+Interfaces are storage-free contracts and can describe callable and data-member requirements for a module. A data-member requirement names required public data; it is not interface-owned storage. A module opts into checking with `@AdheresTo(...)`:
 
 ```ores
 define module contracts as
   define interface MathApi as
     fnc add(int a, int b) => int;
+    String name;
   end
 end
 
 @AdheresTo(contracts.MathApi)
 define module math as
   pub fnc add(int a, int b) => int { return a + b; }
+  pub val String name = "math";
 end
 ```
 
-Only exported (`pub`) callable members satisfy an interface contract. `@AdheresTo(A, B)` may name more than one interface. Data layout is intentionally not part of an interface; reusable stored state belongs in a trait or class.
+Only exported (`pub`) members satisfy an interface contract. `@AdheresTo(A, B)` may name more than one interface. Interface data requirements describe observable shape only: they have no initializer, storage, constructor slot, or object identity. Reusable stored state belongs in a trait or class.
 
 ## Functions and returns
 
@@ -246,20 +248,15 @@ val pair = (1, "one");
 
 ## Interfaces and stateful traits
 
-Interfaces are storage-free structural contracts. They contain function signatures only: no instance fields, no backing storage, and no object identity. A class uses `is` to ask the compiler to prove conformance.
+Interfaces are storage-free structural contracts. They can contain function signatures and data-member requirements, but never backing storage or initializers and never have object identity. A class uses `is` to ask the compiler to prove conformance.
 
 ```ores
 define interface Named as
-  fnc name() => String;
+  String name;
 end
 
 define class User is Named as
-  private val String first = "Ada";
-  private val String last = "Lovelace";
-
-  pub name() => String {
-    return self.first + " " + self.last;
-  }
+  pub val String name = "Ada Lovelace";
 end
 ```
 
@@ -273,7 +270,7 @@ end
 define trait Counter is CounterApi as
   private let int count = 0;
 
-  pub bump() => int {
+  pub bump(self &mut self)() => int {
     self.count = self.count + 1;
     return self.count;
   }
@@ -283,7 +280,7 @@ define class Worker with Counter as
 end
 ```
 
-The compiler flattens trait storage and behavior into the host class before ownership/capability/runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes cannot reach it directly. A trait method may depend on another host method only when that dependency is declared as an abstract trait method requirement.
+The compiler flattens trait storage and behavior into the host class before ownership/capability/runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes cannot reach it directly. Methods keep Oreslang's immutable receiver default; a method that mutates `let` trait/class state must opt into an explicit mutable receiver, e.g. `bump(self &mut self)()`. A trait method may depend on another host method only when that dependency is declared as an abstract trait method requirement.
 
 Trait composition is intentionally strict. Two traits contributing the same field are an error. Two concrete trait methods with the same name and arity are an error unless the class declares a compatible method that explicitly resolves the conflict. There is no declaration-order or “last wins” rule.
 
