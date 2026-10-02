@@ -27,7 +27,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
@@ -69,8 +68,6 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
-        private final Map<String, Env> contextModuleStates = new HashMap<>();
-        private final Set<String> contextModuleInitializing = new LinkedHashSet<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -162,20 +159,9 @@ public final class OresEvalRootNode extends RootNode {
                     () -> initializeOrdinaryModuleState(module));
             if (actorState != null) return actorState;
 
-            // Main/non-actor evaluation has its own context-local state. Actor
-            // cells never use this map; their module state dies with the cell.
-            Env existing = contextModuleStates.get(module.name());
-            if (existing != null) return existing;
-            if (!contextModuleInitializing.add(module.name())) {
-                throw new IllegalStateException("context-local module initialization cycle involving " + module.name());
-            }
-            try {
-                Env state = initializeOrdinaryModuleState(module);
-                contextModuleStates.put(module.name(), state);
-                return state;
-            } finally {
-                contextModuleInitializing.remove(module.name());
-            }
+            // Main/non-actor evaluation persists for the Graal context
+            // lifetime, even if the same call target is invoked repeatedly.
+            return context.contextLocal(actorKey, () -> initializeOrdinaryModuleState(module));
         }
 
         private Env initializeOrdinaryModuleState(Ast.ModuleDecl module) {
