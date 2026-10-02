@@ -33,6 +33,35 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void actorRefsRemainTypedUsableHandlesAfterCrossingAMailbox() throws Exception {
+        String output = run("""
+                fnc target(String message) => void {
+                  stdio.stdout.write(message);
+                  return;
+                }
+
+                fnc relay(ActorRef<String> target_ref) => void {
+                  stdio.stdout.write(target_ref.id == target_ref.id ? "id:" : "bad:");
+                  actor.send(target_ref, "ping");
+                  return;
+                }
+
+                pub routine main() => void {
+                  val target_ref = actor.spawn(target);
+                  val relay_ref = actor.spawn(relay);
+                  actor.send(relay_ref, target_ref);
+                  actor.stop(relay_ref);
+                  actor.join(relay_ref);
+                  actor.stop(target_ref);
+                  actor.join(target_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("id:ping", output);
+    }
+
+    @Test
     void singletonActorReusesOneNamedProcess() throws Exception {
         String output = run("""
                 fnc worker(str message) => void {
