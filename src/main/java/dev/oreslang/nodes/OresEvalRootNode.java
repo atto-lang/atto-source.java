@@ -301,6 +301,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NewExpr created) {
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                if (klass.isStruct()) throw new IllegalArgumentException("struct " + klass.name() + " is a value type; use " + klass.name() + " { ... }");
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
                 if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
@@ -314,6 +315,43 @@ public final class OresEvalRootNode extends RootNode {
                     fields.put(field.name(), value);
                 }
                 return new OresObject(klass, fields);
+            }
+            if (expr instanceof Ast.StructInitExpr created) {
+                if (created.anonymous()) {
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Ast.ObjectField field : created.fields()) {
+                        if (fields.putIfAbsent(field.name(), eval(field.value(), env)) != null) {
+                            throw new IllegalArgumentException("duplicate anonymous struct field " + field.name());
+                        }
+                    }
+                    return Map.copyOf(fields);
+                }
+
+                Ast.ClassDecl struct = findClass(created.type().name());
+                if (struct == null || !struct.isStruct()) {
+                    throw new IllegalArgumentException(created.type().name() + " is not a struct type");
+                }
+
+                LinkedHashMap<String, Ast.Expr> supplied = new LinkedHashMap<>();
+                Set<String> declaredNames = new LinkedHashSet<>();
+                for (Ast.FieldDecl field : struct.fields()) declaredNames.add(field.name());
+                for (Ast.ObjectField field : created.fields()) {
+                    if (!declaredNames.contains(field.name())) {
+                        throw new IllegalArgumentException("unknown struct field " + struct.name() + "." + field.name());
+                    }
+                    if (supplied.putIfAbsent(field.name(), field.value()) != null) {
+                        throw new IllegalArgumentException("duplicate struct field " + struct.name() + "." + field.name());
+                    }
+                }
+
+                LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                for (Ast.FieldDecl field : struct.fields()) {
+                    Ast.Expr value = supplied.get(field.name());
+                    if (value != null) fields.put(field.name(), eval(value, env));
+                    else if (field.initializer() != null) fields.put(field.name(), eval(field.initializer(), env));
+                    else throw new IllegalArgumentException("missing struct field " + struct.name() + "." + field.name());
+                }
+                return new OresObject(struct, fields);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -651,6 +689,14 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresObject {
         private final Ast.ClassDecl klass; private final Map<String,Object> fields;
         private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){this.klass=klass;this.fields=fields;}
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!klass.isStruct() || !(other instanceof OresObject value) || !value.klass.isStruct()) return false;
+            return klass == value.klass && fields.equals(value.fields);
+        }
+        @Override public int hashCode() {
+            return klass.isStruct() ? 31 * System.identityHashCode(klass) + fields.hashCode() : System.identityHashCode(this);
+        }
         @Override public String toString(){return klass.name()+fields;}
     }
 
