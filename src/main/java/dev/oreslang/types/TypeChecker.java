@@ -1206,6 +1206,7 @@ public final class TypeChecker {
                     }
                     return singletonTransportType(fn);
                 }
+                requireExtractableOwnership(fn.parameters(), "function '" + fn.name() + "'");
                 return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
@@ -1243,8 +1244,6 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
-            if (unary.operator().equals("&")) return new Borrow(operand, false);
-            if (unary.operator().equals("&mut")) return new Borrow(operand, true);
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
@@ -1292,6 +1291,30 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
+            }
+            if (call.callee() instanceof Ast.NameExpr name) {
+                Ast.FunctionDecl direct = findFunction(name.name());
+                if (direct != null) {
+                    if (direct.parameters().size() != call.arguments().size()) {
+                        throw new IllegalArgumentException("call arity mismatch for '" + direct.name() + "'");
+                    }
+                    Set<String> directGenerics = Set.copyOf(direct.genericParameters());
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Type expected = resolveParam(direct.parameters().get(i), directGenerics, null);
+                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                        requireAssignable(
+                                deref(typeOf(call.arguments().get(i), env, generics, self)),
+                                deref(expected),
+                                "argument " + (i + 1));
+                    }
+                    Type result = resolve(direct.returnType(), directGenerics, null);
+                    String ownerName = functionOwners.get(direct);
+                    Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
+                    if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
+                        return new Named("Future", List.of(result));
+                    }
+                    return result;
+                }
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
@@ -1420,6 +1443,9 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
+                    requireExtractableOwnership(
+                            fn.parameters(),
+                            "static function '" + klass.name() + "." + fn.name() + "'");
                     return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
@@ -1440,6 +1466,16 @@ public final class TypeChecker {
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
                         requireTraitMethodAccessible(method, named.name() + "." + member.member());
+                        if (method.explicitReceiverType() != null
+                                && method.explicitReceiverType().isBorrow()
+                                && method.explicitReceiverType().mutableBorrow()) {
+                            throw new IllegalArgumentException(
+                                    "mutable-receiver method value '" + member.member()
+                                            + "' cannot be extracted until Fnc models receiver ownership");
+                        }
+                        requireExtractableOwnership(
+                                method.parameters(),
+                                "method '" + named.name() + "." + method.name() + "'");
                         return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
@@ -1503,6 +1539,7 @@ public final class TypeChecker {
             return new Record(members);
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
+            requireExtractableOwnership(lambda.parameters(), "lambda");
             Env lambdaEnv = new Env(env);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
@@ -1967,6 +2004,18 @@ public final class TypeChecker {
             throw new IllegalArgumentException("conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
         }
         members.put(name, type);
+    }
+
+    private void requireExtractableOwnership(List<Ast.Param> params, String callable) {
+        for (Ast.Param param : params) {
+            Ast.ParamMode mode = param.structural() ? Ast.ParamMode.BORROW : param.mode();
+            if (mode != Ast.ParamMode.BORROW) {
+                throw new IllegalArgumentException(
+                        callable + " has " + mode.name().toLowerCase()
+                                + " parameter '" + param.name()
+                                + "' and cannot be extracted as a first-class Fnc until function types encode ownership modes");
+            }
+        }
     }
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
