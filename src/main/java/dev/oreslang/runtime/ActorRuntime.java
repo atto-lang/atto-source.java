@@ -192,7 +192,7 @@ public final class ActorRuntime implements AutoCloseable {
             actors.put(id, cell);
             cell.start();
             return ref;
-        } catch (Throwable failure) {
+        } catch (RuntimeException | Error failure) {
             actors.remove(id, cell);
             if (backendStarted) safeActorExit(id);
             throw failure;
