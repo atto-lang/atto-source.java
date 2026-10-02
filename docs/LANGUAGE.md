@@ -87,11 +87,15 @@ let retries = 0;
 retries = retries + 1;
 ```
 
-Destructuring carries mutability per element:
+Destructuring carries mutability per element. A bare `_` is a discard pattern: it consumes that position without declaring a variable, so it can be repeated in the same pattern or reused by later destructures.
 
 ```ores
-[const code, let body] = (200, "ok");
+[const code, _, let body] = (200, "ignored", "ok");
+[const next, _, let tail] = (201, "ignored again", "done");
+[_, _, const final] = (1, 2, 3);
 ```
+
+`_` is not readable after the destructure because no lexical binding is created for it.
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
