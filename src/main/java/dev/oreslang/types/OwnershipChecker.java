@@ -323,6 +323,39 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr builtin
+                && builtin.name().equals("actor")) {
+            checkExpr(member.receiver(), scope, false);
+            return switch (member.member()) {
+                case "spawn" -> {
+                    for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("ActorRef"), ValueKind.COPY, null);
+                }
+                case "singleton" -> {
+                    for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, false);
+                    yield new ValueInfo(Ast.TypeRef.simple("ActorRef"), ValueKind.COPY, null);
+                }
+                case "send" -> {
+                    if (!call.arguments().isEmpty()) checkExpr(call.arguments().getFirst(), scope, false);
+                    if (call.arguments().size() > 1) checkExpr(call.arguments().get(1), scope, true);
+                    for (int i = 2; i < call.arguments().size(); i++) checkExpr(call.arguments().get(i), scope, true);
+                    yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
+                }
+                case "stop", "join", "status" -> {
+                    for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, false);
+                    yield new ValueInfo(
+                            member.member().equals("status") ? Ast.TypeRef.simple("obj") : Ast.TypeRef.simple("bool"),
+                            member.member().equals("status") ? ValueKind.MOVE_ONLY : ValueKind.COPY,
+                            null);
+                }
+                default -> {
+                    for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
+                    yield new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                }
+            };
+        }
+
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
@@ -718,7 +751,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void" -> true;
+                    "bool","Bool","string","String","void","ActorRef" -> true;
             default -> false;
         };
     }
