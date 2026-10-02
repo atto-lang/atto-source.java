@@ -354,10 +354,15 @@ public final class OresEvalRootNode extends RootNode {
             return owner == null ? null : modules.get(owner);
         }
 
-        private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args, SingletonState singletonState) {
+        private Object callMethod(
+                OresObject receiver,
+                Ast.ClassDecl dispatchClass,
+                Ast.MethodDecl method,
+                List<?> args,
+                SingletonState singletonState) {
             if (singletonState != null) ProcessSingletonRegistry.checkExecutionBudget();
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
-            Env lexical = classLexicalModuleState(receiver.klass, singletonState);
+            Env lexical = classLexicalModuleState(dispatchClass, singletonState);
             Env env = new Env(lexical, singletonState);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
@@ -718,9 +723,20 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args, SingletonState singletonState) {
-            Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
-            if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            return callMethod(receiver, method, args, singletonState);
+            Ast.ClassDecl dispatchClass = runtimeDispatchClass(receiver, singletonState);
+            Ast.MethodDecl method = findMethod(dispatchClass, name, args.size(), new LinkedHashSet<>());
+            if (method == null) throw new IllegalArgumentException("no method " + dispatchClass.name() + "." + name + " with arity " + args.size());
+            return callMethod(receiver, dispatchClass, method, args, singletonState);
+        }
+
+        private Ast.ClassDecl runtimeDispatchClass(OresObject receiver, SingletonState singletonState) {
+            if (singletonState == null) return receiver.klass;
+            Ast.ClassDecl current = findClass(receiver.klass.name());
+            if (current == null) {
+                throw new IllegalStateException("singleton-owned class '" + receiver.klass.name()
+                        + "' no longer exists in the active code generation");
+            }
+            return current;
         }
 
         private CompletionStage<Object> invokeSingletonProxy(
@@ -754,7 +770,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("no public singleton proxy method "
                                     + proxy.klass().name() + "." + methodName + " with arity " + frozenArgs.size());
                         }
-                        return callMethod(object, method, frozenArgs, state);
+                        return callMethod(object, proxy.klass(), method, frozenArgs, state);
                     });
         }
 
@@ -959,9 +975,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
-                Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                Ast.ClassDecl dispatchClass = runtimeDispatchClass(object, singletonState);
+                Ast.MethodDecl iterator = findMethod(dispatchClass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
-                Object produced = callMethod(object, iterator, List.of(), singletonState);
+                Object produced = callMethod(object, dispatchClass, iterator, List.of(), singletonState);
                 return iterableValues(produced, singletonState);
             }
             throw new IllegalArgumentException("value is not iterable");
