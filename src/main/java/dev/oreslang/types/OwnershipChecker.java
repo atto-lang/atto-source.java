@@ -359,7 +359,12 @@ public final class OwnershipChecker {
                     Ast.TypeRef fieldType = moduleField.type() == null
                             ? inferFieldType(moduleField.initializer())
                             : moduleField.type();
-                    if (isCopyType(fieldType)) return new ValueInfo(fieldType, ValueKind.COPY, null);
+                    if (isCopyType(fieldType) || isSingletonProxyField(modules.get(namespace.name()), moduleField)) {
+                        // A public class-valued singleton field is not the raw
+                        // process-owned object. TypeChecker/runtime expose an
+                        // immutable actor-backed proxy capability.
+                        return new ValueInfo(fieldType, ValueKind.COPY, null);
+                    }
                     throw error("cannot directly extract non-Copy module state '"
                             + namespace.name() + "." + member.member()
                             + "'; use a borrowing accessor or explicit ownership-transfer API");
@@ -1118,6 +1123,14 @@ public final class OwnershipChecker {
             }
         }
         return null;
+    }
+
+    private boolean isSingletonProxyField(Ast.ModuleDecl module, Ast.FieldDecl field) {
+        if (module == null || !module.singleton()) return false;
+        if (field.visibility() != Ast.Visibility.PUBLIC) return false;
+        if (field.bindingKind() == Ast.BindingKind.LET) return false;
+        if (field.type() == null || field.type().isBorrow() || !field.type().arguments().isEmpty()) return false;
+        return findClass(field.type().name()) != null;
     }
 
     private Ast.FieldDecl findModuleField(Ast.ModuleDecl module, String name) {
