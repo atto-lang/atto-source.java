@@ -458,6 +458,36 @@ final class UntrustedActorRuntimeTest {
     }
 
     @Test
+    void httpResponseStateCannotMutateAfterStreamingStarts() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            RecordingResponse response = new RecordingResponse();
+            var limits = new ActorRuntime.UntrustedActorLimits(
+                    Duration.ofSeconds(2), 100, 1024, 1024, 1024);
+
+            var ref = runtime.<String>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    limits,
+                    null,
+                    response,
+                    ignored -> (message, turn) -> {
+                        var out = turn.httpResponse().orElseThrow();
+                        out.status(200);
+                        out.header("x-before", "ok");
+                        out.write(ByteBuffer.wrap(new byte[]{'x'}));
+                        out.header("x-after", "forbidden");
+                    });
+
+            ref.send("request");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    IllegalStateException.class,
+                    ref.failure().orElseThrow());
+            assertTrue(response.aborted.get());
+            assertEquals(1, response.bytes.get());
+        }
+    }
+
+    @Test
     void httpResponseLimitFailsClosed() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             RecordingResponse response = new RecordingResponse();
