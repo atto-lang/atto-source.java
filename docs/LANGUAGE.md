@@ -298,7 +298,32 @@ try {
 
 ## Actors
 
-Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
+Oreslang has first-class actor-callable modifiers:
+
+```ores
+pub actor fnc add_one(int value) => int {
+  return value + 1;
+}
+
+pub isoactor routine emit(String value) => void {
+  stdio.stdout.write(value);
+  return;
+}
+```
+
+Each call to an `actor` or `isoactor` callable creates a fresh one-shot actor. The current v0 contract is synchronous: arguments cross the actor transport boundary, the actor runs the callable body, the result crosses the boundary back to the caller, and the actor terminates. The callable keeps its declared source signature; it does not implicitly return an `ActorRef` or future. `async actor` / `async isoactor` is deliberately rejected until the language has a suspension-based nonblocking call contract.
+
+`actor` uses the shared-heap actor scheduler, but **shared heap does not mean shared actor state**. Every shared actor has a stable semantic actor identity even though mailbox turns may run on different JVM workers. Actor-local `Mutex<T>`, ownership, mutable bindings, and actor-local runtime state are keyed to that semantic domain rather than the carrier thread. A shared actor never executes two mailbox turns concurrently. Ordinary cross-actor values still pass through the freeze/copy boundary.
+
+Writable sharing is explicit. `SharedMutex<T>` is the opt-in same-process shared-memory capability. Both sender and receiver must have `SHARED_MEMORY`, and the handle is scoped to one `ActorRuntime`. Process-wide singleton modules remain actor/mailbox owned by default; they do not become implicit raw shared-memory objects merely because multiple actors can call them.
+
+`isoactor` selects private-arena actor memory and a stable virtual-thread identity. Its effective actor policy strips both `SHARED_MEMORY` and `ACTOR_SHARE_READONLY`. A private actor rejects `Shared<T>` and `SharedMutex<T>` values at the receive boundary and cannot return shared-memory capabilities. Raw `MemorySegment` values never cross an actor boundary.
+
+The static checker rejects actor-callable parameters/results that are obviously non-transferable: actor-local `Mutex<T>`, `MutexGuard<T>`, pending `Future<T>`, borrows, function/closure values, unknown dynamic values, and unresolved generics. `isoactor` additionally rejects `SharedMutex<T>`. Runtime recursive freezing remains the final admission check for concrete values.
+
+The private arena is real confined native memory, but the current Java/Truffle interpreter still represents some guest metadata and ordinary values as JVM objects unless their representation explicitly allocates through `ActorMemory`. Therefore `isoactor` currently guarantees semantic isolation plus confined arena-backed allocations and capability exclusion; complete arena-lowering of every guest value remains an implementation hardening path rather than a claim that every interpreter object already lives off-heap.
+
+A synchronous actor callable cannot invoke another actor callable while already executing on the bounded shared-actor pool; the runtime rejects that pattern instead of risking pool starvation. Use message-oriented composition today; a future async actor-call contract will suspend/resume rather than block a shared worker.
 
 ## Isolates
 
