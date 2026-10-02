@@ -123,6 +123,23 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void incrementalUnitsRetainGeneratedGpuArtifacts() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        var build = compiler.compile(Map.of(
+                "math.ores", """
+                        gpu fnc add(i32 a, i32 b) => i32 {
+                          return a + b;
+                        }
+                        """));
+
+        var unit = build.units().get("math.ores");
+        assertNotNull(unit.gpuProgram());
+        assertTrue(unit.gpuProgram().hasKernels());
+        assertEquals(1, unit.gpuProgram().kernels().size());
+        assertTrue(unit.gpuProgram().source().contains("__kernel void"));
+    }
+
+    @Test
     void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var build = compiler.compile(Map.of(
