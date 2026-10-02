@@ -797,7 +797,7 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("use trusted Supplier shared actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
-        return spawn(ActorKind.SHARED, policy, context -> behaviorFactory.get());
+        return spawnInternal(ActorKind.SHARED, policy, context -> behaviorFactory.get(), true);
     }
 
     public <M> ActorRef<M> spawnShared(BehaviorFactory<M> behaviorFactory) {
@@ -810,6 +810,24 @@ public final class ActorRuntime implements AutoCloseable {
         return spawn(ActorKind.SHARED, policy, behaviorFactory);
     }
 
+    /**
+     * Explicit host-only escape hatch for context-aware shared actor factories
+     * that intentionally capture host objects. Compiler lowering must never use
+     * this path. Adversarial policies reject it.
+     */
+    public <M> ActorRef<M> spawnSharedTrusted(BehaviorFactory<M> behaviorFactory) {
+        return spawnSharedTrusted(defaultSpawnPolicy(), behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnSharedTrusted(
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory) {
+        requireSupervisorContext("use trusted captured shared actor construction");
+        Objects.requireNonNull(behaviorFactory);
+        requireTrustedSupplierPolicy(policy);
+        return spawnInternal(ActorKind.SHARED, policy, behaviorFactory, true);
+    }
+
     /** Compatibility path for trusted host callers. */
     public <M> ActorRef<M> spawn(
             ActorKind kind,
@@ -818,14 +836,14 @@ public final class ActorRuntime implements AutoCloseable {
         requireSupervisorContext("use trusted Supplier actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
-        return spawnInternal(kind, policy, context -> behaviorFactory.get(), kind == ActorKind.PRIVATE);
+        return spawnInternal(kind, policy, context -> behaviorFactory.get(), true);
     }
 
-    private static void requireStatelessPrivateFactory(Object factory) {
+    private static void requireStatelessActorFactory(Object factory) {
         for (java.lang.reflect.Field field : factory.getClass().getDeclaredFields()) {
             if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                 throw new SecurityException(
-                        "private actor BehaviorFactory must be stateless; captured host state is not actor-private memory");
+                        "actor BehaviorFactory must be stateless; captured host state must enter through explicit actor messages/capabilities");
             }
         }
     }
@@ -923,7 +941,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
-            boolean trustedPrivateFactory) {
+            boolean trustedFactory) {
         requireCallerRuntimeAffinity("spawn actors");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
@@ -937,8 +955,9 @@ public final class ActorRuntime implements AutoCloseable {
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
-        } else if (!trustedPrivateFactory) {
-            requireStatelessPrivateFactory(behaviorFactory);
+        }
+        if (!trustedFactory) {
+            requireStatelessActorFactory(behaviorFactory);
         }
 
         synchronized (runtimeLifecycleLock) {
@@ -949,7 +968,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<M> ref = new ActorRef<>(id, kind);
             try {
                 ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedPrivateFactory);
+                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
                 actors.put(id, cell);
                 return ref;
             } catch (RuntimeException | Error failure) {
@@ -2210,7 +2229,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
-        private final boolean trustedPrivateFactory;
+        private final boolean trustedFactory;
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
@@ -2228,12 +2247,12 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
-                boolean trustedPrivateFactory) {
+                boolean trustedFactory) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
-            this.trustedPrivateFactory = trustedPrivateFactory;
+            this.trustedFactory = trustedFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -2383,7 +2402,7 @@ public final class ActorRuntime implements AutoCloseable {
                     Behavior<M> created = Objects.requireNonNull(
                             behaviorFactory.create(context),
                             "actor behaviorFactory returned null");
-                    if (kind == ActorKind.PRIVATE && !trustedPrivateFactory) {
+                    if (kind == ActorKind.PRIVATE && !trustedFactory) {
                         validatePrivateBehaviorState(ref.id(), created);
                     }
                     behavior = created;
@@ -2396,7 +2415,7 @@ public final class ActorRuntime implements AutoCloseable {
                     releaseMailboxSlot();
                     try (envelope) {
                         behavior.onMessage((M) envelope.value(), context);
-                        if (kind == ActorKind.PRIVATE && !trustedPrivateFactory) {
+                        if (kind == ActorKind.PRIVATE && !trustedFactory) {
                             // Private state that survives a mailbox turn must
                             // remain in actor-owned storage/capabilities. This
                             // catches behavior fields that were null/immutable
