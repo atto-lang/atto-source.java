@@ -230,6 +230,116 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Owner-bound, non-Sendable HTTP response capability. This deliberately
+     * bypasses actor mailboxes for response body bytes while preserving a hard
+     * byte limit and actor ownership check on every operation.
+     */
+    public final class HttpResponseCapability {
+        private final ActorId owner;
+        private final HttpResponseTransport transport;
+        private final long maxBytes;
+        private final AtomicLong writtenBytes = new AtomicLong();
+        private final AtomicBoolean completed = new AtomicBoolean();
+
+        private HttpResponseCapability(
+                ActorId owner,
+                HttpResponseTransport transport,
+                long maxBytes) {
+            this.owner = Objects.requireNonNull(owner);
+            this.transport = Objects.requireNonNull(transport);
+            this.maxBytes = maxBytes;
+        }
+
+        public long maxBytes() { return maxBytes; }
+        public long writtenBytes() { return writtenBytes.get(); }
+        public long remainingBytes() { return Math.max(0L, maxBytes - writtenBytes.get()); }
+        public boolean completed() { return completed.get(); }
+
+        private ActorCell<?> requireOwner(String operation) {
+            ActorCell<?> cell = currentActor.get();
+            if (cell == null || cell.kind != ActorKind.UNTRUSTED || !cell.ref.id().equals(owner)) {
+                throw new SecurityException(
+                        "HTTP response capability may only be used by its owning untrusted actor: " + operation);
+            }
+            cell.checkUntrustedBudget(1);
+            if (completed.get()) {
+                throw new IllegalStateException("HTTP response is already completed");
+            }
+            return cell;
+        }
+
+        public void status(int statusCode) throws IOException {
+            requireOwner("status");
+            if (statusCode < 100 || statusCode > 599) {
+                throw new IllegalArgumentException("invalid HTTP status code " + statusCode);
+            }
+            transport.status(statusCode);
+        }
+
+        public void header(String name, String value) throws IOException {
+            requireOwner("header");
+            Objects.requireNonNull(name, "header name");
+            Objects.requireNonNull(value, "header value");
+            if (!name.matches("[!#$%&'*+.^_|~0-9A-Za-z-]+")) {
+                throw new IllegalArgumentException("invalid HTTP header name");
+            }
+            if (value.indexOf('\r') >= 0 || value.indexOf('\n') >= 0) {
+                throw new IllegalArgumentException("HTTP header value cannot contain CR/LF");
+            }
+            transport.header(name, value);
+        }
+
+        /**
+         * Writes directly through the host's response transport. No actor
+         * mailbox copy is performed. The transport may be backed directly by a
+         * SocketChannel/HTTP stream. Partial non-blocking writes are allowed.
+         */
+        public int write(ByteBuffer source) throws IOException {
+            requireOwner("write");
+            Objects.requireNonNull(source, "source");
+            int requested = source.remaining();
+            if (requested == 0) return 0;
+            long remaining = remainingBytes();
+            if (requested > remaining) {
+                throw new HttpResponseLimitExceededException(
+                        "untrusted actor HTTP response limit exceeded: requested="
+                                + requested + " remaining=" + remaining + " max=" + maxBytes);
+            }
+            int before = source.remaining();
+            int written = transport.write(source);
+            if (written < 0 || written > before || source.remaining() != before - written) {
+                throw new IllegalStateException(
+                        "HTTP response transport violated ByteBuffer write contract");
+            }
+            writtenBytes.addAndGet(written);
+            return written;
+        }
+
+        public void flush() throws IOException {
+            requireOwner("flush");
+            transport.flush();
+        }
+
+        public void complete() throws IOException {
+            requireOwner("complete");
+            if (completed.compareAndSet(false, true)) {
+                transport.complete();
+            }
+        }
+
+        private void abortFromRuntime(Throwable cause) {
+            if (completed.compareAndSet(false, true)) {
+                try {
+                    transport.abort(cause);
+                } catch (RuntimeException ignored) {
+                    // Teardown must not retain actor memory because a host
+                    // response adapter misbehaved during abort.
+                }
+            }
+        }
+    }
+
+    /**
      * Deeply immutable runtime-owned shared value. The backing graph is frozen
      * once, quota-accounted once, and retained until runtime teardown.
      */
