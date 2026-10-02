@@ -495,6 +495,7 @@ final class IsolationHotReloadTest {
             assertEquals("same-unit.ores", first.codeUnitId());
             assertEquals(first.codeUnitId(), second.codeUnitId());
             assertEquals(second.id(), hot.active("same-unit.ores").id());
+            assertEquals(second.id(), hot.active("dir/../same-unit.ores").id());
             assertEquals(1, hot.activeGenerations().size());
         }
     }
