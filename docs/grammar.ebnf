@@ -81,7 +81,9 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | [ "as" ] { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator ;
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
+                | IDENT ":" type_ref member_terminator
+                | [ binding_kind ] type_ref IDENT member_terminator ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
@@ -209,8 +211,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      state cell per OS process.
    - "define module X as", "define class Y ... as", and "define trait T ... as"
      use "as" as the body marker. "as", "is", "with", and "trait" are reserved.
-   - Interfaces are storage-free contracts: they declare function signatures only.
-     They never allocate fields or contribute object layout.
+   - Interfaces are storage-free contracts. They may declare function signatures
+     and data-member requirements, but data requirements have no initializer,
+     allocate no storage, and contribute no object layout.
    - Stateful reusable composition uses traits. A class satisfies interfaces with
      "is" and composes traits with "with". "implements"/"impl" remain migration
      aliases for "is".
