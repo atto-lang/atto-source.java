@@ -25,12 +25,17 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+    public record ModuleDecl(String name, boolean singleton, List<Annotation> annotations, List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, false, annotations, declarations);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, false, List.of(), declarations);
+        }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
