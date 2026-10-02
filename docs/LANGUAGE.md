@@ -292,17 +292,19 @@ Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
 ## Exceptions and defer
 
-Both structured exceptions and lexical `defer` are supported:
+Structured `try/catch/finally` and lexical `defer` are supported:
 
 ```ores
 try {
   risky();
 } catch (err) {
-  recover(err);
+  log_error(err);
 } finally {
   cleanup();
 }
 ```
+
+`recover`, `panic`, `raise`, and `throw` are not claimed by this contract yet. When those language primitives are added, they must remain separate from host security and scheduler-cancellation control flow.
 
 `defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
 
@@ -312,7 +314,7 @@ Guest `catch` handles application/runtime failures, but host security denial and
 
 `async` is a real type/runtime distinction, not a marker-only modifier. Calling an `async fnc` or async static method produces `Future<T>`; the callable body itself is checked as returning `T`. `await` accepts only `Future<T>` and yields `T`; awaiting an ordinary value is a compile-time/runtime error rather than an identity operation.
 
-Async work is executed by context-owned virtual threads in the Java/Truffle backend, but guest code has no ambient thread API. Task admission is bounded per isolate, live tasks are tracked, and context shutdown cancels/interupts owned async work. A bare async call whose `Future<T>` result is discarded is rejected, and `defer async_call()` is rejected unless the async result is explicitly awaited. This prevents accidental Go-style detached-task leaks.
+Async work is executed by context-owned virtual threads in the Java/Truffle backend, but guest code has no ambient thread API. Task admission is bounded per isolate, live tasks are tracked, and context shutdown cancels/interrupts owned async work. A bare async call whose `Future<T>` result is discarded is rejected, and `defer async_call()` is rejected unless the async result is explicitly awaited. This prevents accidental Go-style detached-task leaks.
 
 Async callables may not accept or return `Borrow<T>` / `BorrowMut<T>`, because those borrows are scoped to the synchronous call boundary. Async instance methods are currently rejected as well: until Oreslang has an explicit owned-async receiver model, an instance receiver may not outlive the call boundary on another task.
 
