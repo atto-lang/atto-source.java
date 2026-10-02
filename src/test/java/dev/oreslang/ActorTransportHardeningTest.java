@@ -26,6 +26,66 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void actorRefsCannotCrossRuntimeCapabilityBoundaries() {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            var refA = runtimeA.<Object>spawn(() -> (message, context) -> { });
+            var targetB = runtimeB.<Object>spawn(() -> (message, context) -> { });
+
+            IllegalArgumentException direct = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> targetB.send(refA));
+            assertTrue(direct.getMessage().contains("owning ActorRuntime"));
+
+            assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(refA));
+
+            ActorRuntime.Shared<Object> wrapped = runtimeA.shareReadonly(refA);
+            IllegalArgumentException wrappedFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> targetB.send(wrapped));
+            assertTrue(wrappedFailure.getMessage().contains("owning ActorRuntime"));
+        }
+    }
+
+    @Test
+    void cyclicMessageGraphsAreRejectedBeforeStackOverflow() {
+        ArrayList<Object> cycle = new ArrayList<>();
+        cycle.add(cycle);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(cycle));
+
+        assertTrue(error.getMessage().contains("cyclic actor message"));
+    }
+
+    @Test
+    void excessivelyDeepMessageGraphsAreRejected() {
+        Object nested = "leaf";
+        for (int i = 0; i < 300; i++) {
+            nested = List.of(nested);
+        }
+        Object tooDeep = nested;
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(tooDeep));
+
+        assertTrue(error.getMessage().contains("maximum nesting depth"));
+    }
+
+    @Test
+    void oversizedMessageGraphsAreRejected() {
+        List<Integer> tooManyNodes = java.util.Collections.nCopies(100_001, 1);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(tooManyNodes));
+
+        assertTrue(error.getMessage().contains("maximum graph size"));
+    }
+
+    @Test
     void sendableCannotReturnMutableHostObject() {
         ActorRuntime.Sendable malicious = () -> new StringBuilder("mutable");
 
