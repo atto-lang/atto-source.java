@@ -96,6 +96,8 @@ public final class ActorRuntime implements AutoCloseable {
             result.put("mailbox_bytes", mailboxBytes);
             result.put("owned_state_bytes", ownedStateBytes);
             result.put("estimated_actor_heap_bytes", safeAdd(mailboxBytes, ownedStateBytes));
+            result.put("heap_backend", "logical_jvm");
+            result.put("physical_heap_isolation", false);
             result.put("manual_gc_requests", manualGcRequests);
             if (failure != null) {
                 result.put("failure_type", failure.type());
