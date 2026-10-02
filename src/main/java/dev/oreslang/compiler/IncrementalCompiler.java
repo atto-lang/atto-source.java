@@ -61,14 +61,20 @@ public final class IncrementalCompiler {
         }
 
         /*
-         * ABI changes invalidate direct importers. Rebuilding an importer does
-         * not automatically cascade further: its own ABI digest decides that.
-         * This is the key distinction between code-generation dirtiness and
-         * public-contract dirtiness.
+         * ABI changes invalidate the full reverse-import closure. This remains
+         * conservative until the cross-unit linker tracks exactly which public
+         * imported symbols are re-exported by each dependent. Crucially,
+         * implementation-only source changes do not enter this queue.
          */
         Map<String, Set<String>> reverse = reverseDependencies(dependencies);
-        for (String changed : abiChanged) {
-            dirty.addAll(reverse.getOrDefault(changed, Set.of()));
+        ArrayDeque<String> abiQueue = new ArrayDeque<>(abiChanged);
+        LinkedHashSet<String> abiAffected = new LinkedHashSet<>(abiChanged);
+        while (!abiQueue.isEmpty()) {
+            String changed = abiQueue.removeFirst();
+            for (String dependent : reverse.getOrDefault(changed, Set.of())) {
+                dirty.add(dependent);
+                if (abiAffected.add(dependent)) abiQueue.addLast(dependent);
+            }
         }
 
         LinkedHashMap<String, CompiledUnit> next = new LinkedHashMap<>();
