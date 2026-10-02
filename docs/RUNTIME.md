@@ -8,9 +8,11 @@
 4. Runtime API facades repeat the authorization check.
 5. Graal host access, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
 6. Actors cannot exceed their configured mailbox capacity.
-7. Hot reload never requires loading executable native libraries.
-8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
-9. `self` cannot be rebound.
+7. `actor.gc()` is actor-local and may never silently escalate to process-wide GC.
+8. `process.gc()` is capability-gated and is the only guest API allowed to request host/process-wide GC.
+9. Hot reload never requires loading executable native libraries.
+10. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
+11. `self` cannot be rebound.
 
 ## Deployment matrix
 
@@ -42,3 +44,18 @@ The strict production direction is:
 ## Receiver implementation
 
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
+
+
+## Garbage-collection boundaries
+
+Oreslang treats an actor as a memory-ownership and GC boundary.
+
+- automatic reclamation remains the default;
+- actor exit makes the actor cell, mailbox, and actor-owned reachable graph reclaimable together;
+- `actor.gc()` requests collection of the current actor only;
+- `process.gc()` requests whole-runtime/host-process collection and requires `PROCESS_GC`;
+- immutable shared values and backend-managed large blobs may outlive one actor and are reclaimed according to their shared ownership/reference policy.
+
+The current JVM/Truffle reference backend cannot ask HotSpot/Graal GC to trace only one arbitrary Java actor object graph. Its default `actor.gc()` backend is therefore a cooperative actor-local collection point and **does not call `System.gc()`**. Native/isolate backends plug in a collector that can physically reclaim the actor heap. The JVM backend uses `System.gc()` only for explicit, capability-authorized `process.gc()`, and even there the JVM treats it as a collection request/hint rather than a correctness requirement.
+
+This preserves the language contract now without faking actor-local GC by introducing a global pause.
