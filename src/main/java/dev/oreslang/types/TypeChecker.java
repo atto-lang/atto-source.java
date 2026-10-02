@@ -207,9 +207,15 @@ public final class TypeChecker {
 
     private void validateSingletonModule(Ast.ModuleDecl module) {
         for (Ast.Decl decl : module.declarations()) {
-            if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
-                        + "' cannot be public; expose actor-safe accessor functions instead");
+            if (decl instanceof Ast.FieldDecl field) {
+                if (field.type() == null) {
+                    throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
+                            + "' requires an explicit type so process-lifetime state has a stable hot-reload schema");
+                }
+                if (field.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
+                            + "' cannot be public; expose actor-safe accessor functions instead");
+                }
             }
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
                 Set<String> generics = Set.copyOf(fn.genericParameters());
