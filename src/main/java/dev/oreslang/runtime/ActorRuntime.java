@@ -2390,7 +2390,6 @@ public final class ActorRuntime implements AutoCloseable {
                     ActorRuntime.this, ref.id(), kind, policy));
             ActorContext<M> context = actorContext();
             try {
-                turnExecutor.execute(() -> initializeBehavior(context));
                 while (!stopped.get() && !closed.get()) {
                     final MessageEnvelope envelope;
                     try {
@@ -2407,7 +2406,14 @@ public final class ActorRuntime implements AutoCloseable {
                         envelope.close();
                         break;
                     }
-                    turnExecutor.execute(() -> processEnvelope(envelope, context));
+                    if (behavior == null) {
+                        turnExecutor.execute(() -> initializeBehavior(context));
+                    }
+                    if (!stopped.get()) {
+                        turnExecutor.execute(() -> processEnvelope(envelope, context));
+                    } else {
+                        envelope.close();
+                    }
                 }
             } catch (Throwable failure) {
                 fail(failure);
