@@ -901,7 +901,13 @@ public final class Parser {
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
         while (true) {
-            if (match(LPAREN)) {
+            if (check(LT) && looksLikeTypeArgumentCall()) {
+                List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
+                consume(LPAREN, "expected '(' after call type arguments");
+                List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
+                consume(RPAREN, "expected ')' after arguments");
+                expr = new Ast.CallExpr(expr, typeArguments, args);
+            } else if (match(LPAREN)) {
                 List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
@@ -915,6 +921,32 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private List<Ast.TypeRef> parseCallTypeArguments() {
+        consume(LT, "expected '<' before call type arguments");
+        List<Ast.TypeRef> arguments = new ArrayList<>();
+        if (!check(GT)) {
+            do arguments.add(parseTypeRef()); while (match(COMMA));
+        }
+        consume(GT, "expected '>' after call type arguments");
+        return List.copyOf(arguments);
+    }
+
+    private boolean looksLikeTypeArgumentCall() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LT) depth++;
+            else if (type == GT) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
+                if (depth < 0) return false;
+            } else if (type == SEMICOLON || type == EQUAL || type == QUESTION || type == COLON) {
+                return false;
+            }
+        }
+        return false;
     }
 
     private String consumeMemberName() {
