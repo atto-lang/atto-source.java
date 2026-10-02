@@ -14,8 +14,15 @@ public final class CapabilityChecker {
     public static void check(Ast.Program program, IsolatePolicy policy) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn) checkStatements(fn.body(), policy);
-                else if (declaration instanceof Ast.ClassDecl klass) {
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    if (fn.actorKind() == Ast.ActorKind.SHARED) {
+                        require(policy, IsolatePolicy.Capability.ACTOR_SHARED_MEMORY, "shared actor fnc " + fn.name());
+                    }
+                    checkStatements(fn.body(), policy);
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    if (klass.actorKind() == Ast.ActorKind.SHARED) {
+                        require(policy, IsolatePolicy.Capability.ACTOR_SHARED_MEMORY, "shared actor " + klass.name());
+                    }
                     for (Ast.FieldDecl field : klass.fields()) if (field.initializer() != null) checkExpr(field.initializer(), policy);
                     for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
                 } else if (declaration instanceof Ast.FieldDecl field && field.initializer() != null) {
