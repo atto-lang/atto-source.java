@@ -15,212 +15,381 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class ReturnedDestructuringTest {
     @Test
-    void unionArraysAndBindingKindPropagationTypeCheck() {
+    void typesUnionFiniteArraysAndRecordResults() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                type intOrBoolOrString = bool | int | string;
+                define module app
+                  type intOrBoolOrString = bool | int | string;
 
-                pub fnc mixed() => Array<type intOrBoolOrString> {
-                  return [3, true, "yes"];
-                }
+                  pub fnc mixed() => Array<type intOrBoolOrString> {
+                    return arr[3, true, "yes"];
+                  }
 
-                pub fnc main() => void {
-                  [const number, flag, answer] = mixed();
-                  stdio.println(number);
-                  stdio.println(flag);
-                  stdio.println(answer);
-                  return;
-                }
+                  pub fnc fixed() => [int, bool, string] {
+                    return [3, true, "yes"];
+                  }
+
+                  pub fnc recordResult() => {foo: int, bar: string} {
+                    return obj{foo: 5, bar: "x"};
+                  }
+
+                  pub fnc main() => void {
+                    [const num, b, answer] = fixed();
+                    const [again, _, text] = fixed();
+                    const {foo, bar} = recordResult();
+                    stdio.println(num);
+                    stdio.println(num);
+                    stdio.println(b);
+                    stdio.println(answer);
+                    stdio.println(again);
+                    stdio.println(text);
+                    stdio.println(foo);
+                    stdio.println(foo);
+                    stdio.println(bar);
+                    return;
+                  }
+                end
                 """)));
     }
 
     @Test
-    void finiteTupleReturnCanUseListBackedValueAndPrefixConstPattern() {
+    void explicitObjectQualifiersAndQualifierPropagationWork() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc fixed() => [int, bool, string] {
-                  return [3, true, "yes"];
-                }
+                define module app
+                  fnc pair() => {foo: int, bar: string} {
+                    return obj{foo: 7, bar: "ok"};
+                  }
 
-                pub fnc main() => void {
-                  const [number, flag, answer] = fixed();
-                  stdio.println(number);
-                  stdio.println(flag);
-                  stdio.println(answer);
-                  return;
-                }
-                """)));
-    }
+                  fnc values() => [int, int, int, int] {
+                    return [1, 2, 3, 4];
+                  }
 
-    @Test
-    void finiteTupleReturnRejectsWrongArityAndWrongSlotType() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc broken() => [int, bool, string] {
-                  return [3, true];
-                }
-
-                pub fnc main() => void { return; }
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc broken() => [int, bool, string] {
-                  return [3, "not-bool", "yes"];
-                }
-
-                pub fnc main() => void { return; }
-                """)));
-    }
-
-    @Test
-    void explicitLetChangesPropagationForRemainingSequenceBindings() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc fixed() => [int, bool, string] {
-                  return [3, true, "yes"];
-                }
-
-                pub fnc main() => void {
-                  [const number, let flag, answer] = fixed();
-                  flag = false;
-                  answer = "no";
-                  stdio.println(number);
-                  stdio.println(flag);
-                  stdio.println(answer);
-                  return;
-                }
+                  pub fnc main() => void {
+                    {const foo, const bar} = pair();
+                    [const a, b, let c, d] = values();
+                    c = 30;
+                    d = 40;
+                    stdio.println(foo);
+                    stdio.println(bar);
+                    stdio.println(a);
+                    stdio.println(b);
+                    return;
+                  }
+                end
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc fixed() => [int, bool, string] {
-                  return [3, true, "yes"];
-                }
+                define module app
+                  fnc values() => [int, int] {
+                    return [1, 2];
+                  }
 
-                pub fnc main() => void {
-                  [const number, flag, answer] = fixed();
-                  flag = false;
-                  return;
-                }
+                  pub fnc main() => void {
+                    [const a, b] = values();
+                    b = 3;
+                    return;
+                  }
+                end
                 """)));
     }
 
     @Test
-    void recordReturnSupportsBothObjectDestructureSpellings() {
+    void unionArrayBindingsRetainTheUnionType() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  type scalar = bool | int | string;
+
+                  fnc values() => Array<scalar> {
+                    return arr[1, true, "x"];
+                  }
+
+                  pub fnc main() => void {
+                    const [first, second, third] = values();
+                    val int narrowed = first;
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void finiteArrayTypeSurvivesLocalBindingsAndArrRemainsHomogeneous() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc result() => {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
-                }
+                define module app
+                  fnc fixedThroughLocal() => [int, bool, string] {
+                    val value = [3, true, "yes"];
+                    return value;
+                  }
 
-                fnc prefixed() => void {
-                  const {foo, bar} = result();
-                  stdio.println(foo);
-                  stdio.println(bar);
-                  return;
-                }
-
-                fnc inlineKinds() => void {
-                  {const foo, const bar} = result();
-                  stdio.println(foo);
-                  stdio.println(bar);
-                  return;
-                }
-
-                pub fnc main() => void {
-                  prefixed();
-                  inlineKinds();
-                  return;
-                }
-                """)));
-    }
-
-    @Test
-    void recordReturnsAndDestructuresRejectMissingOrWrongMembers() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc broken() => {foo: int, bar: string} {
-                  return obj{foo: 5};
-                }
-
-                pub fnc main() => void { return; }
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc broken() => {foo: int, bar: string} {
-                  return obj{foo: "wrong", bar: "x"};
-                }
-
-                pub fnc main() => void { return; }
+                  pub fnc main() => void {
+                    const [number, enabled, answer] = fixedThroughLocal();
+                    stdio.println(number);
+                    stdio.println(enabled);
+                    stdio.println(answer);
+                    return;
+                  }
+                end
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc result() => {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
-                }
-
-                pub fnc main() => void {
-                  const {foo, missing} = result();
-                  return;
-                }
+                define module app
+                  fnc notFinite() => [int, int] {
+                    return arr[1, 2];
+                  }
+                end
                 """)));
     }
 
     @Test
-    void equivalentUnionAndRecordOrderingsHaveCanonicalSignatures() {
+    void finiteArrayIndexesUseSlotTypesAndDynamicWritesStaySafe() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                @Ret<string | int>
-                fnc scalar() => int | string {
-                  return 3;
-                }
+                define module app
+                  pub fnc main() => void {
+                    let values = [1, true, "x"];
+                    val int number = values[0];
+                    val bool enabled = values[1];
+                    val string answer = values[2];
+                    values[0] = 2;
+                    stdio.println(number);
+                    stdio.println(enabled);
+                    stdio.println(answer);
+                    return;
+                  }
+                end
+                """)));
 
-                @Ret<{bar: string, foo: int}>
-                fnc object() => {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
-                }
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  pub fnc main() => void {
+                    val values = [1, true, "x"];
+                    let int index = 0;
+                    val int narrowed = values[index];
+                    return;
+                  }
+                end
+                """)));
 
-                pub fnc main() => void { return; }
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  pub fnc main() => void {
+                    let values = [1, true];
+                    let int index = 0;
+                    values[index] = 1;
+                    return;
+                  }
+                end
                 """)));
     }
 
     @Test
-    void prefixedPatternSyntaxDoesNotStealFiniteTupleOrRecordTypedBindings() {
+    void finiteListAggregatesMoveButExtractedScalarsRemainCopy() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                fnc fixed() => [int, bool, string] {
-                  return [3, true, "yes"];
-                }
+                define module app
+                  pub fnc main() => void {
+                    val values = [1, true, "x"];
+                    [const number, enabled, answer] = values;
+                    stdio.println(number);
+                    stdio.println(number);
+                    stdio.println(enabled);
+                    stdio.println(answer);
+                    return;
+                  }
+                end
+                """)));
 
-                fnc result() => {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
-                }
-
-                pub fnc main() => void {
-                  val [int, bool, string] tupleValue = fixed();
-                  val {foo: int, bar: string} recordValue = result();
-                  stdio.println(tupleValue[0]);
-                  stdio.println(recordValue.foo);
-                  return;
-                }
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  pub fnc main() => void {
+                    val values = List.of(1, true);
+                    val alias = values;
+                    stdio.println(values[0]);
+                    return;
+                  }
+                end
                 """)));
     }
 
     @Test
-    void returnedTupleAndRecordDestructureAtRuntime() throws Exception {
+    void finiteArrayReturnsRejectWrongArityAndMemberTypes() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => [int, bool, string] {
+                    return [1, true];
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => [int, bool, string] {
+                    return [1, "wrong", "yes"];
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void recordReturnsAndDestructuresRejectMissingFields() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => {foo: int, bar: string} {
+                    return obj{foo: 1};
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc value() => {foo: int, bar: string} {
+                    return obj{foo: 1, bar: "x"};
+                  }
+
+                  pub fnc main() => void {
+                    {const baz} = value();
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void repeatedDiscardDoesNotDeclareOrConflict() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc values() => [int, bool, string] {
+                    return [1, true, "kept"];
+                  }
+
+                  pub fnc main() => void {
+                    [const _, _, answer] = values();
+                    stdio.println(answer);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void jvmStyleListOfAndMapOfResultsDestructure() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  pub fnc fixed() => [int, bool, string] {
+                    return List.of(3, true, "yes");
+                  }
+
+                  pub fnc recordResult() => {foo: int, bar: string} {
+                    return Map.of("foo", 5, "bar", "x");
+                  }
+
+                  pub fnc main() => void {
+                    const [number, enabled, answer] = fixed();
+                    const {foo, bar} = recordResult();
+                    stdio.println(number);
+                    stdio.println(enabled);
+                    stdio.println(answer);
+                    stdio.println(foo);
+                    stdio.println(bar);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => [int, bool] {
+                    return List.of(1, "wrong");
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => {foo: int} {
+                    return Map.of("foo", 1, "dangling");
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => {foo: int} {
+                    return Map.of(1, 2);
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => {foo: int} {
+                    return Map.of("foo", 1, "foo", 2);
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void moduleQualifiedReturnedResultsPreserveElementOwnership() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module data
+                  pub fnc fixed() => [int, bool, string] {
+                    return [9, true, "module"];
+                  }
+
+                  pub fnc recordResult() => {foo: int, bar: string} {
+                    return obj{foo: 11, bar: "record"};
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    const [number, enabled, label] = data.fixed();
+                    const {foo, bar} = data.recordResult();
+                    stdio.println(number);
+                    stdio.println(number);
+                    stdio.println(enabled);
+                    stdio.println(label);
+                    stdio.println(foo);
+                    stdio.println(foo);
+                    stdio.println(bar);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void parameterDestructuringRemainsUnsupported() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  fnc bad(const [left, right]) => void {
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void executesReturnedArrayAndObjectDestructuringThroughGraal() throws Exception {
         String program = """
-                type FixedResult = [int, bool, string];
-                type NamedResult = {foo: int, bar: string};
+                define module app
+                  fnc fixed() => [int, bool, string] {
+                    return List.of(3, true, "yes");
+                  }
 
-                fnc fixed() => FixedResult {
-                  return [3, true, "yes"];
-                }
+                  fnc recordResult() => {foo: int, bar: string} {
+                    return Map.of("foo", 5, "bar", "x");
+                  }
 
-                fnc result() => NamedResult {
-                  return obj{foo: 5, bar: "x"};
-                }
-
-                pub fnc main() => void {
-                  const [number, flag, answer] = fixed();
-                  const {foo, bar} = result();
-                  stdio.println(number);
-                  stdio.println(flag);
-                  stdio.println(answer);
-                  stdio.println(foo);
-                  stdio.println(bar);
-                  return;
-                }
+                  pub fnc main() => void {
+                    [const num, b, answer] = fixed();
+                    const {foo, bar} = recordResult();
+                    stdio.println(num);
+                    stdio.println(b);
+                    stdio.println(answer);
+                    stdio.println(foo);
+                    stdio.println(bar);
+                    return;
+                  }
+                end
                 """;
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
