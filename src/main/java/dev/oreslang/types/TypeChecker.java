@@ -44,6 +44,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private String resolutionModule;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
