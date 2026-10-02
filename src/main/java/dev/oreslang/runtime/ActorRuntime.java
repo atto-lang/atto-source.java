@@ -47,6 +47,15 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
 
+    @FunctionalInterface
+    public interface TurnExecutor {
+        void execute(Runnable turn);
+
+        static TurnExecutor direct() {
+            return Runnable::run;
+        }
+    }
+
     public enum ActorKind { PRIVATE, SHARED }
 
     public record DispatcherConfig(
@@ -133,22 +142,31 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
+    private final TurnExecutor turnExecutor;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
     public ActorRuntime() {
-        this(IsolatePolicy.developer(), DispatcherConfig.defaults());
+        this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling) {
-        this(policyCeiling, DispatcherConfig.defaults());
+        this(policyCeiling, DispatcherConfig.defaults(), TurnExecutor.direct());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling, DispatcherConfig dispatcherConfig) {
+        this(policyCeiling, dispatcherConfig, TurnExecutor.direct());
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
                 dispatcherConfig.maxActors(),
@@ -1484,8 +1502,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        @SuppressWarnings("unchecked")
         private void runBatch() {
+            try {
+                turnExecutor.execute(this::runBatchEntered);
+            } catch (Throwable failure) {
+                fail(failure);
+                scheduled.set(false);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private void runBatchEntered() {
             currentActor.set(this);
             try {
                 if (stopped.get()) return;
