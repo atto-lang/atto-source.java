@@ -735,18 +735,33 @@ public final class TypeChecker {
 
         try {
             Map<String, Type> classBindings = new HashMap<>(genericBindings);
+            if (named.arguments().size() != klass.genericParameters().size()) return false;
             for (int i = 0; i < klass.genericParameters().size(); i++) {
-                if (i >= named.arguments().size()) return false;
                 classBindings.put(klass.genericParameters().get(i),
                         resolveSharedGeneric(named.arguments().get(i), genericBindings));
             }
 
             Type nominal = nominalClassType(klass);
             Set<String> classGenerics = Set.copyOf(klass.genericParameters());
-            for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>())) {
-                Type fieldType = resolve(field.type(), classGenerics, nominal);
+
+            // Check only fields declared by this class under this class's own
+            // generic environment. Flattening inherited fields here is unsafe:
+            // a parent T must never be resolved as an unrelated child T.
+            for (Ast.FieldDecl field : klass.fields()) {
+                Type fieldType = resolveSharedGeneric(
+                        resolve(field.type(), classGenerics, nominal),
+                        classBindings);
                 if (!isSharedSafe(fieldType, seen, classBindings)) return false;
             }
+
+            // Recurse into each parent after substituting the child's generic
+            // bindings into the parent's concrete type arguments.
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Type parentType = resolveSharedGeneric(resolve(parentRef, classGenerics, nominal), classBindings);
+                if (!isSharedSafe(parentType, seen, classBindings)) return false;
+            }
+
             return true;
         } finally {
             seen.remove(klass);
