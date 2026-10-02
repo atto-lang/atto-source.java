@@ -633,7 +633,7 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
