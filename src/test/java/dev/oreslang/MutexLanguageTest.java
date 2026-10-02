@@ -711,4 +711,197 @@ final class MutexLanguageTest {
                 () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
     }
 
+
+    @Test
+    void guardBearingValuesCannotBeHiddenInConstructedObjects() {
+        var direct = Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub let T value;
+                  end
+
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    val hidden = new Box<>(guard);
+                    stdio.println(hidden);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException directError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(direct));
+        assertTrue(directError.getMessage().contains(
+                "MutexGuard cannot be stored in a constructed object"));
+
+        var pending = Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub let T value;
+                  end
+
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val futureGuard = mutex.lock_async();
+                    val hidden = new Box<>(futureGuard);
+                    stdio.println(hidden);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException pendingError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(pending));
+        assertTrue(pendingError.getMessage().contains(
+                "MutexGuard cannot be stored in a constructed object"));
+
+        var borrowed = Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub let T value;
+                  end
+
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    val hidden = new Box<>(&guard);
+                    stdio.println(hidden);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException borrowedError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(borrowed));
+        assertTrue(borrowedError.getMessage().contains(
+                "MutexGuard cannot be stored in a constructed object"));
+    }
+
+
+    @Test
+    void sharedSafeUnionPayloadsRequireEveryArmToBeSafe() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc good(SharedMutex<int | string> value) => void {
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad(SharedMutex<int | Mutex<int>> value) => void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("concrete shared-safe type"));
+    }
+
+
+    @Test
+    void mutexPayloadsMustBeOwnedRatherThanBorrowed() {
+        IllegalArgumentException factoryError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad() => void {
+                            val data = arr[1, 2, 3];
+                            val mutex = Mutex.new(&data);
+                            stdio.println(mutex);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(factoryError.getMessage().contains("requires owned data"));
+
+        IllegalArgumentException declaredError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module model
+                          define class Counter
+                            pub let int value = 0;
+                          end
+                        end
+
+                        define module app
+                          fnc bad(Mutex<&Counter> value) => void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(declaredError.getMessage().contains("owned value type"));
+    }
+
+
+    @Test
+    void conditionalExpressionsCannotEraseGuardLinearity() {
+        var awaitProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  async fnc bad(bool choose) => void {
+                    val mutex = Mutex.new(new Counter());
+                    val maybe_guard = choose ? 1 : mutex.lock();
+                    await mutex.lock_async();
+                    stdio.println(maybe_guard);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException awaitError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(awaitProgram));
+        assertTrue(awaitError.getMessage().contains(
+                "cannot await while holding a MutexGuard"));
+
+        var returnProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad(bool choose) => int | Counter {
+                    val mutex = Mutex.new(new Counter());
+                    return choose ? 1 : mutex.lock();
+                  }
+                end
+                """);
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(returnProgram));
+    }
+
 }
