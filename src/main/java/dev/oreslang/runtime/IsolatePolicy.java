@@ -114,6 +114,16 @@ public record IsolatePolicy(
                 .err(new ByteArrayOutputStream())
                 .arguments(OresLanguage.ID, applicationArguments(profile));
 
+        /*
+         * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
+         * only when the embedding process explicitly supplies a polyglot
+         * isolate library; ordinary strict/adversarial contexts remain on the
+         * non-experimental builder path.
+         */
+        if (System.getProperty("polyglot.engine.IsolateLibrary") != null) {
+            builder.allowExperimentalOptions(true);
+        }
+
         if (adversarial) {
             long guestHeap = Math.max(8L * 1024 * 1024, maxHeapBytes * 3 / 4);
             long maxOutput = allows(Capability.STDOUT) ? 1024L * 1024 : 0L;
