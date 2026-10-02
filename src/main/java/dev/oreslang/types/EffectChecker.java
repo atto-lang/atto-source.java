@@ -149,12 +149,16 @@ public final class EffectChecker {
             callees.put(callable, new ArrayList<>());
 
             Scope scope = new Scope(null);
-            if (callable.ownerClass() != null && !callable.isStatic()) {
-                scope.define("self", Ast.TypeRef.simple(callable.ownerClass().name()));
+            if (callable.ownerClass() != null) {
+                scope.defineType(callable.ownerClass().name(), callable.ownerClass());
+                if (!callable.isStatic()) {
+                    scope.define("self", Ast.TypeRef.simple(callable.ownerClass().name()));
+                }
             }
             for (Ast.Param parameter : callable.parameters()) {
                 scope.define(parameter.name(), parameter.type());
             }
+            predeclareLocalTypes(callable.body(), scope);
 
             if (callable.async()) {
                 addEffect(callable, Effect.ALLOC,
@@ -321,7 +325,17 @@ public final class EffectChecker {
     }
 
     private void scanBlock(List<Ast.Stmt> body, Callable current, Scope scope) {
+        predeclareLocalTypes(body, scope);
         for (Ast.Stmt stmt : body) scanStmt(stmt, current, scope);
+    }
+
+    private void predeclareLocalTypes(List<Ast.Stmt> body, Scope scope) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.TypeDeclStmt local
+                    && local.declaration() instanceof Ast.ClassDecl klass) {
+                scope.defineType(klass.name(), klass);
+            }
+        }
     }
 
     private void scanStmt(Ast.Stmt stmt, Callable current, Scope scope) {
@@ -533,7 +547,7 @@ public final class EffectChecker {
                     requireArity(call, "copy", 1);
                     addEffect(current, Effect.COPY, "copy(...) ownership intrinsic");
                     Ast.TypeRef operand = inferType(call.arguments().getFirst(), current, scope);
-                    if (copyMayAllocate(operand, current.module(), scope, new HashSet<>())) {
+                    if (copyMayAllocate(operand, current.module(), scope, newIdentitySet())) {
                         addEffect(current, Effect.ALLOC,
                                 "copy(...) materializes owned heap/storage state");
                     }
@@ -950,7 +964,7 @@ public final class EffectChecker {
             Ast.TypeRef type,
             String module,
             Scope scope,
-            Set<String> active) {
+            Set<Ast.ClassDecl> active) {
         if (type == null || type.inferArguments()) return true;
         Ast.TypeRef target = type.isBorrow() ? type.borrowedTarget() : type;
         String name = target.name();
@@ -978,8 +992,7 @@ public final class EffectChecker {
         if (klass == null) return true;
         if (!klass.isStruct()) return true;
 
-        String identity = module + "::" + klass.name() + "@" + System.identityHashCode(klass);
-        if (!active.add(identity)) return true;
+        if (!active.add(klass)) return true;
         try {
             for (Ast.FieldDecl field : effectiveFields(
                     klass, module, scope,
@@ -991,7 +1004,7 @@ public final class EffectChecker {
             }
             return false;
         } finally {
-            active.remove(identity);
+            active.remove(klass);
         }
     }
 
