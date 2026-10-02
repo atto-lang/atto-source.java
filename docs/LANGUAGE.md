@@ -530,6 +530,11 @@ pub actor routine main() => void { // compile-time error
 This applies equally to shared and isolate actor callables. Lifecycle hooks belong to
 their file/module execution context rather than being detached into a child actor.
 
+A source file/code unit may declare **at most one `main`** across its file-root and named
+modules, because `main` is the process entrypoint. Each module/file-root scope may declare its
+own `init`; separate modules may therefore each have an initializer without making process
+startup ambiguous.
+
 The reservation is intentionally scoped. Local bindings and class members named
 `main` or `init` remain legal, so these names do not pollute every identifier
 namespace in the language.
