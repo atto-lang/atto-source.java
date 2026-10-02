@@ -622,7 +622,11 @@ public final class OresEvalRootNode extends RootNode {
                 kinds.put(binding.name(), binding.kind());
                 return true;
             }
-            if (pattern instanceof Ast.LiteralPattern literal) return Objects.equals(literal.value(), value);
+            if (pattern instanceof Ast.LiteralPattern literal) {
+                Object expected = literal.value();
+                if (expected instanceof Ast.Imaginary imaginary) expected = new Complex(0.0, imaginary.coefficient());
+                return Objects.equals(expected, value);
+            }
 
             List<Ast.Pattern> elements;
             List<?> values;
