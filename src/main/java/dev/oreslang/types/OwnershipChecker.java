@@ -426,6 +426,10 @@ public final class OwnershipChecker {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
                 checkArguments(call.arguments(), fn.parameters(), scope, "function " + fn.name());
+                if (fn.async()) {
+                    Ast.TypeRef future = new Ast.TypeRef("Future", List.of(fn.returnType()), false);
+                    return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
+                }
                 return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null);
             }
         }
@@ -436,6 +440,10 @@ public final class OwnershipChecker {
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (method != null) {
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
+                if (method.async()) {
+                    Ast.TypeRef future = new Ast.TypeRef("Future", List.of(method.returnType()), false);
+                    return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
+                }
                 return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
             }
         }
