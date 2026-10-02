@@ -1273,4 +1273,147 @@ final class ActorRuntimeTest {
     }
 
 
+
+    @Test
+    void actorIdsExposePrefixedUuidStringsWithMonotonicUuidPayloads() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var first = runtime.<String>spawnPrivate(() -> (message, context) -> { });
+            var second = runtime.<String>spawnPrivate(() -> (message, context) -> { });
+
+            assertTrue(first.idString().startsWith("actor_id_"));
+            assertEquals(first.idString(), first.id().toString());
+            assertNotEquals(first.id(), second.id());
+            assertEquals(4, first.id().value().version());
+            assertEquals(2, first.id().value().variant());
+
+            long payloadMask = 0x3fffffffffffffffL;
+            long firstSequence = first.id().value().getLeastSignificantBits() & payloadMask;
+            long secondSequence = second.id().value().getLeastSignificantBits() & payloadMask;
+            assertEquals(firstSequence + 1, secondSequence);
+        }
+    }
+
+    @Test
+    void boundedMailboxBatchLetsPeerActorRunBeforeHotMailboxDrains() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 2);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch firstHotEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirstHot = new CountDownLatch(1);
+            CountDownLatch peerRan = new CountDownLatch(1);
+            AtomicInteger hotProcessed = new AtomicInteger();
+            AtomicInteger hotCountWhenPeerRan = new AtomicInteger(Integer.MAX_VALUE);
+
+            var hot = runtime.<Integer>spawnPrivate(() -> (message, context) -> {
+                if (message == 0) {
+                    firstHotEntered.countDown();
+                    assertTrue(releaseFirstHot.await(2, TimeUnit.SECONDS));
+                }
+                hotProcessed.incrementAndGet();
+            });
+            var peer = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                hotCountWhenPeerRan.set(hotProcessed.get());
+                peerRan.countDown();
+            });
+
+            for (int i = 0; i < 10; i++) hot.send(i);
+            assertTrue(firstHotEntered.await(2, TimeUnit.SECONDS));
+            peer.send("peer");
+            releaseFirstHot.countDown();
+
+            assertTrue(peerRan.await(2, TimeUnit.SECONDS));
+            assertTrue(
+                    hotCountWhenPeerRan.get() <= config.throughput(),
+                    "hot actor must return to the dispatcher queue after one bounded batch");
+        }
+    }
+
+    @Test
+    void untrustedDispatcherAlwaysUsesSingleMessageTurns() {
+        var config = new ActorRuntime.DispatcherConfig(4, 4, 2, 64, 1024);
+        assertEquals(64, config.throughputFor(ActorRuntime.ActorKind.PRIVATE));
+        assertEquals(64, config.throughputFor(ActorRuntime.ActorKind.SHARED));
+        assertEquals(1, config.throughputFor(ActorRuntime.ActorKind.UNTRUSTED));
+    }
+
+    @Test
+    void actorGroupDeduplicatesMembershipAndUsesOrdinaryBoundedSends() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(2);
+            AtomicInteger deliveries = new AtomicInteger();
+
+            var first = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                deliveries.incrementAndGet();
+                received.countDown();
+            });
+            var second = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                deliveries.incrementAndGet();
+                received.countDown();
+            });
+
+            try (var workers = runtime.<String>group("workers")) {
+                workers.add(first).add(first).add(second);
+                assertEquals(2, workers.size());
+                assertTrue(workers.id().toString().startsWith("actor_group_id_"));
+
+                ActorRuntime.FanoutReceipt receipt = workers.broadcast("job");
+                assertEquals(2, receipt.attempted());
+                assertEquals(2, receipt.delivered());
+                assertEquals(0, receipt.terminated());
+                assertEquals(0, receipt.rejected());
+                assertTrue(receipt.allDelivered());
+                assertTrue(received.await(2, TimeUnit.SECONDS));
+                assertEquals(2, deliveries.get());
+            }
+        }
+    }
+
+    @Test
+    void actorGroupPrunesTerminatedMembersAndRejectsForeignRuntimeMembers() throws Exception {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            CountDownLatch liveReceived = new CountDownLatch(1);
+            var dead = left.<String>spawnPrivate(() -> (message, context) -> { });
+            var live = left.<String>spawnPrivate(() -> (message, context) -> liveReceived.countDown());
+            var foreign = right.<String>spawnPrivate(() -> (message, context) -> { });
+
+            try (var workers = left.<String>group("workers")) {
+                workers.add(dead).add(live);
+                assertThrows(IllegalArgumentException.class, () -> workers.add(foreign));
+
+                dead.stop();
+                ActorRuntime.FanoutReceipt receipt = workers.broadcast("job");
+                assertEquals(2, receipt.attempted());
+                assertEquals(1, receipt.delivered());
+                assertEquals(1, receipt.terminated());
+                assertEquals(0, receipt.rejected());
+                assertEquals(1, workers.size());
+                assertTrue(receipt.failures().containsKey(dead.id()));
+                assertTrue(liveReceived.await(2, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void actorGroupIsRuntimeCapabilityNotReadonlySharedData() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<Object> observed = new AtomicReference<>();
+            var member = runtime.<String>spawnPrivate(() -> (message, context) -> { });
+
+            try (var workers = runtime.<String>group("workers")) {
+                workers.add(member);
+                var receiver = runtime.<Object>spawnPrivate(() -> (message, context) -> {
+                    observed.set(message);
+                    received.countDown();
+                });
+
+                receiver.send(workers);
+                assertTrue(received.await(2, TimeUnit.SECONDS));
+                assertSame(workers, observed.get());
+                assertThrows(IllegalArgumentException.class, () -> runtime.shareReadonly(workers));
+                assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(workers));
+            }
+        }
+    }
+
 }
