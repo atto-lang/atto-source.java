@@ -977,7 +977,9 @@ public final class ActorRuntime implements AutoCloseable {
             GraphBudget budget) {
         budget.visit();
         if (depth > MAX_FREEZE_DEPTH) return Long.MAX_VALUE;
-        if (value == null) return 8L;
+        if (value == null) {
+            throw new IllegalArgumentException("raw null cannot cross an actor boundary; use Option<T>");
+        }
         if (value instanceof Shared<?>) return SHARED_HANDLE_BYTES;
         if (value instanceof String string) return safeAdd(24L, safeMultiply(2L, string.length()));
         if (value instanceof Boolean || value instanceof Byte) return 16L;
