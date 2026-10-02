@@ -252,6 +252,32 @@ const complex z = 3 + 4i;
 
 Numeric widening is loss-aware; real values can widen toward complex values, but silent lossy narrowing is not performed.
 
+## Generics and operators
+
+Generic declarations and type applications use angle brackets:
+
+```ores
+define class Box<T>
+  val T value;
+end
+
+fnc identity<T>(T value) => T {
+  return value;
+}
+
+fnc use(Box<int> box) => int {
+  return identity(box.value);
+}
+```
+
+Known classes, interfaces, aliases, and built-ins enforce generic arity. Generic parameters are opaque types, not an implicit `any`: a concrete value is not assignable to an unconstrained `T` unless call-site inference has bound that `T`. Generic function and method calls infer type arguments from value arguments. Nested generic closers such as `Option<Array<int>>` remain valid.
+
+`Type<>` is reserved for inferred type arguments in type contexts that explicitly support inference; it is **not** an expression operator. Oreslang uses `^^` for logical XOR and `^` for bitwise XOR.
+
+Logical operators are `!`, `&&`, `^^`, and `||`. `&&` and `||` short-circuit; `^^` evaluates both boolean operands. Bitwise operators are integer-only: unary `~`, binary `&`, `^`, `|`, and shifts `<<`, `>>`, `>>>`. Shift distances must be in the range 0 through 63 in the current 64-bit integer runtime.
+
+From tighter to looser binding, the relevant binary precedence is: multiplicative, additive, shifts, comparisons, equality, bitwise AND, bitwise XOR, bitwise OR, logical AND, logical XOR, logical OR, ternary, assignment. Prefix borrow `&value` / `&mut value` remains unambiguous because bitwise `&` is infix.
+
 ## Lambdas
 
 Lambdas use `->`:
