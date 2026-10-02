@@ -69,11 +69,15 @@ final class GpuSafetyChecker {
                 if (s.condition() != null) checkExpr(s.condition(), module, owner);
                 if (s.update() != null) checkExpr(s.update(), module, owner);
                 checkStatements(s.body(), module, owner);
+            } else {
+                throw new IllegalStateException("unhandled GPU statement node: " + stmt.getClass().getName());
             }
         }
     }
 
     private void checkExpr(Ast.Expr expr, String module, Ast.FunctionDecl owner) {
+        if (expr instanceof Ast.LiteralExpr) return;
+
         if (expr instanceof Ast.NameExpr name) {
             if (name.name().equals("print") || HOST_ROOTS.contains(name.name())) {
                 fail(module, owner, "host/actor API '" + name.name() + "' is not available in the GPU execution domain");
@@ -148,6 +152,8 @@ final class GpuSafetyChecker {
             for (Ast.Expr item : e.elements()) checkExpr(item, module, owner);
         } else if (expr instanceof Ast.ObjectExpr e) {
             for (Ast.ObjectField field : e.fields()) checkExpr(field.value(), module, owner);
+        } else {
+            throw new IllegalStateException("unhandled GPU expression node: " + expr.getClass().getName());
         }
     }
 
