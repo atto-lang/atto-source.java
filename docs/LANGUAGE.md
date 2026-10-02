@@ -293,6 +293,32 @@ Each mailbox delivery is a fresh actor **turn**. Actor-owned captured state pers
 but callable-scoped `defer` and `recover` frames belong only to the current turn and are drained
 or discarded before the actor accepts the next message.
 
+Actor callables are also supported as declaration sugar for one-shot work:
+
+```ores
+pub actor fnc rebuild(String target) => void {
+  rebuild_index(target);
+}
+
+pub actor isolate routine compact(String target) => void {
+  compact_index(target);
+}
+
+pub routine main() => void {
+  val task = rebuild("users");
+  task.join();
+  stdio.println(task.failed);
+}
+```
+
+An `actor fnc` or `actor routine` body must declare `void`. Calling it immediately
+creates a new actor, transfers/freezes its launch arguments across the actor boundary, schedules
+the body once, and returns an `ActorTask` handle. `ActorTask` exposes `stop()`, `join()`,
+`alive`, `failed`, and `kind`, but deliberately has no `send()`: persistent mailboxes use
+the explicit actor-expression form instead. `main` remains the root/process entrypoint and
+cannot itself be declared `actor`. `async actor` is rejected because actor already defines
+the execution boundary.
+
 Actor failure is fail-stop and isolated from the caller: an uncaught panic/exception terminates
 that actor without unwinding the spawning function, killing sibling actors, or terminating the
 main process. `join()` waits for termination but deliberately does not rethrow actor failure;
