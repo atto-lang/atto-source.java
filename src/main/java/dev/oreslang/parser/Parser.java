@@ -42,19 +42,19 @@ public final class Parser {
             if (match(DEFINE)) {
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || (modifiers.nonLexical || modifiers.explicitLexical) || modifiers.isStatic || modifiers.isAbstract) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
                     modules.add(parseModule(annotations));
                     continue;
                 }
                 if (match(CLASS)) {
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                    if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                    if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -126,11 +126,11 @@ public final class Parser {
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
             if (match(INTERFACE)) {
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                if (modifiers.nonLexical || modifiers.explicitLexical) throw error(previous(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
                 return parseInterface(modifiers.visibility);
             }
             throw error(previous(), "expected class or interface after 'define'");
@@ -144,7 +144,7 @@ public final class Parser {
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
-        if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
+        if (modifiers.nonLexical || modifiers.explicitLexical) throw error(peek(), "'lex', 'lexical', and 'nlex' apply only to fnc, routine, or lambda");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
@@ -177,7 +177,7 @@ public final class Parser {
         while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
-            if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
+            if (mods.nonLexical || mods.explicitLexical) throw error(peek(), "capture modifiers are unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
@@ -340,6 +340,7 @@ public final class Parser {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean nonLexical = false;
+        boolean explicitLexical = false;
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean progress;
@@ -348,12 +349,21 @@ public final class Parser {
             if (match(PUB)) visibility = Ast.Visibility.PUBLIC;
             else if (match(PRIVATE)) visibility = Ast.Visibility.PRIVATE;
             else if (match(ASYNC)) async = true;
-            else if (match(NLEX)) nonLexical = true;
+            else if (match(LEX, LEXICAL)) {
+                if (explicitLexical) throw error(previous(), "duplicate lexical capture modifier");
+                if (nonLexical) throw error(previous(), "'lex'/'lexical' cannot be combined with 'nlex'");
+                explicitLexical = true;
+            }
+            else if (match(NLEX)) {
+                if (nonLexical) throw error(previous(), "duplicate 'nlex' capture modifier");
+                if (explicitLexical) throw error(previous(), "'nlex' cannot be combined with 'lex'/'lexical'");
+                nonLexical = true;
+            }
             else if (match(STATIC)) isStatic = true;
             else if (match(ABSTRACT)) isAbstract = true;
             else progress = false;
         } while (progress);
-        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract);
+        return new Modifiers(visibility, async, nonLexical, explicitLexical, isStatic, isAbstract);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -817,12 +827,17 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         if (match(NLEX)) {
-            if (check(PIPE)) return parsePipeLambda(true);
-            if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
+            if (check(PIPE)) return parsePipeLambda(true, false);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(true, false);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
         }
-        if (check(PIPE)) return parsePipeLambda(false);
-        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
+        if (match(LEX, LEXICAL)) {
+            if (check(PIPE)) return parsePipeLambda(false, true);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, true);
+            throw error(previous(), "'lex'/'lexical' in expression position must prefix a lambda");
+        }
+        if (check(PIPE)) return parsePipeLambda(false, false);
+        if (check(LPAREN) && looksLikeLambda()) return parseLambda(false, false);
         if (match(LPAREN)) {
             Ast.Expr first = parseExpression();
             if (match(COMMA)) {
@@ -859,16 +874,16 @@ public final class Parser {
         return new Ast.ObjectExpr(fields);
     }
 
-    private Ast.LambdaExpr parseLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parseLambda(boolean nonLexical, boolean explicitLexical) {
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
         if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, explicitLexical);
     }
 
-    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
+    private Ast.LambdaExpr parsePipeLambda(boolean nonLexical, boolean explicitLexical) {
         consume(PIPE, "expected '|'");
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
@@ -960,5 +975,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean explicitLexical, boolean isStatic, boolean isAbstract) { }
 }
