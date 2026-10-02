@@ -12,7 +12,7 @@ The language is intentionally opinionated:
 - one return value only (tuples/arrays/records are ordinary single values);
 - `val`, `const`, and `let` are the only variable declarations;
 - actor heaps are isolated: mutable values are never shared between actors;
-- `singleton module` provides exactly one actor-backed module instance per OS process, with actor-private mutable fields and proxy/message-based public calls;
+- `singleton module` provides one actor-backed instance per canonical code-unit/module identity per OS process, with actor-private bounded state, statically sendable request/reply APIs, cycle-checked mailboxes, policy backpressure/timeouts, and generation-guarded hot reload;
 - immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
 - isolates are stricter security boundaries for FaaS/mobile workloads, with host access denied and Oreslang APIs capability-gated by default;
 - JIT, AOT/interpreter, and AOT-host + guest-JIT hybrid execution profiles;
