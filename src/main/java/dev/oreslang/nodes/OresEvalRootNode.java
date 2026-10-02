@@ -1385,6 +1385,7 @@ public final class OresEvalRootNode extends RootNode {
                             + "public, instance-bound, and use an immutable receiver");
                 }
 
+                validateVerifiableCopyGraph(object, new IdentityHashMap<>());
                 Object sourceSnapshot = copySingletonValue(object, new IdentityHashMap<>());
                 copies.put(value, COPY_IN_PROGRESS);
                 Object copied;
@@ -1405,6 +1406,7 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("class '" + object.klass.name()
                             + "' copy() must return a fresh instance of the same concrete class");
                 }
+                validateVerifiableCopyGraph(result, new IdentityHashMap<>());
                 assertNoMutableAliases(object, result);
                 copies.put(value, result);
                 return result;
@@ -1513,6 +1515,52 @@ public final class OresEvalRootNode extends RootNode {
             Object result = ActorRuntime.freeze(value);
             frozen.put(value, result);
             return result;
+        }
+
+        private void validateVerifiableCopyGraph(
+                Object value,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Complex
+                    || value instanceof ActorRuntime.ActorId
+                    || value instanceof ActorRuntime.ActorRef<?>
+                    || value instanceof ActorRuntime.Shared<?>) {
+                return;
+            }
+            if (seen.put(value, Boolean.TRUE) != null) return;
+
+            if (value instanceof OptionValue option) {
+                if (option.present()) validateVerifiableCopyGraph(option.value(), seen);
+                return;
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) validateVerifiableCopyGraph(field, seen);
+                return;
+            }
+            if (value instanceof List<?> list) {
+                for (Object item : list) validateVerifiableCopyGraph(item, seen);
+                return;
+            }
+            if (value instanceof Set<?> set) {
+                for (Object item : set) validateVerifiableCopyGraph(item, seen);
+                return;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    validateVerifiableCopyGraph(entry.getKey(), seen);
+                    validateVerifiableCopyGraph(entry.getValue(), seen);
+                }
+                return;
+            }
+            if (value instanceof Object[] array) {
+                for (Object item : array) validateVerifiableCopyGraph(item, seen);
+                return;
+            }
+
+            throw new IllegalArgumentException("Copy contract cannot verify foreign/host value of type "
+                    + value.getClass().getName()
+                    + "; provide an explicit immutable/copy adapter before storing it in a copyable class graph");
         }
 
         private void assertNoMutableAliases(Object original, Object copied) {
