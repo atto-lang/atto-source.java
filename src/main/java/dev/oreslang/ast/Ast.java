@@ -76,25 +76,34 @@ public final class Ast {
             Visibility visibility,
             boolean async,
             boolean nonLexical,
+            boolean explicitLexical,
             List<String> genericParameters,
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
             List<Stmt> body) implements Decl {
         public FunctionDecl {
+            if (nonLexical && explicitLexical) {
+                throw new IllegalArgumentException("callable cannot be both lexical and nlex");
+            }
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean nonLexical, List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, nonLexical, false, genericParameters, parameters, returnType, annotations, body);
+        }
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, genericParameters, parameters, returnType, annotations, body);
         }
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, false, false, genericParameters, parameters, returnType, annotations, body);
         }
     }
 
