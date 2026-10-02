@@ -2,10 +2,12 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
-import dev.oreslang.runtime.GpuRuntime;
+import dev.oreslang.gpu.GpuRuntime;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
@@ -111,8 +113,7 @@ final class GpuKeywordTest {
             @Override
             public Object invoke(GpuRuntime.Invocation invocation) {
                 assertEquals("__root__.add", invocation.callable());
-                assertEquals(Ast.CallableKind.FNC, invocation.declaration().kind());
-                assertTrue(invocation.declaration().gpu());
+                assertEquals("fnc", invocation.callableKind());
                 assertEquals(2L, ((Number) invocation.arguments().get(0)).longValue());
                 assertEquals(3L, ((Number) invocation.arguments().get(1)).longValue());
                 return 41L;
@@ -144,6 +145,22 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void isolateAdmissionRequiresExplicitGpuCapability() {
+        String source = """
+                gpu fnc kernel(int x) => int {
+                  return x;
+                }
+                """;
+
+        assertThrows(SecurityException.class,
+                () -> OresCompiler.validateForIsolate(source, IsolatePolicy.strictFaas()));
+
+        IsolatePolicy gpuPolicy = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.GPU);
+        assertDoesNotThrow(() -> OresCompiler.validateForIsolate(source, gpuPolicy));
+    }
+
+    @Test
     void gpuEffectParticipatesInExportedAbiDigest() {
         IncrementalCompiler compiler = new IncrementalCompiler();
 
@@ -172,6 +189,8 @@ final class GpuKeywordTest {
                 .build();
         try (Context context = Context.newBuilder(OresLanguage.ID)
                 .allowAllAccess(false)
+                .arguments(OresLanguage.ID,
+                        "--ores-capabilities=STDOUT,GPU")
                 .out(output)
                 .build()) {
             context.eval(source);
