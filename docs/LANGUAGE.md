@@ -280,21 +280,23 @@ The parser and static checker execute no user code.
 
 ## File-level entrypoints
 
-Named modules remain the normal namespace unit, but a source file may also contain file-level callables such as an entrypoint. The compiler places those declarations in an internal file-root namespace; that namespace is not written by user code.
+Named modules remain namespace units, but modules and classes themselves are always file-top-level declarations. They may not be declared inside functions, blocks, loops, classes, or modules. A source file may also contain file-level callables such as an entrypoint. The compiler places those declarations in an internal file-root namespace; that namespace is not written by user code.
 
 ```ores
 define module x
-  define class y
-  end
+  pub fnc ping() => int { return 1; }
+end
+
+define class y
 end
 
 pub routine main() => void {
-  val y = new x.y();
-  stdio.stdout.write(y)
+  val instance = new y();
+  stdio.stdout.write(instance)
 }
 ```
 
-Qualified names such as `x.y` retain their module namespace.
+Module members remain qualified through their module namespace, while top-level classes are referenced directly.
 
 ## `fnc` versus `routine`
 
