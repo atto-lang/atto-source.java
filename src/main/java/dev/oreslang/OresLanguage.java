@@ -7,6 +7,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresContext;
 import org.graalvm.polyglot.SandboxPolicy;
 
@@ -38,7 +39,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
-        return true;
+        return singleThreaded || ActorRuntime.isActorCarrierThread();
     }
 
     @Override
