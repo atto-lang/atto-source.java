@@ -480,30 +480,36 @@ final class SingletonModuleTest {
     @Test
     void singletonModuleCanExportOneProcessOwnedClassInstanceThroughProxy() throws Exception {
         String program = """
-                define class ProcessCounter as
-                  let int count = 0;
+                define class ProcessValue as
+                  val int value = 41;
 
-                  pub bump() => int {
-                    self.count = self.count + 1;
-                    return self.count;
+                  pub read() => int {
+                    return self.value;
                   }
                 end
 
                 define singleton module singleton_object_export_test as
-                  pub val ProcessCounter counter = new ProcessCounter();
+                  let int calls = 0;
+                  pub val ProcessValue value = new ProcessValue();
+
+                  pub fnc note_call() => int {
+                    calls = calls + 1;
+                    return calls;
+                  }
                 end
 
                 define module app as
                   pub routine main() => void {
-                    val int value = await singleton_object_export_test.counter.bump();
-                    stdio.println(value);
+                    val int object_value = await singleton_object_export_test.value.read();
+                    val int call_count = await singleton_object_export_test.note_call();
+                    stdio.println(object_value + call_count);
                     return;
                   }
                 end
                 """;
 
-        assertTrue(eval(program, "singleton-object-export.ores").contains("1"));
-        assertTrue(eval(program, "singleton-object-export.ores").contains("2"));
+        assertTrue(eval(program, "singleton-object-export.ores").contains("42"));
+        assertTrue(eval(program, "singleton-object-export.ores").contains("43"));
     }
 
     @Test
