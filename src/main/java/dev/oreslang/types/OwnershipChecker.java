@@ -147,13 +147,10 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() != null) {
-                if (ret.value() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-                    VarState owner = borrowOwner(unary.operand(), scope);
-                    if (owner.origin == Origin.LOCAL) {
-                        throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
-                    }
+                ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (returned.borrowSource != null && returned.borrowSource.origin == Origin.LOCAL) {
+                    throw error("cannot return a borrow of local value '" + returned.borrowSource.debugName + "'; borrowed value would outlive its owner");
                 }
-                checkExpr(ret.value(), scope, true);
             }
             return;
         }
@@ -368,7 +365,11 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
             ArrayList<ValueInfo> elements = new ArrayList<>(list.elements().size());
-            for (Ast.Expr item : list.elements()) elements.add(checkExpr(item, scope, true));
+            for (Ast.Expr item : list.elements()) {
+                ValueInfo info = checkExpr(item, scope, true);
+                rejectAggregateBorrow(info, "list");
+                elements.add(info);
+            }
             return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null, elements);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
@@ -376,13 +377,17 @@ public final class OwnershipChecker {
             ArrayList<ValueInfo> elements = new ArrayList<>(tuple.elements().size());
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                rejectAggregateBorrow(info, "tuple");
                 elements.add(info);
                 copy &= info.kind == ValueKind.COPY;
             }
             return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null, elements);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
+            for (Ast.ObjectField field : object.fields()) {
+                ValueInfo info = checkExpr(field.value(), scope, true);
+                rejectAggregateBorrow(info, "object");
+            }
             return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
@@ -829,6 +834,13 @@ public final class OwnershipChecker {
                     "bool","Bool","string","String","void" -> true;
             default -> false;
         };
+    }
+
+    private void rejectAggregateBorrow(ValueInfo value, String aggregateKind) {
+        if (value.kind == ValueKind.IMM_BORROW || value.kind == ValueKind.MUT_BORROW || value.borrowSource != null) {
+            throw error("borrows inside " + aggregateKind + " values are not supported until aggregate lifetime tracking is explicit");
+        }
+        for (ValueInfo nested : value.sequenceElements) rejectAggregateBorrow(nested, aggregateKind);
     }
 
     private Ast.TypeRef inferLiteralType(Object value) {
