@@ -17,7 +17,7 @@ import java.util.Set;
  *
  * Traits have no runtime object identity. This pass expands trait state,
  * behavior, and interface obligations into the consuming class before the
- * ordinary type/ownership/capability/runtime passes execute.
+ * ordinary type/ownership/capability/runtime passes execute. Struct hosts remain structs after flattening.
  */
 public final class TraitComposer {
     private TraitComposer() { }
@@ -168,6 +168,7 @@ public final class TraitComposer {
 
             return new Ast.ClassDecl(
                     klass.name(),
+                    klass.kind(),
                     klass.isAbstract(),
                     klass.genericParameters(),
                     klass.parents(),
