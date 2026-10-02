@@ -321,6 +321,14 @@ public final class TypeChecker {
             Env loopEnv = new Env(env);
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.ForStmt loop) {
+            Env loopEnv = new Env(env);
+            if (loop.initializer() != null) checkStatement(loop.initializer(), loopEnv, generics, expectedReturn, self);
+            if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
+            if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
+            checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
         }
     }
 
@@ -944,6 +952,11 @@ public final class TypeChecker {
             for (Ast.Stmt nested : s.finallyBody()) collectCalls(nested, module, out);
         } else if (stmt instanceof Ast.ForOfStmt s) {
             collectCalls(s.iterable(), module, out);
+            for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.ForStmt s) {
+            if (s.initializer() != null) collectCalls(s.initializer(), module, out);
+            if (s.condition() != null) collectCalls(s.condition(), module, out);
+            if (s.update() != null) collectCalls(s.update(), module, out);
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
         }
     }
