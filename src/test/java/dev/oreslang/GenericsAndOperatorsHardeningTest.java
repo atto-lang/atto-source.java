@@ -75,6 +75,88 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void explicitGenericCallsAndInferenceMarkersAreChecked() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc identity<T>(T value) => T {
+                    return value;
+                  }
+
+                  fnc use() => void {
+                    val int explicit = identity<int>(42);
+                    val int inferred = identity<>(42);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc identity<T>(T value) => T { return value; }
+                  fnc bad() => void {
+                    val int value = identity<int>("wrong");
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc plain(int value) => int { return value; }
+                  fnc bad() => int { return plain<>(1); }
+                end
+                """)));
+    }
+
+    @Test
+    void genericInheritanceSubstitutesFieldsMethodsConstructorsAndInterfaces() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define interface HasValue<T>
+                    value: T;
+                  end
+
+                  define class Parent<T>
+                    pub val T value;
+
+                    pub get() => T {
+                      return self.value;
+                    }
+                  end
+
+                  define class Child<U> extends Parent<U> implements HasValue<U>
+                  end
+
+                  define class IntChild extends Parent<int>
+                  end
+
+                  fnc read(Child<int> child) => int {
+                    return child.get();
+                  }
+
+                  fnc readField(IntChild child) => int {
+                    return child.value;
+                  }
+
+                  fnc make() => Child<int> {
+                    return new Child<int>(7);
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void spacedComparisonsAreNotMistakenForGenericCalls() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc between(int a, int b, int c) => bool {
+                    return a < b && b > (c);
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void nestedGenericClosersDoNotBecomeShiftOperators() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
