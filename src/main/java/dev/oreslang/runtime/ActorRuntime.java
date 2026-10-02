@@ -925,6 +925,13 @@ public final class ActorRuntime implements AutoCloseable {
                 actorGroups.remove(this);
             }
         }
+
+        private void invalidateFromRuntime() {
+            synchronized (groupLifecycleLock) {
+                groupClosed.set(true);
+                members.clear();
+            }
+        }
     }
 
     public final class ActorRef<M> {
@@ -2619,6 +2626,8 @@ public final class ActorRuntime implements AutoCloseable {
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
+        for (ActorGroup<?> group : List.copyOf(actorGroups)) group.invalidateFromRuntime();
+        actorGroups.clear();
         sharedMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
