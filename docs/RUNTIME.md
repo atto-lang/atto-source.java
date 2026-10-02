@@ -42,3 +42,14 @@ The strict production direction is:
 ## Receiver implementation
 
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
+
+
+## GPU placement boundary
+
+`gpu` source is admitted as a distinct execution target. It is not a performance annotation on ordinary Truffle execution.
+
+The front end first type-checks the program and then runs GPU admission. GPU admission is intentionally conservative: it proves that kernel bodies stay inside the current device-safe subset and that statically resolved calls from GPU code target other GPU callables. Dynamic host calls, object graphs, host references, unsupported ABI types, and host/global captures are rejected.
+
+The reference evaluator does not emulate GPU work on a CPU. If a GPU-targeted named function, static function, lambda, or `gpu parallel` batch is invoked without a configured GPU lowering/backend, execution fails closed. This avoids tests or development runs accidentally validating CPU behavior that would not be legal device behavior.
+
+`gpu parallel` is scheduling intent for independent kernels/work-items. Backends remain responsible for launch geometry, lane/warp/wavefront/work-group assignment, occupancy, fusion, batching, and device selection. Oreslang does not expose stable "GPU core N" affinity because that is not a portable hardware abstraction. Physical device affinity can be added separately once the runtime has a real multi-device scheduler.
