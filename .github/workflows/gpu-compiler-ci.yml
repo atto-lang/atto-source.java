@@ -1,0 +1,27 @@
+name: gpu-compiler-ci
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-compiler-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gpu-compiler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Compile and run GPU compiler tests
+        run: mvn -B -ntp -Dtest=GpuExecutionTest,IncrementalFunctorStaticTest test
