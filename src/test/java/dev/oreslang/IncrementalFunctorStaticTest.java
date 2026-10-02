@@ -114,7 +114,7 @@ final class IncrementalFunctorStaticTest {
         compiler.compile(first);
 
         Map<String, String> changed = Map.of(
-                "config.ores", "pub val setting = "one";",
+                "config.ores", "pub val setting = \"one\";",
                 "consumer.ores", first.get("consumer.ores"));
         var result = compiler.compile(changed);
 
