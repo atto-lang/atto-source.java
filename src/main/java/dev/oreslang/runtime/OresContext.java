@@ -58,14 +58,26 @@ public final class OresContext implements AutoCloseable {
     public ExecutionProfile executionProfile() { return executionProfile; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
-        isolatePolicy.require(capability, api);
         IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
-        if (actorPolicy != null) {
-            if (ActorRuntime.currentActorRuntime() != actors) {
-                throw new SecurityException("actor capability check crossed ActorRuntime boundary for " + api);
-            }
-            actorPolicy.require(capability, api);
+        if (actorPolicy != null && ActorRuntime.currentActorRuntime() != actors) {
+            throw new SecurityException(
+                    "actor capability check crossed ActorRuntime boundary for " + api);
         }
+        requireEffectiveCapability(isolatePolicy, capability, api);
+    }
+
+    static void requireEffectiveCapability(
+            IsolatePolicy contextPolicy,
+            IsolatePolicy.Capability capability,
+            String api) {
+        // Actor turns execute inside the parent Truffle context, but they may
+        // have a strictly narrower capability set than that context. Always
+        // enforce the actor-local policy first so helper functions, imported
+        // code, and ordinary class methods cannot launder authority from the
+        // parent context into a private actor.
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        if (actorPolicy != null) actorPolicy.require(capability, api);
+        contextPolicy.require(capability, api);
     }
 
     /**
