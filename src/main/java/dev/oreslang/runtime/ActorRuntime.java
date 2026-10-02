@@ -204,6 +204,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static boolean containsSharedMutex(Object value) {
         if (value instanceof OresMutex.Shared<?>) return true;
+        if (value instanceof Shared<?> shared) return containsSharedMutex(shared.value());
         if (value instanceof List<?> list) {
             for (Object item : list) if (containsSharedMutex(item)) return true;
             return false;
