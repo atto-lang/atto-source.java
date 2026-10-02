@@ -190,7 +190,14 @@ public final class Ast {
 
     public record ReturnStmt(Expr value) implements Stmt { }
     public record ExprStmt(Expr expression) implements Stmt { }
-    public record DeferStmt(Expr expression) implements Stmt { }
+    /**
+     * A deferred action is always an explicit lambda plus the argument expressions
+     * (if any) written at the defer site. Plain calls such as `defer f()` are
+     * intentionally not representable in the AST.
+     */
+    public record DeferStmt(LambdaExpr callable, List<Expr> arguments) implements Stmt {
+        public DeferStmt { arguments = List.copyOf(arguments); }
+    }
 
     public record IfBranch(Expr condition, List<Stmt> body) {
         public IfBranch { body = List.copyOf(body); }
