@@ -272,8 +272,22 @@ worker.stop();
 worker.join();
 ```
 
-An actor behavior accepts exactly one mailbox message parameter and returns `void`. Actor
-handles expose `send(message)`, `stop()`, `join()`, `alive`, `failed`, and `kind`.
+An actor behavior accepts exactly one mailbox message parameter and returns `void`. Inside
+the behavior, `self` is the current `Actor<T>` handle, so an actor can send to or stop itself
+without recursively capturing the outer binding. Actor handles expose `send(message)`,
+`stop()`, `join()`, `alive`, `failed`, and `kind`.
+
+```ores
+val counter = actor |int n| -> {
+  if n < 10; do
+    self.send(n + 1);
+  else
+    self.stop();
+  fi
+};
+```
+
+Calling `self.join()` is rejected at runtime instead of deadlocking the actor thread.
 
 Actor failure is fail-stop and isolated from the caller: an uncaught panic/exception terminates
 that actor without unwinding the spawning function, killing sibling actors, or terminating the
