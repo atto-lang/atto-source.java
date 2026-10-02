@@ -217,6 +217,24 @@ public final class Ast {
             body = List.copyOf(body);
         }
         public int arity() { return parameters.size(); }
+
+        /**
+         * Overload identity for class callables is deliberately only name + arity.
+         * Parameter types, parameter names, generic parameters, and return types
+         * never participate in overload selection.
+         */
+        public MethodArity overloadIdentity() { return new MethodArity(name, arity()); }
+
+        public boolean matchesArity(String candidateName, int candidateArity) {
+            return name.equals(candidateName) && arity() == candidateArity;
+        }
+    }
+
+    public record MethodArity(String name, int arity) {
+        public MethodArity {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("method name cannot be blank");
+            if (arity < 0) throw new IllegalArgumentException("method arity cannot be negative");
+        }
     }
 
     public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
