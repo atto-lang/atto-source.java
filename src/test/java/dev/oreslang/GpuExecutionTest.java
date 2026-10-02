@@ -236,6 +236,8 @@ final class GpuExecutionTest {
         assertEquals("n", kernel.launchPlan().globalWorkItemsExpression());
         assertEquals("n", kernel.launchPlan().errorSlotsExpression());
         assertEquals("0", kernel.launchPlan().resultSlotsExpression());
+        assertTrue(kernel.launchPlan().clampNegativeGlobalWorkItemsToZero());
+        assertTrue(kernel.launchPlan().enforceNoAliasBuffers());
         String source = compilation.gpuProgram().source();
         assertTrue(source.contains("__global float* restrict ores_v_xs"));
         assertTrue(source.contains("ulong __ores_len_xs"));
@@ -286,6 +288,8 @@ final class GpuExecutionTest {
         assertEquals("3", batch.fallbackDispatcherLaunchPlan().globalWorkItemsExpression());
         assertEquals("3", batch.fallbackDispatcherLaunchPlan().errorSlotsExpression());
         assertEquals("0", batch.fallbackDispatcherLaunchPlan().resultSlotsExpression());
+        assertFalse(batch.fallbackDispatcherLaunchPlan().clampNegativeGlobalWorkItemsToZero());
+        assertFalse(batch.fallbackDispatcherLaunchPlan().enforceNoAliasBuffers());
         assertTrue(compilation.gpuProgram().manifest().contains("CONCURRENT_KERNELS"));
         assertTrue(compilation.gpuProgram().source().contains("__kernel void " + batch.dispatcherSymbol()));
         assertTrue(compilation.gpuProgram().source().contains("switch (__ores_task)"));
@@ -503,6 +507,29 @@ final class GpuExecutionTest {
         } finally {
             Files.deleteIfExists(source);
         }
+    }
+
+    @Test
+    void signedParallelBoundsCarryAClampContractAndUnsignedBoundsDoNot() {
+        var signed = OresCompiler.compile("""
+                gpu fnc scale(Array<f32> mut xs, i64 n) => void {
+                  for (let i64 i = 0; i < n; i = i + 1) {
+                    xs[i] = xs[i] + 1.0;
+                  }
+                  return;
+                }
+                """).gpuProgram().kernels().getFirst();
+        assertTrue(signed.launchPlan().clampNegativeGlobalWorkItemsToZero());
+
+        var unsigned = OresCompiler.compile("""
+                gpu fnc scale(Array<f32> mut xs, u64 n) => void {
+                  for (let u64 i = 0; i < n; i = i + 1) {
+                    xs[i] = xs[i] + 1.0;
+                  }
+                  return;
+                }
+                """).gpuProgram().kernels().getFirst();
+        assertFalse(unsigned.launchPlan().clampNegativeGlobalWorkItemsToZero());
     }
 
     @Test
