@@ -22,6 +22,7 @@ public final class OresContext implements AutoCloseable {
     private final BufferedReader input;
     private final PrintWriter output;
     private final ActorRuntime actors;
+    private final RuntimeGarbageCollector garbageCollector;
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
@@ -39,6 +40,7 @@ public final class OresContext implements AutoCloseable {
                 isolatePolicy,
                 ActorRuntime.DispatcherConfig.defaults(),
                 this::executeActorTurn);
+        this.garbageCollector = new RuntimeGarbageCollector();
     }
 
     public static OresContext get(Node node) {
@@ -50,6 +52,7 @@ public final class OresContext implements AutoCloseable {
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
     public ActorRuntime actors() { return actors; }
+    public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
@@ -113,7 +116,11 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
-        actors.close();
-        output.flush();
+        try {
+            actors.close();
+        } finally {
+            garbageCollector.close();
+            output.flush();
+        }
     }
 }
