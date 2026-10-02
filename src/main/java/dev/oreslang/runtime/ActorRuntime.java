@@ -1974,7 +1974,10 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
         ActorCell<?> cell = actors.get(ref.id());
-        return cell != null && !cell.stopped.get();
+        // A stopped actor may still be finishing its current mailbox turn and
+        // deterministic teardown. Keep it alive until finalization has closed
+        // private memory, drained reservations, and unregistered the cell.
+        return cell != null && !cell.finalized();
     }
 
     public void stop(ActorRef<?> ref) {
