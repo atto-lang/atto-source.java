@@ -646,8 +646,12 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = typeOf(list.elements().getFirst(), env, generics, self);
-            for (int i = 1; i < list.elements().size(); i++) element = commonType(element, typeOf(list.elements().get(i), env, generics, self));
+            Type element = widenCollectionLiteral(typeOf(list.elements().getFirst(), env, generics, self));
+            for (int i = 1; i < list.elements().size(); i++) {
+                element = commonType(
+                        element,
+                        widenCollectionLiteral(typeOf(list.elements().get(i), env, generics, self)));
+            }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
@@ -759,6 +763,10 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
+    }
+
+    private Type widenCollectionLiteral(Type type) {
+        return type instanceof StringLiteral ? Primitive.STRING : type;
     }
 
     private Type commonType(Type a, Type b) {
