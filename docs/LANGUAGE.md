@@ -327,7 +327,7 @@ try {
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
 
-There are two actor execution domains:
+There are three actor execution domains:
 
 ```ores
 pub actor fnc worker(int value) => int {
@@ -342,12 +342,21 @@ shared actor Account {
     return;
   }
 }
+
+untrusted actor PluginWorker {
+  pub fnc run() => void {
+    for (let i = 0; i < 1_000; i = i + 1) {
+      work(i);
+    }
+  }
+}
 ```
 
 - an unqualified `actor` is **private**;
 - `shared actor` is a **shared-memory-capable** actor;
-- private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
-- compiler-generated/context-aware actor factories are capture-free for **both** actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
+- `untrusted actor` is a **hostile-code sandbox** with a fixed deny-by-default capability ceiling;
+- private, shared, and untrusted actors are scheduled on **separate dispatcher pools** for bulkheading;
+- compiler-generated/context-aware actor factories are capture-free for actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
 - trusted host embedding has separately named supervisor-only construction escape hatches, and adversarial policies reject them;
 - both kinds still process their own mailbox serially;
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
@@ -379,7 +388,13 @@ This preserves the central invariant:
 
 > Actor state is mutated through mailbox ownership. Shared mutable state outside an actor is exceptional and must use an explicit synchronization abstraction.
 
-Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private or shared actor invalidates dependent compiled units.
+Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private, shared, or untrusted actor invalidates dependent compiled units.
+
+Untrusted actors additionally receive data-only mailbox messages and cannot use actor references, shared-memory handles, mutex capabilities, actor spawning, sibling-stop, or actor messaging as an IPC escape hatch. Runtime capability checks intersect the current actor policy with the surrounding isolate policy, so a privileged host context cannot become ambient authority for an untrusted actor.
+
+For hostile hot loading, the trusted loader and guest policies are distinct. Adversarial admission is bounded before parsing/context creation: source text is capped at 1,048,576 characters, code-unit identifiers at 512 characters, and a loader may keep at most eight adversarial generations live at once. Older generations must be explicitly retired.
+
+Untrusted loops do not require source-level `yield`. Compiler/runtime safepoints on cyclic control flow and callable boundaries charge fuel and enforce wall/CPU-time limits; omitting an explicit yield therefore does not disable quota enforcement.
 
 Shared writable handles use transactional publication. A `SharedMutex<T>` is reserved to the destination runtime before mailbox visibility, committed only after queue admission, and unbound again when first publication fails. This prevents failed sends from accidentally claiming a writable capability for the wrong runtime.
 
