@@ -821,4 +821,63 @@ final class LanguageHardeningTest {
                         """)));
         assertTrue(nested.getMessage().contains("cannot use enclosing class generic parameter"));
     }
+    @Test
+    void declaredGenericTypesRequireExplicitConcreteArguments() {
+        IllegalArgumentException rawClass = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub val T value;
+                        end
+
+                        fnc bad(Box value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(rawClass.getMessage().contains("expects 1 type argument"));
+
+        IllegalArgumentException diamondAnnotation = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub val T value;
+                        end
+
+                        fnc bad(Box<> value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(diamondAnnotation.getMessage().contains("use <> only at construction"));
+
+        IllegalArgumentException listDiamond = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(List<> value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(listDiamond.getMessage().contains("explicit type argument"));
+    }
+
+    @Test
+    void genericInterfaceConformanceUsesConcreteArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface BoxApi<T> as
+                  fnc get() => T;
+                end
+
+                define class IntBox implements BoxApi<int> as
+                  pub get() => int { return 7; }
+                end
+                """)));
+
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BoxApi<T> as
+                          fnc get() => T;
+                        end
+
+                        define class BadBox implements BoxApi<int> as
+                          pub get() => String { return "wrong"; }
+                        end
+                        """)));
+        assertTrue(mismatch.getMessage().contains("does not implement interface"));
+    }
 }
