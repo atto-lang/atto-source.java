@@ -246,7 +246,45 @@ try {
 }
 ```
 
-`defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
+### `defer`
+
+`defer` is callable-scoped, not block-scoped. Every defer registered anywhere in a function,
+routine, method, or lambda runs in LIFO order when that callable exits, including explicit
+`return` and exceptional exits.
+
+The rule is deliberately simple: **evaluate the operand immediately; it must produce an
+arity-0 function; call that function later.**
+
+```ores
+pub routine main(Array<string> args) => void {
+  // The lambda value is produced now and called when main exits.
+  defer || -> {
+    cleanup();
+  };
+
+  // producer() runs now. It must return a zero-arity function.
+  defer producer();
+
+  // The outer lambda runs now and explicitly returns the zero-arity function
+  // that is registered for later execution.
+  defer (|| -> {
+    prepare_cleanup();
+    return || -> {
+      cleanup();
+    };
+  })();
+}
+```
+
+This makes `defer f.Close()` non-magical: `f.Close()` really runs at the defer site.
+It is valid only when `Close()` returns an arity-0 function. If `Close()` returns
+`void`, the program is rejected. Likewise, `defer (|| -> { cleanup(); })()` is
+rejected because the self-invocation produces `void`, not a function.
+
+Deferred callables are drained completely in LIFO order. If the callable body fails,
+that body failure remains primary and defer failures are attached as suppressed failures.
+If only deferred actions fail, the first failure in LIFO execution order is primary and
+later defer failures are suppressed.
 
 ## Async / await
 
