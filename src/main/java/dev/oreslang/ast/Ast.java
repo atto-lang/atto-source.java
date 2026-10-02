@@ -179,7 +179,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
-            IfStmt, TryStmt, ForOfStmt, ForStmt { }
+            BreakStmt, ContinueStmt, IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) { }
@@ -196,6 +196,8 @@ public final class Ast {
      * callable's LIFO defer stack and invoked when that callable exits.
      */
     public record DeferStmt(Expr expression) implements Stmt { }
+    public record BreakStmt() implements Stmt { }
+    public record ContinueStmt() implements Stmt { }
 
     public record IfBranch(Expr condition, List<Stmt> body) {
         public IfBranch { body = List.copyOf(body); }
