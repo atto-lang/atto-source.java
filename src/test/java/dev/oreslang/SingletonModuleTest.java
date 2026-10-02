@@ -1236,6 +1236,47 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonTransactionalCopyPreservesInternalAggregateAliases() throws Exception {
+        String output = eval("""
+                define singleton module transactional_alias_guard as
+                  let Array<int> primary = arr[1];
+                  let Array<int> alias = primary;
+
+                  pub fnc bump() => int {
+                    primary[0] = primary[0] + 1;
+                    return alias[0];
+                  }
+
+                  pub fnc mutate_then_fail() => int {
+                    primary[0] = 99;
+                    val Array<int> values = arr[1];
+                    return values[99];
+                  }
+
+                  pub fnc read() => int {
+                    return alias[0];
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await transactional_alias_guard.bump());
+                    try {
+                      val int ignored = await transactional_alias_guard.mutate_then_fail();
+                    } catch (err) {
+                    }
+                    stdio.println(await transactional_alias_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-transaction-alias.ores");
+
+        assertTrue(output.contains("2"), output);
+        long twos = output.lines().filter(line -> line.trim().equals("2")).count();
+        assertEquals(2, twos, output);
+    }
+
+    @Test
     void failedSingletonRequestRollsBackAllProcessStateMutation() throws Exception {
         String output = eval("""
                 define singleton module transactional_failure_guard as
