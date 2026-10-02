@@ -247,16 +247,20 @@ public final class Ast {
             TypeRef type,
             List<Expr> arguments,
             List<ObjectField> entries,
-            List<MethodDecl> methods) implements Expr {
+            List<MethodDecl> methods,
+            boolean anonymousBody) implements Expr {
         public NewExpr {
             arguments = List.copyOf(arguments);
             entries = List.copyOf(entries);
             methods = List.copyOf(methods);
         }
         public NewExpr(TypeRef type, List<Expr> arguments) {
-            this(type, arguments, List.of(), List.of());
+            this(type, arguments, List.of(), List.of(), false);
         }
-        public boolean hasAnonymousBody() { return !entries.isEmpty() || !methods.isEmpty(); }
+        public NewExpr(TypeRef type, List<Expr> arguments, List<ObjectField> entries, List<MethodDecl> methods) {
+            this(type, arguments, entries, methods, true);
+        }
+        public boolean hasAnonymousBody() { return anonymousBody; }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
