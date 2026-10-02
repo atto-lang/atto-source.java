@@ -34,7 +34,12 @@ public final class GpuKernelCompiler {
             String oresType,
             String abiType,
             boolean buffer,
-            boolean mutable) { }
+            boolean mutable,
+            boolean noAlias) {
+        public GpuParameter(String name, String oresType, String abiType, boolean buffer, boolean mutable) {
+            this(name, oresType, abiType, buffer, mutable, buffer);
+        }
+    }
 
     public enum HiddenPurpose { BUFFER_LENGTH, RESULT, ERROR_SLOTS }
 
@@ -92,13 +97,19 @@ public final class GpuKernelCompiler {
 
         public boolean hasKernels() { return !kernels.isEmpty(); }
 
+        /** Deterministic launcher/cache contract paired with the generated device source. */
+        public String manifest() {
+            return canonicalManifest(backend, kernels, batches, requiredExtensions);
+        }
+
         public GpuProgram(String backend, String source, String sha256, List<GpuKernel> kernels) {
             this(backend, source, sha256, kernels, List.of(), Set.of());
         }
 
         public static GpuProgram empty() {
             String source = "// no GPU kernels\n";
-            return new GpuProgram(BACKEND, source, digest(source), List.of(), List.of(), Set.of());
+            String manifest = canonicalManifest(BACKEND, List.of(), List.of(), Set.of());
+            return new GpuProgram(BACKEND, source, artifactDigest(source, manifest), List.of(), List.of(), Set.of());
         }
     }
 
@@ -420,7 +431,8 @@ public final class GpuKernelCompiler {
         sourceBuilder.append('\n').append(body);
 
         String source = sourceBuilder.toString();
-        return new GpuProgram(BACKEND, source, digest(source), metadata, batches, requiredExtensions);
+        String manifest = canonicalManifest(BACKEND, metadata, batches, requiredExtensions);
+        return new GpuProgram(BACKEND, source, artifactDigest(source, manifest), metadata, batches, requiredExtensions);
     }
 
     private List<GpuBatch> emitBatchDispatchers(StringBuilder out) {
@@ -1121,12 +1133,14 @@ public final class GpuKernelCompiler {
     private GpuParameter metadataParameter(Ast.Param param, String module) {
         Ast.TypeRef type = resolveAlias(param.type(), module);
         String declaration = cParameter(param, module);
+        boolean buffer = isBuffer(type);
         return new GpuParameter(
                 param.name(),
                 oresType(type),
                 declaration.substring(0, declaration.lastIndexOf(' ')),
-                isBuffer(type),
-                param.mutable());
+                buffer,
+                param.mutable(),
+                buffer);
     }
 
     private LoweringEnv parameterEnv(List<Ast.Param> parameters, String module) {
@@ -1230,6 +1244,60 @@ public final class GpuKernelCompiler {
         }
         if (out.isEmpty() || Character.isDigit(out.charAt(0))) out.insert(0, '_');
         return out.toString();
+    }
+
+    private static String canonicalManifest(
+            String backend,
+            List<GpuKernel> kernels,
+            List<GpuBatch> batches,
+            Set<String> requiredExtensions) {
+        StringBuilder out = new StringBuilder();
+        out.append("backend=").append(backend).append('\n');
+        requiredExtensions.stream().sorted().forEach(ext -> out.append("extension=").append(ext).append('\n'));
+        for (GpuKernel kernel : kernels) {
+            out.append("kernel=").append(kernel.sourceName()).append('|')
+                    .append(kernel.kernelSymbol()).append('|')
+                    .append(kernel.helperSymbol()).append('|')
+                    .append(kernel.kind()).append('|')
+                    .append(kernel.mode()).append('|')
+                    .append(kernel.executionShape()).append('|')
+                    .append(kernel.batchId() == null ? "" : kernel.batchId()).append('|')
+                    .append(kernel.batchIndex()).append('|')
+                    .append(kernel.resultType()).append('|')
+                    .append(kernel.launchExtentExpression() == null ? "" : kernel.launchExtentExpression())
+                    .append('\n');
+            for (GpuParameter param : kernel.parameters()) {
+                out.append(" param=").append(param.name()).append('|')
+                        .append(param.oresType()).append('|')
+                        .append(param.abiType()).append('|')
+                        .append(param.buffer()).append('|')
+                        .append(param.mutable()).append('|')
+                        .append(param.noAlias()).append('\n');
+            }
+            for (GpuHiddenParameter hidden : kernel.hiddenParameters()) {
+                out.append(" hidden=").append(hidden.name()).append('|')
+                        .append(hidden.abiType()).append('|')
+                        .append(hidden.purpose()).append('|')
+                        .append(hidden.sourceParameter() == null ? "" : hidden.sourceParameter()).append('\n');
+            }
+        }
+        for (GpuBatch batch : batches) {
+            out.append("batch=").append(batch.id()).append('|')
+                    .append(batch.dispatcherSymbol() == null ? "" : batch.dispatcherSymbol()).append('|')
+                    .append(batch.workItems()).append('|')
+                    .append(String.join(",", batch.kernelSymbols())).append('\n');
+            for (GpuHiddenParameter hidden : batch.hiddenParameters()) {
+                out.append(" batch-hidden=").append(hidden.name()).append('|')
+                        .append(hidden.abiType()).append('|')
+                        .append(hidden.purpose()).append('|')
+                        .append(hidden.sourceParameter() == null ? "" : hidden.sourceParameter()).append('\n');
+            }
+        }
+        return out.toString();
+    }
+
+    private static String artifactDigest(String source, String manifest) {
+        return digest(source + "\u0000ORES_GPU_MANIFEST\u0000" + manifest);
     }
 
     private static String digest(String text) {
