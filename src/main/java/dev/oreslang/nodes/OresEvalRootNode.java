@@ -435,8 +435,14 @@ public final class OresEvalRootNode extends RootNode {
                     if (cleanupFailure != null) fatalCleanupFailure.addSuppressed(cleanupFailure);
                     throw fatalCleanupFailure;
                 } catch (Throwable failure) {
-                    if (cleanupFailure == null) cleanupFailure = failure;
-                    else cleanupFailure.addSuppressed(failure);
+                    if (failure instanceof ExecutionTerminated || failure instanceof Error) {
+                        if (cleanupFailure != null) failure.addSuppressed(cleanupFailure);
+                        cleanupFailure = failure;
+                    } else if (cleanupFailure == null) {
+                        cleanupFailure = failure;
+                    } else {
+                        cleanupFailure.addSuppressed(failure);
+                    }
                 }
             }
 
