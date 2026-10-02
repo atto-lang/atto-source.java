@@ -1233,6 +1233,52 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonFinallyCannotReturnOverAnExecutionDeadline() throws Exception {
+        IsolatePolicy shortBudget = new IsolatePolicy(
+                Set.of(
+                        IsolatePolicy.Capability.STDOUT,
+                        IsolatePolicy.Capability.PROCESS_SINGLETON),
+                64L * 1024 * 1024,
+                64,
+                Duration.ofMillis(35));
+
+        String output = evalWithPolicy("""
+                define singleton module uncatchable_finally_budget as
+                  let int value = 0;
+
+                  pub routine attempt_to_override() => void {
+                    try {
+                      for (;;) {
+                      }
+                    } catch (err) {
+                      value = 98;
+                    } finally {
+                      value = 99;
+                      return;
+                    }
+                  }
+
+                  pub fnc read() => int {
+                    return value;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      await uncatchable_finally_budget.attempt_to_override();
+                    } catch (err) {
+                    }
+                    stdio.println(await uncatchable_finally_budget.read());
+                    return;
+                  }
+                end
+                """, "uncatchable-singleton-finally-budget.ores", shortBudget);
+
+        assertTrue(output.contains("0"), output);
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
