@@ -100,8 +100,8 @@ final class IsolationHotReloadTest {
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
             var generation = hot.load("staged.ores", """
                     pub routine main() => void {
-                      val zero = 0;
-                      val boom = 1 / zero;
+                      val values = arr[1];
+                      val boom = values[99];
                       return;
                     }
                     """);
