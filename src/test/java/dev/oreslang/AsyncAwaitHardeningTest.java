@@ -86,6 +86,35 @@ final class AsyncAwaitHardeningTest {
     }
 
     @Test
+    void actorIsReservedAndUnqualifiedActorMeansPrivate() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc main() => void {
+                  val int actor = 1;
+                  return;
+                }
+                """));
+
+        Ast.Program program = Parser.parse("""
+                pub actor fnc private_worker() => int {
+                  return 1;
+                }
+
+                pub shared actor fnc shared_worker() => int {
+                  return 2;
+                }
+                """);
+
+        var functions = program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .toList();
+
+        assertEquals(Ast.ActorKind.PRIVATE, functions.get(0).actorKind());
+        assertEquals(Ast.ActorKind.SHARED, functions.get(1).actorKind());
+    }
+
+    @Test
     void actorCallReturnsHandleRatherThanFuture() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub actor fnc worker(int value) => int {
