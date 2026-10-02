@@ -641,7 +641,7 @@ public final class OresEvalRootNode extends RootNode {
             if (pattern instanceof Ast.WildcardPattern) return true;
             if (pattern instanceof Ast.BindingPattern binding) {
                 if (captures.containsKey(binding.name())) {
-                    return Objects.equals(captures.get(binding.name()), value);
+                    return valueEquals(captures.get(binding.name()), value);
                 }
                 captures.put(binding.name(), value);
                 kinds.put(binding.name(), binding.kind());
@@ -650,7 +650,7 @@ public final class OresEvalRootNode extends RootNode {
             if (pattern instanceof Ast.LiteralPattern literal) {
                 Object expected = literal.value();
                 if (expected instanceof Ast.Imaginary imaginary) expected = new Complex(0.0, imaginary.coefficient());
-                return Objects.equals(expected, value);
+                return valueEquals(expected, value);
             }
 
             List<Ast.Pattern> elements;
