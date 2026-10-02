@@ -324,6 +324,7 @@ public final class OwnershipChecker {
             for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
             return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.GpuExpr gpu) return checkExpr(gpu.expression(), scope, consuming);
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
@@ -579,6 +580,7 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.GpuExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.LambdaExpr) {
             // Nested lambda performs its own capture analysis when checked.
         }
