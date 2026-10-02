@@ -41,6 +41,7 @@ public final class OresContext implements AutoCloseable {
                 ActorRuntime.DispatcherConfig.defaults(),
                 this::executeActorTurn);
         this.garbageCollector = new RuntimeGarbageCollector();
+        this.actors.setActorExitHook(garbageCollector::retireActorDomain);
     }
 
     public static OresContext get(Node node) {
