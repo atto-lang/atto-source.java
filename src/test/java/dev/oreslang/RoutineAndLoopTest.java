@@ -165,6 +165,19 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void conventionalForLoopAlsoInjectsSafepoints() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for (let i = 0; i < 3; i = i + 1) {
+                    stdio.stdout.write(i);
+                  }
+                  stdio.stdout.write(process.descriptor.scheduler_safepoints)
+                }
+                """);
+        assertEquals("0123", output);
+    }
+
+    @Test
     void customJavascriptStyleIteratorDrivesForOf() throws Exception {
         String output = run("""
                 define module collections
