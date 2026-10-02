@@ -392,6 +392,47 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("field 'Local.value' is immutable"));
     }
 
+    @Test
+    void aliasesPreserveOwnershipCategoryAndLocalStructReceiverRules() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                type Count = int;
+
+                fnc consume(Count value) => void {
+                  return;
+                }
+
+                fnc ok() => void {
+                  val Count value = 7;
+                  consume(value);
+                  stdio.println(value);
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException immutableAliasOwner = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          struct Local {
+                            pub let value: int;
+
+                            pub bump(self &mut self)() => void {
+                              self.value = self.value + 1;
+                              return;
+                            }
+                          }
+
+                          type Alias = Local;
+                          val Alias item = Local { value = 0 };
+                          item.bump();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(immutableAliasOwner.getMessage().contains("cannot mutate method 'bump' receiver")
+                || immutableAliasOwner.getMessage().contains("immutable parameter/binding 'item'"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
