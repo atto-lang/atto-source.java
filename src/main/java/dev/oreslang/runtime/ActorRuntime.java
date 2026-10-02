@@ -406,7 +406,9 @@ public final class ActorRuntime implements AutoCloseable {
     /**
      * Segmented native heap owned by exactly one actor virtual Thread.
      *
-     * The Arena itself stays confined to that actor virtual Thread identity.\n     * Carrier-thread migration does not change that owner identity. We commit an initial\n     * segment, then geometrically grow with additional segments when needed.
+     * The Arena itself stays confined to that actor virtual Thread identity.
+     * Carrier-thread migration does not change that owner identity. We commit an initial
+     * segment, then geometrically grow with additional segments when needed.
      * Existing MemorySegments never move, so pointers/slices already handed to
      * the actor remain stable across growth.
      */
@@ -651,7 +653,7 @@ public final class ActorRuntime implements AutoCloseable {
                             config.privateCarrierMin(),
                             config.privateCarrierMax()));
                 }
-            } catch (UnsupportedOperationException | LinkageError unavailable) {
+            } catch (UnsupportedOperationException | SecurityException | LinkageError unavailable) {
                 // Native-image or an alternate JVM may not expose the management
                 // bean. Startup properties still provide the configured bounds.
             }
