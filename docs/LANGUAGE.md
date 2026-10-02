@@ -254,11 +254,38 @@ Numeric widening is loss-aware; real values can widen toward complex values, but
 
 ## Lambdas
 
-Lambdas use `->`:
+Lambdas are lexical closures by default and use `->`. The canonical block
+form keeps returns explicit:
 
 ```ores
-val Fnc<int, int> inc = (int x) -> x + 1;
+val Fnc<int, int> inc = |int x| -> {
+  return x + 1;
+};
 ```
+
+A normal lambda may capture activation-local bindings from its enclosing
+function or block. Captured mutable state remains part of the closure.
+
+## Non-lexical callables (`nlex`)
+
+`nlex` is an opt-in **capture barrier**, not a ban on global/module lookup.
+It prevents a callable from capturing bindings owned by an enclosing runtime
+activation, so an `nlex` lambda does not retain or snapshot an outer local
+environment.
+
+Inside an `nlex` region:
+
+- parameters and locals declared inside the callable remain available;
+- locals shadow module/global/import bindings normally;
+- module members, imports, top-level callables/classes, and built-ins remain
+  statically resolvable;
+- enclosing activation-local bindings cannot be captured;
+- lambdas nested in an `nlex fnc`, `nlex routine`, or `nlex` lambda inherit
+  the barrier.
+
+Actor entry points remain governed by their actor isolation rules. `nlex` may
+add a capture-free guarantee to an actor fnc, but it does not replace mailbox,
+private-slice, or shared-actor isolation.
 
 ## Conditionals
 
