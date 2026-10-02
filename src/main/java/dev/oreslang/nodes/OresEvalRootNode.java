@@ -159,10 +159,10 @@ public final class OresEvalRootNode extends RootNode {
 
             RuntimeException deferFailure = drainDeferred(frame);
             RuntimeException failure;
-            if (bodyFailure instanceof java.util.concurrent.CancellationException) {
+            if (bodyFailure != null && isNonRecoverable(bodyFailure)) {
                 failure = bodyFailure;
                 if (deferFailure != null && deferFailure != failure) failure.addSuppressed(deferFailure);
-            } else if (deferFailure instanceof java.util.concurrent.CancellationException) {
+            } else if (deferFailure != null && isNonRecoverable(deferFailure)) {
                 failure = deferFailure;
                 if (bodyFailure != null && bodyFailure != failure) failure.addSuppressed(bodyFailure);
             } else {
@@ -188,6 +188,7 @@ public final class OresEvalRootNode extends RootNode {
                     return RecoveryResult.recovered(recoverer.call(List.of(failureValue(current))));
                 } catch (RuntimeException next) {
                     if (next != current) next.addSuppressed(current);
+                    if (isNonRecoverable(next)) return RecoveryResult.unrecovered(next);
                     current = next;
                 }
             }
@@ -196,7 +197,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean isNonRecoverable(RuntimeException failure) {
             return failure instanceof java.util.concurrent.CancellationException
-                    || failure instanceof SecurityException;
+                    || failure instanceof SecurityException
+                    || failure instanceof ActorRuntime.StopActorSignal;
         }
 
         private Object failureValue(RuntimeException failure) {
@@ -273,6 +275,9 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.PanicStmt panic) {
                 throw new PanicSignal(eval(panic.value(), env));
             }
+            if (stmt instanceof Ast.StopStmt) {
+                throw new ActorRuntime.StopActorSignal();
+            }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
                     if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env, frame); return; }
@@ -290,9 +295,8 @@ public final class OresEvalRootNode extends RootNode {
                         throw signal;
                     } catch (BreakSignal | ContinueSignal signal) {
                         throw signal;
-                    } catch (java.util.concurrent.CancellationException cancellation) {
-                        throw cancellation;
                     } catch (RuntimeException failure) {
+                        if (isNonRecoverable(failure)) throw failure;
                         Env catchEnv = new Env(env);
                         catchEnv.define(tried.errorName(), failureValue(failure), Ast.BindingKind.VAL);
                         executeBlock(tried.catchBody(), catchEnv, frame);
