@@ -116,6 +116,22 @@ A per-actor atomic scheduling gate ensures only one drain task for that actor is
 
 The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors.
 
+## Await and mailbox suspension
+
+The interpreter routes `await` through one adapter rather than hard-coding `CompletableFuture`. It accepts the Ores awaitable extension point, Java completion stages, ordinary futures, and thread completion. Ores source still presents one async abstraction.
+
+A pooled actor carrier must never wait for a pending external future or an empty mailbox. Pending host `await` therefore fails closed during actor execution until compiler continuation lowering can suspend the actor turn. Mailbox pull receives already expose the nonblocking substrate: `ActorContext.tryReceive()` polls immediately, while `ActorContext.receiveAsync()` installs one pending receiver. The next envelope is completed into that receiver on the actor dispatcher and is not also delivered to the reactive behavior.
+
+Only one pending receive is permitted. Actor stop/failure completes it exceptionally. Manual `tryReceive()` pulls count against the same dispatcher throughput budget as ordinary delivery. The source-level blocking-looking `mailbox.receive()` must compile to suspend over `receiveAsync()`; it must never lower to `BlockingQueue.take()`.
+
+## Actor groups and fan-out
+
+An `ActorGroup<T>` is a same-runtime capability containing a deduplicated set of actor refs. Categories are descriptive metadata, not a global registry namespace. Fan-out snapshots membership and sends through the exact same validation, isolation-copy/shared-handle, memory-quota, and bounded-mailbox admission path as direct send.
+
+Fan-out is deliberately not an all-or-nothing transaction across actors. It returns a receipt distinguishing delivered, terminated, and rejected targets and prunes terminated members. Cross-runtime group handles are rejected; distributed groups require an explicit bridge or membership service.
+
+This design avoids Erlang-style selective-receive queue scans as a scheduler primitive. Traffic classification should use typed messages, separate actors/mailboxes, or explicit groups so work stays proportional to messages actually consumed.
+
 
 ## Shared actor memory
 
