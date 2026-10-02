@@ -15,6 +15,7 @@ public final class CapabilityChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) checkStatements(fn.body(), policy);
+                else if (declaration instanceof Ast.InitDecl init) checkStatements(init.body(), policy);
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.FieldDecl field : klass.fields()) if (field.initializer() != null) checkExpr(field.initializer(), policy);
                     for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
