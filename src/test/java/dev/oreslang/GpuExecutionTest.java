@@ -147,6 +147,36 @@ final class GpuExecutionTest {
     }
 
     @Test
+    void gpuParallelDirectLambdaBatchIsAValidConstInitializer() {
+        assertDoesNotThrow(() -> OresCompiler.compile("""
+                define module app
+                  fnc host() => void {
+                    const funcs = gpu parallel List.of(
+                      || -> { return; },
+                      || -> { return; },
+                      || -> { return; }
+                    );
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void gpuForInitializerBindingRemainsVisibleThroughConditionUpdateAndBody() {
+        assertDoesNotThrow(() -> OresCompiler.compile("""
+                define module math
+                  gpu fnc scale(Array<f32> mut xs, i64 n, f32 factor) => void {
+                    for (let i64 i = 0; i < n; i = i + 1) {
+                      xs[i] = xs[i] * factor;
+                    }
+                    return;
+                  }
+                end
+                """));
+    }
+
+    @Test
     void compilerActuallyEmitsOpenClForNamedGpuFunctions() {
         OresCompiler.CompilationResult compilation = OresCompiler.compile("""
                 define module math
