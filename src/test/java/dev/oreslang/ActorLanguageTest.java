@@ -99,12 +99,12 @@ final class ActorLanguageTest {
     void supervisorCanMonitorChildFailure() throws Exception {
         String output = run("""
                 pub interface DownMessage {
-                  type: String;
+                  event: String;
                   reason: String;
                 }
 
                 fnc supervisor(@Structural DownMessage message) => void {
-                  stdio.stdout.write(message.type);
+                  stdio.stdout.write(message.event);
                   stdio.stdout.write(":");
                   stdio.stdout.write(message.reason);
                   return;
