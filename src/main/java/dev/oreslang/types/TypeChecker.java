@@ -971,6 +971,16 @@ public final class TypeChecker {
             return new Named(named.name(), named.arguments().stream()
                     .map(argument -> resolveSharedGeneric(argument, bindings)).toList());
         }
+        if (type instanceof Borrow borrow) {
+            return new Borrow(resolveSharedGeneric(borrow.target(), bindings), borrow.mutable());
+        }
+        if (type instanceof Function function) {
+            return new Function(
+                    function.parameters().stream()
+                            .map(parameter -> resolveSharedGeneric(parameter, bindings))
+                            .toList(),
+                    resolveSharedGeneric(function.result(), bindings));
+        }
         if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
         if (type instanceof Tuple tuple) {
             return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList());
