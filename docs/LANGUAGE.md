@@ -306,9 +306,23 @@ try {
 
 `defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
 
+Guest `catch` handles application/runtime failures, but host security denial and scheduler/context cancellation are not ordinary language exceptions and cannot be swallowed by guest code. Future `throw`/`raise`/`panic`/`recover` semantics must preserve that boundary.
+
 ## Async / await
 
-`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values without exposing Java `CompletionException` wrapper semantics: interruption is preserved as cancellation and the original runtime failure is rethrown when possible. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
+`async` is a real type/runtime distinction, not a marker-only modifier. Calling an `async fnc` or async static method produces `Future<T>`; the callable body itself is checked as returning `T`. `await` accepts only `Future<T>` and yields `T`; awaiting an ordinary value is a compile-time/runtime error rather than an identity operation.
+
+Async work is executed by context-owned virtual threads in the Java/Truffle backend, but guest code has no ambient thread API. Task admission is bounded per isolate, live tasks are tracked, and context shutdown cancels/interupts owned async work. A bare async call whose `Future<T>` result is discarded is rejected, and `defer async_call()` is rejected unless the async result is explicitly awaited. This prevents accidental Go-style detached-task leaks.
+
+Async callables may not accept or return `Borrow<T>` / `BorrowMut<T>`, because those borrows are scoped to the synchronous call boundary. Async instance methods are currently rejected as well: until Oreslang has an explicit owned-async receiver model, an instance receiver may not outlive the call boundary on another task.
+
+`await` unwraps future failures without exposing Java `CompletionException`/`ExecutionException` wrapper semantics: interruption is preserved as cancellation and the original runtime failure is rethrown when possible.
+
+## Numeric determinism
+
+Signed integer arithmetic is checked consistently in every execution profile. `+`, `-`, `*`, unary negation, integer division overflow, division by zero, and remainder by zero do not silently inherit Java/Go wrapping behavior. `int / int` evaluates as integer division, matching the static `int` result type.
+
+If wrapping or saturating arithmetic is added later it must be explicit; ordinary arithmetic must not change semantics between JIT, AOT, debug, or optimized builds.
 
 ## Actors
 
