@@ -9,6 +9,7 @@ The language is intentionally opinionated:
 - static nominal typing by default, with explicit structural compatibility at selected call boundaries;
 - private functions by default (`fnc`), with `pub` for exported functions;
 - class methods omit `fnc` and have an implicit `self` receiver;
+- nominal value-type `struct` declarations support `struct Foo { ... }` and `define struct Foo as ... end`, while interfaces support the same compact/long declaration pairing;
 - one return value only (tuples/arrays/records are ordinary single values);
 - `val`, `const`, and `let` are the only variable declarations;
 - actor heaps are isolated: mutable values are never shared between actors;
