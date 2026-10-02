@@ -209,6 +209,14 @@ public final class TypeChecker {
         }
     }
 
+    private record MethodOrigin(Ast.ClassDecl owner, Named ownerType) { }
+
+    private record ResolvedMethod(
+            Ast.MethodDecl method,
+            Ast.ClassDecl owner,
+            Named ownerType,
+            Named receiverType) { }
+
     private void validateInheritedClassOverloads(Ast.ClassDecl klass) {
         validateInheritedClassOverloads(klass, false);
         validateInheritedClassOverloads(klass, true);
@@ -220,16 +228,21 @@ public final class TypeChecker {
             if (method.isStatic() == staticNamespace) locallyResolved.add(method.overloadIdentity());
         }
 
-        Map<Ast.MethodArity, List<Ast.ClassDecl>> inherited =
-                inheritedMethodOrigins(klass, staticNamespace, new LinkedHashSet<>());
+        Named classType = nominalClassType(klass);
+        Map<Ast.MethodArity, List<MethodOrigin>> inherited =
+                inheritedMethodOrigins(klass, classType, staticNamespace, new LinkedHashSet<>());
 
-        for (Map.Entry<Ast.MethodArity, List<Ast.ClassDecl>> entry : inherited.entrySet()) {
+        for (Map.Entry<Ast.MethodArity, List<MethodOrigin>> entry : inherited.entrySet()) {
             if (locallyResolved.contains(entry.getKey())) continue;
-            List<Ast.ClassDecl> origins = entry.getValue();
+            List<MethodOrigin> origins = entry.getValue();
             if (origins.size() <= 1) continue;
 
             String label = staticNamespace ? "static function" : "method";
-            String owners = origins.stream().map(this::qualifiedClassName).sorted().reduce((a, b) -> a + ", " + b).orElse("");
+            String owners = origins.stream()
+                    .map(this::methodOriginLabel)
+                    .sorted()
+                    .reduce((a, b) -> a + ", " + b)
+                    .orElse("");
             throw new IllegalArgumentException("ambiguous inherited " + label + " '" + klass.name() + "."
                     + entry.getKey().name() + "' with arity " + entry.getKey().arity()
                     + " from " + owners
@@ -237,26 +250,34 @@ public final class TypeChecker {
         }
     }
 
-    private Map<Ast.MethodArity, List<Ast.ClassDecl>> inheritedMethodOrigins(
-            Ast.ClassDecl klass, boolean staticNamespace, Set<Ast.ClassDecl> stack) {
-        Map<Ast.MethodArity, List<Ast.ClassDecl>> result = new LinkedHashMap<>();
+    private Map<Ast.MethodArity, List<MethodOrigin>> inheritedMethodOrigins(
+            Ast.ClassDecl klass,
+            Named klassType,
+            boolean staticNamespace,
+            Set<Ast.ClassDecl> stack) {
+        Map<Ast.MethodArity, List<MethodOrigin>> result = new LinkedHashMap<>();
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
-            mergeMethodOrigins(result, effectiveMethodOrigins(parent, staticNamespace, stack));
+            Named parentType = resolveParentView(klass, klassType, parentRef, parent);
+            mergeMethodOrigins(result, effectiveMethodOrigins(parent, parentType, staticNamespace, stack));
         }
         return result;
     }
 
-    private Map<Ast.MethodArity, List<Ast.ClassDecl>> effectiveMethodOrigins(
-            Ast.ClassDecl klass, boolean staticNamespace, Set<Ast.ClassDecl> stack) {
+    private Map<Ast.MethodArity, List<MethodOrigin>> effectiveMethodOrigins(
+            Ast.ClassDecl klass,
+            Named klassType,
+            boolean staticNamespace,
+            Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         try {
-            Map<Ast.MethodArity, List<Ast.ClassDecl>> result =
-                    inheritedMethodOrigins(klass, staticNamespace, stack);
+            Map<Ast.MethodArity, List<MethodOrigin>> result =
+                    inheritedMethodOrigins(klass, klassType, staticNamespace, stack);
             for (Ast.MethodDecl method : klass.methods()) {
                 if (method.isStatic() != staticNamespace) continue;
-                result.put(method.overloadIdentity(), new ArrayList<>(List.of(klass)));
+                result.put(method.overloadIdentity(),
+                        new ArrayList<>(List.of(new MethodOrigin(klass, canonicalClassView(klass, klassType)))));
             }
             return result;
         } finally {
@@ -265,15 +286,57 @@ public final class TypeChecker {
     }
 
     private void mergeMethodOrigins(
-            Map<Ast.MethodArity, List<Ast.ClassDecl>> target,
-            Map<Ast.MethodArity, List<Ast.ClassDecl>> source) {
-        for (Map.Entry<Ast.MethodArity, List<Ast.ClassDecl>> entry : source.entrySet()) {
-            List<Ast.ClassDecl> origins = target.computeIfAbsent(entry.getKey(), ignored -> new ArrayList<>());
-            for (Ast.ClassDecl candidate : entry.getValue()) {
-                boolean alreadyPresent = origins.stream().anyMatch(existing -> existing == candidate);
+            Map<Ast.MethodArity, List<MethodOrigin>> target,
+            Map<Ast.MethodArity, List<MethodOrigin>> source) {
+        for (Map.Entry<Ast.MethodArity, List<MethodOrigin>> entry : source.entrySet()) {
+            List<MethodOrigin> origins = target.computeIfAbsent(entry.getKey(), ignored -> new ArrayList<>());
+            for (MethodOrigin candidate : entry.getValue()) {
+                boolean alreadyPresent = origins.stream().anyMatch(existing ->
+                        existing.owner() == candidate.owner() && existing.ownerType().equals(candidate.ownerType()));
                 if (!alreadyPresent) origins.add(candidate);
             }
         }
+    }
+
+    private Named resolveParentView(
+            Ast.ClassDecl child,
+            Named childType,
+            Ast.TypeRef parentRef,
+            Ast.ClassDecl parent) {
+        Map<String, Type> bindings = classGenericBindings(child, childType);
+        Type rawParent = resolve(parentRef, Set.copyOf(child.genericParameters()), childType);
+        Type substituted = resolveSharedGeneric(rawParent, bindings);
+        if (!(substituted instanceof Named named)) {
+            throw new IllegalArgumentException("parent class view for '" + parentRef.name() + "' is not nominal");
+        }
+        if (named.arguments().size() != parent.genericParameters().size()) {
+            throw new IllegalArgumentException("parent class '" + qualifiedClassName(parent) + "' expects "
+                    + parent.genericParameters().size() + " type argument(s), got " + named.arguments().size());
+        }
+        return new Named(qualifiedClassName(parent), named.arguments());
+    }
+
+    private Named canonicalClassView(Ast.ClassDecl klass, Named view) {
+        if (view.arguments().size() != klass.genericParameters().size()) {
+            throw new IllegalArgumentException("class '" + qualifiedClassName(klass) + "' expects "
+                    + klass.genericParameters().size() + " type argument(s), got " + view.arguments().size());
+        }
+        return new Named(qualifiedClassName(klass), view.arguments());
+    }
+
+    private Map<String, Type> classGenericBindings(Ast.ClassDecl klass, Named klassType) {
+        Named canonical = canonicalClassView(klass, klassType);
+        Map<String, Type> bindings = new HashMap<>();
+        for (int i = 0; i < klass.genericParameters().size(); i++) {
+            bindings.put(klass.genericParameters().get(i), canonical.arguments().get(i));
+        }
+        return bindings;
+    }
+
+    private String methodOriginLabel(MethodOrigin origin) {
+        String owner = qualifiedClassName(origin.owner());
+        if (origin.ownerType().arguments().isEmpty()) return owner;
+        return owner + origin.ownerType().arguments();
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
