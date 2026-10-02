@@ -115,6 +115,59 @@ final class ActorRuntimeHardeningTest {
     }
 
     @Test
+    void monitorRegistrationsAreBoundedAndSlotsReturnOnDemonitor() {
+        IsolatePolicy parent = IsolatePolicy.developer();
+        IsolatePolicy policy = new IsolatePolicy(
+                parent.capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                2,
+                Duration.ofSeconds(5),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            ActorRuntime.ActorRef<Object> watcher = runtime.spawn(() -> (message, context) -> { });
+            ActorRuntime.ActorRef<Object> target = runtime.spawn(() -> (message, context) -> { });
+            List<ActorRuntime.MonitorRef> monitors = new ArrayList<>();
+
+            for (int i = 0; i < 16; i++) monitors.add(runtime.monitor(watcher, target));
+            assertEquals(16, runtime.activeMonitorCount());
+
+            IllegalStateException full = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.monitor(watcher, target));
+            assertTrue(full.getMessage().contains("monitor limit"));
+
+            assertTrue(runtime.demonitor(watcher, monitors.getFirst()));
+            assertEquals(15, runtime.activeMonitorCount());
+
+            ActorRuntime.MonitorRef replacement = runtime.monitor(watcher, target);
+            assertNotNull(replacement);
+            assertEquals(16, runtime.activeMonitorCount());
+        }
+    }
+
+    @Test
+    void actorFailureTombstonesBoundUntrustedErrorText() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawn(
+                    ActorRuntime.Protocol.ofClass("failure", String.class),
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("x".repeat(100_000));
+                    });
+
+            ref.send("boom");
+            assertTrue(runtime.join(ref, Duration.ofSeconds(2)));
+
+            ActorRuntime.ActorSnapshot snapshot = runtime.snapshot(ref);
+            assertEquals(ActorRuntime.ActorState.FAILED, snapshot.state());
+            assertNotNull(snapshot.failure());
+            assertTrue(snapshot.failure().message().length() <= 4096);
+            assertTrue(snapshot.failure().message().endsWith("...[truncated]"));
+        }
+    }
+
+    @Test
     void typedProtocolRejectsMalformedMessagesBeforeMailboxAdmission() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
