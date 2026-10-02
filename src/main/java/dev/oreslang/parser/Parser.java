@@ -901,7 +901,7 @@ public final class Parser {
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
         while (true) {
-            if (check(LT) && looksLikeTypeArgumentCall()) {
+            if (check(LT) && adjacent(previous(), peek()) && looksLikeTypeArgumentCall()) {
                 List<Ast.TypeRef> typeArguments = parseCallTypeArguments();
                 consume(LPAREN, "expected '(' after call type arguments");
                 List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
