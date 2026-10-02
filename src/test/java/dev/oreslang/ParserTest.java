@@ -81,6 +81,20 @@ final class ParserTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
     @Test
+    void lexerReservesActorChannelConcurrencyKeywords() {
+        var tokens = new Lexer("channel send try_send receive try_receive select case default loop").scan();
+        assertEquals(Token.Type.CHANNEL, tokens.get(0).type());
+        assertEquals(Token.Type.SEND, tokens.get(1).type());
+        assertEquals(Token.Type.TRY_SEND, tokens.get(2).type());
+        assertEquals(Token.Type.RECEIVE, tokens.get(3).type());
+        assertEquals(Token.Type.TRY_RECEIVE, tokens.get(4).type());
+        assertEquals(Token.Type.SELECT, tokens.get(5).type());
+        assertEquals(Token.Type.CASE, tokens.get(6).type());
+        assertEquals(Token.Type.DEFAULT, tokens.get(7).type());
+        assertEquals(Token.Type.LOOP, tokens.get(8).type());
+    }
+
+    @Test
     void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
         String source = """
                 shared actor Account {
