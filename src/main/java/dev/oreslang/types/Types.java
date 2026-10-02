@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, ClassNamespace, Reference, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -19,6 +19,9 @@ public final class Types {
 
     /** Compile-time meta-value for access to static class functions. */
     public record ClassNamespace(String className) implements Type { }
+
+    /** Rust-style borrow type. Mutable references are exclusive. */
+    public record Reference(Type target, boolean mutable) implements Type { }
 
     public record Record(Map<String, Type> members) implements Type {
         public Record { members = Map.copyOf(members); }
@@ -47,6 +50,15 @@ public final class Types {
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
+
+        if (from instanceof Reference source && to instanceof Reference target) {
+            if (target.mutable()) {
+                return source.mutable()
+                        && isAssignable(source.target(), target.target())
+                        && isAssignable(target.target(), source.target());
+            }
+            return isAssignable(source.target(), target.target());
+        }
 
         if (from instanceof Named source && to instanceof Named target && source.name().equals(target.name())) {
             if (source.arguments().size() != target.arguments().size()) return false;
