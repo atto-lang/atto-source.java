@@ -159,4 +159,29 @@ final class ParserTest {
                 """)));
     }
 
+    @Test
+    void rejectsDuplicateAndConflictingActorModifiers() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared shared actor Account {
+                  let balance = 1;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub private actor fnc worker() => void {
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void actorFunctionCannotBeProgramMain() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub actor fnc main() => void {
+                  return;
+                }
+                """)));
+    }
+
+
 }
