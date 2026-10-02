@@ -649,10 +649,16 @@ public final class OresMutex {
                 return future;
             }
 
-            var timeoutTask = ASYNC_TIMEOUTS.schedule(
-                    () -> future.failFromRuntime(new LockTimeoutException(timeout)),
-                    timeoutNanos,
-                    TimeUnit.NANOSECONDS);
+            final java.util.concurrent.ScheduledFuture<?> timeoutTask;
+            try {
+                timeoutTask = ASYNC_TIMEOUTS.schedule(
+                        () -> future.failFromRuntime(new LockTimeoutException(timeout)),
+                        timeoutNanos,
+                        TimeUnit.NANOSECONDS);
+            } catch (RuntimeException schedulingFailure) {
+                future.failFromRuntime(schedulingFailure);
+                return future;
+            }
             future.whenComplete((ignored, failure) -> timeoutTask.cancel(false));
             return future;
         }
