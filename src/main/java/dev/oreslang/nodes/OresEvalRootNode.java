@@ -342,9 +342,7 @@ public final class OresEvalRootNode extends RootNode {
                 return new OresObject(klass, fields);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
-                Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) return stage.toCompletableFuture().join();
-                throw new IllegalArgumentException("await requires a Future/CompletionStage value; non-futures are never passed through");
+                return AwaitSupport.await(eval(awaited.expression(), env));
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
