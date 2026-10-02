@@ -67,14 +67,24 @@ public final class OwnershipChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
+                else if (decl instanceof Ast.InitDecl init) checkInit(module, init);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module, klass);
             }
         }
     }
 
+    private void checkInit(Ast.ModuleDecl module, Ast.InitDecl init) {
+        Scope moduleScope = new Scope(null);
+        seedModuleState(module, moduleScope);
+        Scope scope = new Scope(moduleScope);
+        checkBlock(init.body(), scope, Ast.TypeRef.simple("void"));
+        scope.close();
+        moduleScope.close();
+    }
+
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
         Scope moduleScope = new Scope(null);
-        if (module.singleton()) seedSingletonModuleState(module, moduleScope);
+        seedModuleState(module, moduleScope);
         Scope scope = new Scope(moduleScope);
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -84,7 +94,7 @@ public final class OwnershipChecker {
         moduleScope.close();
     }
 
-    private void seedSingletonModuleState(Ast.ModuleDecl module, Scope scope) {
+    private void seedModuleState(Ast.ModuleDecl module, Scope scope) {
         for (Ast.Decl decl : module.declarations()) {
             if (!(decl instanceof Ast.FieldDecl field)) continue;
             Ast.TypeRef type = field.type() == null ? inferFieldType(field.initializer()) : field.type();
@@ -108,7 +118,7 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ModuleDecl module, Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
             Scope moduleScope = new Scope(null);
-            if (module.singleton()) seedSingletonModuleState(module, moduleScope);
+            if (module.singleton()) seedModuleState(module, moduleScope);
             Scope scope = new Scope(moduleScope);
             if (!method.isStatic()) {
                 // Receiver is immutable unless a future explicit "mut self"
