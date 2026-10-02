@@ -302,7 +302,13 @@ public final class ActorRuntime implements AutoCloseable {
          * SharedMutex is an explicitly capability-gated writable shared-memory
          * handle. Its protected payload is intentionally not copied here.
          */
-        if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            if (allowedActorRuntime == null) {
+                throw new IllegalArgumentException(
+                        "SharedMutex is a runtime-scoped writable capability and cannot cross a generic freeze boundary");
+            }
+            return sharedMutex;
+        }
 
         if (value instanceof ActorRef<?> ref) {
             if (allowedActorRuntime == null || !ref.belongsTo(allowedActorRuntime)) {
