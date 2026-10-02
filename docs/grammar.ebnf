@@ -29,7 +29,7 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" ;
+callable_modifier = "abstract" | "async" | "gpu" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -53,7 +53,7 @@ method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list 
 explicit_receiver = "self" type_ref ;
 
 static_function_decl
-                = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
+                = { annotation } visibility { "static" | "gpu" } "fnc" IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
@@ -126,7 +126,8 @@ comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
 unary           = [ "!" | "-" | "+" | "await" ] postfix
-                | "&" [ "mut" ] unary ;
+                | "&" [ "mut" ] unary
+                | "gpu" [ "parallel" ] unary ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." IDENT ;
@@ -241,4 +242,16 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      into the closure environment; borrowed values cannot be captured.
    - Class fields declared val/const are immutable; field mutation requires let
      plus mutable owner access.
+   - gpu is a reserved execution-placement keyword. On a named fnc/static fnc it
+     targets the entire body. In expression position, gpu requires a direct lambda.
+   - gpu parallel is a contextual batch form over a non-empty list/tuple literal
+     or List.of(...) containing only direct lambda literals. "parallel" remains a
+     contextual word rather than a globally reserved identifier.
+   - gpu and async cannot be combined. GPU routines, instance methods, structural
+     parameters, generics, inferred lambda parameters, host borrows, host objects,
+     strings, await/defer/try, dynamic calls, and host/global captures are rejected
+     by the current GPU ABI.
+   - GPU placement never implies stable GPU-core affinity. The backend maps work
+     to lanes/warps/work-groups. Physical multi-device affinity is a separate,
+     future execution-placement concern.
 *)
