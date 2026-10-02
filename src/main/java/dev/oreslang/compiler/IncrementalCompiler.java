@@ -131,6 +131,9 @@ public final class IncrementalCompiler {
     }
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        // Init routines are lifecycle implementation details. Source digest
+        // changes rebuild this unit, but init bodies are not exported ABI.
+        if (decl instanceof Ast.InitDecl) return;
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.kind()).append(" pub ").append(fn.name());
