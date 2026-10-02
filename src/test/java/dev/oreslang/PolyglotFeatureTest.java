@@ -13,19 +13,19 @@ final class PolyglotFeatureTest {
     @Test
     void executesNamespacesCollectionsAssignmentAndInheritedMethods() throws Exception {
         String program = """
-                define module math
+                define module math as
                   pub fnc add(int a, int b) => int { return a + b; }
                 end
 
-                define module model
-                  define class A
+                define module model as
+                  define class A as
                     pub value() => int { return 7; }
                   end
-                  define class B extends A
+                  define class B extends A as
                   end
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     let answer = math.add(1, 2);
                     answer = answer + 4;
