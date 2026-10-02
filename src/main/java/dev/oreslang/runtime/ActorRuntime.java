@@ -17,6 +17,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
@@ -43,6 +44,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, Map<UUID, ActorId>> monitorsByTarget = new ConcurrentHashMap<>();
     private final ThreadLocal<ActorId> currentActor = new ThreadLocal<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicInteger activeActorSlots = new AtomicInteger();
     private final IsolatePolicy policyCeiling;
 
     public ActorRuntime() {
@@ -194,13 +196,26 @@ public final class ActorRuntime implements AutoCloseable {
         java.util.Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         requireWithinCeiling(policy);
         requireOwnedStateBytes(policy, initialOwnedStateBytes);
-        ActorId id = ActorId.create();
-        ActorRef<M> ref = new ActorRef<>(id);
-        ActorCell<M> cell = new ActorCell<>(ref, policy, initialOwnedStateBytes, behaviorFactory);
-        ActorCell<?> previous = actors.putIfAbsent(id, cell);
-        if (previous != null) throw new IllegalStateException("actor id collision");
-        cell.start();
-        return ref;
+        reserveActorSlot();
+        boolean published = false;
+        try {
+            ActorId id = ActorId.create();
+            ActorRef<M> ref = new ActorRef<>(id);
+            ActorCell<M> cell = new ActorCell<>(ref, policy, initialOwnedStateBytes, behaviorFactory);
+            ActorCell<?> previous = actors.putIfAbsent(id, cell);
+            if (previous != null) throw new IllegalStateException("actor id collision");
+            published = true;
+            try {
+                cell.start();
+            } catch (Throwable failure) {
+                removeActorCell(id, cell);
+                published = false;
+                throw failure;
+            }
+            return ref;
+        } finally {
+            if (!published) releaseActorSlot();
+        }
     }
 
     /**
@@ -282,7 +297,30 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public int activeActorCount() {
-        return actors.size();
+        return activeActorSlots.get();
+    }
+
+    private void reserveActorSlot() {
+        while (true) {
+            int current = activeActorSlots.get();
+            if (current >= policyCeiling.maxActors()) {
+                throw new IllegalStateException(
+                        "actor limit exceeded for isolate: maxActors=" + policyCeiling.maxActors());
+            }
+            if (activeActorSlots.compareAndSet(current, current + 1)) return;
+        }
+    }
+
+    private void releaseActorSlot() {
+        int remaining = activeActorSlots.decrementAndGet();
+        if (remaining < 0) {
+            activeActorSlots.incrementAndGet();
+            throw new IllegalStateException("actor slot underflow");
+        }
+    }
+
+    private void removeActorCell(ActorId id, ActorCell<?> cell) {
+        if (actors.remove(id, cell)) releaseActorSlot();
     }
 
     /**
@@ -352,6 +390,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (child.maxMailboxMessages() > policyCeiling.maxMailboxMessages()) {
             throw new SecurityException("child actor mailbox limit exceeds parent policy");
+        }
+        if (child.maxActors() > policyCeiling.maxActors()) {
+            throw new SecurityException("child actor maxActors exceeds parent policy");
         }
         if (child.maxWallTime().compareTo(policyCeiling.maxWallTime()) > 0) {
             throw new SecurityException("child actor wall-time limit exceeds parent policy");
@@ -691,6 +732,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         actors.clear();
+        activeActorSlots.set(0);
         singletonActors.clear();
         monitorsByTarget.clear();
         failures.clear();
@@ -766,7 +808,7 @@ public final class ActorRuntime implements AutoCloseable {
                 notifyMonitors(ref.id(), "failed", failureRecord);
                 // Keep the cell discoverable through monitor delivery so join()
                 // cannot race ahead and tear down the watcher.
-                actors.remove(ref.id(), this);
+                removeActorCell(ref.id(), this);
                 return;
             }
 
@@ -817,7 +859,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Publish termination only after all lifecycle notifications
                 // have been queued. This gives join() a real happens-before
                 // boundary for supervision instead of a fail-open lookup race.
-                actors.remove(ref.id(), this);
+                removeActorCell(ref.id(), this);
             }
         }
 
