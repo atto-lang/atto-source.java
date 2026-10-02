@@ -31,3 +31,5 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/actor-callables.ores" | tee /tmp/oreslang-actor-callables.out
+          grep -F "42:shared:isolated" /tmp/oreslang-actor-callables.out
