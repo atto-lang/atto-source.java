@@ -1198,7 +1198,16 @@ public final class TypeChecker {
 
     private void requireActorTransportType(Type type, String where, Set<Type> seen) {
         Type actual = deref(type);
-        if (actual == Unknown.INSTANCE || actual instanceof Generic || actual instanceof StringLiteral) return;
+        if (actual == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(
+                    where + " must have a concrete transport type; inferred/unknown values cannot cross actor or shared-memory boundaries");
+        }
+        if (actual instanceof Generic generic) {
+            throw new IllegalArgumentException(
+                    where + " uses unconstrained generic '" + generic.name()
+                            + "'; add a future Send/Share-safe bound or use a concrete transport type");
+        }
+        if (actual instanceof StringLiteral) return;
         if (!seen.add(actual)) return;
 
         if (actual instanceof Function || actual instanceof ClassNamespace || type instanceof Borrow) {
@@ -1206,6 +1215,10 @@ public final class TypeChecker {
         }
         if (actual == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
+        }
+        if (actual == Primitive.NULL) {
+            throw new IllegalArgumentException(
+                    where + " cannot contain the raw null marker; convert interop null to Option<T> before crossing the boundary");
         }
         if (actual instanceof ListType list) {
             requireActorTransportType(list.element(), where, seen);
