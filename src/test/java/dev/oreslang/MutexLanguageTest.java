@@ -718,4 +718,27 @@ final class MutexLanguageTest {
                 "MutexGuard cannot be stored in a constructed object"));
     }
 
+
+    @Test
+    void sharedSafeUnionPayloadsRequireEveryArmToBeSafe() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc good(SharedMutex<int | string> value) => void {
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad(SharedMutex<int | Mutex<int>> value) => void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("concrete shared-safe type"));
+    }
+
 }
