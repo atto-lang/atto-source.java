@@ -133,7 +133,7 @@ argument_list   = expression { "," expression } ;
 primary         = literal
                 | IDENT
                 | "self"
-                | "new" type_ref "(" [ argument_list ] ")"
+                | "new" type_ref "(" [ argument_list ] ")" [ anonymous_new_body ]
                 | lambda
                 | tuple_literal
                 | array_literal
@@ -152,6 +152,12 @@ array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
+
+anonymous_new_body
+                = "{" { anonymous_new_member } "}" ;
+anonymous_new_member
+                = object_field [ "," | ";" ]
+                | { annotation } visibility { callable_modifier } method_decl [ "," ] ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
@@ -209,6 +215,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
+   - new T(...){...} is an anonymous implementation body. Key:value members
+     initialize Object/Map/HashMap/JsonMap storage; method members must be
+     concrete @override implementations of an existing base/builtin method.
+   - Object, Array, Arrays, List, LinkedList, Map, HashMap, and JsonMap are
+     reserved core collection/object type names.
+   - anonymous implementation methods are non-lexical and cannot capture
+     constructor-local variables.
    - "structural" is contextual in parameter position, not globally reserved.
    - self is an immutable receiver borrow and cannot be rebound.
    - Parameters are immutable by default. Type "mut" name grants mutation of an
