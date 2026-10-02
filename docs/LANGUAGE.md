@@ -571,16 +571,16 @@ pub fnc charge() => void {
 
 Namespaces are flat. `namespace company.payments;` is illegal. Modules are also flat: a module name is one identifier and a module may not contain another module.
 
-The incremental compiler currently uses conservative dependency invalidation:
+The incremental compiler uses separate **source** and **ABI** digests:
 
 1. hash every source unit;
-2. mark changed/new units dirty;
-3. build the reverse import graph;
-4. mark the transitive reverse-dependency closure dirty;
-5. typecheck/rebuild only dirty units;
-6. reuse the previous compiled unit object for everything else.
+2. derive a deterministic exported ABI digest from public functions/bindings, class public members and static functions, interfaces, type aliases, inheritance, structural markers, and module adherence contracts;
+3. rebuild a unit whenever its source or resolved dependency set changes;
+4. invalidate direct importers only when the dependency ABI digest changes;
+5. reuse importer artifacts across implementation-only dependency edits;
+6. keep unchanged/unaffected compiled-unit objects intact.
 
-This is safe before ABI hashing exists. A later optimization may add a public-interface digest so implementation-only edits do not invalidate dependents.
+This separates code-generation dirtiness from public-contract dirtiness. An implementation edit such as changing a function body from `return 42;` to `return 43;` recompiles that file without recompiling importers when the exported signature is unchanged.
 
 Actors and isolates consume versioned code-unit generations. A hot reload therefore does **not** require rebuilding or replacing every actor: changed units receive new generations, unchanged units can remain shared, and supervisors migrate actors/requests according to policy.
 
