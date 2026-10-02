@@ -398,7 +398,7 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
 
-        ActorCell<?>[] snapshot = actors.values().toArray(ActorCell[]::new);
+        List<ActorCell<?>> snapshot = new ArrayList<>(actors.values());
         for (ActorCell<?> cell : snapshot) cell.stop();
 
         Duration requested = policyCeiling.maxWallTime();
