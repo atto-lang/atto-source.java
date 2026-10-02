@@ -534,7 +534,15 @@ public final class TypeChecker {
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleShape(moduleNamespace);
             Ast.ClassDecl classNamespace = findClass(name.name());
-            if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
+            if (classNamespace != null) {
+                String ownerName = classOwners.get(classNamespace);
+                Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
+                if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
+                    throw new IllegalArgumentException("class '" + classNamespace.name()
+                            + "' is actor-private inside singleton module '" + owner.name() + "'");
+                }
+                return new ClassNamespace(qualifiedClassName(classNamespace));
+            }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
@@ -660,7 +668,13 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
                 Ast.ModuleDecl module = modules.get(namespace.name());
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
-                if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
+                if (memberClass != null) {
+                    if (module.singleton() && !module.name().equals(env.moduleName)) {
+                        throw new IllegalArgumentException("classes inside singleton module '" + module.name()
+                                + "' are actor-private and cannot be accessed through its external proxy");
+                    }
+                    return new ClassNamespace(qualifiedClassName(memberClass));
+                }
                 if (module.singleton()) {
                     for (Ast.Decl decl : module.declarations()) {
                         if (decl instanceof Ast.FunctionDecl fn
@@ -732,6 +746,12 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            String ownerName = classOwners.get(klass);
+            Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
+            if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
+                throw new IllegalArgumentException("class '" + klass.name()
+                        + "' is actor-private inside singleton module '" + owner.name() + "'");
+            }
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
             Type nominal = nominalClassType(klass);
