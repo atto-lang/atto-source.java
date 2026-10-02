@@ -595,4 +595,32 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void nestedDifferentSyncCellsAreRejectedInsteadOfRiskingLockOrderDeadlock() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var first = runtime.syncCell(1);
+            var second = runtime.syncCell(2);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                first.update(value -> {
+                    try {
+                        second.snapshot();
+                    } catch (Throwable failure) {
+                        observed.set(failure);
+                    }
+                    return value;
+                });
+                checked.countDown();
+            });
+
+            ref.send("check");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, observed.get());
+            assertTrue(observed.get().getMessage().contains("nested synchronization"));
+        }
+    }
+
+
 }
