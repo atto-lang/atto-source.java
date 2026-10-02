@@ -505,6 +505,150 @@ final class OwnershipAndClosureTest {
         assertEquals("12", output);
     }
 
+    @Test
+    void primitiveStructIsImplicitlyCopyAndGetsIndependentStorage() throws Exception {
+        String output = run("""
+                struct Point {
+                  pub let int x = 1;
+                }
+
+                pub fnc main() => void {
+                  let Point a = Point {};
+                  let Point b = a;
+                  b.x = 2;
+                  stdio.stdout.write(a.x);
+                  stdio.stdout.write(b.x);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void copyStructPassedByValueDoesNotMoveCallerAndCalleeGetsIndependentValue() throws Exception {
+        String output = run("""
+                struct Point {
+                  pub let int x = 1;
+                }
+
+                fnc bump(Point mut value) => Point {
+                  value.x = value.x + 1;
+                  return value;
+                }
+
+                pub fnc main() => void {
+                  let Point original = Point {};
+                  let Point changed = bump(original);
+                  stdio.stdout.write(original.x);
+                  stdio.stdout.write(changed.x);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void nestedCopyStructsAreRecursivelyIndependent() throws Exception {
+        String output = run("""
+                struct Inner {
+                  pub let int count = 1;
+
+                  pub bump(self &mut self)() => int {
+                    self.count = self.count + 1;
+                    return self.count;
+                  }
+                }
+
+                struct Outer {
+                  pub let Inner inner = Inner {};
+                }
+
+                pub fnc main() => void {
+                  let Outer a = Outer {};
+                  let Outer b = a;
+                  b.inner.bump();
+                  stdio.stdout.write(a.inner.count);
+                  stdio.stdout.write(b.inner.count);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void callableLocalStructAliasRetainsImplicitCopySemantics() throws Exception {
+        String output = run("""
+                pub fnc main() => void {
+                  struct Point {
+                    pub let int x = 1;
+                  }
+                  type P = Point;
+
+                  let P a = Point {};
+                  let P b = a;
+                  b.x = 2;
+                  stdio.stdout.write(a.x);
+                  stdio.stdout.write(b.x);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void closureCapturesCopyStructByValueRatherThanAliasingOuterSlot() throws Exception {
+        String output = run("""
+                struct Point {
+                  pub let int x = 1;
+                }
+
+                pub fnc main() => void {
+                  let Point point = Point {};
+                  val (() -> int) read = || -> {
+                    return point.x;
+                  };
+
+                  point.x = 2;
+                  stdio.stdout.write(read());
+                  stdio.stdout.write(point.x);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void structContainingClassRemainsMoveOnly() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        struct Holder {
+                          pub let Box box = new Box();
+                        }
+
+                        fnc consume(Holder value) => void {
+                          return;
+                        }
+
+                        fnc bad() => void {
+                          let Holder holder = Holder {};
+                          consume(holder);
+                          stdio.println(holder.box.value);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("moved value 'holder'"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
