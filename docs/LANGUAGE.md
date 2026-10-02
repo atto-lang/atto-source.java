@@ -367,7 +367,7 @@ val p = struct { x = 3, y = 4 };
 
 An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding, return, function/method argument, or typed function-value argument/result. That conversion requires the exact field set and assignable field types; arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
 
-Struct equality is value equality within the same named struct identity.
+Struct equality is value equality only within the same named struct specialization. Two values of the same struct with the same concrete generic arguments compare field-by-field. Different named structs, and different specializations such as `Box<int>` versus `Box<string>`, are not equality-comparable even when their runtime fields happen to have the same shape or values.
 
 Named structs derive `Copy` structurally. A struct is implicitly copyable when every effective field is copyable. Primitive scalar fields, immutable strings, nested copyable structs, and `Option<T>` with copyable `T` preserve `Copy`. If any field is move-only—such as a class instance, array/list, structural object record, closure, or another move-only aggregate—the enclosing struct is move-only as well.
 
