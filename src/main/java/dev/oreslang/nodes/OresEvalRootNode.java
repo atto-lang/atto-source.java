@@ -170,7 +170,7 @@ public final class OresEvalRootNode extends RootNode {
                     executeBlock(arm.body(), armEnv);
                     return;
                 }
-                throw new IllegalArgumentException("non-exhaustive match for value " + display(value));
+                throw new IllegalArgumentException("non-exhaustive match for " + describeMatchValue(value));
             }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
@@ -678,6 +678,17 @@ public final class OresEvalRootNode extends RootNode {
             kinds.clear();
             kinds.putAll(stagedKinds);
             return true;
+        }
+
+        private String describeMatchValue(Object value) {
+            if (value instanceof OresTuple tuple) return "tuple(arity=" + tuple.size() + ")";
+            if (value instanceof List<?> list) return "list(length=" + list.size() + ")";
+            if (value instanceof Object[] array) return "array(length=" + array.length + ")";
+            if (value instanceof String) return "string";
+            if (value instanceof Boolean) return "bool";
+            if (value instanceof Complex) return "complex";
+            if (value instanceof Number) return "number";
+            return value == null ? "null" : value.getClass().getSimpleName();
         }
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
