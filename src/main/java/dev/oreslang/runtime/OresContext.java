@@ -22,12 +22,16 @@ public final class OresContext implements AutoCloseable {
     private final ActorRuntime actors = new ActorRuntime();
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
+    private final IsolatePolicy isolatePolicy;
+    private final ExecutionProfile executionProfile;
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
         this.env = env;
         this.input = new BufferedReader(new InputStreamReader(env.in()));
         this.output = new PrintWriter(env.out(), true);
+        this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
+        this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
     }
 
     public static OresContext get(Node node) {
@@ -40,6 +44,12 @@ public final class OresContext implements AutoCloseable {
     public PrintWriter output() { return output; }
     public ActorRuntime actors() { return actors; }
     public UUID contextId() { return contextId; }
+    public IsolatePolicy isolatePolicy() { return isolatePolicy; }
+    public ExecutionProfile executionProfile() { return executionProfile; }
+
+    public void requireCapability(IsolatePolicy.Capability capability, String api) {
+        isolatePolicy.require(capability, api);
+    }
 
     /**
      * Compiler-injected cooperative scheduling checkpoint. Loops call this on
@@ -58,6 +68,8 @@ public final class OresContext implements AutoCloseable {
                 "context_id", contextId.toString(),
                 "runtime", "graalvm-truffle",
                 "language", "oreslang",
+                "execution_mode", executionProfile.mode().name(),
+                "platform", executionProfile.platform().name(),
                 "scheduler_safepoints", schedulerSafepoints.get());
     }
 
