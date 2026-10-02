@@ -449,7 +449,9 @@ public final class OwnershipChecker {
                 throw new IllegalArgumentException("closure cannot capture borrowed reference '" + name
                         + "'; capture owned data or immutable shared data instead");
             }
-            if (source.mutable || source.kind != ValueKind.COPY) {
+            if (source.mutable) {
+                moveMutableCapture(source);
+            } else if (source.kind != ValueKind.COPY) {
                 move(source);
             } else {
                 read(source);
@@ -666,6 +668,16 @@ public final class OwnershipChecker {
         if (binding.mutableBorrow && binding.kind != ValueKind.MUT_REF) {
             throw new IllegalArgumentException("cannot directly use '" + binding.name + "' while it is mutably borrowed");
         }
+    }
+
+    private void moveMutableCapture(Binding binding) {
+        if (binding.moved) throw new IllegalArgumentException("use of moved value '" + binding.name + "'");
+        if (binding.mutableBorrow || binding.sharedBorrows > 0) {
+            throw new IllegalArgumentException("cannot move mutable capture '" + binding.name + "' while it is borrowed");
+        }
+        // Even Copy scalars live in a mutable binding cell. The closure owns
+        // that cell after capture, so the outer binding must become unavailable.
+        binding.moved = true;
     }
 
     private void move(Binding binding) {
