@@ -331,19 +331,24 @@ public final class ActorRuntime implements AutoCloseable {
         SingletonRegistration registration = singletonActors.get(name);
         if (registration != null) {
             ActorCell<?> existing = actors.get(registration.actorId());
-            if (existing != null
-                    && (existing.state == ActorState.STARTING || existing.state == ActorState.RUNNING)) {
-                if (contract != null && registration.contract() != null
-                        && !contract.equals(registration.contract())) {
+            if (existing != null) {
+                ActorState existingState = existing.state;
+                if (existingState == ActorState.STOPPING) {
                     throw new IllegalStateException(
-                            "singleton actor '" + name + "' already exists with an incompatible runtime contract");
+                            "singleton actor '" + name + "' is stopping; a replacement cannot overlap the live instance");
                 }
-                if (!existing.ref.protocol().name().equals(protocol.name())) {
-                    throw new IllegalStateException(
-                            "singleton actor '" + name + "' already exists with protocol "
-                                    + existing.ref.protocol().name() + ", not " + protocol.name());
+                if (existingState == ActorState.STARTING || existingState == ActorState.RUNNING) {
+                    if (!java.util.Objects.equals(contract, registration.contract())) {
+                        throw new IllegalStateException(
+                                "singleton actor '" + name + "' already exists with an incompatible runtime contract");
+                    }
+                    if (!existing.ref.protocol().name().equals(protocol.name())) {
+                        throw new IllegalStateException(
+                                "singleton actor '" + name + "' already exists with protocol "
+                                        + existing.ref.protocol().name() + ", not " + protocol.name());
+                    }
+                    return (ActorRef<M>) existing.ref;
                 }
-                return (ActorRef<M>) existing.ref;
             }
             singletonActors.remove(name, registration);
         }
@@ -531,6 +536,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (!runtimeId.equals(ref.runtimeId())) return SendResult.FOREIGN_RUNTIME;
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) return SendResult.UNKNOWN_ACTOR;
+
+        if (message instanceof Shared<?> shared && !runtimeId.equals(shared.runtimeId())) {
+            return SendResult.FOREIGN_RUNTIME;
+        }
 
         Object sourceCandidate = message instanceof Shared<?> shared ? shared.value() : message;
         if (!protocolAccepts(ref.protocol(), sourceCandidate)) return SendResult.PROTOCOL_MISMATCH;
