@@ -556,6 +556,10 @@ public final class TypeChecker {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
             Type actual = typeOf(binding.initializer(), env, generics, self);
+            if (actual instanceof SingletonProxy proxy) {
+                throw new IllegalArgumentException("singleton object proxy '" + proxy.moduleName() + "."
+                        + proxy.fieldName() + "' cannot be rebound locally; invoke and await its methods directly");
+            }
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
@@ -754,8 +758,10 @@ public final class TypeChecker {
                     Ast.ClassDecl klass = findClass(proxy.target().name());
                     if (klass == null) throw new IllegalArgumentException("unknown singleton proxy class '" + proxy.target().name() + "'");
                     Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
-                    if (method == null) throw new IllegalArgumentException("no singleton proxy method '" + member.member()
-                            + "' with arity " + call.arguments().size() + " on " + proxy.target().name());
+                    if (method == null || method.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException("no public singleton proxy method '" + member.member()
+                                + "' with arity " + call.arguments().size() + " on " + proxy.target().name());
+                    }
                     Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
                     methodGenerics.addAll(method.genericParameters());
                     for (int i = 0; i < call.arguments().size(); i++) {
@@ -845,19 +851,11 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("singleton object fields are actor-private; invoke a public method on "
                             + proxy.moduleName() + "." + proxy.fieldName());
                 }
-                List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
-                if (methods.size() == 1) {
-                    Ast.MethodDecl method = methods.getFirst();
-                    Type logical = functionType(method.parameters(), method.returnType(),
-                            Set.copyOf(method.genericParameters()), proxy.target());
-                    Function fn = (Function) logical;
-                    return new Function(fn.parameters(), new Named("Future", List.of(fn.result())));
+                if (!findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
+                    throw new IllegalArgumentException("singleton proxy method values cannot be extracted; call and await "
+                            + proxy.moduleName() + "." + proxy.fieldName() + "." + member.member() + "(...) directly");
                 }
-                if (methods.size() > 1) {
-                    throw new IllegalArgumentException("overloaded singleton proxy method '" + member.member()
-                            + "' must be called so arity can select the overload");
-                }
-                throw new IllegalArgumentException("unknown singleton proxy method '" + member.member() + "'");
+                throw new IllegalArgumentException("unknown singleton proxy member '" + member.member() + "'");
             }
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -1089,6 +1087,20 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn
                         && fn.visibility() == Ast.Visibility.PUBLIC
                         && fn.name().equals(member.member())) return true;
+            }
+        }
+        if (call.callee() instanceof Ast.MemberExpr method
+                && method.receiver() instanceof Ast.MemberExpr exported
+                && exported.receiver() instanceof Ast.NameExpr namespace) {
+            Ast.ModuleDecl owner = modules.get(namespace.name());
+            if (owner == null || !owner.singleton() || owner.name().equals(currentModule)) return false;
+            for (Ast.Decl decl : owner.declarations()) {
+                if (decl instanceof Ast.FieldDecl field
+                        && field.visibility() == Ast.Visibility.PUBLIC
+                        && field.name().equals(exported.member())
+                        && singletonProxyClass(field) != null) {
+                    return true;
+                }
             }
         }
         return false;
