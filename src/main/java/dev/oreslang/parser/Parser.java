@@ -778,7 +778,7 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
-                String member = consume(IDENT, "expected member name after '.'").lexeme();
+                String member = consumeMemberName().lexeme();
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
@@ -787,6 +787,11 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private Token consumeMemberName() {
+        if (match(IDENT, SELF)) return previous();
+        throw error(peek(), "expected member name after '.'");
     }
 
     private Ast.Expr parsePrimary() {
