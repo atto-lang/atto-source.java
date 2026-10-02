@@ -179,6 +179,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
+    private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
@@ -782,7 +783,6 @@ public final class ActorRuntime implements AutoCloseable {
             BehaviorFactory<M> behaviorFactory,
             boolean trustedPrivateFactory) {
         requireCallerRuntimeAffinity("spawn actors");
-        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
@@ -797,17 +797,21 @@ public final class ActorRuntime implements AutoCloseable {
         } else if (!trustedPrivateFactory) {
             requireStatelessPrivateFactory(behaviorFactory);
         }
-        reserveActorSlot();
 
-        ActorId id = ActorId.create();
-        ActorRef<M> ref = new ActorRef<>(id, kind);
-        try {
-            ActorCell<M> cell = new ActorCell<>(ref, kind, effectivePolicy, behaviorFactory);
-            actors.put(id, cell);
-            return ref;
-        } catch (RuntimeException | Error failure) {
-            actorCount.decrementAndGet();
-            throw failure;
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            reserveActorSlot();
+
+            ActorId id = ActorId.create();
+            ActorRef<M> ref = new ActorRef<>(id, kind);
+            try {
+                ActorCell<M> cell = new ActorCell<>(ref, kind, effectivePolicy, behaviorFactory);
+                actors.put(id, cell);
+                return ref;
+            } catch (RuntimeException | Error failure) {
+                actorCount.decrementAndGet();
+                throw failure;
+            }
         }
     }
 
@@ -1046,19 +1050,22 @@ public final class ActorRuntime implements AutoCloseable {
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         boolean admitted = false;
         try {
-            if (cell.kind == ActorKind.SHARED) {
-                sharedMutexReservations = reserveSharedMutexBindings(prepared);
-            }
-            synchronized (cell.lifecycleLock) {
-                if (closed.get() || cell.stopped.get()) {
-                    throw terminated(ref);
+            synchronized (runtimeLifecycleLock) {
+                if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                if (cell.kind == ActorKind.SHARED) {
+                    sharedMutexReservations = reserveSharedMutexBindings(prepared);
                 }
-                if (!cell.mailbox.offer(envelope)) {
-                    throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+                synchronized (cell.lifecycleLock) {
+                    if (cell.stopped.get()) {
+                        throw terminated(ref);
+                    }
+                    if (!cell.mailbox.offer(envelope)) {
+                        throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+                    }
+                    mailboxSlotTransferred = true;
+                    admitted = true;
+                    commitSharedMutexBindings(sharedMutexReservations);
                 }
-                mailboxSlotTransferred = true;
-                admitted = true;
-                commitSharedMutexBindings(sharedMutexReservations);
             }
         } finally {
             if (!admitted) {
@@ -1933,8 +1940,12 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
 
-        boolean firstClose = closed.compareAndSet(false, true);
-        List<ActorCell<?>> snapshot = List.copyOf(actors.values());
+        final boolean firstClose;
+        final List<ActorCell<?>> snapshot;
+        synchronized (runtimeLifecycleLock) {
+            firstClose = closed.compareAndSet(false, true);
+            snapshot = List.copyOf(actors.values());
+        }
         for (ActorCell<?> cell : snapshot) cell.stop();
 
         if (firstClose) {
