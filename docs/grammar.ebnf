@@ -108,8 +108,8 @@ pattern         = "_"
                 | pattern_literal
                 | "(" pattern [ "," pattern { "," pattern } ] ")"
                 | "[" [ pattern { "," pattern } ] "]" ;
-pattern_literal = [ "-" ] ( INT_LITERAL | FLOAT_LITERAL )
-                | IMAG_LITERAL | STRING_LITERAL | "true" | "false" ;
+pattern_literal = [ "-" ] ( INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL )
+                | STRING_LITERAL | "true" | "false" ;
 
 if_stmt         = "if" condition [ ";" ] "do" { statement }
                   { "elseif" condition [ ";" ] "do" { statement } }
