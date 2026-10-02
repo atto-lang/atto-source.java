@@ -38,7 +38,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Decl permits FunctionDecl, InitDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, InitDecl, ClassDecl, TraitDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -109,22 +109,44 @@ public final class Ast {
             List<String> genericParameters,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
+            List<TypeRef> traits,
             List<FieldDecl> fields,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             interfaces = List.copyOf(interfaces);
+            traits = List.copyOf(traits);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, genericParameters, List.of(), List.of(), fields, methods);
+            this(name, isAbstract, genericParameters, List.of(), List.of(), List.of(), fields, methods);
         }
     }
 
-    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
+    /**
+     * Compile-time composition unit. Traits have reusable instance state and
+     * behavior but no independent object identity and cannot be instantiated.
+     */
+    public record TraitDecl(
+            String name,
+            List<String> genericParameters,
+            List<TypeRef> interfaces,
+            List<TypeRef> traits,
+            List<FieldDecl> fields,
+            List<MethodDecl> methods) implements Decl {
+        public TraitDecl {
+            genericParameters = List.copyOf(genericParameters);
+            interfaces = List.copyOf(interfaces);
+            traits = List.copyOf(traits);
+            fields = List.copyOf(fields);
+            methods = List.copyOf(methods);
+        }
+    }
+
+    public sealed interface InterfaceMember permits InterfaceFunctionDecl { }
 
     public record InterfaceFunctionDecl(
             String name,
@@ -137,7 +159,6 @@ public final class Ast {
         }
     }
 
-    public record InterfaceFieldDecl(String name, TypeRef type) implements InterfaceMember { }
 
     public record InterfaceDecl(
             String name,
