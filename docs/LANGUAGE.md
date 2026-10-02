@@ -254,7 +254,44 @@ try {
 
 ## Actors
 
-Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
+Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
+
+There are two actor execution domains:
+
+```ores
+pub actor fnc worker(int value) => int {
+  return value;
+}
+
+shared actor Account {
+  let int balance = 100;
+
+  pub fnc withdraw(int amount) => void {
+    self.balance = self.balance - amount;
+    return;
+  }
+}
+```
+
+- an unqualified `actor` is **private**;
+- `shared actor` is a **shared-memory-capable** actor;
+- private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
+- both kinds still process their own mailbox serially;
+- actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
+- no lock is required around ordinary actor-owned fields, including fields of a shared actor.
+
+Private actors do not accept explicitly shared mutable memory. Their messages are isolation-copied/frozen at the runtime boundary. Shared actors may additionally receive:
+
+1. deeply immutable `Shared<T>` values; and
+2. explicit synchronized shared cells.
+
+The runtime primitive for the second case is `SyncCell<T>`. A cell stores only frozen state and serializes replacement updates under a lock. This is the intended lowering target for a future `sync` language construct; `sync` is **not** an implicit lock around actor methods.
+
+This preserves the central invariant:
+
+> Actor state is mutated through mailbox ownership. Shared mutable state outside an actor is exceptional and must use an explicit synchronization abstraction.
+
+Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private or shared actor invalidates dependent compiled units.
 
 ## Isolates
 
