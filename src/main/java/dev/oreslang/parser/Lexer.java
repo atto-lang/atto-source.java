@@ -20,7 +20,7 @@ public final class Lexer {
         KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC); KEYWORDS.put("routine", ROUTINE);
         KEYWORDS.put("for", FOR); KEYWORDS.put("of", OF); KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("switch", SWITCH);
         KEYWORDS.put("type", TYPE); KEYWORDS.put("interface", INTERFACE); KEYWORDS.put("impl", IMPL); KEYWORDS.put("abstract", ABSTRACT);
-        KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE); KEYWORDS.put("structural", STRUCTURAL);
+        KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
         KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
