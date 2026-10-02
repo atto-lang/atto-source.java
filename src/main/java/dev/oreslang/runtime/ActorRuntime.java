@@ -46,6 +46,7 @@ import java.util.function.UnaryOperator;
  */
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
+    private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -782,6 +783,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        validateMessageGraph(message);
         requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
         requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
         if (cell.mailbox.remainingCapacity() == 0) {
@@ -1088,6 +1090,54 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static void validateMessageGraph(Object value) {
+        validateMessageGraph(value, new IdentityHashMap<>(), 0, new long[]{0L});
+    }
+
+    private static void validateMessageGraph(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth,
+            long[] nodes) {
+        requireGraphDepth(depth);
+        if (++nodes[0] > MAX_MESSAGE_GRAPH_NODES) {
+            throw new IllegalArgumentException(
+                    "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
+        }
+        if (value == null || isScalar(value)
+                || value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof Shared<?>
+                || value instanceof SyncCell<?>
+                || value instanceof OresMutex.Shared<?>) {
+            return;
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            return; // transport-specific validation produces the semantic error.
+        }
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) validateMessageGraph(item, visiting, depth + 1, nodes);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) validateMessageGraph(item, visiting, depth + 1, nodes);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    validateMessageGraph(entry.getKey(), visiting, depth + 1, nodes);
+                    validateMessageGraph(entry.getValue(), visiting, depth + 1, nodes);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    validateMessageGraph(Array.get(value, i), visiting, depth + 1, nodes);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
     private static void requireGraphDepth(int depth) {
         if (depth > MAX_MESSAGE_GRAPH_DEPTH) {
             throw new IllegalArgumentException(
@@ -1100,6 +1150,7 @@ public final class ActorRuntime implements AutoCloseable {
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
+        validateMessageGraph(value);
         return freeze(value, new IdentityHashMap<>(), 0);
     }
 
