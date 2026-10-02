@@ -494,7 +494,7 @@ public final class TypeChecker {
                             }
                             requireAssignable(named.arguments().getFirst(), fn.parameters().getFirst(), member.member() + " callback parameter");
                         }
-                        return Unknown.INSTANCE;
+                        return Primitive.VOID;
                     }
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
@@ -630,7 +630,7 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            checkBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
@@ -793,10 +793,10 @@ public final class TypeChecker {
                 case "lock" -> new Function(List.of(), guard);
                 case "try_lock" -> new Function(List.of(), new Named("Option", List.of(guard)));
                 case "lock_async" -> new Function(List.of(), new Named("Future", List.of(guard)));
-                case "with_lock" -> new Function(List.of(new Function(List.of(element), Unknown.INSTANCE)), Unknown.INSTANCE);
+                case "with_lock" -> new Function(List.of(new Function(List.of(element), Primitive.VOID)), Primitive.VOID);
                 case "is_poisoned" -> new Function(List.of(), Primitive.BOOL);
                 case "recover" -> named.name().equals("SharedMutex")
-                        ? new Function(List.of(new Function(List.of(element), Unknown.INSTANCE)), Unknown.INSTANCE)
+                        ? new Function(List.of(new Function(List.of(element), Primitive.VOID)), Primitive.VOID)
                         : null;
                 default -> null;
             };
