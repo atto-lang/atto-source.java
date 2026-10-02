@@ -317,6 +317,27 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void foreignActorRefCannotBeSmuggledInsideNestedContainersOrShared() {
+        try (ActorRuntime source = new ActorRuntime();
+             ActorRuntime destination = new ActorRuntime()) {
+            var foreign = source.<String>spawn(() -> (message, context) -> { });
+            var receiver = destination.<Object>spawn(() -> (message, context) -> { });
+
+            IllegalArgumentException nested = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(List.of(Map.of("ref", foreign))));
+            assertTrue(nested.getMessage().contains("owning ActorRuntime"));
+
+            ActorRuntime.Shared<Object> wrapped =
+                    new ActorRuntime.Shared<>(List.of(foreign));
+            IllegalArgumentException shared = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(wrapped));
+            assertTrue(shared.getMessage().contains("owning ActorRuntime"));
+        }
+    }
+
+    @Test
     void actorRefsRemainSendableInsideTheirOwningRuntime() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
