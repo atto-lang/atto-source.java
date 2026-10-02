@@ -99,6 +99,68 @@ public final class ActorRuntime implements AutoCloseable {
 
     public enum ActorKind { PRIVATE, SHARED }
 
+    public enum GcReason { EXPLICIT, PERIODIC }
+
+    /**
+     * GC is secondary to ownership. Actor-local values should normally die
+     * deterministically when their lexical/actor lifetime ends; these
+     * checkpoints exist for VM/reflection/runtime-managed objects that need a
+     * tracing fallback.
+     */
+    public record GcConfig(
+            long actorMessageInterval,
+            long processMessageInterval,
+            long explicitProcessGcCooldownNanos) {
+        public GcConfig {
+            if (actorMessageInterval < 0) throw new IllegalArgumentException("actorMessageInterval cannot be negative");
+            if (processMessageInterval < 0) throw new IllegalArgumentException("processMessageInterval cannot be negative");
+            if (explicitProcessGcCooldownNanos < 0) throw new IllegalArgumentException("explicitProcessGcCooldownNanos cannot be negative");
+        }
+
+        public GcConfig(long actorMessageInterval, long processMessageInterval) {
+            this(actorMessageInterval, processMessageInterval, TimeUnit.SECONDS.toNanos(1));
+        }
+
+        public static GcConfig defaults() {
+            return new GcConfig(256, 4096, TimeUnit.SECONDS.toNanos(1));
+        }
+    }
+
+    public interface GarbageCollector {
+        default void actorStarted(ActorId actorId, ActorKind kind, IsolatePolicy policy) { }
+        void collectActor(ActorId actorId, ActorKind kind, GcReason reason);
+        default void actorExited(ActorId actorId, ActorKind kind) { }
+        void collectProcess(GcReason reason);
+
+        static GarbageCollector hostDefault() {
+            return HostGarbageCollector.INSTANCE;
+        }
+    }
+
+    private enum HostGarbageCollector implements GarbageCollector {
+        INSTANCE;
+
+        @Override
+        public void collectActor(ActorId actorId, ActorKind kind, GcReason reason) {
+            // HotSpot/Graal JVM cannot trace only one actor graph. Never turn
+            // actor.gc() into a hidden process-wide System.gc().
+        }
+
+        @Override
+        public void collectProcess(GcReason reason) {
+            // Automatic VM maintenance remains the host VM's job. Only an
+            // explicit, capability-authorized process.gc() becomes a JVM hint.
+            if (reason == GcReason.EXPLICIT) System.gc();
+        }
+    }
+
+    public record GcStats(
+            long actorRequests,
+            long processRequests,
+            long suppressedProcessRequests,
+            long actorCollections,
+            long processCollections) { }
+
     public record DispatcherConfig(
             int privateParallelism,
             int sharedParallelism,
@@ -179,6 +241,14 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
+    private final AtomicLong actorGcRequests = new AtomicLong();
+    private final AtomicLong processGcRequests = new AtomicLong();
+    private final AtomicLong suppressedProcessGcRequests = new AtomicLong();
+    private final AtomicLong actorCollections = new AtomicLong();
+    private final AtomicLong processCollections = new AtomicLong();
+    private final AtomicLong completedActorMessages = new AtomicLong();
+    private static final AtomicBoolean PROCESS_GC_IN_PROGRESS = new AtomicBoolean();
+    private static final AtomicLong LAST_EXPLICIT_PROCESS_GC_NANOS = new AtomicLong(Long.MIN_VALUE);
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
@@ -186,6 +256,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
+    private final GcConfig gcConfig;
+    private final GarbageCollector garbageCollector;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
@@ -218,9 +290,20 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, GcConfig.defaults(), GarbageCollector.hostDefault());
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            GcConfig gcConfig,
+            GarbageCollector garbageCollector) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        this.gcConfig = Objects.requireNonNull(gcConfig);
+        this.garbageCollector = Objects.requireNonNull(garbageCollector);
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
                 dispatcherConfig.maxActors(),
@@ -238,6 +321,15 @@ public final class ActorRuntime implements AutoCloseable {
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
+    public GcConfig gcConfig() { return gcConfig; }
+    public GcStats gcStats() {
+        return new GcStats(
+                actorGcRequests.get(),
+                processGcRequests.get(),
+                suppressedProcessGcRequests.get(),
+                actorCollections.get(),
+                processCollections.get());
+    }
 
     /**
      * Logical actor-confined memory slice for one private actor.
@@ -640,6 +732,9 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /** Request collection for this actor domain only. */
+        void gc();
     }
 
     public final class ActorRef<M> {
@@ -1022,8 +1117,9 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
                 ? policy.withoutCapabilities(
                         IsolatePolicy.Capability.SHARED_MEMORY,
-                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
-                : policy;
+                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                        IsolatePolicy.Capability.PROCESS_GC)
+                : policy.withoutCapabilities(IsolatePolicy.Capability.PROCESS_GC);
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
@@ -1038,12 +1134,18 @@ public final class ActorRuntime implements AutoCloseable {
 
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
+            ActorCell<M> cell = null;
+            boolean collectorStarted = false;
             try {
-                ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
+                cell = new ActorCell<>(
+                        ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
+                garbageCollector.actorStarted(id, kind, effectivePolicy);
+                collectorStarted = true;
                 actors.put(id, cell);
                 return ref;
             } catch (RuntimeException | Error failure) {
+                if (cell != null && cell.memorySlice != null) cell.memorySlice.close();
+                if (collectorStarted) safeActorExit(id, kind);
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -1068,6 +1170,101 @@ public final class ActorRuntime implements AutoCloseable {
                 actorCount.incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
+        }
+    }
+
+    /**
+     * Explicit actor-local collection request. It is valid only during the
+     * current actor's mailbox turn and never escalates to process-wide GC.
+     */
+    public void gcCurrentActor() {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || actors.get(cell.ref.id()) != cell || cell.stopped.get()) {
+            throw new IllegalStateException("actor.gc() requires a live current actor mailbox turn");
+        }
+        actorGcRequests.incrementAndGet();
+        collectActor(cell, GcReason.EXPLICIT, true);
+    }
+
+    /**
+     * Explicit process-wide collection hint. Private actors deliberately have
+     * PROCESS_GC stripped, so an isolate cannot induce whole-process pauses.
+     */
+    public void gcProcess() {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        IsolatePolicy effective = currentActorPolicy();
+        if (effective == null) effective = policyCeiling;
+        effective.require(IsolatePolicy.Capability.PROCESS_GC, "process.gc");
+        processGcRequests.incrementAndGet();
+        if (!reserveExplicitProcessGcWindow()) {
+            suppressedProcessGcRequests.incrementAndGet();
+            return;
+        }
+        if (!collectProcess(GcReason.EXPLICIT, true)) {
+            suppressedProcessGcRequests.incrementAndGet();
+        }
+    }
+
+    private boolean reserveExplicitProcessGcWindow() {
+        long cooldown = gcConfig.explicitProcessGcCooldownNanos();
+        if (cooldown == 0) return true;
+        long now = System.nanoTime();
+        while (true) {
+            long previous = LAST_EXPLICIT_PROCESS_GC_NANOS.get();
+            if (previous != Long.MIN_VALUE && now - previous < cooldown) return false;
+            if (LAST_EXPLICIT_PROCESS_GC_NANOS.compareAndSet(previous, now)) return true;
+        }
+    }
+
+    private void afterActorMessage(ActorCell<?> cell) {
+        long actorOrdinal = ++cell.completedMessages;
+        long processOrdinal = completedActorMessages.incrementAndGet();
+        if (gcConfig.actorMessageInterval() > 0
+                && actorOrdinal % gcConfig.actorMessageInterval() == 0) {
+            collectActor(cell, GcReason.PERIODIC, false);
+        }
+        if (gcConfig.processMessageInterval() > 0
+                && processOrdinal % gcConfig.processMessageInterval() == 0) {
+            collectProcess(GcReason.PERIODIC, false);
+        }
+    }
+
+    private void collectActor(ActorCell<?> cell, GcReason reason, boolean propagateFailure) {
+        try {
+            garbageCollector.collectActor(cell.ref.id(), cell.kind, reason);
+            actorCollections.incrementAndGet();
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw fatal;
+        } catch (RuntimeException failure) {
+            if (propagateFailure) throw failure;
+        }
+    }
+
+    private boolean collectProcess(GcReason reason, boolean propagateFailure) {
+        if (!PROCESS_GC_IN_PROGRESS.compareAndSet(false, true)) return false;
+        try {
+            garbageCollector.collectProcess(reason);
+            processCollections.incrementAndGet();
+            return true;
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw fatal;
+        } catch (RuntimeException failure) {
+            if (propagateFailure) throw failure;
+            return false;
+        } finally {
+            PROCESS_GC_IN_PROGRESS.set(false);
+        }
+    }
+
+    private void safeActorExit(ActorId actorId, ActorKind kind) {
+        try {
+            garbageCollector.actorExited(actorId, kind);
+        } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+            throw fatal;
+        } catch (RuntimeException ignored) {
+            // Cleanup/accounting must continue even if a pluggable collector's
+            // release hook reports an ordinary backend failure.
         }
     }
 
@@ -2314,6 +2511,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean finalized;
+        private long completedMessages;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -2374,6 +2572,7 @@ public final class ActorRuntime implements AutoCloseable {
             finalized = true;
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
+            safeActorExit(ref.id(), kind);
             unregisterActor(this);
             lifecycleLock.notifyAll();
         }
@@ -2471,6 +2670,7 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
+                    @Override public void gc() { ActorRuntime.this.gcCurrentActor(); }
                 };
 
                 if (behavior == null) {
@@ -2499,6 +2699,7 @@ public final class ActorRuntime implements AutoCloseable {
                             validatePrivateBehaviorState(ref.id(), behavior);
                         }
                     }
+                    afterActorMessage(this);
                     processed++;
                 }
             } catch (Throwable failure) {
