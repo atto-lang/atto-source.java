@@ -20,7 +20,7 @@ final class StringTemplateTest {
                 pub fnc main() => void {
                   val doubleQuoted = "single ' quote";
                   val singleQuoted = 'double " quote';
-                  val escaped = 'it\\\\'s "fine"';
+                  val escaped = 'it\\'s "fine"';
                   val who = "Ores";
                   val count = 2;
                   val message = `hello ${who}: ${count + 1}`;
