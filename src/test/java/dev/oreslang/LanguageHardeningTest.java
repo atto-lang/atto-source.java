@@ -191,6 +191,62 @@ final class LanguageHardeningTest {
     }
 
     @Test
+    void matchPatternsAreTypedScopedAndCountAsTerminatingControlFlow() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc decode() => int {
+                    match ("error", 7) {
+                      ("ok", value) => {
+                        return value;
+                      }
+                      ("error", value) => {
+                        return value + 1;
+                      }
+                      _ => {
+                        return 0;
+                      }
+                    }
+                  }
+                end
+                """)));
+
+        IllegalArgumentException arity = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 2) {
+                      (a, b, c) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(arity.getMessage().contains("arity"));
+
+        IllegalArgumentException type = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, "ok") {
+                      (true, value) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(type.getMessage().contains("cannot match"));
+
+        IllegalArgumentException scope = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => int {
+                    match ("ok", 1) {
+                      ("ok", value) => { stdio.println(value); }
+                      _ => { stdio.println("fallback"); }
+                    }
+                    return value;
+                  }
+                end
+                """)));
+        assertTrue(scope.getMessage().contains("unknown name 'value'"));
+    }
+
+    @Test
     void valAndConstCannotBeReassigned() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
