@@ -49,7 +49,7 @@ Rules:
 
 This intentionally rejects Erlang's "scan old messages until one pattern matches" cost model. When selective routing is needed, Oreslang should use statically typed protocol tags and indexed/channelized submailboxes so dispatch is O(1)/indexed rather than O(mailbox length).
 
-The source front-end should expose the receive surface only when it can carry the actor's message protocol type through the type checker. Until that lowering exists, the host runtime primitive is implemented but the compiler should fail closed rather than invent an untyped `Any` mailbox API.
+The source front-end exposes two safe receive surfaces. The simple binding form requires an explicit message type until `Protocol<M>` is wired into actor declarations. The pattern form permits an open mailbox protocol only when each payload capture that needs a concrete type is annotated (for example `key: String`) and the cases include `default` or another irrefutable arm. This avoids inventing an untyped string-tag API while keeping protocol-pattern syntax usable before full protocol-union lowering.
 
 ### Compiler-visible receive loops and actor state
 
@@ -58,20 +58,38 @@ Receive/send/channel operations are language syntax, not ordinary library calls.
 The actor mailbox is a special bounded typed channel. An `ActorRef<M>` is the send capability; only the owning actor has the mailbox receive capability.
 
 ```ores
-pub actor routine counter(int initial) => void {
+pub actor fnc counter(int initial) => void {
   let int count = initial;
 
-  receive loop (msg) {
-    // match msg using the actor protocol
-    // Increment    => count = count + 1
-    // Add(value)   => count = count + value
-    // Get(reply)   => send(reply, count)
-    // Stop         => break
+  receive loop {
+    case :increment => {
+      count = count + 1;
+    }
+
+    case [:add, amount: int] => {
+      count = count + amount;
+    }
+
+    case [:get, reply_to] => {
+      send(reply_to, count);
+    }
+
+    case :stop => {
+      return;
+    }
+
+    default => {
+      stdio.println("unsupported counter message");
+    }
   }
 }
 ```
 
-`receive loop (msg) { ... }` is a dedicated resumable actor-loop node. It suspends when no message is available. `try_receive loop (msg) { ... }` drains immediately available messages without waiting and exits when the mailbox is empty. Both forms contain mandatory operation-accounting/backedge checkpoints; a continuously busy mailbox cannot monopolize a carrier.
+The pattern form is intentionally **not Erlang selective receive**. It dequeues exactly the next FIFO message once, then tests that value against the cases in lexical order. A non-matching head message is never skipped in order to search for a later match. Until a closed `Protocol<M>` can prove exhaustiveness, the checker therefore requires `default` or an irrefutable case. This bounds receive cost independently of mailbox length and prevents old unmatched messages from turning each receive into a mailbox scan.
+
+Patterns support symbol/string/boolean/numeric literals, nested tuple/list shapes, wildcard `_`, ordinary captures, and typed captures such as `amount: int` or `let state: State`. Typed captures are checked statically and re-guarded at dynamic interop edges.
+
+`receive loop (Message msg) { ... }` remains the simple dedicated resumable actor-loop node when every message should run one body. It suspends when no message is available. `try_receive loop { case ... }` and `try_receive loop (Message msg) { ... }` drain immediately available messages without waiting and exit when the mailbox is empty. Both forms contain mandatory operation-accounting/backedge checkpoints; a continuously busy mailbox cannot monopolize a carrier.
 
 State is not represented by recursive calls. Any local that is live across `receive`, blocking `send`, `select`, or `await` is hoisted by lowering into the actor continuation frame. Mutable actor-owned locals therefore remain single-owner and persist across suspension without Erlang-style `loop(NewState)` plumbing. Ordinary stack borrows may not cross a suspension boundary; actor-owned frame state is allowed because ownership is tied to the actor id, not the carrier thread.
 
@@ -137,9 +155,10 @@ Private actors reject explicit shared mutable cells. Shared actors may use synch
 ## Other Erlang warts Oreslang should not inherit
 
 - strings, bytes, byte slices and Unicode code points are distinct types; strings are not integer lists;
-- variables do not use capitalization to distinguish them from atoms;
-- mutable bindings are explicit instead of overloading pattern-match syntax as reassignment;
-- no finite globally interned, user-creatable atom table is required for ordinary identifiers/messages;
+- variables do not use capitalization to distinguish them from protocol tags;
+- `:name` symbols are immutable ordinary GC-able values with bounded identifier-shaped names; equal symbols compare by value, but there is deliberately no required process-global intern/atom table that remote input can exhaust;
+- mutable bindings are explicit (`let`) instead of overloading pattern-match syntax as reassignment;
+- receive pattern matching is local dispatch after FIFO dequeue, never an implicit mailbox scan;
 - no process dictionary / ambient actor-local key-value global;
 - local and remote actor references should be distinct types/capabilities so network cost is not hidden;
 - native/FFI code is an explicit capability boundary;
@@ -162,8 +181,9 @@ Before actor/async v1 is declared stable:
 - [x] actor vs async separation;
 - [x] actor vs isolate distinction;
 - [ ] reconcile typed `Protocol<M>`, `try_send`, and typed `ask` from the Erlang-wart branch onto the dispatcher actor stack;
-- [ ] parse/lower dedicated `receive loop`, `try_receive loop`, channel send/receive, and `select` AST nodes after the actor message protocol type is available to the static checker;
-- [ ] continuation lowering for executable source `async`, actor receive/send/select suspension, and actor-frame state hoisting;
+- [x] parse and statically check dedicated `receive loop`, `try_receive loop`, channel send/receive, and `select` AST nodes;
+- [x] parse/type-check FIFO receive case patterns with typed captures and bounded GC-safe `Symbol` protocol tags;
+- [ ] continuation lowering for executable source `async`, patterned actor receive/send/select suspension, and actor-frame state hoisting;
 - [ ] typed bounded channels plus atomic/fair select registration;
 - [ ] structured actor error reports with source-span/correlation metadata;
 - [ ] typed hot-upgrade migration protocol.
