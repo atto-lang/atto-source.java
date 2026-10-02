@@ -864,13 +864,23 @@ public final class ActorRuntime implements AutoCloseable {
                 snapshot = snapshotMembersLocked();
             }
 
+            // broadcast() is deliberately synchronous. When called from an
+            // actor turn, cap the amount of fan-out work to one scheduling
+            // quantum so a huge group cannot bypass mailbox throughput
+            // fairness inside one handler invocation. A future broadcastAsync
+            // can continuation-chunk larger actor-originated fan-outs.
+            if (inActorExecution() && snapshot.size() > dispatcherConfig.throughput()) {
+                throw new IllegalStateException(
+                        "actor group synchronous broadcast exceeds per-turn fanout budget: members="
+                                + snapshot.size() + " budget=" + dispatcherConfig.throughput());
+            }
+
             validateMessageGraph(message);
             requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
             int delivered = 0;
             int terminated = 0;
             int rejected = 0;
             LinkedHashMap<ActorId, String> failures = new LinkedHashMap<>();
-            int fanoutSinceYield = 0;
 
             for (ActorRef<M> ref : snapshot) {
                 try {
@@ -887,15 +897,6 @@ public final class ActorRuntime implements AutoCloseable {
                             : failure.getMessage());
                 }
 
-                // A very large group must not turn one caller into an
-                // uninterrupted fan-out loop. This is cooperative for trusted
-                // actors; hostile actors are admitted only behind a hard
-                // isolation boundary.
-                if (++fanoutSinceYield >= dispatcherConfig.throughput()) {
-                    fanoutSinceYield = 0;
-                    if (inActorExecution()) schedulerSafepoint();
-                    else Thread.yield();
-                }
             }
             return new FanoutReceipt(snapshot.size(), delivered, terminated, rejected, failures);
         }
