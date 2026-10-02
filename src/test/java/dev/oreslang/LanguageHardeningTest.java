@@ -243,4 +243,44 @@ final class LanguageHardeningTest {
                 end
                 """)));
     }
+    @Test
+    void genericAggregateConstructionUsesConcreteTypeArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct Box<T> {
+                  value: T;
+                }
+
+                fnc good() => Box<int> {
+                  return Box<int> { value = 7 };
+                }
+
+                fnc inferred() => Box<int> {
+                  return Box<> { value = 8 };
+                }
+                """)));
+
+        IllegalArgumentException wrongField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad() => Box<int> {
+                          return Box<int> { value = "wrong" };
+                        }
+                        """)));
+        assertTrue(wrongField.getMessage().contains("struct field Box.value"));
+
+        IllegalArgumentException rawGeneric = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad() => Box<int> {
+                          return Box { value = 7 };
+                        }
+                        """)));
+        assertTrue(rawGeneric.getMessage().contains("expects 1 type argument"));
+    }
 }
