@@ -232,7 +232,12 @@ public final class IncrementalCompiler {
             if (!available.contains(candidate) && !candidate.endsWith(".ores") && available.contains(candidate + ".ores")) {
                 candidate += ".ores";
             }
-            if (available.contains(candidate)) result.add(candidate);
+            if (available.contains(candidate)) {
+                result.add(candidate);
+            } else if (raw.startsWith(".")) {
+                throw new IllegalArgumentException("relative import '" + imported.path() + "' from '" + unitId
+                        + "' does not resolve to a supplied Oreslang source unit");
+            }
         }
         return Set.copyOf(result);
     }
