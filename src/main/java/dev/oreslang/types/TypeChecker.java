@@ -628,7 +628,10 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
-                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
+                        Set<String> memberGenerics = new HashSet<>(klass.genericParameters());
+                        memberGenerics.addAll(method.genericParameters());
+                        Type signature = functionType(method.parameters(), method.returnType(), memberGenerics, named);
+                        return substituteGenerics(signature, classGenericBindings(klass, named));
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -1229,9 +1232,13 @@ public final class TypeChecker {
     private void inferGenericBindings(Type pattern, Type actual, Map<String, Type> bindings, String label) {
         if (pattern instanceof Generic generic) {
             Type previous = bindings.putIfAbsent(generic.name(), actual);
-            if (previous != null && (!assignable(actual, previous) || !assignable(previous, actual))) {
-                throw new IllegalArgumentException("conflicting inference for generic '" + generic.name() + "' in " + label
-                        + ": " + previous + " vs " + actual);
+            if (previous != null) {
+                Type joined = commonType(previous, actual);
+                if (joined == Unknown.INSTANCE) {
+                    throw new IllegalArgumentException("conflicting inference for generic '" + generic.name() + "' in " + label
+                            + ": " + previous + " vs " + actual);
+                }
+                bindings.put(generic.name(), joined);
             }
             return;
         }
