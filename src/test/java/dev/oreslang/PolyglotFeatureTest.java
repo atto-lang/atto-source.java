@@ -91,4 +91,52 @@ final class PolyglotFeatureTest {
 
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("7"));
     }
+    @Test
+    void executesGenericCallsAfterCompileTimeInference() throws Exception {
+        String program = """
+                fnc identity<T>(T value) => T {
+                  return value;
+                }
+
+                define module helpers as
+                  pub fnc choose<T>(T left, T right) => T {
+                    return right;
+                  }
+                end
+
+                define class Echo as
+                  pub echo<T>(T value) => T {
+                    return value;
+                  }
+
+                  pub static fnc static_echo<T>(T value) => T {
+                    return value;
+                  }
+                end
+
+                pub fnc main() => void {
+                  val echo = new Echo();
+                  val a = identity(10);
+                  val b = helpers.choose(20, 21);
+                  val c = echo.echo(30);
+                  val d = Echo.static_echo(40);
+                  stdio.stdout.write(a + b + c + d);
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "generic-calls.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("101"));
+    }
 }
