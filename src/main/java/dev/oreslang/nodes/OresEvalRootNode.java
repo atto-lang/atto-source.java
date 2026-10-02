@@ -106,7 +106,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "function " + fn.name()); }
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -120,7 +120,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -429,7 +429,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
         }
 
         /**
@@ -604,6 +604,29 @@ public final class OresEvalRootNode extends RootNode {
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
+            if (declared == null) return value;
+            if (declared.isTupleType()) {
+                List<?> items = asSequence(value);
+                if (items.size() != declared.arguments().size()) {
+                    throw new IllegalArgumentException(callable + " returned " + items.size()
+                            + " tuple element(s), expected " + declared.arguments().size());
+                }
+                Object[] fixed = items.toArray();
+                for (int i = 0; i < fixed.length; i++) {
+                    fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]");
+                }
+                return java.util.Arrays.asList(fixed);
+            }
+            if (declared.isRecordType()) {
+                for (Map.Entry<String, Ast.TypeRef> member : declared.recordMembers().entrySet()) {
+                    Object nested = destructureMember(value, member.getKey());
+                    shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey());
+                }
+            }
+            return value;
+        }
+
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
         private Object destructureMember(Object value, String name) {
             if (value instanceof Map<?, ?> map) {
