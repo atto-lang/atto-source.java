@@ -419,7 +419,9 @@ define class Lookup
 end
 ```
 
-Two methods with the same name and same arity are a compile-time error even when their parameter types differ. Top-level/module `fnc` and `routine` declarations never overload.
+Overload identity is exactly **name + arity**. Two instance methods with the same name and same arity are a compile-time error even when their parameter types, parameter names, generic parameters, or return types differ. Types are checked only after arity has selected the callable; they never participate in overload resolution.
+
+Static class functions follow the same arity-only rule in their separate class-level namespace. A same-name/same-arity member inherited from a parent is an override slot, not a new overload, and normal inheritance compatibility checks still apply. Top-level/module `fnc` and `routine` declarations never overload.
 
 ## Ternary expressions
 
