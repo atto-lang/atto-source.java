@@ -70,6 +70,8 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
         private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new ConcurrentHashMap<>();
+        private final Map<String, Env> actorModuleStates = new HashMap<>();
+        private final Set<String> actorModuleInitializing = new LinkedHashSet<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -116,6 +118,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object execute(Object[] arguments) {
+            Ast.ModuleDecl root = modules.get(dev.oreslang.parser.Parser.ROOT_MODULE);
+            if (root != null && !root.singleton()) actorModuleState(root);
+
             Ast.FunctionDecl main = findFunction("main");
             if (main == null) return null;
             Object result = callFunction(main, List.of(arguments));
@@ -140,8 +145,54 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionDirect(Ast.FunctionDecl fn, List<?> args) {
-            Env env = new Env(null);
+            Ast.ModuleDecl owner = ownerModule(fn);
+            Env moduleState = owner == null || owner.singleton() ? null : actorModuleState(owner);
+            Env env = new Env(moduleState);
             return executeFunctionBody(fn, args, env);
+        }
+
+        private Env actorModuleState(Ast.ModuleDecl module) {
+            if (module.singleton()) throw new IllegalArgumentException("singleton modules use process-owned state");
+            Env existing = actorModuleStates.get(module.name());
+            if (existing != null) return existing;
+            if (!actorModuleInitializing.add(module.name())) {
+                throw new IllegalStateException("actor-local module initialization cycle involving " + module.name());
+            }
+
+            Env state = new Env(null);
+            try {
+                for (Ast.Decl decl : module.declarations()) {
+                    if (!(decl instanceof Ast.FieldDecl field)) continue;
+                    if (field.initializer() == null) {
+                        throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + field.name());
+                    }
+                    state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
+                }
+                Ast.InitDecl init = findInit(module);
+                if (init != null) executeInitializer(init, state);
+                actorModuleStates.put(module.name(), state);
+                return state;
+            } finally {
+                actorModuleInitializing.remove(module.name());
+            }
+        }
+
+        private Ast.InitDecl findInit(Ast.ModuleDecl module) {
+            Ast.InitDecl found = null;
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.InitDecl init)) continue;
+                if (found != null) throw new IllegalStateException("multiple init routines survived static checking in " + module.name());
+                found = init;
+            }
+            return found;
+        }
+
+        private void executeInitializer(Ast.InitDecl init, Env state) {
+            try {
+                executeBlock(init.body(), state);
+            } catch (ReturnSignal signal) {
+                if (signal.value != null) throw new IllegalStateException("init routine returned a value after static checking");
+            }
         }
 
         private Object callSingletonFunction(SingletonState state, Ast.FunctionDecl fn, List<?> args) {
@@ -205,6 +256,8 @@ public final class OresEvalRootNode extends RootNode {
                 Object value = eval(field.initializer(), state.fields);
                 state.fields.define(field.name(), value, field.bindingKind());
             }
+            Ast.InitDecl init = findInit(module);
+            if (init != null) executeInitializer(init, state.fields);
             return state;
         }
 
@@ -221,8 +274,19 @@ public final class OresEvalRootNode extends RootNode {
                     if (!(decl instanceof Ast.FieldDecl field)) continue;
                     schema.append(field.name())
                             .append(':').append(field.bindingKind())
-                            .append(':').append(field.type())
-                            .append(';');
+                            .append(':').append(field.type());
+                    Ast.ClassDecl stateClass = field.type() == null ? null : findClass(field.type().name());
+                    if (stateClass != null) {
+                        schema.append(":class{");
+                        for (Ast.FieldDecl classField : effectiveFields(stateClass, new LinkedHashSet<>())) {
+                            schema.append(classField.name())
+                                    .append(':').append(classField.bindingKind())
+                                    .append(':').append(classField.type())
+                                    .append(';');
+                        }
+                        schema.append('}');
+                    }
+                    schema.append(';');
                 }
                 return schema.toString();
             });
