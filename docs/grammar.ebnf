@@ -68,10 +68,10 @@ struct_field_decl
                 | visibility type_ref IDENT [ "=" expression ] stmt_terminator
                 | visibility IDENT ":" type_ref [ "=" expression ] struct_field_terminator ;
 
-trait_decl      = "define" "trait" IDENT [ generic_params ]
+trait_decl      = [ "define" ] "trait" IDENT [ generic_params ]
                   [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
                   [ "with" type_ref { "," type_ref } ]
-                  "as" { trait_member } "end" ;
+                  ( "{" { trait_member } "}" | "as" { trait_member } "end" ) ;
 
 trait_member    = field_decl
                 | method_decl ;
@@ -135,6 +135,10 @@ local_type_decl = [ "define" ] "struct" IDENT [ generic_params ]
                   [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
                   [ "with" type_ref { "," type_ref } ]
                   ( "{" { struct_member } "}" | "as" { struct_member } "end" )
+                | [ "define" ] "trait" IDENT [ generic_params ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
+                  ( "{" { trait_member } "}" | "as" { trait_member } "end" )
                 | [ "define" ] "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body
