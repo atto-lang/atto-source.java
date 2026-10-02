@@ -266,4 +266,34 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void privateActorFactoryInitializesInsideOwnedMemorySlice() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch constructed = new CountDownLatch(1);
+            CountDownLatch handled = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorId> constructionOwner = new AtomicReference<>();
+            AtomicReference<ActorRuntime.MemoryReservation> state = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(context -> {
+                var memory = context.privateMemory().orElseThrow();
+                constructionOwner.set(memory.owner());
+                state.set(memory.reserveHeap(4096));
+                constructed.countDown();
+
+                return (message, turn) -> {
+                    assertEquals(memory.owner(), turn.self().id());
+                    assertTrue(memory.usedBytes() >= 4096);
+                    state.get().close();
+                    handled.countDown();
+                };
+            });
+
+            ref.send("initialize");
+
+            assertTrue(constructed.await(2, TimeUnit.SECONDS));
+            assertEquals(ref.id(), constructionOwner.get());
+            assertTrue(handled.await(2, TimeUnit.SECONDS));
+        }
+    }
+
 }
