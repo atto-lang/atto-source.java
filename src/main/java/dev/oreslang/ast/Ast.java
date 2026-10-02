@@ -190,27 +190,12 @@ public final class Ast {
 
     public record ReturnStmt(Expr value) implements Stmt { }
     public record ExprStmt(Expr expression) implements Stmt { }
-    public enum DeferKind {
-        /** A zero-arity callable value is produced now and invoked when the enclosing callable exits. */
-        CALLABLE_VALUE,
-        /** An explicit lambda and its arguments are captured now; the lambda is invoked on exit. */
-        EXPLICIT_LAMBDA_CALL
-    }
-
     /**
-     * Defer never disguises an ordinary call as a delayed call.
-     *
-     * CALLABLE_VALUE:
-     *   `defer || -> { ... };`
-     *   `defer f.close();` only when f.close() itself returns a zero-arity function.
-     *
-     * EXPLICIT_LAMBDA_CALL:
-     *   `defer |int x| -> { cleanup(x); }(value);`
-     *   The lambda and arguments are captured now, while its body runs on callable exit.
+     * The operand is evaluated immediately at the defer site. Its resulting
+     * value must be a zero-arity callable, which is registered on the enclosing
+     * callable's LIFO defer stack and invoked when that callable exits.
      */
-    public record DeferStmt(DeferKind kind, Expr expression, List<Expr> arguments) implements Stmt {
-        public DeferStmt { arguments = List.copyOf(arguments); }
-    }
+    public record DeferStmt(Expr expression) implements Stmt { }
 
     public record IfBranch(Expr condition, List<Stmt> body) {
         public IfBranch { body = List.copyOf(body); }
