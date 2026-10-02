@@ -319,7 +319,7 @@ public final class OresEvalRootNode extends RootNode {
                         Object value = eval(call.arguments().get(i + 1), env);
                         values.put(key, value);
                     }
-                    return values;
+                    return Map.copyOf(values);
                 }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
