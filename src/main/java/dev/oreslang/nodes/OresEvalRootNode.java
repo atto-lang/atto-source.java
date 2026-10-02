@@ -399,7 +399,7 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
             if (receiver instanceof OresMutex.Guard<?> guard) {
                 return switch (name) {
-                    case "value" -> guard.value();
+                    case "get" -> (Invokable) args -> { requireZero(args, "MutexGuard.get"); return guard.value(); };
                     case "release" -> (Invokable) args -> { requireZero(args, "MutexGuard.release"); guard.release(); return null; };
                     case "is_released" -> (Invokable) args -> { requireZero(args, "MutexGuard.is_released"); return guard.released(); };
                     default -> member(guard.value(), name);
