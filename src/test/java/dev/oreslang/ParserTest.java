@@ -4,6 +4,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
+import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -79,4 +80,56 @@ final class ParserTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
+    @Test
+    void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
+        String source = """
+                shared actor Account {
+                  let int balance = 100;
+
+                  pub fnc withdraw(int amount) => void {
+                    self.balance = self.balance - amount;
+                    return;
+                  }
+                }
+                """;
+
+        Ast.Program program = Parser.parse(source);
+        Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+
+        assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
+        assertEquals("Account", actor.name());
+        assertEquals("withdraw", actor.methods().getFirst().name());
+
+        Ast.Program typed = TypeChecker.check(program);
+        assertDoesNotThrow(() -> OwnershipChecker.check(typed));
+    }
+
+    @Test
+    void actorFncDefaultsPrivateAndCanBeExplicitlyShared() {
+        Ast.Program privateProgram = Parser.parse("""
+                pub actor fnc worker(int value) => int {
+                  return value;
+                }
+                """);
+        Ast.FunctionDecl privateActor = (Ast.FunctionDecl) privateProgram.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorKind.PRIVATE, privateActor.actorKind());
+
+        Ast.Program sharedProgram = Parser.parse("""
+                pub shared actor fnc worker(int value) => int {
+                  return value;
+                }
+                """);
+        Ast.FunctionDecl sharedActor = (Ast.FunctionDecl) sharedProgram.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorKind.SHARED, sharedActor.actorKind());
+    }
+
+    @Test
+    void sharedWithoutActorIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared fnc nope() => void {
+                  return;
+                }
+                """));
+    }
+
 }
