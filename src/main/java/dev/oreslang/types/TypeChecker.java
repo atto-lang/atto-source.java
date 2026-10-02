@@ -605,6 +605,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
             Type result = checkLambdaBlockAndInferResult(lambda.blockBody(), lambdaEnv, generics, self);
+            if (result != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
+                throw new IllegalArgumentException("inferred non-void lambda must explicitly return on every path");
+            }
             return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
