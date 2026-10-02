@@ -36,6 +36,61 @@ final class ActorRuntimeHardeningTest {
     }
 
     @Test
+    void foreignSharedHandleIsRejectedBeforeProtocolCanInspectItsValue() {
+        try (ActorRuntime left = new ActorRuntime(); ActorRuntime right = new ActorRuntime()) {
+            AtomicInteger validatorCalls = new AtomicInteger();
+            ActorRuntime.Protocol<Object> protocol = new ActorRuntime.Protocol<>(
+                    "opaque",
+                    value -> {
+                        validatorCalls.incrementAndGet();
+                        return true;
+                    });
+            ActorRuntime.ActorRef<Object> sink = right.spawn(protocol, () -> (message, context) -> { });
+            ActorRuntime.Shared<List<Integer>> foreign = left.shareReadonly(List.of(1, 2, 3));
+
+            assertEquals(ActorRuntime.SendResult.FOREIGN_RUNTIME, sink.trySend(foreign));
+            assertEquals(0, validatorCalls.get());
+        }
+    }
+
+    @Test
+    void singletonReplacementCannotOverlapAStoppingSingleton() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> first = runtime.spawnSingleton(
+                    "cache.singleton",
+                    ActorRuntime.Protocol.ofClass("cache-command", String.class),
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        release.await(2, TimeUnit.SECONDS);
+                    });
+
+            first.send("work");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.stop(first));
+
+            IllegalStateException overlap = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.spawnSingleton(
+                            "cache.singleton",
+                            ActorRuntime.Protocol.ofClass("cache-command", String.class),
+                            () -> (message, context) -> { }));
+            assertTrue(overlap.getMessage().contains("stopping"));
+
+            release.countDown();
+            assertTrue(runtime.join(first, Duration.ofSeconds(2)));
+
+            ActorRuntime.ActorRef<String> replacement = runtime.spawnSingleton(
+                    "cache.singleton",
+                    ActorRuntime.Protocol.ofClass("cache-command", String.class),
+                    () -> (message, context) -> { });
+            assertNotEquals(first.id(), replacement.id());
+        }
+    }
+
+    @Test
     void typedProtocolRejectsMalformedMessagesBeforeMailboxAdmission() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
