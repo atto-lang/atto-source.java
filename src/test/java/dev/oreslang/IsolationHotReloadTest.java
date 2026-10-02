@@ -479,6 +479,39 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void hotReloadCanonicalizesEquivalentCodeUnitPaths() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var first = hot.load("dir/../same-unit.ores", """
+                    pub routine main() => void { return; }
+                    """);
+            var second = hot.load("same-unit.ores", """
+                    pub routine main() => void {
+                      val version = 2;
+                      return;
+                    }
+                    """);
+
+            assertEquals("same-unit.ores", first.codeUnitId());
+            assertEquals(first.codeUnitId(), second.codeUnitId());
+            assertEquals(second.id(), hot.active("same-unit.ores").id());
+            assertEquals(1, hot.activeGenerations().size());
+        }
+    }
+
+    @Test
+    void hotReloadRejectsBlankOrCollapsedCodeUnitIdentity() {
+        try (HotReloadManager hot =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> hot.load("   ", "pub routine main() => void { return; }"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> hot.load("a/..", "pub routine main() => void { return; }"));
+            assertEquals(0, hot.liveGenerations());
+        }
+    }
+
+    @Test
     void hotReloadRequiresExplicitCapability() {
         assertThrows(SecurityException.class,
                 () -> new HotReloadManager(IsolatePolicy.strictFaas(), ExecutionProfile.serverJit()));
