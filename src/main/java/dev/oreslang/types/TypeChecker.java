@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
@@ -9,6 +10,7 @@ import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.SingletonProxy;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.Type;
@@ -110,9 +112,15 @@ public final class TypeChecker {
 
         for (Ast.ModuleDecl module : program.modules()) {
             checkModuleAdherence(module);
+            long initCount = module.declarations().stream().filter(Ast.InitDecl.class::isInstance).count();
+            if (initCount > 1) {
+                String scope = module.name().equals(Parser.ROOT_MODULE) ? "source file" : "module '" + module.name() + "'";
+                throw new IllegalArgumentException(scope + " may declare at most one init routine");
+            }
             if (module.singleton()) validateSingletonModule(module);
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
+                else if (decl instanceof Ast.InitDecl init) checkInit(module, init);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                 else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
@@ -176,9 +184,29 @@ public final class TypeChecker {
         }
     }
 
+    private void checkInit(Ast.ModuleDecl module, Ast.InitDecl init) {
+        Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
+        checkBlock(init.body(), env, Set.of(), Primitive.VOID, null);
+    }
+
+    private Env moduleBindingEnv(Ast.ModuleDecl module) {
+        Env env = new Env(null, module.name());
+        for (Ast.Decl decl : module.declarations()) {
+            if (!(decl instanceof Ast.FieldDecl field)) continue;
+            if (field.initializer() == null) {
+                throw new IllegalArgumentException("module binding '" + module.name() + "." + field.name() + "' requires an initializer");
+            }
+            Type actual = typeOf(field.initializer(), env, Set.of(), null);
+            Type declared = field.type() == null ? actual : resolve(field.type(), Set.of(), null);
+            requireAssignable(actual, declared, "initializer for " + module.name() + "." + field.name());
+            env.define(field.name(), declared, field.bindingKind());
+        }
+        return env;
+    }
+
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
-        Env env = module.singleton() ? singletonModuleEnv(module) : new Env(null, module.name());
+        Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
         validateSingletonTransportStatements(fn.body(), module.name());
