@@ -66,7 +66,8 @@ method_decl     = { annotation } visibility { callable_modifier } method_name [ 
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
 explicit_receiver = "self" [ type_ref ]
-                  | "mut" "self" [ type_ref ] ;
+                  | "mut" "self" [ type_ref ]
+                  | CONTEXTUAL_TAKE "self" [ type_ref ] ;
 
 static_function_decl
                 = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
@@ -266,6 +267,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - "structural" and "take" are contextual in parameter position, not globally reserved.
    - self is an immutable receiver borrow by default and cannot be rebound.
      "mut self" is the exclusive mutable receiver form.
+     contextual "take self" transfers receiver ownership into the method.
    - Parameters are immutable bindings. Type name is a temporary read borrow;
      "mut Type name" is an exclusive temporary mutable borrow; contextual
      "take Type name" transfers ownership to the callee.
