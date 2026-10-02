@@ -460,10 +460,6 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeRef() {
-        if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return Ast.TypeRef.borrowed(parseTypeRef(), mutable);
-        }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
         if (match(TYPEOF)) {
@@ -762,10 +758,6 @@ public final class Parser {
 
     private Ast.Expr parseUnary() {
         if (match(BANG, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
-        if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
-        }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         return parsePostfix();
     }
