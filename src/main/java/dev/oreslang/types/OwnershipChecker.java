@@ -128,6 +128,9 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() != null) {
+                if (mutexCriticalSectionDepth > 0) {
+                    throw error("with_lock/recover critical-section callbacks cannot return a value");
+                }
                 if (ret.value() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                     VarState owner = borrowOwner(unary.operand(), scope);
                     if (owner.origin == Origin.LOCAL) {
@@ -410,7 +413,11 @@ public final class OwnershipChecker {
                                 throw error(member.member() + " callback must accept exactly one protected-value parameter");
                             }
                             Ast.Param original = lambda.parameters().getFirst();
-                            Ast.Param protectedParam = new Ast.Param(element, original.name(), original.structural(), true);
+                            Ast.Param protectedParam = new Ast.Param(
+                                    Ast.TypeRef.borrowed(element, true),
+                                    original.name(),
+                                    original.structural(),
+                                    false);
                             Ast.LambdaExpr protectedLambda = new Ast.LambdaExpr(
                                     List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
                             mutexCriticalSectionDepth++;
