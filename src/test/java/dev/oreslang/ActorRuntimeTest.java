@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -36,6 +37,25 @@ final class ActorRuntimeTest {
     @Test
     void rejectsUnknownMutableHostObjects() {
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new StringBuilder("mutable")));
+    }
+
+    @Test
+    void actorCarriesItsOwnStricterPolicy() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<IsolatePolicy> observed = new AtomicReference<>();
+            IsolatePolicy strict = IsolatePolicy.strictFaas();
+
+            var ref = runtime.<String>spawn(strict, () -> (message, context) -> {
+                observed.set(context.policy());
+                received.countDown();
+            });
+            ref.send("ping");
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(strict.capabilities(), observed.get().capabilities());
+            assertEquals(strict.maxMailboxMessages(), observed.get().maxMailboxMessages());
+        }
     }
 
     @Test
