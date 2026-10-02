@@ -912,6 +912,40 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonHandlesCannotBeCachedInModuleOrClassFields() {
+        IllegalArgumentException moduleField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module cached_handle_service as
+                          pub fnc read() => int { return 1; }
+                        end
+
+                        define module bad_cache as
+                          val cached = cached_handle_service;
+                        end
+                        """)));
+        assertTrue(moduleField.getMessage().contains("handles cannot be extracted"));
+
+        IllegalArgumentException classField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class CachedBox as
+                          let int value = 1;
+                          pub read() => int { return self.value; }
+                        end
+
+                        define singleton module cached_proxy_service as
+                          pub val CachedBox box = new CachedBox();
+                        end
+
+                        define module app as
+                          define class Holder as
+                            val cached = cached_proxy_service.box;
+                          end
+                        end
+                        """)));
+        assertTrue(classField.getMessage().contains("proxy handles cannot be extracted"));
+    }
+
+    @Test
     void singletonModulesCannotAdvertiseOrdinarySynchronousInterfaces() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
