@@ -1999,6 +1999,11 @@ public final class TypeChecker {
     private void requireMutableReceiverExpression(Ast.Expr receiver, Env env, String where) {
         if (receiver instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) return;
         if (receiver instanceof Ast.NewExpr || receiver instanceof Ast.StructInitExpr) return;
+        if (receiver instanceof Ast.CallExpr call && isOwnershipIntrinsicCall(call, env)
+                && call.callee() instanceof Ast.NameExpr intrinsic
+                && (intrinsic.name().equals("copy") || intrinsic.name().equals("take"))) {
+            return;
+        }
 
         Ast.NameExpr root = receiverRootName(receiver);
         if (root == null) {
