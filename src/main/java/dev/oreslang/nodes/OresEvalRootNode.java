@@ -54,6 +54,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Map<Ast.LambdaExpr, ClosureCaptureAnalyzer.CapturePlan> capturePlans = new IdentityHashMap<>();
+        private final Map<Ast.LambdaExpr, Invokable> lexicalNoEnvClosures = new IdentityHashMap<>();
+        private final Map<Ast.LambdaExpr, Invokable> nonLexicalNoEnvClosures = new IdentityHashMap<>();
 
         private Evaluator(Ast.Program program, OresContext context) {
             this.program = program;
@@ -273,6 +275,10 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.LambdaExpr lambda) {
+                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return invokeInlineLambda(lambda, env, args);
+                }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
@@ -338,9 +344,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean inheritedNonLexical = env.descendantsNonLexical();
-                if (lambda.explicitLexical() && inheritedNonLexical) {
-                    throw new IllegalArgumentException("'lex'/'lexical' lambda cannot override an enclosing nlex capture barrier");
-                }
+                requireCaptureModeAllowed(lambda, inheritedNonLexical);
 
                 boolean nonLexical = lambda.nonLexical() || inheritedNonLexical;
                 ClosureCaptureAnalyzer.CapturePlan capturePlan = nonLexical
@@ -350,19 +354,52 @@ public final class OresEvalRootNode extends RootNode {
                         ? null
                         : env.capture(capturePlan.names());
 
-                return (Invokable) args -> {
-                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
-                    Env local = new Env(captured, nonLexical);
-                    for (int i = 0; i < lambda.parameters().size(); i++) {
-                        Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-                    }
-                    if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    try { executeBlock(lambda.blockBody(), local); return null; }
-                    catch (ReturnSignal signal) { return signal.value; }
-                };
+                if (captured == null) {
+                    Map<Ast.LambdaExpr, Invokable> cache = nonLexical ? nonLexicalNoEnvClosures : lexicalNoEnvClosures;
+                    return cache.computeIfAbsent(lambda,
+                            ignored -> args -> invokeLambda(lambda, null, nonLexical, args));
+                }
+
+                return (Invokable) args -> invokeLambda(lambda, captured, nonLexical, args);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
+        }
+
+        /**
+         * Immediate lambda calls do not need a heap closure environment at all:
+         * the invocation can read its lexical parent directly for the duration
+         * of the call. If it creates an escaping nested closure, that nested
+         * closure still performs normal selective capture before it escapes.
+         */
+        private Object invokeInlineLambda(Ast.LambdaExpr lambda, Env caller, List<Object> args) {
+            boolean inheritedNonLexical = caller.descendantsNonLexical();
+            requireCaptureModeAllowed(lambda, inheritedNonLexical);
+            boolean nonLexical = lambda.nonLexical() || inheritedNonLexical;
+            return invokeLambda(lambda, nonLexical ? null : caller, nonLexical, args);
+        }
+
+        private void requireCaptureModeAllowed(Ast.LambdaExpr lambda, boolean inheritedNonLexical) {
+            if (lambda.explicitLexical() && inheritedNonLexical) {
+                throw new IllegalArgumentException("'lex'/'lexical' lambda cannot override an enclosing nlex capture barrier");
+            }
+        }
+
+        private Object invokeLambda(Ast.LambdaExpr lambda, Env captured, boolean nonLexical, List<Object> args) {
+            if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
+
+            Env local = new Env(captured, nonLexical);
+            for (int i = 0; i < lambda.parameters().size(); i++) {
+                Ast.Param param = lambda.parameters().get(i);
+                local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+
+            if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
+            try {
+                executeBlock(lambda.blockBody(), local);
+                return null;
+            } catch (ReturnSignal signal) {
+                return signal.value;
+            }
         }
 
         private Object member(Object receiver, String name) {
