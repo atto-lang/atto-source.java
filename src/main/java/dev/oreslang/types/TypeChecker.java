@@ -694,6 +694,111 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
+    private boolean inGpuCallable() {
+        return gpuCallableDepth > 0;
+    }
+
+    private Type gpuStaticCallType(
+            String namespace,
+            String member,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (!namespace.equals("GpuArray") && !namespace.equals("GpuStream")) return null;
+
+        if (namespace.equals("GpuArray")) {
+            if (!member.equals("from_cpu")) {
+                throw new IllegalArgumentException("unknown GpuArray core function '" + member + "'");
+            }
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuArray.from_cpu() is a CPU-to-GPU transfer and cannot run inside a gpu callable");
+            }
+            if (arguments.size() != 1) throw new IllegalArgumentException("GpuArray.from_cpu() expects exactly one Array/List argument");
+            Type source = deref(typeOf(arguments.getFirst(), env, generics, self));
+            if (!(source instanceof ListType list)) {
+                throw new IllegalArgumentException("GpuArray.from_cpu() requires Array<T> or List<T>, got " + source);
+            }
+            requireGpuTransferType(list.element(), false, "GpuArray.from_cpu() element");
+            return new GpuArrayType(list.element());
+        }
+
+        if (!member.equals("from_array")) {
+            throw new IllegalArgumentException("unknown GpuStream core function '" + member + "'");
+        }
+        if (arguments.size() != 1) throw new IllegalArgumentException("GpuStream.from_array() expects exactly one GpuArray<T>");
+        Type source = deref(typeOf(arguments.getFirst(), env, generics, self));
+        if (!(source instanceof GpuArrayType array)) {
+            throw new IllegalArgumentException("GpuStream.from_array() requires GpuArray<T>, got " + source);
+        }
+        return new GpuStreamType(array.element());
+    }
+
+    private Type gpuInstanceCallType(
+            Type receiver,
+            String member,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (receiver instanceof GpuArrayType array) {
+            if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuArray." + member + "() takes no arguments");
+            return switch (member) {
+                case "stream" -> new GpuStreamType(array.element());
+                case "copy_to_cpu" -> {
+                    if (inGpuCallable()) throw new IllegalArgumentException("GpuArray.copy_to_cpu() cannot run inside a gpu callable");
+                    yield new ListType(array.element());
+                }
+                case "length" -> Primitive.INT;
+                default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
+            };
+        }
+        if (receiver instanceof GpuStreamType stream) {
+            if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuStream." + member + "() takes no arguments");
+            return switch (member) {
+                case "collect" -> new GpuArrayType(stream.element());
+                case "copy_to_cpu" -> {
+                    if (inGpuCallable()) throw new IllegalArgumentException("GpuStream.copy_to_cpu() cannot run inside a gpu callable");
+                    yield new ListType(stream.element());
+                }
+                default -> throw new IllegalArgumentException("unknown GpuStream member '" + member + "'");
+            };
+        }
+        return null;
+    }
+
+    private Type gpuBuiltinMemberType(String namespace, String member) {
+        if (namespace.equals("GpuArray") && member.equals("from_cpu")) {
+            return new Function(List.of(new ListType(Unknown.INSTANCE)), new GpuArrayType(Unknown.INSTANCE));
+        }
+        if (namespace.equals("GpuStream") && member.equals("from_array")) {
+            return new Function(List.of(new GpuArrayType(Unknown.INSTANCE)), new GpuStreamType(Unknown.INSTANCE));
+        }
+        if (namespace.equals("GpuArray") || namespace.equals("GpuStream")) {
+            throw new IllegalArgumentException("unknown " + namespace + " core function '" + member + "'");
+        }
+        return null;
+    }
+
+    private Type gpuBuiltinMemberType(Type receiver, String member) {
+        if (receiver instanceof GpuArrayType array) {
+            return switch (member) {
+                case "stream" -> new Function(List.of(), new GpuStreamType(array.element()));
+                case "copy_to_cpu" -> new Function(List.of(), new ListType(array.element()));
+                case "length" -> new Function(List.of(), Primitive.INT);
+                default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
+            };
+        }
+        if (receiver instanceof GpuStreamType stream) {
+            return switch (member) {
+                case "collect" -> new Function(List.of(), new GpuArrayType(stream.element()));
+                case "copy_to_cpu" -> new Function(List.of(), new ListType(stream.element()));
+                default -> throw new IllegalArgumentException("unknown GpuStream member '" + member + "'");
+            };
+        }
+        return null;
+    }
+
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
         if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
