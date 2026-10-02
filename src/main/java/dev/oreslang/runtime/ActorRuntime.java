@@ -854,6 +854,11 @@ public final class ActorRuntime implements AutoCloseable {
              type = type.getSuperclass()) {
             for (java.lang.reflect.Field field : type.getDeclaredFields()) {
                 if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                if (!java.lang.reflect.Modifier.isFinal(field.getModifiers())) {
+                    throw new SecurityException(
+                            "private actor behavior field '" + field.getName()
+                                    + "' is mutable JVM state; persistent mutable state must use context.privateMemory()");
+                }
                 if (!field.trySetAccessible()) {
                     throw new SecurityException(
                             "private actor behavior contains inaccessible captured state: " + field.getName());
