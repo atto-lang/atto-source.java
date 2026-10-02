@@ -452,7 +452,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (sourceEstimate > policyCeiling.maxHeapBytes()) {
             throw new IllegalArgumentException("shared value exceeds isolate heap policy");
         }
-        T frozen = (T) freeze(value);
+        T frozen = (T) freezeReadonly(value);
         long frozenBytes = estimatedFrozenBytes(frozen);
         if (frozenBytes > policyCeiling.maxHeapBytes()) {
             throw new IllegalArgumentException("frozen shared value exceeds isolate heap policy");
@@ -527,10 +527,18 @@ public final class ActorRuntime implements AutoCloseable {
      * acyclic immutable values.
      */
     public static Object freeze(Object value) {
-        return freeze(value, new IdentityHashMap<>(), 0);
+        return freeze(value, new IdentityHashMap<>(), 0, false);
     }
 
-    private static Object freeze(Object value, IdentityHashMap<Object, Boolean> path, int depth) {
+    private static Object freezeReadonly(Object value) {
+        return freeze(value, new IdentityHashMap<>(), 0, true);
+    }
+
+    private static Object freeze(
+            Object value,
+            IdentityHashMap<Object, Boolean> path,
+            int depth,
+            boolean readOnlyShared) {
         if (depth > MAX_FREEZE_DEPTH) throw new IllegalArgumentException("message graph exceeds maximum freeze depth " + MAX_FREEZE_DEPTH);
         if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
@@ -548,30 +556,31 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             if (value instanceof List<?> list) {
                 List<Object> frozen = new ArrayList<>();
-                for (Object item : list) frozen.add(freeze(item, path, depth + 1));
+                for (Object item : list) frozen.add(freeze(item, path, depth + 1, readOnlyShared));
                 return List.copyOf(frozen);
             }
             if (value instanceof Set<?> set) {
                 java.util.LinkedHashSet<Object> frozen = new java.util.LinkedHashSet<>();
-                for (Object item : set) frozen.add(freeze(item, path, depth + 1));
+                for (Object item : set) frozen.add(freeze(item, path, depth + 1, readOnlyShared));
                 return Set.copyOf(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    frozen.put(freeze(entry.getKey(), path, depth + 1), freeze(entry.getValue(), path, depth + 1));
+                    frozen.put(freeze(entry.getKey(), path, depth + 1, readOnlyShared), freeze(entry.getValue(), path, depth + 1, readOnlyShared));
                 }
                 return Map.copyOf(frozen);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 List<Object> frozen = new ArrayList<>();
-                for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i), path, depth + 1));
+                for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i), path, depth + 1, readOnlyShared));
                 return List.copyOf(frozen);
             }
             if (value instanceof Sendable sendable) {
                 Object replacement = sendable.freezeForSend(
-                        nested -> freeze(nested, path, depth + 1));
+                        nested -> freeze(nested, path, depth + 1, readOnlyShared),
+                        readOnlyShared);
                 if (replacement == value) {
                     throw new IllegalArgumentException(
                             "Sendable.freezeForSend() must return an actor-local copy or immutable transport value, not this");
@@ -602,7 +611,7 @@ public final class ActorRuntime implements AutoCloseable {
      * detection and depth limits remain one graph traversal.
      */
     public interface Sendable {
-        Object freezeForSend(SendFreezer freezer);
+        Object freezeForSend(SendFreezer freezer, boolean readOnlyShared);
 
         default long estimatedSendBytes(SendSizer sizer) {
             return 64L;
