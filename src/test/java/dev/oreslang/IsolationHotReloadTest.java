@@ -70,6 +70,42 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void processGcRequiresDedicatedCapabilityAndGcApisAreZeroArity() {
+        var processGc = TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  process.gc();
+                  return;
+                }
+                """));
+
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(processGc, IsolatePolicy.strictFaas()));
+        assertTrue(denied.getMessage().contains("PROCESS_GC"));
+        assertDoesNotThrow(() -> CapabilityChecker.check(processGc, IsolatePolicy.developer()));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  actor.gc();
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  process.gc(1);
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  actor.gc(1);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void hotReloadCreatesDistinctVersionedContextsWithoutFfi() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
