@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
@@ -192,6 +193,23 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (module.equals(Parser.ROOT_MODULE) && fn.name().equals("init")) {
+            Ast.TypeRef initReturn = fn.returnType();
+            if (fn.kind() != Ast.CallableKind.FNC
+                    || fn.visibility() != Ast.Visibility.PRIVATE
+                    || fn.async()
+                    || fn.nonLexical()
+                    || fn.actorKind() != Ast.ActorKind.NONE
+                    || !fn.genericParameters().isEmpty()
+                    || !fn.parameters().isEmpty()
+                    || initReturn == null
+                    || !"void".equals(initReturn.name())
+                    || !initReturn.arguments().isEmpty()
+                    || initReturn.inferArguments()) {
+                throw new IllegalArgumentException(
+                        "file init hook must be exactly 'fnc init() => void' (private, synchronous, non-actor, non-generic)");
+            }
+        }
         if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
                     "program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");

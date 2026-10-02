@@ -34,6 +34,41 @@ import * as x from './xyz';
 
 Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
 
+### Circular imports and file initialization
+
+Import cycles are legal. Oreslang does not reject a program merely because its
+file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
+
+The loader uses a staged lifecycle:
+
+1. parse and statically validate the complete reachable source graph;
+2. resolve/link imports for every code unit;
+3. compute strongly connected components (SCCs) of the import graph;
+4. for each dependency-first SCC, verify that **all** members are linked;
+5. run each member's optional file init hook;
+6. after initialization, invoke the entry unit's `main`.
+
+A file init hook has the exact shape:
+
+```ores
+fnc init() => void {
+  // side effects are allowed here
+  return;
+}
+```
+
+It is private, synchronous, non-actor, non-generic, takes no parameters, and
+returns `void`. The hook runs at most once for that loaded code-unit
+generation. Inside a cycle, init hooks execute in deterministic normalized
+code-unit-id order, but code must rely only on the stronger barrier guarantee:
+**every peer in the cycle is already linked before any peer's init begins**.
+
+This means an init hook may call exported declarations from a cyclic peer
+without observing an "unloaded module" state. If application state requires a
+specific sequencing relationship *between* two init hooks in the same cycle,
+that relationship should be made explicit in application code rather than
+inferred from the import edges.
+
 ## Module interfaces / OCaml-style module signatures
 
 Interfaces can describe the structural public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
