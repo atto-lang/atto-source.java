@@ -4,6 +4,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ExecutionTerminated;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresValues;
+import dev.oreslang.runtime.ProcessSingletonRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -479,6 +480,59 @@ final class ActorRuntimeTest {
         assertEquals(List.of(1, 2), owned.value());
         assertThrows(UnsupportedOperationException.class,
                 () -> owned.value().add(3));
+    }
+
+    @Test
+    void actorToSingletonRpcInheritsRemainingMessageDeadline() throws Exception {
+        IsolatePolicy shortPolicy = new IsolatePolicy(
+                Set.of(),
+                32L * 1024 * 1024,
+                8,
+                Duration.ofMillis(90));
+        ProcessSingletonRegistry.Handle<Object> singleton =
+                ProcessSingletonRegistry.getOrCreate(
+                        "actor-deadline:" + java.util.UUID.randomUUID(),
+                        Object::new);
+
+        try (ActorRuntime runtime = new ActorRuntime(shortPolicy)) {
+            CountDownLatch finished = new CountDownLatch(1);
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawn(shortPolicy, () -> (message, context) -> {
+                try {
+                    Thread.sleep(60);
+                    singleton.call(
+                            List.of(),
+                            8,
+                            context.runtime().remainingCurrentActorWallTime(Duration.ofSeconds(5)),
+                            (state, ignored) -> {
+                                while (true) ProcessSingletonRegistry.checkExecutionBudget();
+                            })
+                            .toCompletableFuture()
+                            .join();
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    finished.countDown();
+                }
+            });
+
+            ref.send("run");
+
+            assertTrue(finished.await(2, TimeUnit.SECONDS));
+            assertNotNull(observed.get());
+            Throwable current = observed.get();
+            boolean deadline = false;
+            while (current != null) {
+                if (String.valueOf(current.getMessage()).contains("wall-time budget")
+                        || String.valueOf(current.getMessage()).contains("expired")) {
+                    deadline = true;
+                    break;
+                }
+                current = current.getCause();
+            }
+            assertTrue(deadline, String.valueOf(observed.get()));
+        }
     }
 
     @Test
