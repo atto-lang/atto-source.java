@@ -1135,18 +1135,28 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
             ActorCell<M> cell = null;
-            boolean collectorStarted = false;
+            boolean collectorStartAttempted = false;
             try {
                 cell = new ActorCell<>(
                         ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
+                // Treat actorStarted as a transactional hook. If it partially
+                // registers backend state and then fails, actorExited still gets
+                // a best-effort rollback callback.
+                collectorStartAttempted = true;
                 garbageCollector.actorStarted(id, kind, effectivePolicy);
-                collectorStarted = true;
                 actors.put(id, cell);
                 return ref;
             } catch (RuntimeException | Error failure) {
-                if (cell != null && cell.memorySlice != null) cell.memorySlice.close();
-                if (collectorStarted) safeActorExit(id, kind);
-                actorCount.decrementAndGet();
+                try {
+                    try {
+                        if (cell != null && cell.memorySlice != null) cell.memorySlice.close();
+                    } finally {
+                        if (collectorStartAttempted) safeActorExit(id, kind);
+                    }
+                } finally {
+                    // A collector cleanup failure must never leak the actor slot.
+                    actorCount.decrementAndGet();
+                }
                 throw failure;
             }
         }
@@ -1236,7 +1246,9 @@ public final class ActorRuntime implements AutoCloseable {
             actorCollections.incrementAndGet();
         } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
             throw fatal;
-        } catch (RuntimeException failure) {
+        } catch (RuntimeException | Error failure) {
+            // Periodic maintenance is advisory and must never kill user actors
+            // because a pluggable collector backend has a non-fatal bug.
             if (propagateFailure) throw failure;
         }
     }
@@ -1249,7 +1261,9 @@ public final class ActorRuntime implements AutoCloseable {
             return true;
         } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
             throw fatal;
-        } catch (RuntimeException failure) {
+        } catch (RuntimeException | Error failure) {
+            // Periodic process maintenance is best-effort. Explicit process.gc()
+            // still surfaces non-fatal backend failures to its trusted caller.
             if (propagateFailure) throw failure;
             return false;
         } finally {
@@ -1262,9 +1276,10 @@ public final class ActorRuntime implements AutoCloseable {
             garbageCollector.actorExited(actorId, kind);
         } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
             throw fatal;
-        } catch (RuntimeException ignored) {
-            // Cleanup/accounting must continue even if a pluggable collector's
-            // release hook reports an ordinary backend failure.
+        } catch (RuntimeException | Error ignored) {
+            // Exit hooks are cleanup notifications, not actor liveness
+            // dependencies. Non-fatal backend failures must not strand actor
+            // registry entries, actor slots, or private memory accounting.
         }
     }
 
@@ -2572,9 +2587,17 @@ public final class ActorRuntime implements AutoCloseable {
             finalized = true;
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
-            safeActorExit(ref.id(), kind);
-            unregisterActor(this);
-            lifecycleLock.notifyAll();
+            try {
+                safeActorExit(ref.id(), kind);
+            } finally {
+                try {
+                    unregisterActor(this);
+                } finally {
+                    // Even a fatal collector hook must not leave awaiters asleep
+                    // after the actor has already entered finalization.
+                    lifecycleLock.notifyAll();
+                }
+            }
         }
 
         private boolean finalized() {
