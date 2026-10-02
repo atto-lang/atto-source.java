@@ -125,7 +125,29 @@ define class Combined extends Cacheable, Serializable implements HasId, Named
 end
 ```
 
-Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible types.
+Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible types. An explicit `@override` is checked: the inherited method must exist with the same arity and a compatible signature.
+
+Abstract methods are declarations without bodies, and concrete classes must discharge every inherited abstract method:
+
+```ores
+define abstract class Finder
+  pub abstract find(String key) => String;
+end
+
+define class FixedFinder extends Finder
+  @override
+  pub find(String key) => String { return "fixed"; }
+end
+```
+
+An abstract class can also be completed at a construction site with an anonymous implementation. Anonymous implementation methods are deliberately non-lexical: they can use `self`, parameters, module/global names, and their own locals, but they cannot capture constructor-local variables.
+
+```ores
+val finder = new Finder() {
+  @override
+  pub find(String key) => String { return "anonymous"; }
+};
+```
 
 `Object` and `List` are extensible base classes:
 
@@ -138,6 +160,64 @@ end
 ```
 
 Inline object and array literals are values, not classes, and cannot be inherited from.
+
+## Core collection types
+
+The core prelude reserves these collection/object type names:
+
+- `Object`
+- `Array<T>` and `Arrays<T>`
+- `List<T>`
+- `LinkedList<T>`
+- `Map<K,V>`
+- `HashMap<K,V>`
+- `JsonMap`
+
+`Array`, `Arrays`, `List`, and `LinkedList` share the sequence contract: integer indexing plus `get`, `set`, `add`/`push`, `remove_at`, `size`, and `length`. `LinkedList` selects linked-list storage; the other sequence spellings use array-backed storage in the current runtime. `Array<T>` remains the conventional typed-array spelling; `Arrays<T>` is a first-class compatibility spelling rather than a utility namespace.
+
+`Map<K,V>` is deterministic insertion-ordered in the reference runtime; `HashMap<K,V>` selects hash-map storage. Both expose `get`/`find`/`remove` returning `Option<V>`, plus `put`, `contains_key`, `size`, `keys`, and `values`. Direct indexing has type `V` and throws on a missing key rather than manufacturing a forbidden null value.
+
+Map-like constructors may contain keyed initializer entries:
+
+```ores
+val headers = new Map<String, String>() {
+  "content-type": "application/json",
+  "accept": "application/json"
+};
+
+val cache = new HashMap<String, int>() {
+  "hits": 1,
+  "misses": 0
+};
+```
+
+The initializer-entry syntax is string-keyed. Maps with a non-string key type are initialized with `put` instead.
+
+`JsonMap` fixes the key type to `String` and enforces JSON-compatible values at the runtime boundary (scalars, arrays/lists, and recursively string-keyed maps/objects). It intentionally has no type parameters until Oreslang grows a recursive `JsonValue` type:
+
+```ores
+val payload = new JsonMap() {
+  "name": "ores",
+  "values": arr[1, 2, 3],
+  "meta": obj{active: true}
+};
+```
+
+A construction body can also override an existing collection method. Every anonymous method must say `@override`; inventing a new method in an anonymous body is rejected.
+
+```ores
+val lookup = new Map<String, String>() {
+  "field1": "bar",
+  "field2": "baz",
+
+  @override
+  find(String key) => Option<String> {
+    return Some("custom");
+  }
+};
+```
+
+This is an anonymous implementation/subclass semantic, not a closure: the override cannot capture surrounding locals.
 
 ## Inline values
 
@@ -155,7 +235,9 @@ val values = arr[10, 20, 30];
 val first = values[0];
 ```
 
-`arr[...]` is the canonical inline-array spelling. The original bare `[...]` literal remains accepted for source compatibility and destructuring migration.
+`arr[...]` is the canonical inline-array spelling. It uses the same sequence runtime contract as `new List<T>(...)`, so collection methods behave consistently on literals and constructed lists. The original bare `[...]` literal remains accepted for source compatibility and destructuring migration.
+
+`obj{...}` is the structural-object shorthand corresponding to an `Object` initialized with named fields; `new Object() { ... }` is available when the explicit constructor spelling is clearer.
 
 Tuples preserve per-position static types:
 
