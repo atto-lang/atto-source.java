@@ -746,4 +746,29 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void actorPopulationIsBoundedAndSlotsReturnOnStop() {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 2);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var first = runtime.<String>spawnPrivate(() -> (message, context) -> { });
+            var second = runtime.<String>spawnShared(() -> (message, context) -> { });
+
+            assertEquals(2, runtime.actorCount());
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.<String>spawnPrivate(() -> (message, context) -> { }));
+            assertTrue(failure.getMessage().contains("actor limit exceeded"));
+
+            first.stop();
+            assertEquals(1, runtime.actorCount());
+
+            assertDoesNotThrow(() ->
+                    runtime.<String>spawnPrivate(() -> (message, context) -> { }));
+            assertEquals(2, runtime.actorCount());
+
+            second.stop();
+        }
+    }
+
+
 }
