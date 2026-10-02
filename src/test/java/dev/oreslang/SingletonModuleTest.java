@@ -624,6 +624,17 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void isolateLocalStaticsCannotMasqueradeAsOsProcessSingletons() {
+        assertDoesNotThrow(() -> ProcessSingletonRegistry.requireBackendFor(false));
+
+        IllegalStateException failure = assertThrows(
+                IllegalStateException.class,
+                () -> ProcessSingletonRegistry.requireBackendFor(true));
+        assertTrue(failure.getMessage().contains("trusted host coordinator"));
+        assertTrue(failure.getMessage().contains("not process-global"));
+    }
+
+    @Test
     void strictFaasDoesNotGrantAmbientProcessSingletonAccess() {
         String source = """
                 define singleton module forbidden_global as
