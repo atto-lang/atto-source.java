@@ -188,6 +188,55 @@ final class ActorRuntimeHardeningTest {
     }
 
     @Test
+    void monitorDownDeliveryCannotDisappearWhenWatcherMailboxIsFull() throws Exception {
+        IsolatePolicy parent = IsolatePolicy.developer();
+        IsolatePolicy tinyMailbox = new IsolatePolicy(
+                parent.capabilities(),
+                16L * 1024L * 1024L,
+                1,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(parent)) {
+            CountDownLatch watcherEntered = new CountDownLatch(1);
+            CountDownLatch releaseWatcher = new CountDownLatch(1);
+
+            ActorRuntime.Protocol<Object> watcherProtocol = new ActorRuntime.Protocol<>(
+                    "watcher",
+                    value -> value instanceof String || value instanceof Map<?, ?>);
+            ActorRuntime.ActorRef<Object> watcher = runtime.spawn(
+                    tinyMailbox,
+                    watcherProtocol,
+                    () -> (message, context) -> {
+                        if (message instanceof String) {
+                            watcherEntered.countDown();
+                            releaseWatcher.await(2, TimeUnit.SECONDS);
+                        }
+                    });
+
+            ActorRuntime.ActorRef<String> target = runtime.spawn(
+                    ActorRuntime.Protocol.ofClass("target", String.class),
+                    () -> (message, context) -> {
+                        throw new IllegalStateException("child boom");
+                    });
+
+            runtime.monitor(watcher, target);
+            watcher.send("busy");
+            assertTrue(watcherEntered.await(2, TimeUnit.SECONDS));
+            watcher.send("queued");
+            target.send("boom");
+
+            assertTrue(runtime.join(target, Duration.ofSeconds(2)));
+            assertTrue(runtime.join(watcher, Duration.ofSeconds(2)));
+
+            ActorRuntime.ActorSnapshot watcherSnapshot = runtime.snapshot(watcher);
+            assertEquals(ActorRuntime.ActorState.FAILED, watcherSnapshot.state());
+            assertNotNull(watcherSnapshot.failure());
+            assertTrue(watcherSnapshot.failure().message().contains("DOWN delivery failed"));
+            releaseWatcher.countDown();
+        }
+    }
+
+    @Test
     void askUsesMessagePassingAndAOneSlotReplyActor() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.Protocol<Map<String, Object>> requestProtocol =
