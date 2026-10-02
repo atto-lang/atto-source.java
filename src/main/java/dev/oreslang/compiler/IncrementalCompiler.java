@@ -140,6 +140,7 @@ public final class IncrementalCompiler {
             appendGenerics(abi, fn.genericParameters());
             appendParams(abi, fn.parameters());
             abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            appendCallableLocalTypes(abi, fn.body());
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
@@ -162,6 +163,15 @@ public final class IncrementalCompiler {
                 appendGenerics(abi, method.genericParameters());
                 appendParams(abi, method.parameters());
                 abi.append("=>").append(typeRef(method.returnType())).append('\n');
+            }
+            return;
+        }
+        if (decl instanceof Ast.StructDecl struct) {
+            abi.append("struct ").append(struct.visibility()).append(' ').append(struct.name());
+            appendGenerics(abi, struct.genericParameters());
+            abi.append('\n');
+            for (Ast.StructField field : struct.fields()) {
+                abi.append(" struct-field ").append(field.name()).append(':').append(typeRef(field.type())).append('\n');
             }
             return;
         }
@@ -191,6 +201,31 @@ public final class IncrementalCompiler {
             abi.append("binding ").append(field.bindingKind()).append(' ')
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
+        }
+    }
+
+    private static void appendCallableLocalTypes(StringBuilder abi, List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.StructDecl struct) {
+                abi.append(" local-struct ").append(struct.name());
+                appendGenerics(abi, struct.genericParameters());
+                abi.append('\n');
+                for (Ast.StructField field : struct.fields()) {
+                    abi.append("  local-struct-field ").append(field.name()).append(':')
+                            .append(typeRef(field.type())).append('\n');
+                }
+            } else if (stmt instanceof Ast.InterfaceDecl iface) {
+                abi.append(" local-interface ").append(iface.name());
+                appendGenerics(abi, iface.genericParameters());
+                abi.append('\n');
+                for (Ast.InterfaceMember member : iface.members()) {
+                    Ast.InterfaceFunctionDecl method = (Ast.InterfaceFunctionDecl) member;
+                    abi.append("  local-iface-fnc ").append(method.name());
+                    appendGenerics(abi, method.genericParameters());
+                    appendParams(abi, method.parameters());
+                    abi.append("=>").append(typeRef(method.returnType())).append('\n');
+                }
+            }
         }
     }
 
