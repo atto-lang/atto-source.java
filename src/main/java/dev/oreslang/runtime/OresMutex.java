@@ -40,6 +40,11 @@ public final class OresMutex {
         return new Shared<>(value);
     }
 
+    /** Runtime marker for futures whose successful value is a lexical MutexGuard. */
+    public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+        private GuardFuture() { }
+    }
+
     public sealed interface Lock<T> permits Local, Shared {
         Guard<T> lock();
         Optional<Guard<T>> tryLock();
@@ -137,11 +142,13 @@ public final class OresMutex {
 
         @Override
         public CompletableFuture<Guard<T>> lockAsync() {
+            GuardFuture<T> future = new GuardFuture<>();
             try {
-                return CompletableFuture.completedFuture(lock());
+                future.complete(lock());
             } catch (Throwable failure) {
-                return CompletableFuture.failedFuture(failure);
+                future.completeExceptionally(failure);
             }
+            return future;
         }
 
         @Override
@@ -346,7 +353,7 @@ public final class OresMutex {
             }
 
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
-            CompletableFuture<Guard<T>> future = new CompletableFuture<>();
+            GuardFuture<T> future = new GuardFuture<>();
             final Thread waiter;
             try {
                 waiter = Thread.ofVirtual().name("ores-shared-mutex-waiter").unstarted(() -> {
