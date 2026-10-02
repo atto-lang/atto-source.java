@@ -55,7 +55,9 @@ public final class OresContext implements AutoCloseable {
     public ExecutionProfile executionProfile() { return executionProfile; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
-        isolatePolicy.require(capability, api);
+        // Guest APIs invoked during an actor turn must use the actor's derived
+        // policy, not merely the surrounding polyglot context policy.
+        actors.requireEffectiveCapability(capability, api);
     }
 
     /**
