@@ -44,6 +44,9 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
+    private static final Set<String> RESERVED_COLLECTION_TYPES = Set.of(
+            "Object", "Array", "Arrays", "List", "LinkedList", "Map", "HashMap", "JsonMap");
+
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -80,15 +83,24 @@ public final class TypeChecker {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectReservedCollectionType(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectReservedCollectionType(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectReservedCollectionType(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private static void rejectReservedCollectionType(String name, String kind) {
+        if (RESERVED_COLLECTION_TYPES.contains(name)) {
+            throw new IllegalArgumentException(kind + " name '" + name + "' is reserved by the Oreslang core collection prelude");
         }
     }
 
@@ -592,14 +604,15 @@ public final class TypeChecker {
 
             if (isBuiltinListName(typeName)) {
                 if (!created.entries().isEmpty()) throw new IllegalArgumentException(typeName + " does not accept keyed initializer entries; use constructor elements or arr[...]");
-                Type element = created.type().arguments().isEmpty()
-                        ? Unknown.INSTANCE
-                        : resolve(created.type().arguments().getFirst(), generics, self);
                 if (created.type().arguments().size() > 1) throw new IllegalArgumentException(typeName + " accepts at most one type argument");
+                boolean explicitElement = !created.type().arguments().isEmpty();
+                Type element = explicitElement
+                        ? resolve(created.type().arguments().getFirst(), generics, self)
+                        : Unknown.INSTANCE;
                 for (Ast.Expr argument : created.arguments()) {
                     Type actual = typeOf(argument, env, generics, self);
-                    if (element == Unknown.INSTANCE) element = element == Unknown.INSTANCE ? actual : commonType(element, actual);
-                    else requireAssignable(actual, element, "constructor element for " + typeName);
+                    if (explicitElement) requireAssignable(actual, element, "constructor element for " + typeName);
+                    else element = element == Unknown.INSTANCE ? actual : commonType(element, actual);
                 }
                 Type collection = new ListType(element);
                 validateAnonymousBuiltinMethods(created.methods(), collection, env, generics);
@@ -615,18 +628,21 @@ public final class TypeChecker {
                     key = Primitive.STRING;
                     value = Unknown.INSTANCE;
                 } else {
-                    if (created.type().arguments().size() > 2) throw new IllegalArgumentException(typeName + " accepts exactly two type arguments when explicit");
-                    key = created.type().arguments().size() >= 1 ? resolve(created.type().arguments().get(0), generics, self) : Unknown.INSTANCE;
-                    value = created.type().arguments().size() >= 2 ? resolve(created.type().arguments().get(1), generics, self) : Unknown.INSTANCE;
+                    if (!created.type().arguments().isEmpty() && created.type().arguments().size() != 2) {
+                        throw new IllegalArgumentException(typeName + " requires exactly two type arguments when explicit");
+                    }
+                    key = created.type().arguments().size() == 2 ? resolve(created.type().arguments().get(0), generics, self) : Unknown.INSTANCE;
+                    value = created.type().arguments().size() == 2 ? resolve(created.type().arguments().get(1), generics, self) : Unknown.INSTANCE;
                 }
+                boolean inferredValue = !typeName.equals("JsonMap") && created.type().arguments().isEmpty();
                 Set<String> initializerKeys = new HashSet<>();
                 for (Ast.ObjectField entry : created.entries()) {
                     if (!initializerKeys.add(entry.name())) throw new IllegalArgumentException("duplicate map initializer key '" + entry.name() + "'");
                     if (key == Unknown.INSTANCE) key = Primitive.STRING;
                     else requireAssignable(Primitive.STRING, key, "map initializer key '" + entry.name() + "'");
                     Type actual = typeOf(entry.value(), env, generics, self);
-                    if (value == Unknown.INSTANCE) value = actual;
-                    else requireAssignable(actual, value, "map initializer value for '" + entry.name() + "'");
+                    if (inferredValue) value = value == Unknown.INSTANCE ? actual : commonType(value, actual);
+                    else if (value != Unknown.INSTANCE) requireAssignable(actual, value, "map initializer value for '" + entry.name() + "'");
                 }
                 Type collection = new Named(typeName, List.of(key, value));
                 validateAnonymousBuiltinMethods(created.methods(), collection, env, generics);
