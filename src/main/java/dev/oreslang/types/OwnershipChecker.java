@@ -454,6 +454,28 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl staticClass = classNamespaceOf(member.receiver(), scope);
+            if (staticClass != null) {
+                Ast.MethodDecl staticFunction = findStaticMethod(
+                        staticClass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                if (staticFunction != null) {
+                    CallSignature signature = specializeCall(
+                            staticFunction.genericParameters(),
+                            staticFunction.genericParameters(),
+                            staticFunction.parameters(),
+                            staticFunction.returnType(),
+                            call,
+                            scope,
+                            Map.of());
+                    checkArguments(
+                            call.arguments(),
+                            signature.parameters(),
+                            scope,
+                            "static function " + staticClass.name() + "." + staticFunction.name());
+                    return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                }
+            }
+
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null) {
@@ -794,6 +816,19 @@ public final class OwnershipChecker {
         }
     }
 
+    private Ast.ClassDecl classNamespaceOf(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.NameExpr name) {
+            if (scope.lookup(name.name()) != null) return null;
+            return findClass(name.name());
+        }
+        if (expr instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && scope.lookup(namespace.name()) == null) {
+            return findClass(namespace.name() + "." + member.member());
+        }
+        return null;
+    }
+
     private Ast.TypeRef receiverType(Ast.Expr receiver, Scope scope) {
         Ast.TypeRef type = null;
         if (receiver instanceof Ast.NameExpr name) {
@@ -898,6 +933,28 @@ public final class OwnershipChecker {
             if (parent == null) continue;
             Ast.TypeRef parentType = concreteParentType(parentRef, klass, concreteType);
             ResolvedField found = findFieldTarget(parent, parentType, name, seen);
+            if (found != null) {
+                seen.remove(klass);
+                return found;
+            }
+        }
+        seen.remove(klass);
+        return null;
+    }
+
+    private Ast.MethodDecl findStaticMethod(
+            Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+                seen.remove(klass);
+                return method;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = findClass(parentRef.name());
+            if (parent == null) continue;
+            Ast.MethodDecl found = findStaticMethod(parent, name, arity, seen);
             if (found != null) {
                 seen.remove(klass);
                 return found;
