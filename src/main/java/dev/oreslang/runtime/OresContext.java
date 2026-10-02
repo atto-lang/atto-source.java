@@ -54,11 +54,14 @@ public final class OresContext implements AutoCloseable {
 
                     @Override
                     public boolean supportsUntrustedIsolation() {
-                        // An adversarial OresContext is created through
-                        // SandboxPolicy.UNTRUSTED + spawnIsolate(true) with hard
-                        // heap/CPU/thread limits. A developer context is not a
-                        // sufficient boundary for hostile actor code.
-                        return isolatePolicy.adversarial();
+                        // This OresContext has one guest context. Even when the
+                        // whole context is SandboxPolicy.UNTRUSTED, one hostile
+                        // actor could consume that context's CPU budget before
+                        // the sandbox terminates it. That is process containment,
+                        // not per-actor starvation isolation. Keep untrusted
+                        // actor admission closed until this executor maps each
+                        // such actor to its own hard Graal/native isolate.
+                        return false;
                     }
                 });
     }
@@ -97,8 +100,8 @@ public final class OresContext implements AutoCloseable {
             IsolatePolicy actorPolicy,
             Runnable turn) {
         // A strict/adversarial Truffle context remains single-guest-thread at
-        // this layer. ActorRuntime still uses separate ready queues/pools, while
-        // the UNTRUSTED sandbox supplies the hard containment boundary.
+        // this layer. ActorRuntime still uses separate ready queues/pools, but
+        // this shared context is not advertised as per-actor hostile isolation.
         boolean serialize = isolatePolicy.adversarial();
         if (serialize) adversarialActorTurnLock.lock();
         TruffleContext truffleContext = env.getContext();
