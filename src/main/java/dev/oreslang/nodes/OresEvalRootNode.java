@@ -813,26 +813,19 @@ public final class OresEvalRootNode extends RootNode {
                 }
 
                 return switch (type.name()) {
-                    case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-                            "int", "uint", "bigint" -> value instanceof Byte
-                                    || value instanceof Short
-                                    || value instanceof Integer
-                                    || value instanceof Long
-                                    || value instanceof java.math.BigInteger;
-                    case "f32", "f64", "float" -> value instanceof Byte
+                    case "i64", "int" -> value instanceof Byte
+                            || value instanceof Short
+                            || value instanceof Integer
+                            || value instanceof Long;
+                    case "f64", "float" -> value instanceof Byte
                             || value instanceof Short
                             || value instanceof Integer
                             || value instanceof Long
-                            || value instanceof java.math.BigInteger
                             || value instanceof Float
                             || value instanceof Double;
-                    case "decimal" -> value instanceof Byte
-                            || value instanceof Short
-                            || value instanceof Integer
-                            || value instanceof Long
-                            || value instanceof java.math.BigInteger
-                            || value instanceof java.math.BigDecimal;
-                    case "complex64", "complex128", "complex" -> value instanceof Number || value instanceof Complex;
+                    case "complex128", "complex" -> value instanceof Number || value instanceof Complex;
+                    case "i8", "i16", "i32", "u8", "u16", "u32", "u64",
+                            "uint", "bigint", "f32", "decimal", "complex64" -> false;
                     case "bool", "Bool" -> value instanceof Boolean;
                     case "str", "string", "String" -> value instanceof String;
                     case "Array", "List" -> {
