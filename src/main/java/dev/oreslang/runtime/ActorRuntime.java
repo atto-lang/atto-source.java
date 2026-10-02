@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -235,6 +236,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
+        private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -255,6 +257,26 @@ public final class ActorRuntime implements AutoCloseable {
         public MemoryReservation reserveHeap(long bytes) {
             requireCurrentOwner();
             return reserve(bytes, "private actor heap");
+        }
+
+        /**
+         * Allocate actor-confined direct memory. The raw ByteBuffer is never
+         * exposed; all reads/writes verify the owning ActorId. This gives
+         * compiler-lowered private actor state a genuinely unshared backing
+         * region while actors remain multiplexed over carrier threads.
+         */
+        public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
+            requireCurrentOwner();
+            if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
+            MemoryReservation reservation = reserve(bytes, "private actor direct heap");
+            try {
+                PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
+                blocks.add(block);
+                return block;
+            } catch (RuntimeException | Error failure) {
+                reservation.close();
+                throw failure;
+            }
         }
 
         private MemoryReservation reserveMailbox(Object isolatedMessage) {
@@ -309,8 +331,99 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
+            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
+            blocks.clear();
             long bytes = usedBytes.getAndSet(0);
             if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
+        }
+
+        private void unregister(PrivateMemoryBlock block) {
+            blocks.remove(block);
+        }
+    }
+
+    /**
+     * Owner-checked direct memory owned by exactly one private actor.
+     *
+     * No mutable buffer reference escapes this wrapper. Closing the block or
+     * terminating the actor overwrites the entire region before invalidation.
+     */
+    public final class PrivateMemoryBlock implements AutoCloseable {
+        private final ActorMemorySlice slice;
+        private final MemoryReservation reservation;
+        private final ByteBuffer memory;
+        private final AtomicBoolean blockClosed = new AtomicBoolean();
+
+        private PrivateMemoryBlock(
+                ActorMemorySlice slice,
+                MemoryReservation reservation,
+                int bytes) {
+            this.slice = Objects.requireNonNull(slice);
+            this.reservation = Objects.requireNonNull(reservation);
+            this.memory = ByteBuffer.allocateDirect(bytes);
+        }
+
+        public int capacity() { return memory.capacity(); }
+        public ActorId owner() { return slice.owner(); }
+        public boolean closed() { return blockClosed.get(); }
+
+        public byte readByte(int index) {
+            requireOwnerAndOpen();
+            return memory.get(index);
+        }
+
+        public void writeByte(int index, byte value) {
+            requireOwnerAndOpen();
+            memory.put(index, value);
+        }
+
+        public byte[] copyOut() {
+            requireOwnerAndOpen();
+            byte[] out = new byte[memory.capacity()];
+            ByteBuffer duplicate = memory.duplicate();
+            duplicate.clear();
+            duplicate.get(out);
+            return out;
+        }
+
+        public void copyIn(byte[] bytes) {
+            Objects.requireNonNull(bytes);
+            requireOwnerAndOpen();
+            if (bytes.length != memory.capacity()) {
+                throw new IllegalArgumentException(
+                        "private memory copy size mismatch: expected " + memory.capacity()
+                                + " bytes but got " + bytes.length);
+            }
+            ByteBuffer duplicate = memory.duplicate();
+            duplicate.clear();
+            duplicate.put(bytes);
+        }
+
+        private void requireOwnerAndOpen() {
+            if (blockClosed.get() || slice.closed()) {
+                throw new IllegalStateException("private actor memory block is closed");
+            }
+            slice.requireCurrentOwner();
+        }
+
+        private void zeroMemory() {
+            ByteBuffer duplicate = memory.duplicate();
+            duplicate.clear();
+            while (duplicate.hasRemaining()) duplicate.put((byte) 0);
+        }
+
+        private void invalidateFromSlice() {
+            if (!blockClosed.compareAndSet(false, true)) return;
+            zeroMemory();
+        }
+
+        @Override
+        public void close() {
+            requireOwnerAndOpen();
+            if (!blockClosed.compareAndSet(false, true)) return;
+            zeroMemory();
+            slice.unregister(this);
+            reservation.close();
         }
     }
 
