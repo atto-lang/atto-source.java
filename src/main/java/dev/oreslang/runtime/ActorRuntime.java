@@ -1540,10 +1540,11 @@ public final class ActorRuntime implements AutoCloseable {
                 policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
             }
             target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
-            requireSharedMutexPayloadSafe(
-                    sharedMutex.transportValue(),
-                    new IdentityHashMap<>(),
-                    depth + 1);
+            sharedMutex.inspectForTransport(payload ->
+                    requireSharedMutexPayloadSafe(
+                            payload,
+                            new IdentityHashMap<>(),
+                            depth + 1));
             return;
         }
         if (value instanceof Shared<?> shared) {
@@ -1597,16 +1598,9 @@ public final class ActorRuntime implements AutoCloseable {
             requireSharedMutexPayloadSafe(shared.value(), visiting, depth + 1);
             return;
         }
-        if (value instanceof OresMutex.Shared<?> nested) {
-            if (visiting.put(value, Boolean.TRUE) != null) {
-                throw new IllegalArgumentException("cyclic SharedMutex payload is not runtime-shared-safe");
-            }
-            try {
-                requireSharedMutexPayloadSafe(nested.transportValue(), visiting, depth + 1);
-            } finally {
-                visiting.remove(value);
-            }
-            return;
+        if (value instanceof OresMutex.Shared<?>) {
+            throw new IllegalArgumentException(
+                    "SharedMutex payload cannot contain another SharedMutex; nested shared locks are not transport-safe until recursive lock-order semantics are defined");
         }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new IllegalArgumentException(
