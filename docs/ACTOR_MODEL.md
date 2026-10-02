@@ -11,8 +11,7 @@ copying historical failure modes into the language contract.
 3. Mailboxes are bounded by message count and estimated bytes.
 4. Actor, monitor, and shared-region handles are runtime/isolate-scoped
    capabilities. A handle minted by one tenant runtime is rejected by another.
-5. Source actors are expected to lower to typed `Protocol<M>` metadata.
-   Dynamic interoperability may explicitly opt into a dynamic protocol.
+5. Source actors lower their message type to typed `Protocol<M>` admission metadata. Primitive, string, list/array, `Option`, actor-handle, and nominal class messages are checked again at runtime; richer structural/generic forms remain governed by the static checker rather than inventing stricter runtime rules. Dynamic interoperability may explicitly opt into a dynamic protocol.
 6. FIFO dequeue is the mailbox primitive. Oreslang does not implement
    Erlang-style selective-receive scanning over old unmatched messages.
 7. Backpressure is explicit: `trySend` reports admission failure and ordinary
@@ -58,7 +57,7 @@ The freeze boundary:
 - rejects cyclic mutable graphs;
 - rejects graphs deeper than the configured runtime maximum;
 - rejects excessively large graphs during preflight;
-- recursively re-validates `Sendable.freezeForSend()` projections;
+- recursively validates nested values supplied through the trusted/generated `Sendable.freezeForSend()` freezer; generated transport values remain a trusted runtime ABI;
 - rejects map/set collisions introduced by transport projection;
 - rejects foreign-runtime capability handles.
 
