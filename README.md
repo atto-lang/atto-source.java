@@ -24,7 +24,10 @@ The language is intentionally opinionated:
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
 - multiple named modules may appear in one source file;
-- explicit `return` statements;
+- explicit `return` statements, with omitted result annotations inferred from explicit returns and conservative `any` fallback;
+- exhaustive `match` expressions with guards, destructuring, constructor/or-patterns, and compile-time unreachable-arm checks;
+- optional forward composition with `|>`, including piping directly into `match`;
+- native verification syntax (`requires`, `ensures`, `decreases`, `assert`, `assume`, `invariant`, `old(...)`) integrated with the static checker;
 - generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.
 
 The first implementation is developed on a feature branch and will land with an executable Truffle skeleton, grammar/specification, examples, tests, and CI.
