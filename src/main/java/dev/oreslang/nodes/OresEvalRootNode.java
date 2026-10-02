@@ -216,13 +216,13 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != fn.parameters().size()) {
                 throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
             }
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
-
             Ast.ModuleDecl owner = ownerModule(fn);
             predeclareLocalTypes(fn.body(), env, owner == null ? null : owner.name());
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                Object argument = coerceDeclaredAggregate(param.type(), args.get(i), env);
+                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(fn.body(), env);
                 return null;
@@ -362,12 +362,13 @@ public final class OresEvalRootNode extends RootNode {
             Env lexical = classLexicalModuleState(receiver.klass, singletonState);
             Env env = new Env(lexical, singletonState);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
-                Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
             Ast.ModuleDecl owner = ownerModule(receiver.klass);
             predeclareLocalTypes(method.body(), env, owner == null ? null : owner.name());
+            for (int i = 0; i < method.parameters().size(); i++) {
+                Ast.Param param = method.parameters().get(i);
+                Object argument = coerceDeclaredAggregate(param.type(), args.get(i), env);
+                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(method.body(), env);
                 return null;
@@ -868,12 +869,13 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env lexical = classLexicalModuleState(klass, singletonState);
             Env env = new Env(lexical, singletonState);
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
             Ast.ModuleDecl owner = ownerModule(klass);
             predeclareLocalTypes(fn.body(), env, owner == null ? null : owner.name());
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                Object argument = coerceDeclaredAggregate(param.type(), args.get(i), env);
+                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(fn.body(), env);
                 return null;
