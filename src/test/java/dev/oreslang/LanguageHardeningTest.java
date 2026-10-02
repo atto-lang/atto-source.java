@@ -93,28 +93,26 @@ final class LanguageHardeningTest {
     @Test
     void classesSupportMultipleParentsAndMultipleInterfaces() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module model
-                  define interface AApi
-                    fnc a() => int;
-                  end
-                  define interface BApi
-                    fnc b() => int;
-                  end
+                define interface AApi
+                  fnc a() => int;
+                end
+                define interface BApi
+                  fnc b() => int;
+                end
 
-                  define class A
-                    pub a() => int { return 1; }
-                  end
-                  define class B
-                    pub b() => int { return 2; }
-                  end
+                define class A
+                  pub a() => int { return 1; }
+                end
+                define class B
+                  pub b() => int { return 2; }
+                end
 
-                  define class Combined extends A, B implements AApi, BApi
-                  end
+                define class Combined extends A, B implements AApi, BApi
+                end
 
-                  define class ObjectChild extends Object
-                  end
-                  define class ListChild extends List
-                  end
+                define class ObjectChild extends Object
+                end
+                define class ListChild extends List
                 end
                 """)));
     }
@@ -122,24 +120,20 @@ final class LanguageHardeningTest {
     @Test
     void inheritanceCyclesAndConflictingDiamondsAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module m
-                  define class A extends B
-                  end
-                  define class B extends A
-                  end
+                define class A extends B
+                end
+                define class B extends A
                 end
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module m
-                  define class A
-                    pub val int id = 1;
-                  end
-                  define class B
-                    pub val String id = "b";
-                  end
-                  define class C extends A, B
-                  end
+                define class A
+                  pub val int id = 1;
+                end
+                define class B
+                  pub val String id = "b";
+                end
+                define class C extends A, B
                 end
                 """)));
     }
