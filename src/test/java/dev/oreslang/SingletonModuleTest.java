@@ -537,6 +537,33 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonMailboxBoundariesRejectMutableParameters() {
+        IllegalArgumentException callable = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module mutable_param_service as
+                          pub fnc inspect(Array<int> mut values) => int {
+                            return 1;
+                          }
+                        end
+                        """)));
+        assertTrue(callable.getMessage().contains("cannot accept mut parameters"));
+
+        IllegalArgumentException proxy = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class MutableProxyTarget as
+                          pub inspect(Array<int> mut values) => int {
+                            return 1;
+                          }
+                        end
+
+                        define singleton module mutable_proxy_service as
+                          pub val MutableProxyTarget target = new MutableProxyTarget();
+                        end
+                        """)));
+        assertTrue(proxy.getMessage().contains("cannot accept mut transported parameters"));
+    }
+
+    @Test
     void singletonPublicApiMustBeStaticallySendable() {
         IllegalArgumentException classBoundary = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
