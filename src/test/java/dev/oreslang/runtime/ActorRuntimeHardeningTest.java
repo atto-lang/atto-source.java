@@ -91,6 +91,30 @@ final class ActorRuntimeHardeningTest {
     }
 
     @Test
+    void rawNullIsRejectedUniformlyAtActorBoundaries() {
+        IllegalArgumentException root = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(null));
+        assertTrue(root.getMessage().contains("Option"));
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> ref = runtime.spawn(() -> (message, context) -> { });
+
+            IllegalArgumentException direct = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ref.send(null));
+            assertTrue(direct.getMessage().contains("Option"));
+
+            java.util.HashMap<String, Object> nested = new java.util.HashMap<>();
+            nested.put("nullable", null);
+            IllegalArgumentException nestedFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ref.send(nested));
+            assertTrue(nestedFailure.getMessage().contains("Option"));
+        }
+    }
+
+    @Test
     void typedProtocolRejectsMalformedMessagesBeforeMailboxAdmission() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
