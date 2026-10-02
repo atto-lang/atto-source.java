@@ -37,6 +37,28 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void isolatePolicyRoundTripsActorResourceCeilingsIntoGuestArguments() {
+        IsolatePolicy policy = new IsolatePolicy(
+                Set.of(
+                        IsolatePolicy.Capability.STDOUT,
+                        IsolatePolicy.Capability.ACTOR_SPAWN),
+                64L * 1024L * 1024L,
+                77,
+                9,
+                Duration.ofSeconds(12),
+                false);
+
+        IsolatePolicy parsed = IsolatePolicy.fromApplicationArguments(
+                policy.applicationArguments(ExecutionProfile.serverJit()));
+
+        assertEquals(policy.maxHeapBytes(), parsed.maxHeapBytes());
+        assertEquals(77, parsed.maxMailboxMessages());
+        assertEquals(9, parsed.maxActors());
+        assertEquals(Duration.ofSeconds(12), parsed.maxWallTime());
+        assertEquals(policy.capabilities(), parsed.capabilities());
+    }
+
+    @Test
     void capabilityAdmissionRejectsForbiddenApiBeforeGuestExecution() {
         var program = TypeChecker.check(Parser.parse("""
                 pub routine main() => void {
