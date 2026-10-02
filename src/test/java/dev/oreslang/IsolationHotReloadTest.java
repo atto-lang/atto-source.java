@@ -53,6 +53,43 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void gcAndActorCapabilitiesRemainIndependentlyDeniedInStrictFaas() {
+        var gcProgram = TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  process.gc();
+                  return;
+                }
+                """));
+        SecurityException gcDenied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(gcProgram, IsolatePolicy.strictFaas()));
+        assertTrue(gcDenied.getMessage().contains("GC_CONTROL"));
+
+        var actorProgram = TypeChecker.check(Parser.parse("""
+                fnc worker(String message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  val ref = actor.spawn(worker);
+                  actor.send(ref, "hello");
+                  return;
+                }
+                """));
+        SecurityException actorDenied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(actorProgram, IsolatePolicy.strictFaas()));
+        assertTrue(actorDenied.getMessage().contains("ACTOR_SPAWN")
+                || actorDenied.getMessage().contains("ACTOR_SEND"));
+
+        IsolatePolicy messagingOnly = IsolatePolicy.strictFaas().withCapabilities(
+                IsolatePolicy.Capability.ACTOR_SPAWN,
+                IsolatePolicy.Capability.ACTOR_SEND);
+        assertDoesNotThrow(() -> CapabilityChecker.check(actorProgram, messagingOnly));
+        assertThrows(SecurityException.class, () -> CapabilityChecker.check(gcProgram, messagingOnly));
+    }
+
+    @Test
     void runtimeCapabilityCheckCannotBeBypassedByFacadeDispatch() throws Exception {
         IsolatePolicy noOutput = new IsolatePolicy(Set.of(), 64L * 1024 * 1024, 32, Duration.ofSeconds(5));
         Source source = Source.newBuilder(OresLanguage.ID, """
