@@ -1420,22 +1420,34 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
+                requireGraphNodeCapacity(nodes[0], list.size());
                 for (Object item : list) validateMessageGraph(item, visiting, depth + 1, nodes);
             } else if (value instanceof Set<?> set) {
+                requireGraphNodeCapacity(nodes[0], set.size());
                 for (Object item : set) validateMessageGraph(item, visiting, depth + 1, nodes);
             } else if (value instanceof Map<?, ?> map) {
+                requireGraphNodeCapacity(nodes[0], Math.multiplyExact((long) map.size(), 2L));
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     validateMessageGraph(entry.getKey(), visiting, depth + 1, nodes);
                     validateMessageGraph(entry.getValue(), visiting, depth + 1, nodes);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
+                requireGraphNodeCapacity(nodes[0], length);
                 for (int i = 0; i < length; i++) {
                     validateMessageGraph(Array.get(value, i), visiting, depth + 1, nodes);
                 }
             }
         } finally {
             visiting.remove(value);
+        }
+    }
+
+    private static void requireGraphNodeCapacity(long alreadyVisited, long additionalNodes) {
+        if (additionalNodes < 0
+                || additionalNodes > (long) MAX_MESSAGE_GRAPH_NODES - alreadyVisited) {
+            throw new IllegalArgumentException(
+                    "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
         }
     }
 
