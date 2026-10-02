@@ -418,6 +418,10 @@ public final class OresEvalRootNode extends RootNode {
                         if (env.singletonState != null && env.singletonState.key.equals(singletonKey(owner))) {
                             return (Invokable) args -> callSingletonFunction(env.singletonState, fn, normalizeArgs(fn, args));
                         }
+                        if (fn.visibility() != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException("private singleton callable '" + owner.name() + "."
+                                    + fn.name() + "' is actor-private");
+                        }
                         return (Invokable) args -> callSingleton(owner, fn, normalizeArgs(fn, args));
                     }
                     return (Invokable) args -> callFunctionDirect(fn, normalizeArgs(fn, args));
