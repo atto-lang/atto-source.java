@@ -286,7 +286,7 @@ public final class TypeChecker {
             if (binding.initializer() instanceof Ast.LambdaExpr lambda && declaredAhead instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
-            Type actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
+            Type actual = typeOf(binding.initializer(), env, generics, self);
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
@@ -298,42 +298,39 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             Type source = deref(typeOf(destructure.initializer(), env, generics, self));
-            if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+            if (destructure.kind() == Ast.DestructureKind.ARRAY) {
                 if (source instanceof Tuple tuple) {
-                    if (tuple.elements().size() != destructure.bindings().size()) {
-                        throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
-                                + " element(s), pattern has " + destructure.bindings().size());
-                    }
+                    if (tuple.elements().size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
                     for (int i = 0; i < destructure.bindings().size(); i++) {
-                        defineDestructureBinding(env, destructure.bindings().get(i), tuple.elements().get(i));
+                        Ast.DestructureBinding binding = destructure.bindings().get(i);
+                        if (!binding.discard()) env.define(binding.name(), tuple.elements().get(i), binding.kind());
                     }
                 } else if (source instanceof ListType list) {
                     for (Ast.DestructureBinding binding : destructure.bindings()) {
-                        defineDestructureBinding(env, binding, list.element());
+                        if (!binding.discard()) env.define(binding.name(), list.element(), binding.kind());
+                    }
+                } else if (source == Unknown.INSTANCE) {
+                    for (Ast.DestructureBinding binding : destructure.bindings()) {
+                        if (!binding.discard()) env.define(binding.name(), Unknown.INSTANCE, binding.kind());
                     }
                 } else {
-                    throw new IllegalArgumentException("sequence destructuring requires a tuple or array/list value");
+                    throw new IllegalArgumentException("array destructuring requires a tuple or array/list value");
                 }
             } else {
-                Record shape;
-                if (source instanceof Record record) {
-                    shape = record;
+                Record record = null;
+                if (source instanceof Record sourceRecord) {
+                    record = sourceRecord;
                 } else if (source instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
-                    if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
-                    shape = publicClassShape(klass, new LinkedHashSet<>());
-                } else if (source == Unknown.INSTANCE) {
-                    shape = null;
-                } else {
-                    throw new IllegalArgumentException("object destructuring requires a record/map-like value");
+                    if (klass == null) throw new IllegalArgumentException("object destructuring requires an object/map record value");
+                    record = publicClassShape(klass, new LinkedHashSet<>());
+                } else if (source != Unknown.INSTANCE) {
+                    throw new IllegalArgumentException("object destructuring requires an object/map record value");
                 }
-
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
-                    if (binding.isDiscard()) continue;
-                    Type member = shape == null ? Unknown.INSTANCE : shape.members().get(binding.name());
-                    if (member == null) {
-                        throw new IllegalArgumentException("object destructure requires member '" + binding.name() + "'");
-                    }
+                    if (binding.discard()) continue;
+                    Type member = record == null ? Unknown.INSTANCE : record.members().get(binding.name());
+                    if (member == null) throw new IllegalArgumentException("object destructure is missing field '" + binding.name() + "'");
                     env.define(binding.name(), member, binding.kind());
                 }
             }
@@ -343,9 +340,7 @@ public final class TypeChecker {
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
-            Type actual = ret.value() == null
-                    ? Primitive.VOID
-                    : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+            Type actual = ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
@@ -413,6 +408,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
             String where;
+            Tuple dynamicTupleTarget = null;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
@@ -426,13 +422,24 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                if (receiver instanceof ListType list) {
+                    targetType = list.element();
+                } else if (receiver instanceof Tuple tuple) {
+                    targetType = tupleIndexType(tuple, indexed.index());
+                    if (constantTupleIndex(indexed.index()) == null) dynamicTupleTarget = tuple;
+                } else {
+                    throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
-            requireAssignable(value, targetType, "assignment to " + where);
+            if (dynamicTupleTarget != null) {
+                for (Type slot : dynamicTupleTarget.elements()) {
+                    requireAssignable(value, slot, "assignment through dynamic finite-array index");
+                }
+            } else {
+                requireAssignable(value, targetType, "assignment to " + where);
+            }
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
@@ -474,6 +481,34 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr builtin
+                    && builtin.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("List")
+                    && builtin.member().equals("of")) {
+                return new Tuple(call.arguments().stream()
+                        .map(argument -> typeOf(argument, env, generics, self))
+                        .toList());
+            }
+            if (call.callee() instanceof Ast.MemberExpr builtin
+                    && builtin.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("Map")
+                    && builtin.member().equals("of")) {
+                if ((call.arguments().size() & 1) != 0) {
+                    throw new IllegalArgumentException("Map.of requires alternating string keys and values");
+                }
+                Map<String, Type> members = new LinkedHashMap<>();
+                for (int i = 0; i < call.arguments().size(); i += 2) {
+                    Ast.Expr keyExpr = call.arguments().get(i);
+                    if (!(keyExpr instanceof Ast.LiteralExpr literal) || !(literal.value() instanceof String key)) {
+                        throw new IllegalArgumentException("Map.of record keys must be compile-time strings");
+                    }
+                    Type valueType = typeOf(call.arguments().get(i + 1), env, generics, self);
+                    if (members.putIfAbsent(key, valueType) != null) {
+                        throw new IllegalArgumentException("duplicate Map.of record key '" + key + "'");
+                    }
+                }
+                return new Record(members);
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -572,7 +607,7 @@ public final class TypeChecker {
             Type index = typeOf(indexed.index(), env, generics, self);
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
-            if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            if (receiver instanceof Tuple tuple) return tupleIndexType(tuple, indexed.index());
             throw new IllegalArgumentException("indexing requires an array/list or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
@@ -599,10 +634,8 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
-            for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
-            }
+            Type element = typeOf(list.elements().getFirst(), env, generics, self);
+            for (int i = 1; i < list.elements().size(); i++) element = commonType(element, typeOf(list.elements().get(i), env, generics, self));
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
@@ -632,17 +665,6 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
-    }
-
-    private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
-        if (expected instanceof Tuple && expr instanceof Ast.ListExpr list) {
-            return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
-        }
-        return typeOf(expr, env, generics, self);
-    }
-
-    private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
-        if (!binding.isDiscard()) env.define(binding.name(), type, binding.kind());
     }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
@@ -694,6 +716,27 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
+    private Type tupleIndexType(Tuple tuple, Ast.Expr indexExpr) {
+        Integer constant = constantTupleIndex(indexExpr);
+        if (constant != null) {
+            if (constant < 0 || constant >= tuple.elements().size()) {
+                throw new IllegalArgumentException("finite-array index " + constant + " is out of bounds for size " + tuple.elements().size());
+            }
+            return tuple.elements().get(constant);
+        }
+        if (tuple.elements().isEmpty()) return Unknown.INSTANCE;
+        Type result = tuple.elements().getFirst();
+        for (int i = 1; i < tuple.elements().size(); i++) result = commonType(result, tuple.elements().get(i));
+        return result;
+    }
+
+    private Integer constantTupleIndex(Ast.Expr indexExpr) {
+        if (!(indexExpr instanceof Ast.LiteralExpr literal) || !(literal.value() instanceof Number number)) return null;
+        long value = number.longValue();
+        if (number.doubleValue() != value) return null;
+        return Math.toIntExact(value);
+    }
+
     private Type iterableElementType(Type iterable) {
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
@@ -716,22 +759,11 @@ public final class TypeChecker {
         throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
     }
 
-    private Type widenCollectionElement(Type type) {
-        return type instanceof StringLiteral ? Primitive.STRING : type;
-    }
-
-    private Type collectionElementJoin(Type a, Type b) {
-        if (assignable(b, a) && assignable(a, b)) return a;
-        if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
-        if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
-        return Types.unionOf(a, b);
-    }
-
     private Type commonType(Type a, Type b) {
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
-        return Unknown.INSTANCE;
+        return Types.union(a, b);
     }
 
     private Type numericJoin(Type left, Type right, String op) {
@@ -967,20 +999,22 @@ public final class TypeChecker {
             if (!allowNullMarker) throw new IllegalArgumentException("null is not a standalone type; it is only legal as Option<null>");
             return Primitive.NULL;
         }
+        if (generics.contains(ref.name())) return new Generic(ref.name());
+
         if (ref.isUnion()) {
-            return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self, allowNullMarker)).toList());
+            List<Type> members = ref.arguments().stream().map(member -> resolve(member, generics, self, allowNullMarker)).toList();
+            return Types.union(members);
         }
-        if (ref.isTupleType()) {
+        if (ref.isTuple()) {
             return new Tuple(ref.arguments().stream().map(element -> resolve(element, generics, self, allowNullMarker)).toList());
         }
-        if (ref.isRecordType()) {
+        if (ref.isRecord()) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
                 members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
             }
             return new Record(members);
         }
-        if (generics.contains(ref.name())) return new Generic(ref.name());
 
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
         if (alias != null) {
@@ -1051,12 +1085,6 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
-        if (actual instanceof Union source) {
-            return source.options().stream().allMatch(option -> assignable(option, expected));
-        }
-        if (expected instanceof Union target) {
-            return target.options().stream().anyMatch(option -> assignable(actual, option));
-        }
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
