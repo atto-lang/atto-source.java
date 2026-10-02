@@ -318,7 +318,8 @@ final class GpuExecutionTest {
                 .findFirst().orElseThrow();
         assertTrue(source.contains(load.helperSymbol()
                 + "(ores_v_xs, __ores_len_xs, ores_v_i, __ores_error)"));
-        assertTrue(source.contains("(ores_v_i) >= 0"));\n        assertTrue(source.contains("(ulong)(ores_v_i) < __ores_len_xs"));
+        assertTrue(source.contains("(ores_v_i) >= 0"));
+        assertTrue(source.contains("(ulong)(ores_v_i) < __ores_len_xs"));
         assertTrue(source.contains("ORES_GPU_ERR_BOUNDS"));
     }
 
