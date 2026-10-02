@@ -123,6 +123,22 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void recoveryCannotBeUsedAsAnOrdinaryLock() {
+        var mutex = OresMutex.shared(new int[]{0});
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> mutex.recover(value -> {
+                    value[0] = 99;
+                    return null;
+                }));
+
+        assertTrue(error.getMessage().contains("not poisoned"));
+        assertFalse(mutex.isPoisoned());
+        assertEquals(0, mutex.withLock(value -> value[0]));
+    }
+
+    @Test
     void sharedMutexPoisonsAndRequiresExplicitRecovery() {
         var mutex = OresMutex.shared(new int[]{0});
 
