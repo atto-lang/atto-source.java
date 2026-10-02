@@ -1283,6 +1283,10 @@ public final class ActorRuntime implements AutoCloseable {
             UntrustedActorLimits untrustedLimits,
             HttpResponseTransport responseTransport) {
         requireCallerRuntimeAffinity("spawn actors");
+        ActorCell<?> callerCell = currentActor.get();
+        if (callerCell != null && callerCell.kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException("untrusted actors cannot spawn child actors");
+        }
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
