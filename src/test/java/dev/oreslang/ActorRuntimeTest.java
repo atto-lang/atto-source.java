@@ -101,6 +101,15 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void rawArenaMemoryCannotBeMadeSendable() {
+        try (java.lang.foreign.Arena arena = java.lang.foreign.Arena.ofConfined()) {
+            MemorySegment segment = arena.allocate(8);
+            assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(segment));
+            assertThrows(IllegalArgumentException.class, () -> new ActorRuntime.Shared<>(segment));
+        }
+    }
+
+    @Test
     void rejectsUnknownMutableHostObjects() {
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new StringBuilder("mutable")));
     }
