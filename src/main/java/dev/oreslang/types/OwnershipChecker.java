@@ -88,7 +88,7 @@ public final class OwnershipChecker {
                 // Receiver is immutable unless a future explicit "mut self"
                 // syntax is introduced. Methods can still mutate through an
                 // explicit &mut parameter.
-                scope.define("self", new VarState(Ast.TypeRef.simple(klass.name()), false, ValueKind.MOVE_ONLY, Origin.PARAM));
+                scope.define("self", new VarState(Ast.TypeRef.simple(klass.name()), false, ValueKind.IMM_BORROW, Origin.PARAM));
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             checkBlock(method.body(), scope, method.returnType());
