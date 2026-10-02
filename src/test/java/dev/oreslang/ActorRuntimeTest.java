@@ -485,10 +485,11 @@ final class ActorRuntimeTest {
     void actorMessageGraphDepthIsBounded() {
         Object nested = "leaf";
         for (int i = 0; i < 300; i++) nested = List.of(nested);
+        Object tooDeep = nested;
 
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> ActorRuntime.freeze(nested));
+                () -> ActorRuntime.freeze(tooDeep));
         assertTrue(failure.getMessage().contains("maximum nesting depth"));
     }
 
@@ -1028,5 +1029,55 @@ final class ActorRuntimeTest {
         assertDoesNotThrow(runtime::close);
         assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
     }
+
+    @Test
+    void privateActorCannotCreateReadonlySharedMemory() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                try {
+                    context.runtime().shareReadonly(List.of("private"));
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            ref.send("check");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertNotNull(observed.get());
+            assertTrue(observed.get().getMessage().contains("private actors cannot access synchronized shared memory")
+                    || observed.get().getMessage().contains("shareReadonly")
+                    || observed.get() instanceof SecurityException);
+        }
+    }
+
+    @Test
+    void privateActorCannotDereferenceCapturedReadonlySharedHandle() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.Shared<List<String>> shared = runtime.shareReadonly(List.of("shared"));
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                try {
+                    shared.value();
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            ref.send("check");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, observed.get());
+            assertTrue(observed.get().getMessage().contains("private actors cannot access"));
+        }
+    }
+
 
 }
