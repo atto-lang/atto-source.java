@@ -461,7 +461,11 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
-        boolean nonLexical = lambda.nonLexical() || outer.descendantsNonLexical();
+        boolean inheritedNonLexical = outer.descendantsNonLexical();
+        if (lambda.explicitLexical() && inheritedNonLexical) {
+            throw error("'lex'/'lexical' lambda cannot override an enclosing nlex capture barrier");
+        }
+        boolean nonLexical = lambda.nonLexical() || inheritedNonLexical;
         CaptureSet captures = nonLexical ? new CaptureSet() : collectCaptures(lambda, outer, recursiveBinding);
         Scope closure = new Scope(null, nonLexical);
 
@@ -505,7 +509,13 @@ public final class OwnershipChecker {
         Set<String> blockLocals = new HashSet<>(locals);
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt binding) {
-                scanExpr(binding.initializer(), blockLocals, outer, recursiveBinding, captures, false);
+                if (binding.initializer() instanceof Ast.LambdaExpr) {
+                    Set<String> recursiveLocals = new HashSet<>(blockLocals);
+                    recursiveLocals.add(binding.name());
+                    scanExpr(binding.initializer(), recursiveLocals, outer, recursiveBinding, captures, false);
+                } else {
+                    scanExpr(binding.initializer(), blockLocals, outer, recursiveBinding, captures, false);
+                }
                 blockLocals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 scanExpr(destructure.initializer(), blockLocals, outer, recursiveBinding, captures, false);
@@ -572,8 +582,16 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
-        else if (expr instanceof Ast.LambdaExpr) {
-            // Nested lambda performs its own capture analysis when checked.
+        else if (expr instanceof Ast.LambdaExpr nested) {
+            if (nested.nonLexical()) return;
+            Set<String> nestedLocals = new HashSet<>(locals);
+            for (Ast.Param param : nested.parameters()) nestedLocals.add(param.name());
+            if (nested.expressionBody() != null) {
+                scanExpr(nested.expressionBody(), nestedLocals, outer, recursiveBinding, captures, false);
+            }
+            if (nested.blockBody() != null) {
+                scanStatements(nested.blockBody(), nestedLocals, outer, recursiveBinding, captures);
+            }
         }
     }
 
