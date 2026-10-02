@@ -411,11 +411,23 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
-            if (receiver instanceof GuestActorRef ref && name.equals("id")) return ref.delegate().id().toString();
+            if (receiver instanceof GuestActorRef ref && name.equals("id")) {
+                return ref.delegate().id().toString();
+            }
+            if (receiver instanceof ActorRuntime.ActorRef<?> ref && name.equals("id")) {
+                return ref.id().toString();
+            }
             if (receiver instanceof GuestMonitorRef ref) {
                 return switch (name) {
                     case "id" -> ref.delegate().value().toString();
                     case "target_id" -> ref.delegate().target().toString();
+                    default -> throw new IllegalArgumentException("unknown monitor member " + name);
+                };
+            }
+            if (receiver instanceof ActorRuntime.MonitorRef ref) {
+                return switch (name) {
+                    case "id" -> ref.value().toString();
+                    case "target_id" -> ref.target().toString();
                     default -> throw new IllegalArgumentException("unknown monitor member " + name);
                 };
             }
