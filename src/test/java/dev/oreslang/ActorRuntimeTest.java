@@ -286,6 +286,51 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void spawnCannotRacePastRuntimeShutdown() throws Exception {
+        CountDownLatch backendStartEntered = new CountDownLatch(1);
+        CountDownLatch allowBackendStart = new CountDownLatch(1);
+        CountDownLatch backendExited = new CountDownLatch(1);
+
+        ActorRuntime.GarbageCollector collector = new ActorRuntime.GarbageCollector() {
+            @Override public void actorStarted(ActorRuntime.ActorId actorId, IsolatePolicy policy) {
+                backendStartEntered.countDown();
+                try {
+                    assertTrue(allowBackendStart.await(2, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    fail(interrupted);
+                }
+            }
+
+            @Override public void collectActor(ActorRuntime.ActorId actorId) { }
+
+            @Override public void actorExited(ActorRuntime.ActorId actorId) {
+                backendExited.countDown();
+            }
+
+            @Override public void collectProcess() { }
+        };
+
+        ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), collector);
+        AtomicReference<ActorRuntime.ActorRef<String>> spawned = new AtomicReference<>();
+
+        Thread spawn = Thread.ofVirtual().start(() ->
+                spawned.set(runtime.<String>spawn(() -> (message, context) -> { })));
+
+        assertTrue(backendStartEntered.await(2, TimeUnit.SECONDS));
+        Thread close = Thread.ofVirtual().start(runtime::close);
+
+        allowBackendStart.countDown();
+        spawn.join();
+        close.join();
+
+        assertNotNull(spawned.get());
+        assertTrue(backendExited.await(2, TimeUnit.SECONDS));
+        assertThrows(IllegalStateException.class,
+                () -> runtime.<String>spawn(() -> (message, context) -> { }));
+    }
+
+    @Test
     void gcRequestsAreRejectedAfterRuntimeClose() {
         ActorRuntime runtime = new ActorRuntime();
         runtime.close();
