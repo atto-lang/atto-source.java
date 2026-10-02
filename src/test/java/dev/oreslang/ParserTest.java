@@ -79,4 +79,26 @@ final class ParserTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
+
+    @Test
+    void reservedWordsMayNameMembersButRemainReservedLexically() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define module app
+                  fnc main() => void {
+                    val shared = SharedMutex.new(arr[1, 2, 3]);
+                    return;
+                  }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  fnc main() => void {
+                    val new = 1;
+                    return;
+                  }
+                end
+                """));
+    }
+
 }
