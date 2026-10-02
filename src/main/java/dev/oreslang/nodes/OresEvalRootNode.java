@@ -367,7 +367,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.ObjectField field : object.fields()) {
                     if (result.putIfAbsent(field.name(), eval(field.value(), env)) != null) throw new IllegalArgumentException("duplicate obj field " + field.name());
                 }
-                return Map.copyOf(result);
+                return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(result));
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -1302,7 +1302,9 @@ public final class OresEvalRootNode extends RootNode {
             for (Map.Entry<String,Object> field : fields.entrySet()) {
                 copied.put(field.getKey(), freezer.freeze(field.getValue()));
             }
-            Map<String,Object> destination = readOnlyShared ? Map.copyOf(copied) : copied;
+            Map<String,Object> destination = readOnlyShared
+                    ? java.util.Collections.unmodifiableMap(new LinkedHashMap<>(copied))
+                    : copied;
             return new OresObject(klass, destination, readOnlyShared);
         }
 
