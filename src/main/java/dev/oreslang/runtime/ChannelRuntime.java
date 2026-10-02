@@ -357,6 +357,7 @@ public final class ChannelRuntime {
                     ReceiveNode waitingNode = new ReceiveNode(channel, null, -1);
                     WaitFuture<Object> future = new WaitFuture<>(() -> cancelOrdinary(waitingNode));
                     waitingNode.future = future;
+                    requireWaiterCapacity(channel, 1);
                     channel.receivers.addLast(waitingNode);
                     waitingNode.registered = true;
                     node = waitingNode;
