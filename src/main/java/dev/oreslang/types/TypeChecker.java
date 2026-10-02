@@ -2614,45 +2614,164 @@ public final class TypeChecker {
             Ast.ClassDecl actualClass = findClass(actualNamed.name());
             if (actualClass != null) {
                 Ast.ClassDecl expectedClass = findClass(expectedNamed.name());
-                if (expectedClass != null && classExtends(actualClass, expectedClass, new LinkedHashSet<>())) return true;
+                if (expectedClass != null) {
+                    Named projected = projectClassTypeToAncestor(
+                            actualClass,
+                            actualNamed,
+                            expectedClass,
+                            new LinkedHashSet<>());
+                    if (projected != null && Types.isAssignable(projected, expectedNamed)) return true;
+                }
+
                 Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
-                if (expectedInterface != null && classImplements(actualClass, expectedInterface, new LinkedHashSet<>())) return true;
+                if (expectedInterface != null) {
+                    Named projected = projectClassTypeToInterface(
+                            actualClass,
+                            actualNamed,
+                            expectedInterface,
+                            new LinkedHashSet<>());
+                    if (projected != null && Types.isAssignable(projected, expectedNamed)) return true;
+                }
+            }
+
+            Ast.InterfaceDecl actualInterface = findInterface(actualNamed.name());
+            Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
+            if (actualInterface != null && expectedInterface != null) {
+                Named projected = projectInterfaceTypeToAncestor(
+                        actualInterface,
+                        actualNamed,
+                        expectedInterface,
+                        new LinkedHashSet<>());
+                if (projected != null && Types.isAssignable(projected, expectedNamed)) return true;
             }
         }
         return false;
     }
 
-    private boolean classExtends(Ast.ClassDecl actual, Ast.ClassDecl expected, Set<Ast.ClassDecl> seen) {
-        if (actual == expected) return true;
-        if (!seen.add(actual)) return false;
+    private Named projectClassTypeToAncestor(
+            Ast.ClassDecl actual,
+            Named actualType,
+            Ast.ClassDecl expected,
+            Set<Ast.ClassDecl> seen) {
+        if (actual == expected) return actualType;
+        if (!seen.add(actual)) return null;
+
+        Map<String, Type> substitutions = actualType.arguments().size() == actual.genericParameters().size()
+                ? classGenericSubstitutions(actual, actualType)
+                : Map.of();
+
         for (Ast.TypeRef parentRef : actual.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, actual);
-            if (parent != null && classExtends(parent, expected, seen)) return true;
+            if (parent == null) continue;
+
+            Type parentType = resolve(
+                    parentRef,
+                    Set.copyOf(actual.genericParameters()),
+                    nominalClassType(actual));
+            if (!substitutions.isEmpty()) parentType = substituteGenerics(parentType, substitutions);
+            if (!(parentType instanceof Named namedParent)) continue;
+
+            Named projected = projectClassTypeToAncestor(parent, namedParent, expected, seen);
+            if (projected != null) {
+                seen.remove(actual);
+                return projected;
+            }
         }
-        return false;
+
+        seen.remove(actual);
+        return null;
     }
 
-    private boolean classImplements(Ast.ClassDecl klass, Ast.InterfaceDecl expected, Set<Ast.ClassDecl> seen) {
-        if (!seen.add(klass)) return false;
-        for (Ast.TypeRef ifaceRef : klass.interfaces()) {
+    private Named projectClassTypeToInterface(
+            Ast.ClassDecl actual,
+            Named actualType,
+            Ast.InterfaceDecl expected,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(actual)) return null;
+
+        Map<String, Type> substitutions = actualType.arguments().size() == actual.genericParameters().size()
+                ? classGenericSubstitutions(actual, actualType)
+                : Map.of();
+
+        for (Ast.TypeRef ifaceRef : actual.interfaces()) {
             Ast.InterfaceDecl iface = findInterface(ifaceRef.name());
-            if (iface != null && (iface == expected || interfaceExtends(iface, expected, new LinkedHashSet<>()))) return true;
+            if (iface == null) continue;
+
+            Type ifaceType = resolve(
+                    ifaceRef,
+                    Set.copyOf(actual.genericParameters()),
+                    nominalClassType(actual));
+            if (!substitutions.isEmpty()) ifaceType = substituteGenerics(ifaceType, substitutions);
+            if (!(ifaceType instanceof Named namedInterface)) continue;
+
+            Named projected = projectInterfaceTypeToAncestor(
+                    iface,
+                    namedInterface,
+                    expected,
+                    new LinkedHashSet<>());
+            if (projected != null) {
+                seen.remove(actual);
+                return projected;
+            }
         }
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent != null && classImplements(parent, expected, seen)) return true;
+
+        for (Ast.TypeRef parentRef : actual.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, actual);
+            if (parent == null) continue;
+
+            Type parentType = resolve(
+                    parentRef,
+                    Set.copyOf(actual.genericParameters()),
+                    nominalClassType(actual));
+            if (!substitutions.isEmpty()) parentType = substituteGenerics(parentType, substitutions);
+            if (!(parentType instanceof Named namedParent)) continue;
+
+            Named projected = projectClassTypeToInterface(parent, namedParent, expected, seen);
+            if (projected != null) {
+                seen.remove(actual);
+                return projected;
+            }
         }
-        return false;
+
+        seen.remove(actual);
+        return null;
     }
 
-    private boolean interfaceExtends(Ast.InterfaceDecl actual, Ast.InterfaceDecl expected, Set<Ast.InterfaceDecl> seen) {
-        if (actual == expected) return true;
-        if (!seen.add(actual)) return false;
+    private Named projectInterfaceTypeToAncestor(
+            Ast.InterfaceDecl actual,
+            Named actualType,
+            Ast.InterfaceDecl expected,
+            Set<Ast.InterfaceDecl> seen) {
+        if (actual == expected) return actualType;
+        if (!seen.add(actual)) return null;
+
+        LinkedHashMap<String, Type> substitutions = new LinkedHashMap<>();
+        if (actualType.arguments().size() == actual.genericParameters().size()) {
+            for (int i = 0; i < actual.genericParameters().size(); i++) {
+                substitutions.put(actual.genericParameters().get(i), actualType.arguments().get(i));
+            }
+        }
+
         for (Ast.TypeRef parentRef : actual.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
-            if (parent != null && interfaceExtends(parent, expected, seen)) return true;
+            if (parent == null) continue;
+
+            Type parentType = resolve(
+                    parentRef,
+                    Set.copyOf(actual.genericParameters()),
+                    null);
+            if (!substitutions.isEmpty()) parentType = substituteGenerics(parentType, substitutions);
+            if (!(parentType instanceof Named namedParent)) continue;
+
+            Named projected = projectInterfaceTypeToAncestor(parent, namedParent, expected, seen);
+            if (projected != null) {
+                seen.remove(actual);
+                return projected;
+            }
         }
-        return false;
+
+        seen.remove(actual);
+        return null;
     }
 
     private Ast.FunctionDecl findFunction(String name) {
