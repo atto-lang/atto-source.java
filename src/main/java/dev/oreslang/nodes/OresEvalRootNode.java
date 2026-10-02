@@ -21,7 +21,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 
@@ -164,15 +163,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private CompletionStage<Object> startAsync(java.util.concurrent.Callable<Object> task) {
-            CompletableFuture<Object> future = new CompletableFuture<>();
-            Thread.ofVirtual().name("ores-async").start(() -> {
-                try {
-                    future.complete(task.call());
-                } catch (Throwable failure) {
-                    future.completeExceptionally(failure);
-                }
-            });
-            return future;
+            return context.submitAsync(task);
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
