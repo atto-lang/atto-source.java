@@ -573,7 +573,7 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
-        if (isBindingKind(peek().type()) && (checkNext(LBRACKET) || checkNext(LBRACE))) {
+        if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
         }
@@ -704,6 +704,28 @@ public final class Parser {
         if (current + 1 >= tokens.size()) return false;
         Token first = tokens.get(current + 1);
         return isBindingKind(first.type()) || isDiscardToken(first);
+    }
+
+    private boolean looksLikePrefixedDestructure() {
+        if (current + 2 >= tokens.size()) return false;
+        Token.Type open = tokens.get(current + 1).type();
+        Token.Type close;
+        if (open == LBRACKET) close = RBRACKET;
+        else if (open == LBRACE) close = RBRACE;
+        else return false;
+
+        int depth = 0;
+        for (int i = current + 1; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == open) depth++;
+            else if (type == close) {
+                depth--;
+                if (depth == 0) {
+                    return i + 1 < tokens.size() && tokens.get(i + 1).type() == EQUAL;
+                }
+            }
+        }
+        return false;
     }
 
     private boolean isDiscardToken(Token token) {
