@@ -57,7 +57,19 @@ Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(
 
 ## Functions and returns
 
-Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+Functions use `fnc` and are private by default. `pub` exports them. `void` is a reserved return type. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+
+All of these void callable spellings are valid:
+
+```ores
+pub fnc a() => void { return; }
+pub void fnc b() => void { return; }
+pub void fnc c() { return; }
+pub void routine d() { return; }
+pub routine e() => void { return; }
+```
+
+The prefix form is return-type sugar, not a runtime value: `void fnc f()` means the callable returns no value. When both prefix `void` and `=> T` are present, `T` must be `void`. A void callable permits `return;` but rejects `return value;`. A non-void callable rejects a bare `return;`.
 
 ```ores
 fnc add(int a, int b) => int {
@@ -70,7 +82,7 @@ fnc answer() {
 }
 ```
 
-`@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+`@Ret<T>` and `=> T` are equivalent. If both are present they must agree; prefix `void` must agree with either form as well. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
 
 ## Bindings
 
@@ -404,13 +416,19 @@ routine, method, or lambda runs in LIFO order when that callable exits, includin
 `return` and exceptional exits.
 
 The rule is deliberately simple: **evaluate the operand immediately; it must produce an
-arity-0 function; call that function later.**
+arity-0 function returning `void`; call that function later.**
 
 ```ores
 pub routine main(Array<string> args) => void {
   // The lambda value is produced now and called when main exits.
   defer || -> {
     cleanup();
+  };
+
+  // The explicit form is equivalent.
+  defer || -> void {
+    cleanup_more();
+    return;
   };
 
   // producer() runs now. It must return a zero-arity function.
@@ -428,9 +446,11 @@ pub routine main(Array<string> args) => void {
 ```
 
 This makes `defer f.Close()` non-magical: `f.Close()` really runs at the defer site.
-It is valid only when `Close()` returns an arity-0 function. If `Close()` returns
-`void`, the program is rejected. Likewise, `defer (|| -> { cleanup(); })()` is
-rejected because the self-invocation produces `void`, not a function.
+It is valid only when `Close()` returns an arity-0 function whose own result type is
+`void`. If `Close()` returns `void`, the program is rejected. A deferred callback
+that returns a value is also rejected because defer discards no values implicitly.
+Likewise, `defer (|| -> { cleanup(); })()` is rejected because the self-invocation
+produces `void`, not a function.
 
 Deferred callables are drained completely in LIFO order. If the callable body fails,
 that body failure remains primary and defer failures are attached as suppressed failures.
@@ -925,26 +945,46 @@ fnc sink() => ((bool foo) -> void) {
 
 Parameter names inside function types are documentation-only; structural function compatibility is determined by parameter/result types.
 
-The canonical lambda syntax is pipe-delimited and block-only:
+The canonical lambda syntax is pipe-delimited and block-only. The return type is optional and, when explicit, appears between `->` and the block:
 
 ```ores
 fnc find(bool found) => F {
-  return || -> {
+  return || -> int {
     return found ? 5 : 6;
   };
 }
 
 fnc callback() => ((bool foo) -> void) {
-  return |foo| -> {
+  return |foo| -> void {
     stdio.println(foo);
     return;
   };
 }
+
+routine local_cleanup() => void {
+  // No value-returning path, so this lambda infers void.
+  val cleanup = || -> {
+    stdio.println("cleanup");
+    return;
+  };
+
+  // Explicit function-expression result type.
+  val explicit_cleanup = || -> void {
+    stdio.println("cleanup");
+    return;
+  };
+
+  cleanup();
+  explicit_cleanup();
+  return;
+}
 ```
 
-Lambda parameters may be inferred from a contextual function type (`|foo|`) or typed explicitly (`|bool foo|`).
+The parenthesized typed-lambda form follows the same rule: `(int x) -> int { ... }`.
 
-There are no expression-body lambdas. Every lambda has braces. When the contextual result type is non-void, every control-flow path must contain an explicit `return <value>;`. Void lambdas may use `return;`.
+Lambda parameters may be inferred from a contextual function type (`|foo|`) or typed explicitly (`|bool foo|`). A contextual function type may still supply the result type when the lambda omits one.
+
+There are no expression-body lambdas. Every lambda has braces. A lambda with no value-returning path infers `void`. An explicit `-> void { ... }` lambda may use `return;` but may not return a value. Explicit or contextual non-void lambdas must explicitly return a value on every control-flow path.
 
 This means higher-order functions and functors do not introduce a second return convention: named functions, methods, static functions, and anonymous functions all use the same explicit `return` statement semantics.
 
