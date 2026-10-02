@@ -999,14 +999,13 @@ public final class TypeChecker {
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
-                    Set<String> fnGenerics = new HashSet<>(klass.genericParameters());
-                    fnGenerics.addAll(fn.genericParameters());
+                    Function signature = methodFunctionType(fn, klass, null);
                     for (int i = 0; i < call.arguments().size(); i++) {
-                        Type expected = resolveParam(fn.parameters().get(i), fnGenerics, null);
+                        Type expected = signature.parameters().get(i);
                         validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                         requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                     }
-                    return resolve(fn.returnType(), fnGenerics, null);
+                    return signature.result();
                 }
                 if (receiver instanceof SingletonProxy proxy) {
                     Ast.ClassDecl klass = findClass(proxy.target().name());
@@ -1016,16 +1015,14 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("no public singleton proxy method '" + member.member()
                                 + "' with arity " + call.arguments().size() + " on " + proxy.target().name());
                     }
-                    Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
-                    methodGenerics.addAll(method.genericParameters());
+                    Function signature = methodFunctionType(method, klass, proxy.target());
                     for (int i = 0; i < call.arguments().size(); i++) {
-                        Type expected = resolveParam(method.parameters().get(i), methodGenerics, proxy.target());
+                        Type expected = signature.parameters().get(i);
                         validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                         requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
                                 "singleton proxy argument " + (i + 1));
                     }
-                    Type result = resolve(method.returnType(), methodGenerics, proxy.target());
-                    return new Named("Future", List.of(result));
+                    return new Named("Future", List.of(signature.result()));
                 }
                 if (receiver instanceof Record record) {
                     Type candidate = record.members().get(methodKey(member.member(), call.arguments().size()));
@@ -1045,14 +1042,13 @@ public final class TypeChecker {
                     if (klass != null) {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
-                        Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
-                        methodGenerics.addAll(method.genericParameters());
+                        Function signature = methodFunctionType(method, klass, named);
                         for (int i = 0; i < call.arguments().size(); i++) {
-                            Type expected = resolveParam(method.parameters().get(i), methodGenerics, named);
+                            Type expected = signature.parameters().get(i);
                             validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                             requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                         }
-                        return resolve(method.returnType(), methodGenerics, named);
+                        return signature.result();
                     }
                 }
             }
@@ -1131,7 +1127,7 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                    return methodFunctionType(fn, klass, null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -1150,7 +1146,7 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
-                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
+                        return methodFunctionType(method, klass, named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -1509,7 +1505,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
-                    functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                    methodFunctionType(method, klass, self), "class " + klass.name());
         }
         stack.remove(klass);
         Record result = new Record(members);
@@ -1536,7 +1532,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members, methodKey(method.name(), method.arity()),
-                        functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                        methodFunctionType(method, klass, self), "class " + klass.name());
             }
         }
         stack.remove(klass);
@@ -1707,6 +1703,21 @@ public final class TypeChecker {
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
         return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
+    }
+
+    private Function methodFunctionType(Ast.MethodDecl method, Ast.ClassDecl klass, Type self) {
+        pushLocalTypeScope(method.body());
+        try {
+            Set<String> generics = new HashSet<>(klass.genericParameters());
+            generics.addAll(method.genericParameters());
+            Function signature = functionType(method.parameters(), method.returnType(), generics, self);
+            if (self instanceof Named named && named.arguments().size() == klass.genericParameters().size()) {
+                signature = (Function) substituteGenerics(signature, classGenericSubstitutions(klass, named));
+            }
+            return signature;
+        } finally {
+            popLocalTypeScope();
+        }
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
