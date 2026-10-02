@@ -125,6 +125,9 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (match(DEFINE)) {
+            if (modifiers.explicitVoid) {
+                throw error(previous(), "'void' return modifier applies only to callable declarations");
+            }
             if (modifiers.actor) {
                 throw error(previous(), "actor modifier is only valid on fnc or routine declarations");
             }
@@ -142,6 +145,9 @@ public final class Parser {
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        if (modifiers.explicitVoid) {
+            throw error(peek(), "'void' return modifier applies only to fnc or routine declarations");
+        }
         if (modifiers.actor) {
             throw error(peek(), "actor modifier is only valid on fnc or routine declarations");
         }
@@ -186,6 +192,9 @@ public final class Parser {
             if (mods.actor) {
                 throw error(peek(), "actor modifier is only valid on top-level/module fnc or routine declarations");
             }
+            if (mods.explicitVoid && isBindingKind(peek().type())) {
+                throw error(peek(), "'void' return modifier cannot be used on data fields");
+            }
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
@@ -228,6 +237,10 @@ public final class Parser {
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
                 continue;
+            }
+
+            if (memberModifiers.explicitVoid) {
+                throw error(peek(), "'void' return modifier cannot be used on interface data fields");
             }
 
             if (check(IDENT) && checkNext(COLON)) {
