@@ -596,6 +596,11 @@ public final class OresEvalRootNode extends RootNode {
             public boolean actorEntrySafe() {
                 return true;
             }
+
+            @Override
+            public String actorContractKey() {
+                return function.parameters() + "=>" + function.returnType();
+            }
         }
 
         private final class LambdaValue implements Invokable {
@@ -638,6 +643,11 @@ public final class OresEvalRootNode extends RootNode {
             public boolean actorEntrySafe() {
                 return nonLexical;
             }
+
+            @Override
+            public String actorContractKey() {
+                return lambda.parameters().toString();
+            }
         }
 
         private final class ActorFacade {
@@ -674,6 +684,7 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.ActorRef<Object> ref = context.actors().spawnSingletonOwned(
                         name,
                         initialStateBytes,
+                        singletonContract(handler, stateful, initialArgument),
                         () -> statefulBehavior(handler, stateful, initialState));
                 return new GuestActorRef(ref);
             }
@@ -848,6 +859,32 @@ public final class OresEvalRootNode extends RootNode {
                 return new GuestActorRef(ref);
             }
 
+            private String singletonContract(
+                    Invokable handler,
+                    boolean stateful,
+                    Object initialArgument) {
+                String protocol = handler.actorContractKey();
+                if (protocol == null || protocol.isBlank()) {
+                    throw new IllegalArgumentException("singleton actor handler has no stable runtime contract");
+                }
+                return protocol
+                        + "|mode=" + (stateful ? "stateful" : "stateless")
+                        + (stateful ? "|state=" + runtimeStateTag(initialArgument) : "");
+            }
+
+            private String runtimeStateTag(Object value) {
+                if (value instanceof ActorRuntime.Shared<?> shared) {
+                    return "shared:" + runtimeStateTag(shared.value());
+                }
+                if (value == null) return "null";
+                if (value instanceof OresObject object) return "class:" + object.klass.name();
+                if (value instanceof List<?>) return "list";
+                if (value instanceof Map<?, ?>) return "map";
+                if (value instanceof Set<?>) return "set";
+                if (value.getClass().isArray()) return "array:" + value.getClass().getComponentType().getTypeName();
+                return value.getClass().getName();
+            }
+
             private Invokable actorHandler(Object value) {
                 if (!(value instanceof Invokable invokable)) {
                     throw new IllegalArgumentException("actor entrypoint must be a named function or nlex lambda");
@@ -968,6 +1005,7 @@ public final class OresEvalRootNode extends RootNode {
     private interface Invokable {
         Object call(List<Object> arguments);
         default boolean actorEntrySafe() { return false; }
+        default String actorContractKey() { return null; }
     }
 
     private static final class Env {
