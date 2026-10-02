@@ -56,7 +56,7 @@ public final class TypeChecker {
         checker.validateRoutineRecursion();
         checker.validate(composed);
         OwnershipChecker.check(composed);
-        return composed;
+        return TraitComposer.stripValidationClasses(composed);
     }
 
     private void validateImports(Ast.Program program) {
