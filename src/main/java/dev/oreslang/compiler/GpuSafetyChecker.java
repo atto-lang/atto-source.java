@@ -112,9 +112,17 @@ public final class GpuSafetyChecker {
             if (param.structural()) {
                 throw new IllegalArgumentException("GPU callable '" + label + "' cannot use structural parameters");
             }
+            if (param.type().isTupleType()) {
+                throw new IllegalArgumentException("GPU callable '" + label + "' cannot pass tuple parameters through the current device ABI");
+            }
             requireGpuType(param.type(), false, new HashSet<>(), label + " parameter " + param.name());
         }
         requireGpuType(result, true, new HashSet<>(), label + " result");
+        Ast.TypeRef resolvedResult = resolveAlias(result, new HashSet<>());
+        if (resolvedResult.isTupleType() || resolvedResult.name().equals("Array") || resolvedResult.name().equals("List")) {
+            throw new IllegalArgumentException("GPU callable '" + label
+                    + "' must return a scalar or void; write array results through an explicit mutable Array<T>/List<T> parameter");
+        }
     }
 
     private void requireGpuType(Ast.TypeRef type, boolean allowVoid, Set<String> resolving, String where) {
@@ -145,8 +153,7 @@ public final class GpuSafetyChecker {
 
         switch (type.name()) {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-                    "int", "uint", "f32", "f64", "float", "complex64", "complex128", "complex",
-                    "bool", "Bool" -> {
+                    "int", "uint", "f32", "f64", "float", "bool", "Bool" -> {
                 if (!type.arguments().isEmpty()) throw new IllegalArgumentException(where + " has unexpected type arguments");
             }
             case "void" -> {
@@ -162,9 +169,21 @@ public final class GpuSafetyChecker {
                 }
                 requireGpuType(element, false, resolving, where + " element");
             }
+            case "complex64", "complex128", "complex" -> throw new IllegalArgumentException(
+                    where + " uses complex arithmetic, which is rejected until the GPU backend lowers Oreslang complex operators semantically");
             default -> throw new IllegalArgumentException(where + " type '" + type.name()
                     + "' is not GPU-transferable yet (classes, strings, bigint/decimal, Option, records and host objects are rejected)");
         }
+    }
+
+    private Ast.TypeRef resolveAlias(Ast.TypeRef type, Set<String> resolving) {
+        Ast.TypeAliasDecl alias = aliases.get(type.name());
+        if (alias == null) return type;
+        if (!alias.genericParameters().isEmpty() || !type.arguments().isEmpty()) return type;
+        if (!resolving.add(alias.name())) throw new IllegalArgumentException("GPU type alias cycle involving " + alias.name());
+        Ast.TypeRef resolved = resolveAlias(alias.target(), resolving);
+        resolving.remove(alias.name());
+        return resolved;
     }
 
     private void scanStatements(String module, List<Ast.Stmt> statements) {
@@ -268,6 +287,9 @@ public final class GpuSafetyChecker {
                 throw new IllegalArgumentException("GPU lambda parameter '" + param.name()
                         + "' must have an explicit GPU-transferable type");
             }
+            if (param.type().isTupleType()) {
+                throw new IllegalArgumentException("GPU lambda parameter '" + param.name() + "' cannot use a tuple device ABI");
+            }
             requireGpuType(param.type(), false, new HashSet<>(), "GPU lambda parameter " + param.name());
             scope.define(param.name());
         }
@@ -280,9 +302,8 @@ public final class GpuSafetyChecker {
             if (stmt instanceof Ast.BindingStmt binding) {
                 validateGpuExpressionTree(module, block, binding.initializer());
                 block.define(binding.name());
-            } else if (stmt instanceof Ast.DestructureStmt destructure) {
-                validateGpuExpressionTree(module, block, destructure.initializer());
-                for (Ast.DestructureBinding binding : destructure.bindings()) if (!binding.isDiscard()) block.define(binding.name());
+            } else if (stmt instanceof Ast.DestructureStmt) {
+                throw new IllegalArgumentException("destructuring is not supported inside GPU code until tuple/register lowering is implemented");
             } else if (stmt instanceof Ast.ReturnStmt returned) {
                 if (returned.value() != null) validateGpuExpressionTree(module, block, returned.value());
             } else if (stmt instanceof Ast.ExprStmt expression) {
@@ -297,11 +318,8 @@ public final class GpuSafetyChecker {
                     validateGpuStatements(module, block, branch.body(), lambda);
                 }
                 validateGpuStatements(module, block, conditional.elseBody(), lambda);
-            } else if (stmt instanceof Ast.ForOfStmt loop) {
-                validateGpuExpressionTree(module, block, loop.iterable());
-                Scope loopScope = new Scope(block);
-                loopScope.define(loop.bindingName());
-                validateGpuStatements(module, loopScope, loop.body(), lambda);
+            } else if (stmt instanceof Ast.ForOfStmt) {
+                throw new IllegalArgumentException("for-of is not supported inside GPU code; use an index-based for loop with an explicit bound");
             } else if (stmt instanceof Ast.ForStmt loop) {
                 Scope loopScope = new Scope(block);
                 if (loop.initializer() != null) validateGpuStatements(module, loopScope, List.of(loop.initializer()), lambda);
@@ -360,13 +378,11 @@ public final class GpuSafetyChecker {
             validateGpuExpressionTree(module, scope, indexed.index());
             return;
         }
-        if (expr instanceof Ast.ListExpr list) {
-            for (Ast.Expr item : list.elements()) validateGpuExpressionTree(module, scope, item);
-            return;
+        if (expr instanceof Ast.ListExpr) {
+            throw new IllegalArgumentException("GPU code cannot allocate list/array literals; pass preallocated buffers as Array<T>/List<T> parameters");
         }
-        if (expr instanceof Ast.TupleExpr tuple) {
-            for (Ast.Expr item : tuple.elements()) validateGpuExpressionTree(module, scope, item);
-            return;
+        if (expr instanceof Ast.TupleExpr) {
+            throw new IllegalArgumentException("GPU tuple values are rejected until tuple/register lowering is implemented");
         }
         if (expr instanceof Ast.GpuExpr) {
             throw new IllegalArgumentException("nested gpu placement inside an already-GPU callable is redundant and rejected");
