@@ -137,6 +137,7 @@ public final class OresEvalRootNode extends RootNode {
             else if (failure == null) failure = deferFailure;
 
             if (failure != null) {
+                if (failure instanceof java.util.concurrent.CancellationException) throw failure;
                 RecoveryResult recovered = recoverFailure(frame, failure);
                 if (recovered.recovered()) return recovered.value();
                 throw recovered.failure();
@@ -236,6 +237,7 @@ public final class OresEvalRootNode extends RootNode {
                 try { executeBlock(tried.body(), env, frame); }
                 catch (ReturnSignal signal) { throw signal; }
                 catch (BreakSignal | ContinueSignal signal) { throw signal; }
+                catch (java.util.concurrent.CancellationException cancellation) { throw cancellation; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failureValue(failure), Ast.BindingKind.VAL);
