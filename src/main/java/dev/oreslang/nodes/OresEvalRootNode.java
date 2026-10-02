@@ -681,7 +681,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) return stage.toCompletableFuture().join();
+                if (value instanceof CompletionStage<?> stage) {
+                    Object frozen = stage.toCompletableFuture().join();
+                    return ActorRuntime.materializeOwned(frozen);
+                }
                 return value;
             }
             if (expr instanceof Ast.ListExpr list) {
