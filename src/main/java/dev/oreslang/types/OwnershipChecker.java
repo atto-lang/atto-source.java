@@ -815,7 +815,7 @@ public final class OwnershipChecker {
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+            if (!method.isStatic() && method.matchesArity(name, arity)) {
                 seen.remove(klass);
                 return method;
             }
