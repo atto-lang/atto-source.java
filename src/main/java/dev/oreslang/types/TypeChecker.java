@@ -189,19 +189,14 @@ public final class TypeChecker {
         }
 
         for (Ast.InterfaceMember member : iface.members()) {
-            if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                String key = methodKey(fn.name(), fn.parameters().size());
-                if (!memberKeys.add(key)) throw new IllegalArgumentException("duplicate interface method '" + iface.name() + "." + fn.name() + "' with arity " + fn.parameters().size());
-                Set<String> all = new HashSet<>(generics);
-                for (String generic : fn.genericParameters()) {
-                    if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
-                }
-                functionType(fn.parameters(), fn.returnType(), all, null);
-            } else {
-                Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
-                if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
-                resolve(field.type(), generics, null);
+            Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) member;
+            String key = methodKey(fn.name(), fn.parameters().size());
+            if (!memberKeys.add(key)) throw new IllegalArgumentException("duplicate interface method '" + iface.name() + "." + fn.name() + "' with arity " + fn.parameters().size());
+            Set<String> all = new HashSet<>(generics);
+            for (String generic : fn.genericParameters()) {
+                if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
             }
+            functionType(fn.parameters(), fn.returnType(), all, null);
         }
     }
 
