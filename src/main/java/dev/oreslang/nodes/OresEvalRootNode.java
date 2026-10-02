@@ -68,6 +68,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ClassDecl, String> localClassOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
         private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new ConcurrentHashMap<>();
         private final Map<String, Env> actorModuleStates = new HashMap<>();
@@ -219,11 +220,14 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+
+            Ast.ModuleDecl owner = ownerModule(fn);
+            predeclareLocalTypes(fn.body(), env, owner == null ? null : owner.name());
             try {
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) {
-                return signal.value;
+                return coerceDeclaredAggregate(fn.returnType(), signal.value, env);
             }
         }
 
@@ -348,6 +352,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Ast.ModuleDecl ownerModule(Ast.ClassDecl klass) {
             String owner = classOwners.get(klass);
+            if (owner == null) owner = localClassOwners.get(klass);
             return owner == null ? null : modules.get(owner);
         }
 
@@ -369,6 +374,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             Env env = new Env(parent);
+            predeclareLocalTypes(statements, env, null);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
@@ -378,12 +384,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
+            if (stmt instanceof Ast.TypeDeclStmt) return;
             if (stmt instanceof Ast.BindingStmt binding) {
+                Object value = coerceDeclaredAggregate(binding.declaredType(), eval(binding.initializer(), env), env);
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
-                    env.initialize(binding.name(), eval(binding.initializer(), env));
+                    env.initialize(binding.name(), value);
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(binding.name(), value, binding.kind());
                 }
                 return;
             }
@@ -466,7 +474,8 @@ public final class OresEvalRootNode extends RootNode {
                             : null;
                     return new ModuleFacade(module, localState);
                 }
-                Ast.ClassDecl klass = findClass(name.name());
+                Ast.ClassDecl klass = env.lookupType(name.name());
+                if (klass == null) klass = findClass(name.name());
                 if (klass != null) {
                     Ast.ModuleDecl owner = ownerModule(klass);
                     if (owner != null && owner.singleton()
@@ -575,8 +584,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
-                Ast.ClassDecl klass = findClass(created.type().name());
+                Ast.ClassDecl klass = runtimeClass(created.type(), env);
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                if (klass.isStruct()) throw new IllegalArgumentException("struct " + klass.name() + " is a value type; use " + klass.name() + " { ... }");
                 Ast.ModuleDecl owner = ownerModule(klass);
                 if (owner != null && owner.singleton()
                         && (env.singletonState == null
@@ -598,6 +608,43 @@ public final class OresEvalRootNode extends RootNode {
                     fields.put(field.name(), value);
                 }
                 return new OresObject(klass, fields);
+            }
+            if (expr instanceof Ast.StructInitExpr created) {
+                if (created.anonymous()) {
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Ast.ObjectField field : created.fields()) {
+                        if (fields.putIfAbsent(field.name(), eval(field.value(), env)) != null) {
+                            throw new IllegalArgumentException("duplicate anonymous struct field " + field.name());
+                        }
+                    }
+                    return Map.copyOf(fields);
+                }
+
+                Ast.ClassDecl struct = runtimeClass(created.type(), env);
+                if (struct == null || !struct.isStruct()) {
+                    throw new IllegalArgumentException(created.type().name() + " is not a struct type");
+                }
+
+                LinkedHashMap<String, Ast.Expr> supplied = new LinkedHashMap<>();
+                Set<String> declaredNames = new LinkedHashSet<>();
+                for (Ast.FieldDecl field : struct.fields()) declaredNames.add(field.name());
+                for (Ast.ObjectField field : created.fields()) {
+                    if (!declaredNames.contains(field.name())) {
+                        throw new IllegalArgumentException("unknown struct field " + struct.name() + "." + field.name());
+                    }
+                    if (supplied.putIfAbsent(field.name(), field.value()) != null) {
+                        throw new IllegalArgumentException("duplicate struct field " + struct.name() + "." + field.name());
+                    }
+                }
+
+                LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                for (Ast.FieldDecl field : struct.fields()) {
+                    Ast.Expr value = supplied.get(field.name());
+                    if (value != null) fields.put(field.name(), eval(value, env));
+                    else if (field.initializer() != null) fields.put(field.name(), eval(field.initializer(), env));
+                    else throw new IllegalArgumentException("missing struct field " + struct.name() + "." + field.name());
+                }
+                return new OresObject(struct, fields);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -632,6 +679,36 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
+        }
+
+        private void predeclareLocalTypes(List<Ast.Stmt> statements, Env env, String moduleName) {
+            for (Ast.Stmt stmt : statements) {
+                if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
+                if (local.declaration() instanceof Ast.ClassDecl struct) {
+                    env.defineType(struct.name(), struct);
+                    if (moduleName != null) localClassOwners.putIfAbsent(struct, moduleName);
+                }
+            }
+        }
+
+        private Ast.ClassDecl runtimeClass(Ast.TypeRef type, Env env) {
+            if (type == null) return null;
+            Ast.ClassDecl local = env.lookupType(type.name());
+            return local != null ? local : findClass(type.name());
+        }
+
+        private Object coerceDeclaredAggregate(Ast.TypeRef declaredType, Object value, Env env) {
+            if (declaredType == null || !(value instanceof Map<?, ?> map)) return value;
+            Ast.ClassDecl struct = runtimeClass(declaredType, env);
+            if (struct == null || !struct.isStruct()) return value;
+
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : struct.fields()) {
+                if (!map.containsKey(field.name())) return value;
+                fields.put(field.name(), map.get(field.name()));
+            }
+            if (map.size() != fields.size()) return value;
+            return new OresObject(struct, fields);
         }
 
         private Object member(Object receiver, String name, SingletonState singletonState) {
@@ -991,6 +1068,7 @@ public final class OresEvalRootNode extends RootNode {
         private final SingletonState singletonState;
         private final boolean singletonStorage;
         private final Map<String, Slot> slots = new HashMap<>();
+        private final Map<String, Ast.ClassDecl> localTypes = new HashMap<>();
 
         private Env(Env parent) {
             this(parent, parent == null ? null : parent.singletonState, false);
@@ -1020,6 +1098,14 @@ public final class OresEvalRootNode extends RootNode {
             slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private void defineType(String name, Ast.ClassDecl type) {
+            Ast.ClassDecl previous = localTypes.putIfAbsent(name, type);
+            if (previous != null && previous != type) throw new IllegalArgumentException("duplicate local type " + name);
+        }
+        private Ast.ClassDecl lookupType(String name) {
+            Ast.ClassDecl type = localTypes.get(name);
+            return type != null ? type : parent == null ? null : parent.lookupType(name);
+        }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
@@ -1050,6 +1136,7 @@ public final class OresEvalRootNode extends RootNode {
         private Env snapshot() {
             Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState, singletonStorage);
             cp.slots.putAll(slots);
+            cp.localTypes.putAll(localTypes);
             return cp;
         }
     }
@@ -1068,6 +1155,14 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresObject {
         private final Ast.ClassDecl klass; private final Map<String,Object> fields;
         private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){this.klass=klass;this.fields=fields;}
+        @Override public boolean equals(Object other) {
+            if (this == other) return true;
+            if (!klass.isStruct() || !(other instanceof OresObject value) || !value.klass.isStruct()) return false;
+            return klass == value.klass && fields.equals(value.fields);
+        }
+        @Override public int hashCode() {
+            return klass.isStruct() ? 31 * System.identityHashCode(klass) + fields.hashCode() : System.identityHashCode(this);
+        }
         @Override public String toString(){return klass.name()+fields;}
     }
 
