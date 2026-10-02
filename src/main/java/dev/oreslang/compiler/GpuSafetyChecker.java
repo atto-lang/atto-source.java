@@ -322,7 +322,15 @@ public final class GpuSafetyChecker {
                 throw new IllegalArgumentException("for-of is not supported inside GPU code; use an index-based for loop with an explicit bound");
             } else if (stmt instanceof Ast.ForStmt loop) {
                 Scope loopScope = new Scope(block);
-                if (loop.initializer() != null) validateGpuStatements(module, loopScope, List.of(loop.initializer()), lambda);
+                if (loop.initializer() instanceof Ast.BindingStmt binding) {
+                    validateGpuExpressionTree(module, loopScope, binding.initializer());
+                    loopScope.define(binding.name());
+                } else if (loop.initializer() instanceof Ast.ExprStmt expression) {
+                    validateGpuExpressionTree(module, loopScope, expression.expression());
+                } else if (loop.initializer() != null) {
+                    throw new IllegalArgumentException(
+                            "GPU for-loop initializer must be a scalar binding or expression");
+                }
                 if (loop.condition() != null) validateGpuExpressionTree(module, loopScope, loop.condition());
                 if (loop.update() != null) validateGpuExpressionTree(module, loopScope, loop.update());
                 validateGpuStatements(module, loopScope, loop.body(), lambda);
