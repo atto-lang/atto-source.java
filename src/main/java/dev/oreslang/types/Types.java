@@ -44,7 +44,7 @@ public final class Types {
     /** Explicit source-level `any`: an intentional dynamic escape hatch. */
     public enum Any implements Type { INSTANCE }
 
-    /** Explicit source-level `unknown`: dynamic data that should be narrowed by callers. */
+    /** Explicit source-level `unknown`; narrowing semantics are enforced separately from origin tracking. */
     public enum Unknown implements Type { INSTANCE }
 
     /** Compiler-created `any`; rejected when noImplicitAny is enabled. */
