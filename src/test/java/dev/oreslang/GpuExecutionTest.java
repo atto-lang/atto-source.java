@@ -369,6 +369,15 @@ final class GpuExecutionTest {
                 """).gpuProgram();
         assertTrue(doubles.requiredExtensions().contains("cl_khr_fp64"));
         assertTrue(doubles.source().contains("#pragma OPENCL EXTENSION cl_khr_fp64 : enable"));
+
+
+        var identifierOnly = OresCompiler.compile("""
+                gpu fnc add(i32 double_counter, i32 x) => i32 {
+                  return double_counter + x;
+                }
+                """).gpuProgram();
+        assertFalse(identifierOnly.requiredExtensions().contains("cl_khr_fp64"));
+        assertFalse(identifierOnly.source().contains("#pragma OPENCL EXTENSION cl_khr_fp64 : enable"));
     }
 
     @Test
