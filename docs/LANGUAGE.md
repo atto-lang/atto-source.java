@@ -347,6 +347,39 @@ let Fnc<int, int> fact = |int n| -> {
 };
 ```
 
+## Actor callables: `actor` and `isoactor`
+
+`actor` and `isoactor` are reserved callable modifiers for top-level or module `fnc` and `routine` declarations:
+
+```ores
+pub actor fnc add_one(int value) => int {
+  return value + 1;
+}
+
+pub actor routine shared_worker() => void {
+  // This invocation runs as a fresh shared-heap actor.
+  return;
+}
+
+pub isoactor routine isolated_worker() => void {
+  // This invocation runs as a fresh private-arena actor.
+  return;
+}
+```
+
+Calling a decorated callable is the actor creation boundary. Every call creates a fresh one-shot actor, copies/freezes the arguments across the actor transport boundary, runs the callable body on that actor, freezes the return value back to the caller, and terminates the actor. Exceptions propagate to the caller rather than disappearing into the actor scheduler. The callable keeps its declared source-level type, so `actor fnc f() => int` is still called as a function returning `int`.
+
+The two modifiers select different runtime execution domains:
+
+- `actor` lowers to `ActorRuntime.MemoryPolicy.sharedHeap()`. Its serial actor turn runs on the dedicated shared-actor pool.
+- `isoactor` lowers to `ActorRuntime.MemoryPolicy.privateArena(...)`. It owns one stable virtual-Thread identity plus a confined, growable private arena. The initial arena is 1 MiB and growth remains bounded by the actor/isolate policy ceiling.
+
+`actor` and `isoactor` are mutually exclusive and cannot be repeated. They are not valid on classes, class methods, interfaces, type aliases, or bindings. Because both words are reserved, declarations such as `val int actor = 1` and `val int isoactor = 1` are invalid.
+
+The one-shot call boundary is synchronous in the current source semantics so the declared return type remains unchanged. An `async actor fnc` surface can later make that boundary explicitly nonblocking without changing what `actor` or `isoactor` mean.
+
+For `isoactor`, the private arena is the allocation domain exposed to arena-aware Oreslang value lowering. As with the underlying private-actor runtime, the current Java reference interpreter still keeps runtime control metadata and some interpreter representation objects on the managed JVM heap; source-level mutable state may not be shared across the actor boundary merely because those host objects exist.
+
 ## Semicolons
 
 Semicolons are strongly recommended. They remain the canonical formatter output.
