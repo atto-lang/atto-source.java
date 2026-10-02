@@ -476,9 +476,12 @@ public final class OresEvalRootNode extends RootNode {
                     pending = fatal;
                 }
 
-                if (pending instanceof ExecutionTerminated || pending instanceof VirtualMachineError) {
+                if (pending instanceof ExecutionTerminated || pending instanceof Error) {
                     try {
                         executeBlock(tried.finallyBody(), env);
+                    } catch (VirtualMachineError fatalCleanupFailure) {
+                        fatalCleanupFailure.addSuppressed(pending);
+                        throw fatalCleanupFailure;
                     } catch (Throwable cleanupFailure) {
                         pending.addSuppressed(cleanupFailure);
                     }
