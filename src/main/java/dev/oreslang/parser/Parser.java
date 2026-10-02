@@ -795,7 +795,9 @@ public final class Parser {
             consume(LPAREN, "expected '(' after new type");
             List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
             consume(RPAREN, "expected ')' after constructor arguments");
-            return new Ast.NewExpr(type, args);
+            if (!check(LBRACE)) return new Ast.NewExpr(type, args);
+            AnonymousNewBody body = parseAnonymousNewBody();
+            return new Ast.NewExpr(type, args, body.entries(), body.methods());
         }
         if (match(OBJ)) return parseObjectLiteral();
         if (match(ARR)) {
@@ -824,6 +826,38 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    private record AnonymousNewBody(List<Ast.ObjectField> entries, List<Ast.MethodDecl> methods) { }
+
+    private AnonymousNewBody parseAnonymousNewBody() {
+        consume(LBRACE, "expected '{' to open anonymous constructor body");
+        List<Ast.ObjectField> entries = new ArrayList<>();
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+
+        while (!check(RBRACE) && !check(EOF)) {
+            if ((check(IDENT) || check(STRING)) && checkNext(COLON)) {
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after initializer key");
+                entries.add(new Ast.ObjectField(name, parseExpression()));
+                if (match(COMMA, SEMICOLON)) continue;
+                if (!check(RBRACE)) {
+                    throw error(peek(), "map/object initializer entries must be separated by ',' or ';'");
+                }
+                continue;
+            }
+
+            List<Ast.Annotation> annotations = parseAnnotations();
+            Modifiers mods = parseModifiers();
+            if (mods.isStatic) throw error(peek(), "anonymous instance implementations cannot declare static functions");
+            if (mods.isAbstract) throw error(peek(), "anonymous instance implementations must provide concrete methods");
+            Ast.MethodDecl method = parseMethod(annotations, mods);
+            methods.add(method);
+            match(COMMA);
+        }
+
+        consume(RBRACE, "expected '}' to close anonymous constructor body");
+        return new AnonymousNewBody(List.copyOf(entries), List.copyOf(methods));
     }
 
     private Ast.ObjectExpr parseObjectLiteral() {
