@@ -907,13 +907,6 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof SyncCell<?>) return;
-        if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            requireOwnedActorRefs(sharedMutex.transportValue(), visiting, depth + 1);
-            return;
-        }
-        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
-            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
-        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
@@ -956,6 +949,13 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof SyncCell<?>) return;
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            requireOwnedActorRefs(sharedMutex.transportValue(), visiting, depth + 1);
+            return;
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
+        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
@@ -1172,12 +1172,6 @@ public final class ActorRuntime implements AutoCloseable {
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
-        }
-        if (value instanceof OresMutex.Shared<?>) {
-            throw new IllegalArgumentException("private actors cannot receive SharedMutex<T>");
-        }
-        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
-            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
         if (value instanceof OresMutex.Shared<?>) {
             throw new IllegalArgumentException("private actors cannot receive SharedMutex<T>");
