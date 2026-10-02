@@ -138,48 +138,7 @@ public final class Lexer {
                 continue;
             }
             if (c == '`') return;
-            if (c == '
-    private void number() {
-        while (isDigit(peek()) || peek() == '_') advance();
-        boolean floating = false;
-        if (peek() == '.' && isDigit(peekNext())) {
-            floating = true; advance();
-            while (isDigit(peek()) || peek() == '_') advance();
-        }
-        if (peek() == 'e' || peek() == 'E') {
-            floating = true; advance();
-            if (peek() == '+' || peek() == '-') advance();
-            if (!isDigit(peek())) throw error("malformed exponent");
-            while (isDigit(peek()) || peek() == '_') advance();
-        }
-        if (peek() == 'i') { advance(); add(IMAG); }
-        else add(floating ? FLOAT : INT);
-    }
-
-    private void identifier() {
-        while (isIdentPart(peek())) advance();
-        String text = source.substring(start, current);
-        add(KEYWORDS.getOrDefault(text, IDENT));
-    }
-
-    private boolean isAtEnd() { return current >= source.length(); }
-    private char advance() { char c = source.charAt(current++); column++; return c; }
-    private boolean match(char expected) {
-        if (isAtEnd() || source.charAt(current) != expected) return false;
-        current++; column++; return true;
-    }
-    private char peek() { return isAtEnd() ? '\0' : source.charAt(current); }
-    private char peekNext() { return current + 1 >= source.length() ? '\0' : source.charAt(current + 1); }
-    private void newline() { line++; column = 1; }
-    private void add(Token.Type type) { tokens.add(new Token(type, source.substring(start, current), line, startColumn)); }
-    private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
-    private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
-    private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
-    private IllegalArgumentException error(String message) {
-        return new IllegalArgumentException("Oreslang lexer error at " + line + ":" + startColumn + ": " + message);
-    }
-}
- && peek() == '{') {
+            if (c == '$' && peek() == '{') {
                 advance();
                 scanTemplateInterpolation();
             }
