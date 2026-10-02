@@ -93,6 +93,17 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void explicitlyTypedLambdasCanRecurse() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  let Fnc<int, int> fact = (int n) -> n == 0 ? 1 : n * fact(n - 1);
+                  stdio.stdout.write(fact(5))
+                }
+                """);
+        assertEquals("120", output);
+    }
+
+    @Test
     void ternaryWorksWithOption() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc find(bool found) => Option<int> {
