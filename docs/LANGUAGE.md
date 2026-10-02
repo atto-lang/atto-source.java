@@ -270,7 +270,9 @@ fnc use(Box<int> box) => int {
 }
 ```
 
-Known classes, interfaces, aliases, and built-ins enforce generic arity. Generic parameters are opaque types, not an implicit `any`: a concrete value is not assignable to an unconstrained `T` unless call-site inference has bound that `T`. Generic function and method calls infer type arguments from value arguments. Nested generic closers such as `Option<Array<int>>` remain valid.
+Known classes, interfaces, aliases, and built-ins enforce generic arity. Generic parameters are opaque types, not an implicit `any`: a concrete value is not assignable to an unconstrained `T` unless call-site inference has bound that `T`. Generic function and method calls infer type arguments from value arguments. Calls may also state type arguments explicitly with `identity<int>(42)`; `identity<>(42)` explicitly requests inference. The `<` opening a call-site generic list must be adjacent to the callable name/member, which keeps ordinary spaced comparisons such as `a < b` unambiguous. Nested generic closers such as `Option<Array<int>>` remain valid.
+
+Generic bindings are substituted through inherited class fields/methods, constructors, inherited interfaces, and structural-typing views, so `Child<U> extends Parent<U>` preserves the concrete `U` all the way through member access.
 
 `Type<>` is reserved for inferred type arguments in type contexts that explicitly support inference; it is **not** an expression operator. Oreslang uses `^^` for logical XOR and `^` for bitwise XOR.
 
