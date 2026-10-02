@@ -4,6 +4,8 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
+import dev.oreslang.types.Types.GpuArrayType;
+import dev.oreslang.types.Types.GpuStreamType;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
@@ -27,6 +29,9 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    private static final Set<String> CORE_GPU_NAMES = Set.of("GpuArray", "GpuStream");
+
+    private int gpuCallableDepth;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -61,11 +66,13 @@ public final class TypeChecker {
             if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
             if (imported.wildcard()) {
                 if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
+                rejectCoreGpuName(imported.namespace(), "import namespace");
                 if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
                 importedValues.add(imported.namespace());
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
+                    rejectCoreGpuName(name, "import");
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                     if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
                 }
@@ -75,8 +82,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            rejectCoreGpuName(module.name(), "module");
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                rejectCoreGpuDeclName(decl);
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
@@ -177,16 +186,22 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
-        Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
-        Env env = new Env(null);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        Type returns = resolve(fn.returnType(), generics, null);
-        checkBlock(fn.body(), env, generics, returns, null);
-        if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
-            throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
-        }
-        if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
-            throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+        boolean gpu = Ast.hasGpuPlacement(fn.annotations());
+        if (gpu) gpuCallableDepth++;
+        try {
+            Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+            Env env = new Env(null);
+            for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            Type returns = resolve(fn.returnType(), generics, null);
+            checkBlock(fn.body(), env, generics, returns, null);
+            if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
+                throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
+            }
+            if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
+                throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+            }
+        } finally {
+            if (gpu) gpuCallableDepth--;
         }
     }
 
@@ -242,7 +257,13 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
-            checkBlock(method.body(), env, generics, returns, callableSelf);
+            boolean gpuMethod = Ast.hasGpuPlacement(method.annotations());
+            if (gpuMethod) gpuCallableDepth++;
+            try {
+                checkBlock(method.body(), env, generics, returns, callableSelf);
+            } finally {
+                if (gpuMethod) gpuCallableDepth--;
+            }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
@@ -402,6 +423,7 @@ public final class TypeChecker {
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
+            if (CORE_GPU_NAMES.contains(name.name())) return new ClassNamespace(name.name());
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleShape(moduleNamespace);
             Ast.ClassDecl classNamespace = findClass(name.name());
@@ -428,8 +450,13 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                else if (receiver instanceof GpuArrayType array) {
+                    if (!inGpuCallable()) throw new IllegalArgumentException("GpuArray indexing/mutation is GPU-only; use copy_to_cpu() for host access");
+                    targetType = array.element();
+                } else if (receiver instanceof GpuStreamType) {
+                    throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
+                } else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                else throw new IllegalArgumentException("indexed assignment requires an array/list, GpuArray, or tuple");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -498,6 +525,8 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 if (receiver instanceof ClassNamespace classNamespace) {
+                    Type gpuCoreCall = gpuStaticCallType(classNamespace.className(), member.member(), call.arguments(), env, generics, self);
+                    if (gpuCoreCall != null) return gpuCoreCall;
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
@@ -511,6 +540,8 @@ public final class TypeChecker {
                     }
                     return resolve(fn.returnType(), fnGenerics, null);
                 }
+                Type gpuInstanceCall = gpuInstanceCallType(receiver, member.member(), call.arguments());
+                if (gpuInstanceCall != null) return gpuInstanceCall;
                 if (receiver instanceof Named named) {
                     if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
                             && named.arguments().size() == 1
@@ -563,6 +594,12 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (receiver instanceof ClassNamespace classNamespace) {
+                Type gpuCoreMember = gpuBuiltinMemberType(classNamespace.className(), member.member());
+                if (gpuCoreMember != null) return gpuCoreMember;
+            }
+            Type gpuResourceMember = gpuBuiltinMemberType(deref(receiver), member.member());
+            if (gpuResourceMember != null) return gpuResourceMember;
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
             receiver = unwrapMutexGuard(receiver);
@@ -609,10 +646,18 @@ public final class TypeChecker {
             Type index = typeOf(indexed.index(), env, generics, self);
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
+            if (receiver instanceof GpuArrayType array) {
+                if (!inGpuCallable()) throw new IllegalArgumentException("GpuArray indexing is GPU-only; use copy_to_cpu() for host access");
+                return array.element();
+            }
+            if (receiver instanceof GpuStreamType) throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
             if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-            throw new IllegalArgumentException("indexing requires an array/list or tuple");
+            throw new IllegalArgumentException("indexing requires an array/list, GpuArray, or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (CORE_GPU_NAMES.contains(created.type().name())) {
+                throw new IllegalArgumentException(created.type().name() + " is a core GPU resource type and cannot be constructed with new");
+            }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
@@ -655,20 +700,25 @@ public final class TypeChecker {
             return new Record(members);
         }
         if (expr instanceof Ast.GpuExpr gpu) {
-            if (gpu.mode() == Ast.GpuMode.SINGLE) {
-                if (!(gpu.expression() instanceof Ast.LambdaExpr lambda)) {
-                    throw new IllegalArgumentException("'gpu' expression placement requires a direct lambda; use 'gpu fnc' for named functions");
+            gpuCallableDepth++;
+            try {
+                if (gpu.mode() == Ast.GpuMode.SINGLE) {
+                    if (!(gpu.expression() instanceof Ast.LambdaExpr lambda)) {
+                        throw new IllegalArgumentException("'gpu' expression placement requires a direct lambda; use 'gpu fnc' for named functions");
+                    }
+                    return typeOf(lambda, env, generics, self);
                 }
-                return typeOf(lambda, env, generics, self);
-            }
-            List<Ast.Expr> elements = gpuParallelElements(gpu.expression());
-            if (elements.isEmpty()) throw new IllegalArgumentException("'gpu parallel' requires at least one direct lambda");
-            for (Ast.Expr element : elements) {
-                if (!(element instanceof Ast.LambdaExpr)) {
-                    throw new IllegalArgumentException("'gpu parallel' collections must contain only direct lambda literals");
+                List<Ast.Expr> elements = gpuParallelElements(gpu.expression());
+                if (elements.isEmpty()) throw new IllegalArgumentException("'gpu parallel' requires at least one direct lambda");
+                for (Ast.Expr element : elements) {
+                    if (!(element instanceof Ast.LambdaExpr)) {
+                        throw new IllegalArgumentException("'gpu parallel' collections must contain only direct lambda literals");
+                    }
                 }
+                return typeOf(new Ast.ListExpr(elements), env, generics, self);
+            } finally {
+                gpuCallableDepth--;
             }
-            return typeOf(new Ast.ListExpr(elements), env, generics, self);
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
             Env lambdaEnv = new Env(env);
@@ -692,6 +742,136 @@ public final class TypeChecker {
             return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
         }
         return typeOf(expr, env, generics, self);
+    }
+
+    private boolean inGpuCallable() {
+        return gpuCallableDepth > 0;
+    }
+
+    private Type gpuStaticCallType(
+            String namespace,
+            String member,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (!CORE_GPU_NAMES.contains(namespace)) return null;
+
+        if (namespace.equals("GpuArray")) {
+            if (!member.equals("from_cpu")) {
+                throw new IllegalArgumentException("unknown GpuArray core function '" + member + "'");
+            }
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuArray.from_cpu() is a host-to-GPU transfer and cannot run inside a gpu callable");
+            }
+            if (arguments.size() != 1) throw new IllegalArgumentException("GpuArray.from_cpu() expects exactly one Array/List argument");
+            Type source = deref(typeOf(arguments.getFirst(), env, generics, self));
+            if (!(source instanceof ListType list)) {
+                throw new IllegalArgumentException("GpuArray.from_cpu() requires Array<T> or List<T>, got " + source);
+            }
+            requireGpuResidentElementType(list.element(), "GpuArray.from_cpu() element");
+            return new GpuArrayType(list.element());
+        }
+
+        if (!member.equals("from_array")) {
+            throw new IllegalArgumentException("unknown GpuStream core function '" + member + "'");
+        }
+        if (inGpuCallable()) {
+            throw new IllegalArgumentException("GpuStream.from_array() is host orchestration and cannot run inside a gpu callable");
+        }
+        if (arguments.size() != 1) throw new IllegalArgumentException("GpuStream.from_array() expects exactly one GpuArray<T>");
+        Type source = deref(typeOf(arguments.getFirst(), env, generics, self));
+        if (!(source instanceof GpuArrayType array)) {
+            throw new IllegalArgumentException("GpuStream.from_array() requires GpuArray<T>, got " + source);
+        }
+        return new GpuStreamType(array.element());
+    }
+
+    private Type gpuInstanceCallType(Type receiver, String member, List<Ast.Expr> arguments) {
+        receiver = deref(receiver);
+        if (receiver instanceof GpuArrayType array) {
+            if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuArray." + member + "() takes no arguments");
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuArray." + member + "() is host orchestration; gpu callables consume GpuArray directly");
+            }
+            return switch (member) {
+                case "stream" -> new GpuStreamType(array.element());
+                case "copy_to_cpu" -> new ListType(array.element());
+                case "length" -> Primitive.INT;
+                default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
+            };
+        }
+        if (receiver instanceof GpuStreamType stream) {
+            if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuStream." + member + "() takes no arguments");
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuStream." + member + "() is host orchestration; gpu callables consume GpuStream directly");
+            }
+            return switch (member) {
+                case "collect" -> new GpuArrayType(stream.element());
+                case "copy_to_cpu" -> new ListType(stream.element());
+                default -> throw new IllegalArgumentException("unknown GpuStream member '" + member + "'");
+            };
+        }
+        return null;
+    }
+
+    private Type gpuBuiltinMemberType(String namespace, String member) {
+        if (!CORE_GPU_NAMES.contains(namespace)) return null;
+        if (inGpuCallable()) {
+            throw new IllegalArgumentException(namespace + "." + member + " is host orchestration and cannot be extracted inside a gpu callable");
+        }
+        if (namespace.equals("GpuArray") && member.equals("from_cpu")) {
+            return new Function(List.of(new ListType(Unknown.INSTANCE)), new GpuArrayType(Unknown.INSTANCE));
+        }
+        if (namespace.equals("GpuStream") && member.equals("from_array")) {
+            return new Function(List.of(new GpuArrayType(Unknown.INSTANCE)), new GpuStreamType(Unknown.INSTANCE));
+        }
+        throw new IllegalArgumentException("unknown " + namespace + " core function '" + member + "'");
+    }
+
+    private Type gpuBuiltinMemberType(Type receiver, String member) {
+        if (receiver instanceof GpuArrayType array) {
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException(member + " is a host orchestration member and cannot be extracted inside a gpu callable");
+            }
+            return switch (member) {
+                case "stream" -> new Function(List.of(), new GpuStreamType(array.element()));
+                case "copy_to_cpu" -> new Function(List.of(), new ListType(array.element()));
+                case "length" -> new Function(List.of(), Primitive.INT);
+                default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
+            };
+        }
+        if (receiver instanceof GpuStreamType stream) {
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException(member + " is a host orchestration member and cannot be extracted inside a gpu callable");
+            }
+            return switch (member) {
+                case "collect" -> new Function(List.of(), new GpuArrayType(stream.element()));
+                case "copy_to_cpu" -> new Function(List.of(), new ListType(stream.element()));
+                default -> throw new IllegalArgumentException("unknown GpuStream member '" + member + "'");
+            };
+        }
+        return null;
+    }
+
+    private void requireGpuResidentElementType(Type type, String where) {
+        if (type == Primitive.INT || type == Primitive.FLOAT || type == Primitive.BOOL) return;
+        throw new IllegalArgumentException(
+                where + " must be a concrete GPU scalar supported by the current device ABI (integer, float, or bool), got " + type);
+    }
+
+    private void rejectCoreGpuName(String name, String kind) {
+        if (CORE_GPU_NAMES.contains(name)) {
+            throw new IllegalArgumentException(kind + " name '" + name + "' is reserved by the Oreslang GPU core prelude");
+        }
+    }
+
+    private void rejectCoreGpuDeclName(Ast.Decl decl) {
+        if (decl instanceof Ast.FunctionDecl fn) rejectCoreGpuName(fn.name(), "callable");
+        else if (decl instanceof Ast.ClassDecl klass) rejectCoreGpuName(klass.name(), "class");
+        else if (decl instanceof Ast.InterfaceDecl iface) rejectCoreGpuName(iface.name(), "interface");
+        else if (decl instanceof Ast.TypeAliasDecl alias) rejectCoreGpuName(alias.name(), "type alias");
+        else if (decl instanceof Ast.FieldDecl field) rejectCoreGpuName(field.name(), "module binding");
     }
 
     private List<Ast.Expr> gpuParallelElements(Ast.Expr expression) {
@@ -791,6 +971,7 @@ public final class TypeChecker {
             return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
         }
         if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof GpuArrayType || type instanceof GpuStreamType) return false;
         if (type instanceof Union union) {
             for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
             return true;
@@ -921,6 +1102,14 @@ public final class TypeChecker {
 
     private Type iterableElementType(Type iterable) {
         if (iterable instanceof ListType list) return list.element();
+        if (iterable instanceof GpuArrayType array) {
+            if (!inGpuCallable()) throw new IllegalArgumentException("GpuArray iteration is GPU-only; use copy_to_cpu() for host iteration");
+            return array.element();
+        }
+        if (iterable instanceof GpuStreamType stream) {
+            if (!inGpuCallable()) throw new IllegalArgumentException("GpuStream consumption is GPU-only; consume it inside a gpu callable or copy_to_cpu()");
+            return stream.element();
+        }
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
             for (Type element : tuple.elements()) result = result == Unknown.INSTANCE ? element : commonType(result, element);
@@ -1236,6 +1425,18 @@ public final class TypeChecker {
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
+            }
+            case "GpuArray" -> {
+                if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException("GpuArray requires exactly one type argument");
+                Type element = ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self);
+                requireGpuResidentElementType(element, "GpuArray element");
+                yield new GpuArrayType(element);
+            }
+            case "GpuStream" -> {
+                if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException("GpuStream requires exactly one type argument");
+                Type element = ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self);
+                requireGpuResidentElementType(element, "GpuStream element");
+                yield new GpuStreamType(element);
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
