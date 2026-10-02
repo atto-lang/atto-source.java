@@ -11,7 +11,11 @@ public final class OresCompiler {
     private OresCompiler() { }
 
     public static Ast.Program parseAndTypeCheck(String source) {
-        return TypeChecker.check(Parser.parse(source));
+        return parseAndTypeCheck(source, CompilerOptions.defaults());
+    }
+
+    public static Ast.Program parseAndTypeCheck(String source, CompilerOptions compilerOptions) {
+        return TypeChecker.check(Parser.parse(source), compilerOptions);
     }
 
     /**
@@ -19,7 +23,14 @@ public final class OresCompiler {
      * executing guest code.
      */
     public static Ast.Program validateForIsolate(String source, IsolatePolicy policy) {
-        Ast.Program program = parseAndTypeCheck(source);
+        return validateForIsolate(source, policy, CompilerOptions.defaults());
+    }
+
+    public static Ast.Program validateForIsolate(
+            String source,
+            IsolatePolicy policy,
+            CompilerOptions compilerOptions) {
+        Ast.Program program = parseAndTypeCheck(source, compilerOptions);
         CapabilityChecker.check(program, policy);
         return program;
     }

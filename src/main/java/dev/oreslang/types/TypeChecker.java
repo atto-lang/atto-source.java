@@ -1,6 +1,8 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.CompilerOptions;
+import dev.oreslang.types.Types.Any;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
@@ -12,6 +14,8 @@ import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.Type;
+import dev.oreslang.types.Types.ImplicitAny;
+import dev.oreslang.types.Types.ImplicitUnknown;
 import dev.oreslang.types.Types.Unknown;
 
 import java.util.ArrayList;
@@ -36,6 +40,7 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    private final CompilerOptions compilerOptions;
     private final IdentityHashMap<Ast.FunctionDecl, Type> inferredFunctionReturns = new IdentityHashMap<>();
     private final Set<Ast.FunctionDecl> inferringFunctionReturns = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Ast.MethodDecl> inferringMethodReturns = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -47,8 +52,16 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
+    private TypeChecker(CompilerOptions compilerOptions) {
+        this.compilerOptions = java.util.Objects.requireNonNull(compilerOptions, "compilerOptions");
+    }
+
     public static Ast.Program check(Ast.Program program) {
-        TypeChecker checker = new TypeChecker();
+        return check(program, CompilerOptions.defaults());
+    }
+
+    public static Ast.Program check(Ast.Program program, CompilerOptions compilerOptions) {
+        TypeChecker checker = new TypeChecker(compilerOptions);
         checker.validateImports(program);
         checker.collect(program);
         checker.validateRoutineRecursion();
@@ -273,7 +286,11 @@ public final class TypeChecker {
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
-        if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
+        if (field.type() != null) {
+            requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
+        } else {
+            rejectImplicitDynamic(actual, "inferred type of module binding '" + field.name() + "'");
+        }
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
             throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
         }
@@ -296,6 +313,9 @@ public final class TypeChecker {
             }
             Type actual = typeOf(binding.initializer(), env, generics, self);
             Type declared = declaredAhead == null ? actual : declaredAhead;
+            if (declaredAhead == null) {
+                rejectImplicitDynamic(actual, "inferred type of binding '" + binding.name() + "'");
+            }
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
                 throw new IllegalArgumentException("const '" + binding.name() + "' needs a compile-time constant initializer");
@@ -393,12 +413,12 @@ public final class TypeChecker {
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
-            if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
+            if (name.name().equals("None")) return new Named("Option", List.of(ImplicitUnknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleShape(moduleNamespace);
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
-            if (importedValues.contains(name.name())) return Unknown.INSTANCE;
+            if (importedValues.contains(name.name())) return ImplicitUnknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) return functionType(fn);
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
@@ -445,7 +465,7 @@ public final class TypeChecker {
                 Type armType = typeOf(arm.value(), armEnv, generics, self);
                 result = result == null ? armType : commonType(result, armType);
             }
-            return result == null ? Unknown.INSTANCE : result;
+            return result == null ? ImplicitAny.INSTANCE : result;
         }
         if (expr instanceof Ast.OldExpr old) return typeOf(old.expression(), env, generics, self);
         if (expr instanceof Ast.UnaryExpr unary) {
@@ -609,7 +629,7 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.ListExpr list) {
-            if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
+            if (list.elements().isEmpty()) return new ListType(ImplicitUnknown.INSTANCE);
             Type element = typeOf(list.elements().getFirst(), env, generics, self);
             for (int i = 1; i < list.elements().size(); i++) element = commonType(element, typeOf(list.elements().get(i), env, generics, self));
             return new ListType(element);
@@ -732,7 +752,7 @@ public final class TypeChecker {
             }
             if (!joined.isEmpty()) return new Record(joined);
         }
-        return Unknown.INSTANCE;
+        return ImplicitAny.INSTANCE;
     }
 
     private Type numericJoin(Type left, Type right, String op) {
@@ -954,14 +974,15 @@ public final class TypeChecker {
     private Type inferFunctionReturn(Ast.FunctionDecl fn, Set<String> generics) {
         Type cached = inferredFunctionReturns.get(fn);
         if (cached != null) return cached;
-        if (!inferringFunctionReturns.add(fn)) return Unknown.INSTANCE;
+        if (!inferringFunctionReturns.add(fn)) return implicitAny("recursive return inference for function '" + fn.name() + "'");
         try {
             Env env = new Env(null);
             for (Ast.Param param : fn.parameters()) {
                 env.define(param.name(), resolveParam(param, generics, null),
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            Type inferred = inferReturnType(fn.body(), env, generics, null);
+            Type inferred = inferReturnType(fn.body(), env, generics, null, "function '" + fn.name() + "'");
+            rejectImplicitDynamic(inferred, "inferred return type of function '" + fn.name() + "'");
             inferredFunctionReturns.put(fn, inferred);
             return inferred;
         } finally {
@@ -984,7 +1005,7 @@ public final class TypeChecker {
     }
 
     private Type inferMethodReturn(Ast.MethodDecl method, Set<String> generics, Type self) {
-        if (!inferringMethodReturns.add(method)) return Unknown.INSTANCE;
+        if (!inferringMethodReturns.add(method)) return implicitAny("recursive return inference for method '" + method.name() + "'");
         try {
             Env env = new Env(null);
             if (!method.isStatic() && self != null) env.define("self", self, Ast.BindingKind.VAL);
@@ -992,7 +1013,9 @@ public final class TypeChecker {
                 env.define(param.name(), resolveParam(param, generics, self),
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            return inferReturnType(method.body(), env, generics, self);
+            Type inferred = inferReturnType(method.body(), env, generics, self, "method '" + method.name() + "'");
+            rejectImplicitDynamic(inferred, "inferred return type of method '" + method.name() + "'");
+            return inferred;
         } finally {
             inferringMethodReturns.remove(method);
         }
@@ -1053,7 +1076,8 @@ public final class TypeChecker {
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
-            case "any" -> Unknown.INSTANCE;
+            case "any" -> Any.INSTANCE;
+            case "unknown" -> Unknown.INSTANCE;
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
@@ -1217,7 +1241,7 @@ public final class TypeChecker {
         return ref != null && ref.name().equals("$infer$");
     }
 
-    private Type inferReturnType(List<Ast.Stmt> body, Env env, Set<String> generics, Type self) {
+    private Type inferReturnType(List<Ast.Stmt> body, Env env, Set<String> generics, Type self, String callable) {
         boolean sawValue = false;
         Type inferred = null;
         for (Ast.Stmt stmt : body) {
@@ -1231,7 +1255,7 @@ public final class TypeChecker {
             }
             // Flow-sensitive local/control-flow inference deliberately degrades to any
             // instead of guessing. An explicit => T restores a proof obligation.
-            return Unknown.INSTANCE;
+            return implicitAny("return type of " + callable);
         }
         if (inferred == null || !sawValue) return Primitive.VOID;
         return inferred;
@@ -1500,6 +1524,50 @@ public final class TypeChecker {
 
     private boolean hasInferredArgs(Ast.TypeRef ref) {
         return ref.inferArguments() || ref.arguments().stream().anyMatch(this::hasInferredArgs);
+    }
+
+    private Type implicitAny(String where) {
+        if (compilerOptions.noImplicitAnyEnabled()) {
+            throw new IllegalArgumentException("implicit any in " + where
+                    + "; add an explicit type or disable noImplicitAny");
+        }
+        return ImplicitAny.INSTANCE;
+    }
+
+    private void rejectImplicitDynamic(Type type, String where) {
+        if (compilerOptions.noImplicitAnyEnabled() && containsImplicitAny(type)) {
+            throw new IllegalArgumentException("implicit any in " + where
+                    + "; add an explicit type or disable noImplicitAny");
+        }
+        if (compilerOptions.noImplicitUnknownEnabled() && containsImplicitUnknown(type)) {
+            throw new IllegalArgumentException("implicit unknown in " + where
+                    + "; add an explicit type or disable noImplicitUnknown");
+        }
+    }
+
+    private boolean containsImplicitAny(Type type) {
+        return containsDynamicMarker(type, true);
+    }
+
+    private boolean containsImplicitUnknown(Type type) {
+        return containsDynamicMarker(type, false);
+    }
+
+    private boolean containsDynamicMarker(Type type, boolean any) {
+        if (any && type == ImplicitAny.INSTANCE) return true;
+        if (!any && type == ImplicitUnknown.INSTANCE) return true;
+        if (type instanceof Borrow borrow) return containsDynamicMarker(borrow.target(), any);
+        if (type instanceof ListType list) return containsDynamicMarker(list.element(), any);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsDynamicMarker(t, any));
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsDynamicMarker(t, any));
+        if (type instanceof Function fn) {
+            return fn.parameters().stream().anyMatch(t -> containsDynamicMarker(t, any))
+                    || containsDynamicMarker(fn.result(), any);
+        }
+        if (type instanceof Record record) {
+            return record.members().values().stream().anyMatch(t -> containsDynamicMarker(t, any));
+        }
+        return false;
     }
 
     private void requireAssignable(Type actual, Type expected, String where) {
