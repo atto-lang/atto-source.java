@@ -792,13 +792,30 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value instanceof Set<?> set) {
                 java.util.LinkedHashSet<Object> frozen = new java.util.LinkedHashSet<>();
-                for (Object item : set) frozen.add(freezeValue(item, allowedRuntimeId, allowCapabilities, path, depth + 1, readOnlyShared, budget));
+                for (Object item : set) {
+                    Object next = freezeValue(
+                            item, allowedRuntimeId, allowCapabilities, path, depth + 1, readOnlyShared, budget);
+                    if (!frozen.add(next)) {
+                        throw new IllegalArgumentException(
+                                "distinct set elements collapse to the same frozen value");
+                    }
+                }
                 return Set.copyOf(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    frozen.put(freezeValue(entry.getKey(), allowedRuntimeId, allowCapabilities, path, depth + 1, readOnlyShared, budget), freezeValue(entry.getValue(), allowedRuntimeId, allowCapabilities, path, depth + 1, readOnlyShared, budget));
+                    Object key = freezeValue(
+                            entry.getKey(), allowedRuntimeId, allowCapabilities,
+                            path, depth + 1, readOnlyShared, budget);
+                    Object item = freezeValue(
+                            entry.getValue(), allowedRuntimeId, allowCapabilities,
+                            path, depth + 1, readOnlyShared, budget);
+                    if (frozen.containsKey(key)) {
+                        throw new IllegalArgumentException(
+                                "distinct map keys collapse to the same frozen key");
+                    }
+                    frozen.put(key, item);
                 }
                 return Map.copyOf(frozen);
             }
@@ -811,14 +828,24 @@ public final class ActorRuntime implements AutoCloseable {
             if (value instanceof Sendable sendable) {
                 Object replacement = sendable.freezeForSend(
                         nested -> freezeValue(
-                                nested, allowedRuntimeId, allowCapabilities, path, depth + 1, readOnlyShared, budget),
+                                nested, allowedRuntimeId, allowCapabilities,
+                                path, depth + 1, readOnlyShared, budget),
                         readOnlyShared);
                 if (replacement == value) {
                     throw new IllegalArgumentException(
                             "Sendable.freezeForSend() must return an actor-local copy or immutable transport value, not this");
                 }
+
+                // Sendable is a trusted/generated runtime ABI. Implementations
+                // must freeze every nested value through the supplied freezer.
+                // A new Sendable transport object is therefore already frozen;
+                // recursively invoking freezeForSend on it would re-project
+                // values such as OresObject indefinitely. Non-Sendable roots
+                // and capability roots are still recursively validated here.
+                if (replacement instanceof Sendable) return replacement;
                 return freezeValue(
-                        replacement, allowedRuntimeId, allowCapabilities, path, depth + 1, readOnlyShared, budget);
+                        replacement, allowedRuntimeId, allowCapabilities,
+                        path, depth + 1, readOnlyShared, budget);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
