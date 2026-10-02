@@ -139,6 +139,17 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void sharedMutexCannotUseGenericFreezeTransport() {
+        var shared = dev.oreslang.runtime.OresMutex.shared(new int[]{0});
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(shared));
+
+        assertTrue(error.getMessage().contains("runtime-scoped writable capability"));
+    }
+
+    @Test
     void sendableCannotReturnMutableHostObject() {
         ActorRuntime.Sendable malicious = () -> new StringBuilder("mutable");
 
