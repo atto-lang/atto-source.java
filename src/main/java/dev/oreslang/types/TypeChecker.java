@@ -843,7 +843,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process")
+                    || name.name().equals("actor") || name.name().equals("env")) {
+                return new Named(name.name(), List.of());
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -983,6 +986,22 @@ public final class TypeChecker {
                 return switch (member.member()) {
                     case "inActor", "in_actor" -> new Function(List.of(), Primitive.BOOL);
                     default -> throw new IllegalArgumentException("unknown actor runtime member '" + member.member() + "'");
+                };
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("env")) {
+                return switch (member.member()) {
+                    case "get" -> new Function(
+                            List.of(Primitive.STRING),
+                            new Named("Option", List.of(Primitive.STRING)));
+                    case "require" -> new Function(List.of(Primitive.STRING), Primitive.STRING);
+                    case "has" -> new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    case "bool" -> new Function(
+                            List.of(Primitive.STRING),
+                            new Named("Option", List.of(Primitive.BOOL)));
+                    case "int" -> new Function(
+                            List.of(Primitive.STRING),
+                            new Named("Option", List.of(Primitive.INT)));
+                    default -> throw new IllegalArgumentException("unknown env member '" + member.member() + "'");
                 };
             }
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
