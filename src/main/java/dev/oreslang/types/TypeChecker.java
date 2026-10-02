@@ -112,7 +112,7 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
-                else if (decl instanceof Ast.TypeAliasDecl alias) resolveAlias(alias, Set.of(), null, new LinkedHashSet<>());
+                else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
                 else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
             }
         }
@@ -909,10 +909,6 @@ public final class TypeChecker {
             }
             default -> new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
         };
-    }
-
-    private Type resolveAlias(Ast.TypeAliasDecl alias, Set<String> generics, Type self, Set<String> ignored) {
-        return resolve(new Ast.TypeRef(alias.name(), List.of(), false), generics, self);
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
