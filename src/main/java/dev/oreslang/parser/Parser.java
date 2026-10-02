@@ -670,12 +670,17 @@ public final class Parser {
         return new Ast.ExprStmt(expression);
     }
 
-    private Ast.ReceiveLoopStmt parseReceiveLoop(Ast.ReceiveLoopMode mode) {
+    private Ast.Stmt parseReceiveLoop(Ast.ReceiveLoopMode mode) {
         consume(mode == Ast.ReceiveLoopMode.BLOCKING ? RECEIVE : TRY_RECEIVE,
                 "expected receive loop keyword");
         consume(LOOP, "expected 'loop' after receive keyword");
-        consume(LPAREN, "expected '(' after receive loop");
 
+        // Erlang-like pattern-dispatch spelling. This is deliberately FIFO:
+        // the next message is dequeued once and then matched against these arms.
+        if (check(LBRACE)) return parseReceivePatternLoop(mode);
+
+        // Compatibility/simple form: bind every dequeued message to one name.
+        consume(LPAREN, "expected '(' after receive loop");
         Ast.TypeRef bindingType = null;
         String bindingName;
         if (check(IDENT) && checkNext(RPAREN)) {
@@ -686,6 +691,94 @@ public final class Parser {
         }
         consume(RPAREN, "expected ')' after receive-loop binding");
         return new Ast.ReceiveLoopStmt(mode, bindingType, bindingName, parseBlock());
+    }
+
+    private Ast.ReceivePatternLoopStmt parseReceivePatternLoop(Ast.ReceiveLoopMode mode) {
+        consume(LBRACE, "expected '{' after receive loop");
+        List<Ast.ReceiveCase> cases = new ArrayList<>();
+        List<Ast.Stmt> defaultBody = List.of();
+
+        while (match(CASE)) {
+            Ast.Pattern pattern = parsePattern();
+            consume(FAT_ARROW, "expected '=>' after receive case pattern");
+            cases.add(new Ast.ReceiveCase(pattern, parseBlock()));
+            match(COMMA, SEMICOLON);
+        }
+
+        if (match(DEFAULT)) {
+            consume(FAT_ARROW, "expected '=>' after receive default");
+            defaultBody = parseBlock();
+            match(COMMA, SEMICOLON);
+        }
+
+        if (cases.isEmpty()) throw error(peek(), "receive loop pattern form requires at least one case");
+        if (check(CASE)) throw error(peek(), "receive cases must appear before default");
+        consume(RBRACE, "expected '}' after receive loop cases");
+        return new Ast.ReceivePatternLoopStmt(mode, cases, defaultBody);
+    }
+
+    private Ast.Pattern parsePattern() {
+        if (isDiscardToken(peek())) {
+            advance();
+            return new Ast.WildcardPattern();
+        }
+
+        if (match(COLON)) {
+            String name = consume(IDENT, "expected symbol name after ':'").lexeme();
+            return new Ast.LiteralPattern(new Ast.Symbol(name));
+        }
+
+        if (isBindingKind(peek().type())) {
+            Ast.BindingKind kind = parseBindingKind();
+            Token name = consume(IDENT, "expected capture name after binding kind");
+            if (isDiscardToken(name)) return new Ast.WildcardPattern();
+            if (match(COLON)) {
+                return new Ast.TypedBindingPattern(kind, parseTypeRef(), name.lexeme());
+            }
+            return new Ast.BindingPattern(kind, name.lexeme());
+        }
+
+        if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
+        if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
+        if (match(FALSE)) return new Ast.LiteralPattern(Boolean.FALSE);
+        if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(MINUS)) {
+            if (match(INT)) return new Ast.LiteralPattern(-Long.parseLong(previous().lexeme().replace("_", "")));
+            if (match(FLOAT)) return new Ast.LiteralPattern(-Double.parseDouble(previous().lexeme().replace("_", "")));
+            throw error(peek(), "negative receive-pattern literals must be numeric");
+        }
+
+        if (match(LPAREN)) {
+            Ast.Pattern first = parsePattern();
+            if (!match(COMMA)) {
+                consume(RPAREN, "expected ')' after grouped receive pattern");
+                return first;
+            }
+            List<Ast.Pattern> elements = new ArrayList<>();
+            elements.add(first);
+            do elements.add(parsePattern()); while (match(COMMA));
+            consume(RPAREN, "expected ')' after tuple receive pattern");
+            return new Ast.TuplePattern(elements);
+        }
+
+        if (match(LBRACKET)) {
+            List<Ast.Pattern> elements = new ArrayList<>();
+            if (!check(RBRACKET)) {
+                do elements.add(parsePattern()); while (match(COMMA));
+            }
+            consume(RBRACKET, "expected ']' after list receive pattern");
+            return new Ast.ListPattern(elements);
+        }
+
+        if (match(IDENT)) {
+            String name = previous().lexeme();
+            if (match(COLON)) {
+                return new Ast.TypedBindingPattern(Ast.BindingKind.VAL, parseTypeRef(), name);
+            }
+            return new Ast.BindingPattern(Ast.BindingKind.VAL, name);
+        }
+        throw error(peek(), "expected receive pattern");
     }
 
     private Ast.SelectStmt parseSelect() {
@@ -998,6 +1091,10 @@ public final class Parser {
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
+        if (match(COLON)) {
+            return new Ast.LiteralExpr(new Ast.Symbol(
+                    consume(IDENT, "expected symbol name after ':'").lexeme()));
+        }
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(CHANNEL)) {
             consume(LT, "expected '<' after channel");
