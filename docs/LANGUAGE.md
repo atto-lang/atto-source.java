@@ -316,7 +316,7 @@ shared actor Account {
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
 - no lock is required around ordinary actor-owned fields, including fields of a shared actor;
 - actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
-- synchronized shared memory requires the host-granted `ACTOR_SHARED_MEMORY` capability.
+- synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
 
 Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
@@ -537,7 +537,7 @@ Security is layered. Oreslang uses a deny-by-default language capability policy 
 
 An isolate policy can independently allow or deny:
 
-`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `ACTOR_SHARED_MEMORY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `SHARED_MEMORY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
 
 The trusted compiler API can reject forbidden API usage before execution:
 
