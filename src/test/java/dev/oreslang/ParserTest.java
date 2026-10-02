@@ -356,4 +356,23 @@ final class ParserTest {
                 """));
     }
 
+    @Test
+    void classDeclarationsRequireAsDelimiter() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class CounterState as
+                  pub let int value = 10;
+                end
+                """));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class CounterState
+                          pub let int value = 10;
+                        end
+                        """));
+
+        assertTrue(failure.getMessage().contains("expected 'as' after class header"));
+    }
+
 }
