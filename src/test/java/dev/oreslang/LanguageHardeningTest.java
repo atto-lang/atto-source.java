@@ -782,4 +782,43 @@ final class LanguageHardeningTest {
                         """)));
         assertTrue(genericValue.getMessage().contains("polymorphic function values"));
     }
+    @Test
+    void staticFunctionsInGenericClassesDoNotCaptureClassTypeParameters() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box<T> as
+                  pub static fnc answer() => int {
+                    return 42;
+                  }
+
+                  pub static fnc echo<T>(T value) => T {
+                    return value;
+                  }
+                end
+
+                fnc use() => int {
+                  return Box.answer() + Box.echo(1);
+                }
+                """)));
+
+        IllegalArgumentException signature = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub static fnc bad(T value) => T {
+                            return value;
+                          }
+                        end
+                        """)));
+        assertTrue(signature.getMessage().contains("cannot use enclosing class generic parameter"));
+
+        IllegalArgumentException nested = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub static fnc bad() => void {
+                            type Item = T;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(nested.getMessage().contains("cannot use enclosing class generic parameter"));
+    }
 }
