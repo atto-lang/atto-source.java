@@ -98,6 +98,10 @@ public final class ActorRuntime implements AutoCloseable {
             return value;
         }
 
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
         private void closeFromRuntime() {
             if (!sharedClosed.compareAndSet(false, true)) return;
             long bytes = reservedBytes;
@@ -290,6 +294,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public boolean closed() { return cellClosed.get(); }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
 
         public T snapshot() {
             rejectPrivateActorSharedMemoryAccess("SyncCell.snapshot");
@@ -678,6 +686,9 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
 
+        if (cell.kind == ActorKind.SHARED) {
+            requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
+        }
         Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freeze(message);
         MemoryReservation reservation = null;
         if (cell.memorySlice != null) {
@@ -724,6 +735,7 @@ public final class ActorRuntime implements AutoCloseable {
     public <T> Shared<T> shareReadonly(T value) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "shareReadonly");
+        requireOwnedSharedHandles(value, new IdentityHashMap<>(), 0);
         Object frozen = freeze(value);
         rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
         long bytes = estimateFrozenBytes(frozen);
@@ -735,6 +747,52 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("actor runtime is closed");
         }
         return shared;
+    }
+
+    private void requireOwnedSharedHandles(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value instanceof Shared<?> shared) {
+            if (!shared.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "Shared value belongs to a different ActorRuntime; copy/freeze it into the destination runtime");
+            }
+            shared.value();
+            return;
+        }
+        if (value instanceof SyncCell<?> cell) {
+            if (!cell.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "SyncCell belongs to a different ActorRuntime and cannot cross shared-memory domains");
+            }
+            if (cell.closed()) throw new IllegalArgumentException("SyncCell is closed");
+            return;
+        }
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) requireOwnedSharedHandles(item, visiting, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) requireOwnedSharedHandles(item, visiting, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    requireOwnedSharedHandles(entry.getKey(), visiting, depth + 1);
+                    requireOwnedSharedHandles(entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    requireOwnedSharedHandles(Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
     }
 
     private static void rejectSharedMutableHandles(
