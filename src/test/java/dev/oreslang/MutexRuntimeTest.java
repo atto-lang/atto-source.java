@@ -288,6 +288,31 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void sharedMutexBindsOnlyAfterAuthorizedRuntimePublication() {
+        IsolatePolicy strict = IsolatePolicy.strictFaas();
+        var shared = OresMutex.shared(new int[]{0});
+
+        try (ActorRuntime denied = new ActorRuntime(strict);
+             ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            var deniedRef = denied.<OresMutex.Shared<int[]>>spawn(
+                    strict, () -> (message, context) -> { });
+            var refA = runtimeA.<OresMutex.Shared<int[]>>spawn(
+                    () -> (message, context) -> { });
+            var refB = runtimeB.<OresMutex.Shared<int[]>>spawn(
+                    () -> (message, context) -> { });
+
+            assertThrows(SecurityException.class, () -> deniedRef.send(shared));
+            assertDoesNotThrow(() -> refA.send(shared));
+
+            IllegalArgumentException crossRuntime = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> refB.send(shared));
+            assertTrue(crossRuntime.getMessage().contains("owning ActorRuntime"));
+        }
+    }
+
+    @Test
     void strictActorPolicyRejectsSharedMemoryHandles() {
         IsolatePolicy strict = IsolatePolicy.strictFaas();
         try (ActorRuntime runtime = new ActorRuntime(strict)) {
