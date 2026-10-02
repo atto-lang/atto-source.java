@@ -133,7 +133,8 @@ multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
 unary           = [ "!" | "~" | "-" | "+" | "await" ] postfix
                 | "&" [ "mut" ] unary ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
-call_suffix     = "(" [ argument_list ] ")" ;
+call_suffix     = [ generic_call_args ] "(" [ argument_list ] ")" ;
+generic_call_args = "<" [ type_args ] ">" ;
 member_suffix   = "." IDENT ;
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
