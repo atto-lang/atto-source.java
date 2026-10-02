@@ -215,7 +215,7 @@ public final class OresMutex {
         private void rejectBlockingActorAcquisition() {
             if (ActorRuntime.inActorExecution()) {
                 throw new WrongMutexDomainException(
-                        "blocking SharedMutex.lock()/lock_for()/with_lock()/recover() is forbidden during actor execution; use try_lock() or await lock_async()");
+                        "blocking SharedMutex.lock()/lock_for()/with_lock() is forbidden during actor execution; use try_lock() or await lock_async()");
             }
         }
 
@@ -384,16 +384,29 @@ public final class OresMutex {
 
         public <R> R recover(Function<? super T, ? extends R> repair) {
             Objects.requireNonNull(repair, "repair");
-            rejectBlockingActorAcquisition();
             Object ownerDomain = reserveDomain(false);
+            boolean acquired = false;
             try {
-                permit.acquire();
-            } catch (InterruptedException interrupted) {
-                releaseDomain(ownerDomain);
-                Thread.currentThread().interrupt();
-                throw new java.util.concurrent.CancellationException("SharedMutex recovery wait interrupted");
-            }
-            try {
+                if (ActorRuntime.inActorExecution()) {
+                    // Recovery is expected to happen after the poisoning guard
+                    // released its permit. Never block an actor if another
+                    // recovery attempt is already in progress.
+                    acquired = permit.tryAcquire();
+                    if (!acquired) {
+                        throw new WrongMutexDomainException(
+                                "SharedMutex recovery is busy; actor recovery never blocks, retry from a later mailbox turn");
+                    }
+                } else {
+                    try {
+                        permit.acquire();
+                        acquired = true;
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new java.util.concurrent.CancellationException(
+                                "SharedMutex recovery wait interrupted");
+                    }
+                }
+
                 if (!poisoned.get()) {
                     throw new IllegalStateException(
                             "SharedMutex is not poisoned; recover(...) is only for repairing poisoned state");
@@ -408,7 +421,7 @@ public final class OresMutex {
                 }
             } finally {
                 releaseDomain(ownerDomain);
-                permit.release();
+                if (acquired) permit.release();
             }
         }
 
