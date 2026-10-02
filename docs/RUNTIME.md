@@ -52,6 +52,17 @@ The strict production direction is:
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
 
 
+## Truffle thread boundary
+
+`ActorRuntime` is the host scheduling substrate. Its private/shared executors must not be confused with permission to execute Ores guest ASTs concurrently inside one Truffle language context.
+
+Oreslang currently keeps `TruffleLanguage.isThreadAccessAllowed(...)` in single-threaded mode. A carrier may change when access remains sequential, but concurrent guest execution in one context is intentionally denied. Source-level actor lowering must therefore introduce an explicit Truffle execution strategy before actor declarations become runnable:
+
+- either enter a context from host-owned dispatcher threads and opt the language into Truffle multi-threading after auditing AST/context state for concurrency; or
+- map actor memory domains to separate inner/polyglot/native contexts and enter the correct context for each mailbox turn.
+
+The guest `THREAD_CREATE` capability is separate from host/runtime dispatcher scheduling. Denying guest-created threads must not be bypassed merely because the actor runtime itself owns worker pools.
+
 ## Actor dispatchers
 
 The host actor runtime follows the same scheduling shape as Akka's event-based dispatcher: many actors share an executor, each actor has its own mailbox, and a scheduled actor drains only a bounded number of messages before yielding back to the executor. The configured throughput bound prevents one hot mailbox from monopolizing a worker.
