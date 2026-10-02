@@ -750,8 +750,7 @@ public final class GpuKernelCompiler {
             String right = renderExpr(module, binary.right(), env);
             String op = binary.operator().equals("|") ? "||" : binary.operator().equals(",") ? "&&" : binary.operator();
 
-            if ((op.equals("/") || op.equals("%"))
-                    && (isIntegerScalar(leftType) || isIntegerScalar(rightType))) {
+            if ((op.equals("/") || op.equals("%")) && isIntegerScalar(resultType)) {
                 throw new IllegalArgumentException(
                         "integer " + op + " is rejected in GPU code until divide-by-zero and signed-overflow traps are lowered explicitly");
             }
@@ -890,7 +889,10 @@ public final class GpuKernelCompiler {
                 throw new IllegalArgumentException("non-finite floating-point literals are not supported in GPU code");
             }
             String text = Double.toString(n);
-            return text.contains(".") || text.contains("e") || text.contains("E") ? text : text + ".0";
+            if (!(text.contains(".") || text.contains("e") || text.contains("E"))) text += ".0";
+            // Oreslang unsuffixed floating literals are f64 in GPU lowering. Emit an
+            // explicit double cast so device-extension detection cannot miss them.
+            return "((double)" + text + ")";
         }
         throw new IllegalArgumentException("literal is not lowerable to GPU code: " + value);
     }
