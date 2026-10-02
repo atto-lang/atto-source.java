@@ -115,7 +115,10 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
-                else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
+                else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
+                    resolve(alias.target(), aliasGenerics, null);
+                }
                 else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
             }
         }
@@ -157,6 +160,7 @@ public final class TypeChecker {
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
             if (findInterface(parentRef.name()) == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            resolve(parentRef, generics, null);
         }
 
         for (Ast.InterfaceMember member : iface.members()) {
@@ -197,6 +201,7 @@ public final class TypeChecker {
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
+            resolve(parent, classGenerics, self);
             resolveClassParent(parent, klass);
         }
 
@@ -254,6 +259,7 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
+            resolve(interfaceRef, classGenerics, self);
             Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
@@ -450,6 +456,10 @@ public final class TypeChecker {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
             }
+            if (unary.operator().equals("~")) {
+                requireInteger(operand, "~ operand");
+                return Primitive.INT;
+            }
             if (!Types.isNumeric(operand)) throw new IllegalArgumentException("unary " + unary.operator() + " needs a numeric operand");
             return operand;
         }
@@ -457,10 +467,15 @@ public final class TypeChecker {
             Type left = typeOf(binary.left(), env, generics, self);
             Type right = typeOf(binary.right(), env, generics, self);
             return switch (binary.operator()) {
-                case ",", "|" -> {
-                    requireAssignable(left, Primitive.BOOL, "boolean operand");
-                    requireAssignable(right, Primitive.BOOL, "boolean operand");
+                case "&&", "||", "^^" -> {
+                    requireAssignable(left, Primitive.BOOL, "logical operand");
+                    requireAssignable(right, Primitive.BOOL, "logical operand");
                     yield Primitive.BOOL;
+                }
+                case "&", "|", "^", "<<", ">>", ">>>" -> {
+                    requireInteger(left, "bitwise left operand");
+                    requireInteger(right, "bitwise right operand");
+                    yield Primitive.INT;
                 }
                 case "==", "!=" -> Primitive.BOOL;
                 case "<", "<=", ">", ">=" -> {
@@ -475,6 +490,19 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr functionName) {
+                Ast.FunctionDecl target = findFunction(functionName.name());
+                if (target != null) {
+                    return checkGenericCallable(
+                            target.genericParameters(),
+                            target.parameters(),
+                            target.returnType(),
+                            call.arguments(),
+                            env, generics, self,
+                            Map.of(),
+                            "function " + functionName.name());
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -498,14 +526,16 @@ public final class TypeChecker {
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
-                    Set<String> fnGenerics = new HashSet<>(klass.genericParameters());
-                    fnGenerics.addAll(fn.genericParameters());
-                    for (int i = 0; i < call.arguments().size(); i++) {
-                        Type expected = resolveParam(fn.parameters().get(i), fnGenerics, null);
-                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
-                    }
-                    return resolve(fn.returnType(), fnGenerics, null);
+                    List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
+                    callableGenerics.addAll(fn.genericParameters());
+                    return checkGenericCallable(
+                            callableGenerics,
+                            fn.parameters(),
+                            fn.returnType(),
+                            call.arguments(),
+                            env, generics, self,
+                            Map.of(),
+                            "static function " + klass.name() + "." + fn.name());
                 }
                 if (receiver instanceof Named named) {
                     if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
@@ -529,14 +559,16 @@ public final class TypeChecker {
                     if (klass != null) {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
-                        Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
-                        methodGenerics.addAll(method.genericParameters());
-                        for (int i = 0; i < call.arguments().size(); i++) {
-                            Type expected = resolveParam(method.parameters().get(i), methodGenerics, named);
-                            validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
-                        }
-                        return resolve(method.returnType(), methodGenerics, named);
+                        List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
+                        callableGenerics.addAll(method.genericParameters());
+                        return checkGenericCallable(
+                                callableGenerics,
+                                method.parameters(),
+                                method.returnType(),
+                                call.arguments(),
+                                env, generics, self,
+                                classGenericBindings(klass, named),
+                                "method " + klass.name() + "." + method.name());
                     }
                 }
             }
@@ -589,7 +621,7 @@ public final class TypeChecker {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
                     Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
-                    if (field != null) return field;
+                    if (field != null) return substituteGenerics(field, classGenericBindings(klass, named));
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
@@ -610,15 +642,21 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            Type resolvedCreated = resolve(created.type(), generics, self);
+            if (klass == null) return resolvedCreated;
+            if (!(resolvedCreated instanceof Named nominal)) {
+                throw new IllegalArgumentException("constructor target must resolve to a named class type");
+            }
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
-            Type nominal = nominalClassType(klass);
+            Map<String, Type> classBindings = classGenericBindings(klass, nominal);
             for (int i = 0; i < fields.size(); i++) {
                 Ast.FieldDecl field = fields.get(i);
                 if (i < created.arguments().size()) {
+                    Type fieldPattern = resolve(field.type(), Set.copyOf(klass.genericParameters()), nominalClassType(klass));
+                    Type expected = substituteGenerics(fieldPattern, classBindings);
                     requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
-                            resolve(field.type(), Set.copyOf(klass.genericParameters()), nominal), "constructor field " + field.name());
+                            expected, "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
                 }
@@ -738,7 +776,7 @@ public final class TypeChecker {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
-                if (field != null) return field;
+                if (field != null) return substituteGenerics(field, classGenericBindings(klass, named));
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
@@ -899,6 +937,10 @@ public final class TypeChecker {
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
         return Unknown.INSTANCE;
+    }
+
+    private void requireInteger(Type type, String where) {
+        if (type != Primitive.INT) throw new IllegalArgumentException(where + " must be an integer type");
     }
 
     private Type numericJoin(Type left, Type right, String op) {
@@ -1120,6 +1162,127 @@ public final class TypeChecker {
         throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
     }
 
+    private void validateGenericArity(Ast.TypeRef ref, List<String> parameters, String owner) {
+        if (ref.inferArguments()) {
+            throw new IllegalArgumentException(owner + " does not permit unresolved <> here; provide explicit type arguments");
+        }
+        if (ref.arguments().size() != parameters.size()) {
+            throw new IllegalArgumentException(owner + " expects " + parameters.size()
+                    + " type argument(s), got " + ref.arguments().size());
+        }
+    }
+
+    private Map<String, Type> classGenericBindings(Ast.ClassDecl klass, Named actual) {
+        if (actual.arguments().size() != klass.genericParameters().size()) {
+            throw new IllegalArgumentException("class " + klass.name() + " expects " + klass.genericParameters().size()
+                    + " type argument(s), got " + actual.arguments().size());
+        }
+        Map<String, Type> bindings = new HashMap<>();
+        for (int i = 0; i < klass.genericParameters().size(); i++) {
+            bindings.put(klass.genericParameters().get(i), actual.arguments().get(i));
+        }
+        return bindings;
+    }
+
+    private Type checkGenericCallable(
+            List<String> genericNames,
+            List<Ast.Param> params,
+            Ast.TypeRef returnRef,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Map<String, Type> initialBindings,
+            String label) {
+        if (params.size() != arguments.size()) throw new IllegalArgumentException(label + " arity mismatch");
+        Set<String> unique = uniqueGenerics(genericNames, label);
+        Map<String, Type> bindings = new HashMap<>(initialBindings);
+        List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callerSelf)).toList();
+
+        for (int i = 0; i < arguments.size(); i++) {
+            Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
+            inferGenericBindings(patterns.get(i), actual, bindings, label);
+        }
+        for (int i = 0; i < arguments.size(); i++) {
+            Type expected = substituteGenerics(patterns.get(i), bindings);
+            if (containsUnboundGeneric(expected)) {
+                throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
+            }
+            validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
+            requireAssignable(typeOf(arguments.get(i), env, callerGenerics, callerSelf), expected, "argument " + (i + 1));
+        }
+
+        Type result = substituteGenerics(resolve(returnRef, unique, callerSelf), bindings);
+        if (containsUnboundGeneric(result)) {
+            throw new IllegalArgumentException("cannot infer generic return type for " + label + "; add an inferable value parameter");
+        }
+        return result;
+    }
+
+    private void inferGenericBindings(Type pattern, Type actual, Map<String, Type> bindings, String label) {
+        if (pattern instanceof Generic generic) {
+            Type previous = bindings.putIfAbsent(generic.name(), actual);
+            if (previous != null && (!assignable(actual, previous) || !assignable(previous, actual))) {
+                throw new IllegalArgumentException("conflicting inference for generic '" + generic.name() + "' in " + label
+                        + ": " + previous + " vs " + actual);
+            }
+            return;
+        }
+        if (pattern instanceof Borrow p && actual instanceof Borrow a) {
+            inferGenericBindings(p.target(), a.target(), bindings, label);
+            return;
+        }
+        if (pattern instanceof ListType p && actual instanceof ListType a) {
+            inferGenericBindings(p.element(), a.element(), bindings, label);
+            return;
+        }
+        if (pattern instanceof Tuple p && actual instanceof Tuple a && p.elements().size() == a.elements().size()) {
+            for (int i = 0; i < p.elements().size(); i++) inferGenericBindings(p.elements().get(i), a.elements().get(i), bindings, label);
+            return;
+        }
+        if (pattern instanceof Named p && actual instanceof Named a
+                && p.name().equals(a.name()) && p.arguments().size() == a.arguments().size()) {
+            for (int i = 0; i < p.arguments().size(); i++) inferGenericBindings(p.arguments().get(i), a.arguments().get(i), bindings, label);
+            return;
+        }
+        if (pattern instanceof Function p && actual instanceof Function a
+                && p.parameters().size() == a.parameters().size()) {
+            for (int i = 0; i < p.parameters().size(); i++) inferGenericBindings(p.parameters().get(i), a.parameters().get(i), bindings, label);
+            inferGenericBindings(p.result(), a.result(), bindings, label);
+        }
+    }
+
+    private Type substituteGenerics(Type type, Map<String, Type> bindings) {
+        if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
+        if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
+        if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
+        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof Named named) return new Named(named.name(), named.arguments().stream().map(t -> substituteGenerics(t, bindings)).toList());
+        if (type instanceof Function fn) return new Function(
+                fn.parameters().stream().map(t -> substituteGenerics(t, bindings)).toList(),
+                substituteGenerics(fn.result(), bindings));
+        if (type instanceof Record record) {
+            Map<String, Type> members = new LinkedHashMap<>();
+            record.members().forEach((name, member) -> members.put(name, substituteGenerics(member, bindings)));
+            return new Record(members);
+        }
+        return type;
+    }
+
+    private boolean containsUnboundGeneric(Type type) {
+        if (type instanceof Generic) return true;
+        if (type instanceof Borrow borrow) return containsUnboundGeneric(borrow.target());
+        if (type instanceof ListType list) return containsUnboundGeneric(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnboundGeneric);
+        if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnboundGeneric);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnboundGeneric);
+        if (type instanceof Function fn) return fn.parameters().stream().anyMatch(this::containsUnboundGeneric)
+                || containsUnboundGeneric(fn.result());
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsUnboundGeneric);
+        return false;
+    }
+
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
         return resolve(ref, generics, self, false);
     }
@@ -1208,7 +1371,24 @@ public final class TypeChecker {
                 if (args.isEmpty()) throw new IllegalArgumentException("Fnc requires at least a result type");
                 yield new Function(args.subList(0, args.size() - 1), args.getLast());
             }
-            default -> new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+            default -> {
+                Ast.ClassDecl knownClass = findClass(ref.name());
+                if (knownClass != null) {
+                    validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
+                    yield new Named(qualifiedClassName(knownClass),
+                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                }
+                Ast.InterfaceDecl knownInterface = findInterface(ref.name());
+                if (knownInterface != null) {
+                    validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
+                    yield new Named(qualifiedInterfaceName(knownInterface),
+                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                }
+                if (ref.inferArguments()) {
+                    throw new IllegalArgumentException("cannot infer type arguments for unknown type '" + ref.name() + "<>'");
+                }
+                yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+            }
         };
     }
 
