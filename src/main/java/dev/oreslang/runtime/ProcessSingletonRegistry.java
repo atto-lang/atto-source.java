@@ -16,7 +16,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -203,13 +202,13 @@ public final class ProcessSingletonRegistry {
                 return reply;
             }
 
-            long timeoutMillis;
-            try {
-                timeoutMillis = Math.max(1L, callerWallTime.toMillis());
-            } catch (ArithmeticException overflow) {
-                timeoutMillis = Long.MAX_VALUE;
-            }
-            reply.orTimeout(timeoutMillis, TimeUnit.MILLISECONDS);
+            /*
+             * Do not race the actor with CompletableFuture.orTimeout(). A
+             * caller-side timer could mark the request timed out while the
+             * serial actor was still mutating state. Deadlines are enforced by
+             * the actor before dequeue, at function/loop safepoints, and again
+             * before transactional commit.
+             */
             return reply;
         }
 
