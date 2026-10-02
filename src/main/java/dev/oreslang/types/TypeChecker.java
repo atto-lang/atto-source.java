@@ -350,8 +350,22 @@ public final class TypeChecker {
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
-        if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            Type expressionType = typeOf(expression.expression(), env, generics, self);
+            if (isFutureType(expressionType)) {
+                throw new IllegalArgumentException(
+                        "async/Future result cannot be discarded; await it or bind it to an owned value");
+            }
+            return;
+        }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            Type deferredType = typeOf(defer.expression(), env, generics, self);
+            if (isFutureType(deferredType)) {
+                throw new IllegalArgumentException(
+                        "defer cannot silently detach an async/Future result; use defer await <async-call> or an explicit supervised task");
+            }
+            return;
+        }
         if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 requireAssignable(typeOf(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
@@ -973,6 +987,12 @@ public final class TypeChecker {
         return async ? new Named("Future", List.of(result)) : result;
     }
 
+    private boolean isFutureType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Future")
+                && named.arguments().size() == 1;
+    }
+
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
         if (!param.structural()) return resolve(param.type(), generics, self);
         Ast.InterfaceDecl iface = findInterface(param.type().name());
@@ -1040,7 +1060,7 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Option<void> is invalid; use void for no return value");
                 yield new Named("Option", List.of(element));
             }
-            case "ActorRef", "Shared" -> {
+            case "ActorRef", "Shared", "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
                 }
