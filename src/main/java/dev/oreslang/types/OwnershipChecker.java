@@ -305,17 +305,7 @@ public final class OwnershipChecker {
         }
 
         ValueInfo value;
-        if (binding.initializer() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-            boolean mutableBorrow = unary.operator().equals("&mut");
-            VarState owner = borrowOwner(unary.operand(), scope);
-            beginPersistentBorrow(owner, mutableBorrow);
-            value = new ValueInfo(Ast.TypeRef.borrowed(owner.type, mutableBorrow), mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, owner);
-        } else if (isOwnershipIntrinsicCall(binding.initializer(), "borrow", scope)) {
-            Ast.CallExpr borrow = (Ast.CallExpr) binding.initializer();
-            VarState owner = borrowOwner(borrow.arguments().getFirst(), scope);
-            beginPersistentBorrow(owner, false);
-            value = new ValueInfo(Ast.TypeRef.borrowed(owner.type, false), ValueKind.IMM_BORROW, owner);
-        } else if (binding.initializer() instanceof Ast.LambdaExpr lambda) {
+        if (binding.initializer() instanceof Ast.LambdaExpr lambda) {
             value = checkLambda(lambda, scope, binding.name());
         } else {
             value = checkExpr(binding.initializer(), scope, true);
@@ -334,6 +324,17 @@ public final class OwnershipChecker {
                 value.kind,
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
+        if (value.borrowSource != null) {
+            if (value.kind == ValueKind.IMM_BORROW) {
+                value.borrowSource.immutableBorrows++;
+                state.borrowRegistered = true;
+            } else if (value.kind == ValueKind.MUT_BORROW) {
+                if (!value.borrowRegistered) {
+                    beginPersistentBorrow(value.borrowSource, true);
+                }
+                state.borrowRegistered = true;
+            }
+        }
         scope.define(binding.name(), state);
     }
 
@@ -347,13 +348,26 @@ public final class OwnershipChecker {
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
-            if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
-            return new ValueInfo(state.type, state.kind, state.borrowSource);
+            if (consuming && state.kind == ValueKind.MUT_BORROW) {
+                VarState source = state.borrowSource;
+                boolean registered = state.borrowRegistered;
+                move(state, name.name());
+                state.borrowSource = null;
+                state.borrowRegistered = false;
+                return new ValueInfo(state.type, ValueKind.MUT_BORROW, source, registered);
+            }
+            return new ValueInfo(state.type, state.kind, state.borrowSource, state.borrowRegistered);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
                 boolean mutable = unary.operator().equals("&mut");
                 VarState owner = borrowOwner(unary.operand(), scope);
+                if (!mutable && owner.kind == ValueKind.SHARED) {
+                    Ast.TypeRef target = owner.type != null && owner.type.isBorrow()
+                            ? owner.type.borrowedTarget()
+                            : owner.type;
+                    return new ValueInfo(Ast.TypeRef.borrowed(target, false), ValueKind.SHARED, null);
+                }
                 validateBorrow(owner, mutable);
                 return new ValueInfo(Ast.TypeRef.borrowed(owner.type, mutable), mutable ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, owner);
             }
@@ -380,9 +394,20 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
-            return left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
-                    ? left
-                    : new ValueInfo(left.type, ValueKind.MOVE_ONLY, null);
+            if (left.kind == ValueKind.COPY && right.kind == ValueKind.COPY) return left;
+            if (left.kind == ValueKind.SHARED && right.kind == ValueKind.SHARED) {
+                return new ValueInfo(left.type, ValueKind.SHARED, null);
+            }
+            boolean leftBorrow = left.kind == ValueKind.IMM_BORROW || left.kind == ValueKind.MUT_BORROW;
+            boolean rightBorrow = right.kind == ValueKind.IMM_BORROW || right.kind == ValueKind.MUT_BORROW;
+            if (leftBorrow || rightBorrow) {
+                if (left.kind == right.kind && left.borrowSource == right.borrowSource) {
+                    return new ValueInfo(left.type, left.kind, left.borrowSource,
+                            left.borrowRegistered && right.borrowRegistered);
+                }
+                throw error("conditional expression cannot merge borrows with different owners/lifetimes; use share(...) for a detached snapshot");
+            }
+            return new ValueInfo(left.type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.CallExpr call) {
             if (isOwnershipIntrinsicCall(call, scope)) {
@@ -395,12 +420,18 @@ public final class OwnershipChecker {
                         Ast.TypeRef target = source.type != null && source.type.isBorrow()
                                 ? source.type.borrowedTarget()
                                 : source.type;
-                        ValueKind resultKind = source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY;
+                        ValueKind resultKind = kindOfType(target);
+                        if (resultKind == ValueKind.IMM_BORROW || resultKind == ValueKind.MUT_BORROW
+                                || resultKind == ValueKind.SHARED) resultKind = ValueKind.MOVE_ONLY;
+                        if (target != null && target.name().equals("$infer$") && source.kind == ValueKind.COPY) {
+                            resultKind = ValueKind.COPY;
+                        }
                         yield new ValueInfo(target, resultKind, null);
                     }
                     case "take" -> {
                         ValueInfo source = checkExpr(argument, scope, false);
                         if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
+                                || source.kind == ValueKind.SHARED
                                 || (source.type != null && source.type.isBorrow())) {
                             throw error("take requires an owned value, not a borrow");
                         }
@@ -408,6 +439,12 @@ public final class OwnershipChecker {
                     }
                     case "borrow" -> {
                         VarState owner = borrowOwner(argument, scope);
+                        if (owner.kind == ValueKind.SHARED) {
+                            Ast.TypeRef target = owner.type != null && owner.type.isBorrow()
+                                    ? owner.type.borrowedTarget()
+                                    : owner.type;
+                            yield new ValueInfo(Ast.TypeRef.borrowed(target, false), ValueKind.SHARED, null);
+                        }
                         validateBorrow(owner, false);
                         yield new ValueInfo(Ast.TypeRef.borrowed(owner.type, false), ValueKind.IMM_BORROW, owner);
                     }
@@ -416,7 +453,7 @@ public final class OwnershipChecker {
                         Ast.TypeRef target = source.type != null && source.type.isBorrow()
                                 ? source.type.borrowedTarget()
                                 : source.type;
-                        yield new ValueInfo(Ast.TypeRef.borrowed(target, false), ValueKind.IMM_BORROW, null);
+                        yield new ValueInfo(Ast.TypeRef.borrowed(target, false), ValueKind.SHARED, null);
                     }
                     default -> throw new IllegalStateException("unknown ownership intrinsic " + intrinsic.name());
                 };
@@ -441,28 +478,41 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.NewExpr created) {
-            for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
+            for (Ast.Expr arg : created.arguments()) {
+                ValueInfo stored = checkExpr(arg, scope, true);
+                rejectStoredBorrow(stored, "class constructor argument");
+            }
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.StructInitExpr created) {
-            for (Ast.ObjectField field : created.fields()) checkExpr(field.value(), scope, true);
+            for (Ast.ObjectField field : created.fields()) {
+                ValueInfo stored = checkExpr(field.value(), scope, true);
+                rejectStoredBorrow(stored, "struct field '" + field.name() + "'");
+            }
             return new ValueInfo(created.type() == null ? Ast.TypeRef.inferred() : created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
-            for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
+            for (Ast.Expr item : list.elements()) {
+                ValueInfo stored = checkExpr(item, scope, true);
+                rejectStoredBorrow(stored, "array/list element");
+            }
             return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
             boolean copy = true;
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                rejectStoredBorrow(info, "tuple element");
                 copy &= info.kind == ValueKind.COPY;
             }
             return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
+            for (Ast.ObjectField field : object.fields()) {
+                ValueInfo stored = checkExpr(field.value(), scope, true);
+                rejectStoredBorrow(stored, "object field '" + field.name() + "'");
+            }
             return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
@@ -470,6 +520,16 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.NameExpr some
+                && some.name().equals("Some")
+                && call.arguments().size() == 1) {
+            ValueInfo stored = checkExpr(call.arguments().getFirst(), scope, true);
+            rejectStoredBorrow(stored, "Option value");
+            return new ValueInfo(Ast.TypeRef.simple("Option"),
+                    stored.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
+        }
+
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
@@ -535,7 +595,9 @@ public final class OwnershipChecker {
                     if (mutable && state.kind != ValueKind.MUT_BORROW) {
                         throw error(callable + " argument " + (i + 1) + " requires &mut value");
                     }
-                    if (!mutable && state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW) {
+                    if (!mutable && state.kind != ValueKind.IMM_BORROW
+                            && state.kind != ValueKind.MUT_BORROW
+                            && state.kind != ValueKind.SHARED) {
                         throw error(callable + " argument " + (i + 1) + " requires borrowed value; pass &" + name.name());
                     }
                     continue;
@@ -640,6 +702,13 @@ public final class OwnershipChecker {
         }
     }
 
+    private void rejectStoredBorrow(ValueInfo value, String where) {
+        if (value.kind == ValueKind.IMM_BORROW || value.kind == ValueKind.MUT_BORROW) {
+            throw error(where + " cannot store an ordinary borrow without explicit lifetime support; "
+                    + "use copy(...) for new ownership or share(...) for a detached read-only snapshot");
+        }
+    }
+
     private boolean borrowMayEscape(VarState source) {
         if (source.origin == Origin.MODULE) return true;
         if (source.origin == Origin.PARAM) {
@@ -664,8 +733,13 @@ public final class OwnershipChecker {
             source.debugName = capture.name;
             requireUsable(source, capture.name, capture.write);
 
-            if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
-                throw error("closure cannot capture borrowed value '" + capture.name + "'; capture its owner by value or pass the borrow as a lambda parameter");
+            if (source.kind != ValueKind.SHARED
+                    && (source.kind == ValueKind.IMM_BORROW
+                    || source.kind == ValueKind.MUT_BORROW
+                    || (source.type != null && source.type.isBorrow()))) {
+                throw error("closure cannot capture borrowed value '" + capture.name
+                        + "'; capture its owner by value, use share(...) for a detached read-only snapshot, "
+                        + "or pass the borrow as a lambda parameter");
             }
 
             if (capture.write) {
@@ -676,6 +750,8 @@ public final class OwnershipChecker {
             } else if (source.kind == ValueKind.MOVE_ONLY) {
                 move(source, capture.name);
                 closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
+            } else if (source.kind == ValueKind.SHARED) {
+                closure.define(capture.name, new VarState(source.type, false, ValueKind.SHARED, Origin.CAPTURE));
             } else {
                 closure.define(capture.name, new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE));
             }
@@ -1079,17 +1155,22 @@ public final class OwnershipChecker {
         return new IllegalArgumentException("Oreslang ownership error: " + message);
     }
 
-    private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW }
+    private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW, SHARED }
     private enum Origin { PARAM, LOCAL, CAPTURE, MODULE }
 
     private static final class ValueInfo {
         private final Ast.TypeRef type;
         private final ValueKind kind;
         private final VarState borrowSource;
+        private final boolean borrowRegistered;
         private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource) {
+            this(type, kind, borrowSource, false);
+        }
+        private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource, boolean borrowRegistered) {
             this.type = type;
             this.kind = kind;
             this.borrowSource = borrowSource;
+            this.borrowRegistered = borrowRegistered;
         }
     }
 
@@ -1102,6 +1183,7 @@ public final class OwnershipChecker {
         private int immutableBorrows;
         private boolean mutableBorrowed;
         private VarState borrowSource;
+        private boolean borrowRegistered;
         private String debugName = "<value>";
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
@@ -1140,7 +1222,7 @@ public final class OwnershipChecker {
             if (closed) return;
             closed = true;
             for (VarState state : locals.values()) {
-                if (state.borrowSource != null) {
+                if (state.borrowRegistered && state.borrowSource != null) {
                     if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
                     else if (state.kind == ValueKind.IMM_BORROW) state.borrowSource.immutableBorrows--;
                 }
