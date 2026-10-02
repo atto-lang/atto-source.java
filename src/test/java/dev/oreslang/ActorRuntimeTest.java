@@ -571,4 +571,28 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void readonlySharedValuesAreQuotaAccountedAndInvalidAfterRuntimeClose() {
+        ActorRuntime runtime = new ActorRuntime();
+        ActorRuntime.Shared<Map<String, List<Integer>>> shared =
+                runtime.shareReadonly(Map.of("items", List.of(1, 2, 3)));
+
+        assertTrue(runtime.sharedMemoryBytes() > 0L);
+        assertEquals(List.of(1, 2, 3), shared.value().get("items"));
+
+        runtime.close();
+
+        assertEquals(0L, runtime.sharedMemoryBytes());
+        assertThrows(IllegalStateException.class, shared::value);
+    }
+
+    @Test
+    void strictPolicyRejectsReadonlySharingWithoutCapability() {
+        IsolatePolicy strict = IsolatePolicy.strictFaas();
+        try (ActorRuntime runtime = new ActorRuntime(strict)) {
+            assertThrows(SecurityException.class, () -> runtime.shareReadonly(List.of(1, 2, 3)));
+        }
+    }
+
+
 }
