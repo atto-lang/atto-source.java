@@ -46,6 +46,9 @@ process.gc();
 - works for private and shared actors, but only actor-owned state belongs to the
   actor-local collection domain;
 - does not collect `Shared`, `SyncCell`, or other explicitly shared state.
+- coalesces repeated explicit requests within one mailbox message to a single
+  collector callback, so untrusted actor code cannot amplify a GC hint into an
+  unbounded native collector loop.
 
 `process.gc()`:
 
@@ -70,6 +73,12 @@ JVM already schedules its own GC; Oreslang does not periodically force global
 `System.gc()`.
 
 The intervals are policy/VM tuning knobs, not source semantics.
+
+GC telemetry distinguishes requested hints, suppressed/coalesced hints, and
+successful collector callbacks. A callback counter is **not** proof that bytes
+were physically reclaimed: on the JVM backend actor-local callbacks and
+periodic process callbacks are intentionally no-ops because HotSpot/Graal owns
+the physical tracing collector.
 
 ## Private versus shared actors
 
