@@ -604,7 +604,8 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            Type result = checkLambdaBlockAndInferResult(lambda.blockBody(), lambdaEnv, generics, self);
+            LambdaReturnSummary returns = checkLambdaBlockAndInferReturns(lambda.blockBody(), lambdaEnv, generics, self);
+            Type result = returns.hasReturn() ? returns.type() : Primitive.VOID;
             if (result != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
                 throw new IllegalArgumentException("inferred non-void lambda must explicitly return on every path");
             }
@@ -613,65 +614,90 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
-    private Type checkLambdaBlockAndInferResult(
+    private record LambdaReturnSummary(boolean hasReturn, Type type) {
+        private static LambdaReturnSummary none() { return new LambdaReturnSummary(false, Primitive.VOID); }
+        private static LambdaReturnSummary of(Type type) { return new LambdaReturnSummary(true, type); }
+    }
+
+    private LambdaReturnSummary checkLambdaBlockAndInferReturns(
             List<Ast.Stmt> body,
             Env parent,
             Set<String> generics,
             Type self) {
         Env env = new Env(parent);
-        Type inferred = null;
+        LambdaReturnSummary inferred = LambdaReturnSummary.none();
 
         for (Ast.Stmt stmt : body) {
-            Type candidate = inferredReturnFromStatement(stmt, env, generics, self);
-            if (candidate != null) inferred = inferred == null ? candidate : commonType(inferred, candidate);
+            inferred = mergeLambdaReturns(inferred, inferredReturnFromStatement(stmt, env, generics, self));
             checkStatement(stmt, env, generics, Unknown.INSTANCE, self);
         }
-        return inferred == null ? Primitive.VOID : inferred;
+        return inferred;
     }
 
-    private Type inferredReturnFromStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type self) {
+    private LambdaReturnSummary inferredReturnFromStatement(
+            Ast.Stmt stmt,
+            Env env,
+            Set<String> generics,
+            Type self) {
         if (stmt instanceof Ast.ReturnStmt ret) {
-            return ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
+            return LambdaReturnSummary.of(ret.value() == null
+                    ? Primitive.VOID
+                    : typeOf(ret.value(), env, generics, self));
         }
         if (stmt instanceof Ast.IfStmt conditional) {
-            Type result = null;
+            LambdaReturnSummary result = LambdaReturnSummary.none();
             for (Ast.IfBranch branch : conditional.branches()) {
-                Type branchResult = checkLambdaBlockAndInferResult(branch.body(), env, generics, self);
-                if (branchResult != Primitive.VOID) {
-                    result = result == null ? branchResult : commonType(result, branchResult);
-                }
+                result = mergeLambdaReturns(
+                        result,
+                        checkLambdaBlockAndInferReturns(branch.body(), env, generics, self));
             }
-            Type elseResult = checkLambdaBlockAndInferResult(conditional.elseBody(), env, generics, self);
-            if (elseResult != Primitive.VOID) result = result == null ? elseResult : commonType(result, elseResult);
+            result = mergeLambdaReturns(
+                    result,
+                    checkLambdaBlockAndInferReturns(conditional.elseBody(), env, generics, self));
             return result;
         }
         if (stmt instanceof Ast.TryStmt attempted) {
-            Type result = null;
-            Type bodyResult = checkLambdaBlockAndInferResult(attempted.body(), env, generics, self);
-            if (bodyResult != Primitive.VOID) result = bodyResult;
+            LambdaReturnSummary result = checkLambdaBlockAndInferReturns(
+                    attempted.body(), env, generics, self);
 
             Env caught = new Env(env);
             caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
-            Type catchResult = checkLambdaBlockAndInferResult(attempted.catchBody(), caught, generics, self);
-            if (catchResult != Primitive.VOID) result = result == null ? catchResult : commonType(result, catchResult);
+            result = mergeLambdaReturns(
+                    result,
+                    checkLambdaBlockAndInferReturns(attempted.catchBody(), caught, generics, self));
 
-            Type finallyResult = checkLambdaBlockAndInferResult(attempted.finallyBody(), env, generics, self);
-            if (finallyResult != Primitive.VOID) result = result == null ? finallyResult : commonType(result, finallyResult);
+            result = mergeLambdaReturns(
+                    result,
+                    checkLambdaBlockAndInferReturns(attempted.finallyBody(), env, generics, self));
             return result;
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Env loopEnv = new Env(env);
-            loopEnv.define(loop.bindingName(), iterableElementType(typeOf(loop.iterable(), env, generics, self)), loop.bindingKind());
-            Type result = checkLambdaBlockAndInferResult(loop.body(), loopEnv, generics, self);
-            return result == Primitive.VOID ? null : result;
+            loopEnv.define(
+                    loop.bindingName(),
+                    iterableElementType(typeOf(loop.iterable(), env, generics, self)),
+                    loop.bindingKind());
+            return checkLambdaBlockAndInferReturns(loop.body(), loopEnv, generics, self);
         }
         if (stmt instanceof Ast.ForStmt loop) {
             Env loopEnv = new Env(env);
-            if (loop.initializer() != null) checkStatement(loop.initializer(), loopEnv, generics, Unknown.INSTANCE, self);
-            Type result = checkLambdaBlockAndInferResult(loop.body(), loopEnv, generics, self);
-            return result == Primitive.VOID ? null : result;
+            if (loop.initializer() != null) {
+                checkStatement(loop.initializer(), loopEnv, generics, Unknown.INSTANCE, self);
+            }
+            return checkLambdaBlockAndInferReturns(loop.body(), loopEnv, generics, self);
         }
-        return null;
+        return LambdaReturnSummary.none();
+    }
+
+    private LambdaReturnSummary mergeLambdaReturns(
+            LambdaReturnSummary left,
+            LambdaReturnSummary right) {
+        if (!left.hasReturn()) return right;
+        if (!right.hasReturn()) return left;
+        if ((left.type() == Primitive.VOID) != (right.type() == Primitive.VOID)) {
+            throw new IllegalArgumentException("lambda cannot mix 'return;' with value-returning paths");
+        }
+        return LambdaReturnSummary.of(commonType(left.type(), right.type()));
     }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
