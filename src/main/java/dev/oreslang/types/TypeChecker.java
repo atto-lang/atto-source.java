@@ -40,6 +40,7 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
     private final java.util.ArrayDeque<Map<String, Ast.ClassDecl>> localClassScopes = new java.util.ArrayDeque<>();
     private final java.util.ArrayDeque<Map<String, Ast.InterfaceDecl>> localInterfaceScopes = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<Map<String, Ast.TypeAliasDecl>> localTypeAliasScopes = new java.util.ArrayDeque<>();
     private final IdentityHashMap<Ast.ClassDecl, String> localClassIdentities = new IdentityHashMap<>();
     private final Map<String, Ast.ClassDecl> escapedLocalClasses = new HashMap<>();
     private int nextLocalTypeIdentity = 1;
@@ -147,7 +148,7 @@ public final class TypeChecker {
             for (Ast.TypeRef ref : annotation.arguments()) {
                 Ast.InterfaceDecl iface = findInterface(ref.name());
                 if (iface == null) throw new IllegalArgumentException("unknown module interface '" + ref.name() + "'");
-                Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+                Record expected = interfaceShapeForUse(iface, ref, Set.of(), null);
                 if (!assignable(actual, expected)) {
                     throw new IllegalArgumentException("module '" + module.name() + "' does not adhere to interface '" + ref.name() + "': expected " + expected + " but got " + actual);
                 }
@@ -771,7 +772,7 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            Record expected = interfaceShapeForUse(iface, interfaceRef, classGenerics, self);
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
@@ -805,6 +806,8 @@ public final class TypeChecker {
                 checkClass(env.moduleName, struct);
             } else if (localType.declaration() instanceof Ast.InterfaceDecl iface) {
                 checkInterface(iface);
+            } else if (localType.declaration() instanceof Ast.TypeAliasDecl alias) {
+                resolve(alias.target(), Set.copyOf(alias.genericParameters()), self);
             }
             return;
         }
@@ -1547,13 +1550,45 @@ public final class TypeChecker {
         return new Record(members);
     }
 
+    private Record interfaceShapeForUse(
+            Ast.InterfaceDecl iface,
+            Ast.TypeRef use,
+            Set<String> surroundingGenerics,
+            Type self) {
+        if (use.inferArguments() || use.arguments().size() != iface.genericParameters().size()) {
+            throw new IllegalArgumentException("interface '" + iface.name() + "' expects "
+                    + iface.genericParameters().size() + " type argument(s), got " + use.arguments().size());
+        }
+        Record raw = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        if (iface.genericParameters().isEmpty()) return raw;
+
+        LinkedHashMap<String, Type> substitutions = new LinkedHashMap<>();
+        for (int i = 0; i < iface.genericParameters().size(); i++) {
+            substitutions.put(iface.genericParameters().get(i),
+                    resolve(use.arguments().get(i), surroundingGenerics, self));
+        }
+        return (Record) substituteGenerics(raw, substitutions);
+    }
+
     private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
         if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            for (Map.Entry<String, Type> inherited : interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack).members().entrySet()) {
+            if (parentRef.inferArguments() || parentRef.arguments().size() != parent.genericParameters().size()) {
+                throw new IllegalArgumentException("interface '" + parent.name() + "' expects "
+                        + parent.genericParameters().size() + " type argument(s), got " + parentRef.arguments().size());
+            }
+            Record inheritedShape = interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack);
+            if (!parent.genericParameters().isEmpty()) {
+                LinkedHashMap<String, Type> substitutions = new LinkedHashMap<>();
+                for (int i = 0; i < parent.genericParameters().size(); i++) {
+                    substitutions.put(parent.genericParameters().get(i), resolve(parentRef.arguments().get(i), generics, null));
+                }
+                inheritedShape = (Record) substituteGenerics(inheritedShape, substitutions);
+            }
+            for (Map.Entry<String, Type> inherited : inheritedShape.members().entrySet()) {
                 mergeMember(members, inherited.getKey(), inherited.getValue(), "interface inheritance of " + iface.name());
             }
         }
@@ -1783,7 +1818,7 @@ public final class TypeChecker {
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
         if (!param.structural()) return resolve(param.type(), generics, self);
         Ast.InterfaceDecl iface = findInterface(param.type().name());
-        if (iface != null) return interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        if (iface != null) return interfaceShapeForUse(iface, param.type(), generics, self);
         Ast.ClassDecl klass = findClass(param.type().name());
         if (klass != null) return publicClassShape(klass, new LinkedHashSet<>());
         throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
@@ -1810,10 +1845,7 @@ public final class TypeChecker {
 
         Ast.InterfaceDecl lexicalInterface = findLexicalInterface(ref.name());
         if (lexicalInterface != null) {
-            if (!lexicalInterface.genericParameters().isEmpty() || !ref.arguments().isEmpty() || ref.inferArguments()) {
-                throw new IllegalArgumentException("generic callable-local interfaces are not supported yet");
-            }
-            return interfaceShape(lexicalInterface, Set.of(), new LinkedHashSet<>());
+            return interfaceShapeForUse(lexicalInterface, ref, generics, self);
         }
 
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
@@ -2049,13 +2081,25 @@ public final class TypeChecker {
     }
 
     private Ast.TypeAliasDecl findTypeAlias(String name) {
+        Ast.TypeAliasDecl lexical = findLexicalTypeAlias(name);
+        if (lexical != null) return lexical;
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
+    }
+
+    private Ast.TypeAliasDecl findLexicalTypeAlias(String name) {
+        if (name.contains(".")) return null;
+        for (Map<String, Ast.TypeAliasDecl> scope : localTypeAliasScopes) {
+            Ast.TypeAliasDecl local = scope.get(name);
+            if (local != null) return local;
+        }
+        return null;
     }
 
     private void pushLocalTypeScope(List<Ast.Stmt> body) {
         Map<String, Ast.ClassDecl> classesHere = new LinkedHashMap<>();
         Map<String, Ast.InterfaceDecl> interfacesHere = new LinkedHashMap<>();
+        Map<String, Ast.TypeAliasDecl> aliasesHere = new LinkedHashMap<>();
         Set<String> names = new HashSet<>();
 
         for (Ast.Stmt stmt : body) {
@@ -2069,16 +2113,21 @@ public final class TypeChecker {
             } else if (local.declaration() instanceof Ast.InterfaceDecl iface) {
                 if (!names.add(iface.name())) throw new IllegalArgumentException("duplicate callable-local type '" + iface.name() + "'");
                 interfacesHere.put(iface.name(), iface);
+            } else if (local.declaration() instanceof Ast.TypeAliasDecl alias) {
+                if (!names.add(alias.name())) throw new IllegalArgumentException("duplicate callable-local type '" + alias.name() + "'");
+                aliasesHere.put(alias.name(), alias);
             }
         }
 
         localClassScopes.push(classesHere);
         localInterfaceScopes.push(interfacesHere);
+        localTypeAliasScopes.push(aliasesHere);
     }
 
     private void popLocalTypeScope() {
         localClassScopes.pop();
         localInterfaceScopes.pop();
+        localTypeAliasScopes.pop();
     }
 
     private Function declaredFunctionType(Ast.FunctionDecl fn) {
