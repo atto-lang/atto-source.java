@@ -336,6 +336,7 @@ public final class OwnershipChecker {
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            ensureAwaitSuspensionSafe(scope);
             ValueInfo future = checkExpr(awaited.expression(), scope, true);
             if (future.type != null && future.type.name().equals("Future") && future.type.arguments().size() == 1) {
                 Ast.TypeRef result = future.type.arguments().getFirst();
@@ -771,6 +772,17 @@ public final class OwnershipChecker {
         if (!(current instanceof Ast.NameExpr name)) return false;
         VarState root = scope.lookup(name.name());
         return root != null && isActorConfinedBorrow(root);
+    }
+
+    private void ensureAwaitSuspensionSafe(Scope scope) {
+        for (VarState state : scope.visibleStates()) {
+            if (state.moved) continue;
+            if ((state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW)
+                    && !isActorConfinedBorrow(state)) {
+                throw error("borrow '" + state.debugName
+                        + "' is live across await; end the borrow before the suspension point or move/copy owned data into the async task");
+            }
+        }
     }
 
     private boolean isActorConfinedBorrow(VarState state) {
