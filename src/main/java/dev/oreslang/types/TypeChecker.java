@@ -1225,6 +1225,17 @@ public final class TypeChecker {
             for (Type argument : named.arguments()) {
                 requireActorTransportType(argument, where, seen);
             }
+
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+                for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>())) {
+                    requireActorTransportType(
+                            resolve(field.type(), classGenerics, named),
+                            where + " field " + klass.name() + "." + field.name(),
+                            seen);
+                }
+            }
         }
     }
 
