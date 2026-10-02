@@ -439,7 +439,23 @@ public final class OwnershipChecker {
             }
             Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
             if (field == null) {
-                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+                if (klass.isStruct() && consuming) {
+                    Ast.TypeRef ownerType = receiverType(member.receiver(), scope);
+                    Ast.TypeRef concreteOwner = ownerType != null && ownerType.isBorrow()
+                            ? ownerType.borrowedTarget()
+                            : ownerType;
+                    if (concreteOwner == null || !isCopyType(concreteOwner)) {
+                        if (ownerType != null && ownerType.isBorrow()) {
+                            throw error("cannot extract a persistent method value from a borrowed non-Copy struct; "
+                                    + "move the owned struct into the method value or call the method directly");
+                        }
+                        // A bound method over a move-only struct owns the whole
+                        // receiver. Reuse the ordinary consuming path so names
+                        // are moved and nested projections obey partial-move rules.
+                        checkExpr(member.receiver(), scope, true);
+                    }
+                }
+                return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
             }
 
             Ast.TypeRef ownerType = receiverType(member.receiver(), scope);
