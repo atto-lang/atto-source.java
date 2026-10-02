@@ -2,6 +2,8 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.ProcessSingletonRegistry;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -13,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -430,6 +433,56 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonCodeChangesRequireHotCodeLoadAuthority() throws Exception {
+        IsolatePolicy noHotLoad = new IsolatePolicy(
+                Set.of(IsolatePolicy.Capability.STDOUT),
+                64L * 1024 * 1024,
+                64,
+                Duration.ofSeconds(2));
+
+        String firstProgram = """
+                define singleton module no_hot_reload_guard
+                  let int count = 0;
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int n = await no_hot_reload_guard.next();
+                    stdio.println(n);
+                    return;
+                  }
+                end
+                """;
+
+        String changedProgram = """
+                define singleton module no_hot_reload_guard
+                  let int count = 0;
+                  pub fnc next() => int {
+                    count = count + 10;
+                    return count;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int n = await no_hot_reload_guard.next();
+                    stdio.println(n);
+                    return;
+                  }
+                end
+                """;
+
+        assertTrue(evalWithPolicy(firstProgram, "no-hot-reload-guard.ores", noHotLoad).contains("1"));
+        RuntimeException denied = assertThrows(RuntimeException.class,
+                () -> evalWithPolicy(changedProgram, "no-hot-reload-guard.ores", noHotLoad));
+        assertTrue(causeChainContains(denied, "HOT_CODE_LOAD"), String.valueOf(denied));
+    }
+
+    @Test
     void failedInitializationCanBeRetriedBeforeStateEverExists() {
         String key = "init-retry:" + UUID.randomUUID();
 
@@ -485,6 +538,20 @@ final class SingletonModuleTest {
             current = current.getCause();
         }
         return false;
+    }
+
+    private String evalWithPolicy(String program, String name, IsolatePolicy policy) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, name)
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = policy.restrictedContextBuilder(ExecutionProfile.serverJit())
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     private String eval(String program, String name) throws Exception {
