@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -218,6 +219,9 @@ public final class OresMutex {
         private final Semaphore permit = new Semaphore(1, true);
         private final AtomicBoolean poisoned = new AtomicBoolean();
         private final AtomicInteger asyncWaiters = new AtomicInteger();
+        private final Object asyncQueueLock = new Object();
+        private final ArrayDeque<AsyncWaiter> asyncQueue = new ArrayDeque<>();
+        private boolean preferAsyncHandoff = true;
         /*
          * Runtime ownership is publication-aware. A send may need to reserve
          * ownership before mailbox admission so a receiver can never observe an
@@ -351,10 +355,74 @@ public final class OresMutex {
             releaseWaiter(GLOBAL_ASYNC_WAITERS, "global");
         }
 
+        private final class AsyncWaiter {
+            private final Object ownerDomain;
+            private final boolean enforceOwnerDomain;
+            private final GuardFuture<T> future;
+
+            private AsyncWaiter(
+                    Object ownerDomain,
+                    boolean enforceOwnerDomain,
+                    GuardFuture<T> future) {
+                this.ownerDomain = ownerDomain;
+                this.enforceOwnerDomain = enforceOwnerDomain;
+                this.future = future;
+            }
+        }
+
+        /**
+         * Releases the physical permit or directly transfers it to a queued
+         * async waiter. Direct handoff avoids one virtual thread per waiter.
+         *
+         * <p>When both blocking host waiters and async waiters exist, alternate
+         * preference so neither class can monopolize release handoff.</p>
+         */
+        private void releasePermitOrHandoff() {
+            while (true) {
+                AsyncWaiter waiter = null;
+                synchronized (asyncQueueLock) {
+                    while (!asyncQueue.isEmpty()) {
+                        AsyncWaiter candidate = asyncQueue.removeFirst();
+                        if (!candidate.future.isDone()) {
+                            waiter = candidate;
+                            break;
+                        }
+                    }
+
+                    if (waiter == null) {
+                        permit.release();
+                        return;
+                    }
+
+                    if (permit.hasQueuedThreads() && !preferAsyncHandoff) {
+                        asyncQueue.addFirst(waiter);
+                        preferAsyncHandoff = true;
+                        permit.release();
+                        return;
+                    }
+                    if (permit.hasQueuedThreads()) preferAsyncHandoff = false;
+                }
+
+                if (poisoned.get()) {
+                    releaseDomain(waiter.ownerDomain);
+                    waiter.future.completeExceptionally(new PoisonedMutexException());
+                    continue;
+                }
+
+                SharedGuard guard = new SharedGuard(
+                        waiter.ownerDomain,
+                        waiter.enforceOwnerDomain);
+                if (waiter.future.complete(guard)) return;
+
+                // Cancellation won after dequeue but before completion.
+                releaseDomain(waiter.ownerDomain);
+            }
+        }
+
         private Guard<T> checkedGuardAfterAcquire(Object ownerDomain, boolean enforceOwnerDomain) {
             if (poisoned.get()) {
                 releaseDomain(ownerDomain);
-                permit.release();
+                releasePermitOrHandoff();
                 throw new PoisonedMutexException();
             }
             return new SharedGuard(ownerDomain, enforceOwnerDomain);
@@ -430,49 +498,47 @@ public final class OresMutex {
 
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
             GuardFuture<T> future = new GuardFuture<>();
-            final Thread waiter;
-            try {
-                waiter = Thread.ofVirtual().name("ores-shared-mutex-waiter").unstarted(() -> {
-                    try {
-                        permit.acquire();
-                        Guard<T> guard = checkedGuardAfterAcquire(ownerDomain, enforceOwnerDomain);
-                        if (!future.complete(guard)) {
-                            // Cancellation can win after the permit is acquired but
-                            // before the future accepts its result. This cleanup is
-                            // runtime-owned and may execute on the waiter virtual
-                            // thread, so it must not apply the guest guard's actor-
-                            // domain release check.
-                            ((SharedGuard) guard).releaseFromRuntime();
-                        }
-                    } catch (InterruptedException interrupted) {
-                        releaseDomain(ownerDomain);
-                        Thread.currentThread().interrupt();
-                        future.completeExceptionally(
-                                new java.util.concurrent.CancellationException(
-                                        "SharedMutex async wait cancelled"));
-                    } catch (Throwable failure) {
-                        future.completeExceptionally(failure);
-                    }
-                });
-            } catch (Throwable startupFailure) {
-                releaseDomain(ownerDomain);
-                releaseAsyncWaiter();
-                releaseGlobalAsyncWaiter();
-                return CompletableFuture.failedFuture(startupFailure);
-            }
+            AsyncWaiter waiter = new AsyncWaiter(
+                    ownerDomain,
+                    enforceOwnerDomain,
+                    future);
 
             future.whenComplete((ignored, failure) -> {
+                if (future.isCancelled()) {
+                    boolean removed;
+                    synchronized (asyncQueueLock) {
+                        removed = asyncQueue.remove(waiter);
+                    }
+                    if (removed) releaseDomain(ownerDomain);
+                }
                 releaseAsyncWaiter();
                 releaseGlobalAsyncWaiter();
-                if (future.isCancelled()) waiter.interrupt();
             });
 
-            try {
-                waiter.start();
-            } catch (Throwable startupFailure) {
-                releaseDomain(ownerDomain);
-                future.completeExceptionally(startupFailure);
+            boolean acquired = false;
+            boolean poisonedNow = false;
+            synchronized (asyncQueueLock) {
+                if (poisoned.get()) {
+                    poisonedNow = true;
+                } else if (permit.tryAcquire()) {
+                    acquired = true;
+                } else {
+                    asyncQueue.addLast(waiter);
+                }
             }
+
+            if (poisonedNow) {
+                releaseDomain(ownerDomain);
+                future.completeExceptionally(new PoisonedMutexException());
+            } else if (acquired) {
+                SharedGuard guard = new SharedGuard(
+                        ownerDomain,
+                        enforceOwnerDomain);
+                if (!future.complete(guard)) {
+                    guard.releaseFromRuntime();
+                }
+            }
+
             return future;
         }
 
@@ -529,7 +595,7 @@ public final class OresMutex {
                 }
             } finally {
                 releaseDomain(ownerDomain);
-                if (acquired) permit.release();
+                if (acquired) releasePermitOrHandoff();
             }
         }
 
@@ -581,7 +647,7 @@ public final class OresMutex {
             private void releaseFromRuntime() {
                 if (!released.compareAndSet(false, true)) return;
                 releaseDomain(ownerDomain);
-                permit.release();
+                releasePermitOrHandoff();
             }
 
             @Override
