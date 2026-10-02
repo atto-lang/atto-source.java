@@ -53,7 +53,9 @@ actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
-                = { annotation } visibility [ "static" ] [ "fnc" ] method_name [ generic_params ]
+                = { annotation } visibility [ "fnc" ] method_name [ generic_params ]
+                  method_head return_spec block
+                | { annotation } visibility "static" "fnc" method_name [ generic_params ]
                   method_head return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
@@ -215,6 +217,15 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      contain modules.
    - fnc declarations may recurse; routines may not participate in a call cycle.
    - fnc and routine declarations do not overload.
+   - async and actor are mutually exclusive concurrency modifiers.
+   - async callable syntax declares the fulfilled result T after "=>"; calling it
+     has type Future<T>. Writing Future<T> as the declared async result would
+     create an accidental nested future and is rejected.
+   - actor fnc syntax declares the actor result T after "=>"; calling it has type
+     ActorHandle<T>. ActorHandle<T> is not directly awaitable; result() yields
+     the explicit Future<T> when completion is needed.
+   - await is legal only in an async callable or actor mailbox turn and requires
+     a Future<T>. Ordinary borrows may not remain live across that suspension.
    - instance methods may overload only when arity differs.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.
