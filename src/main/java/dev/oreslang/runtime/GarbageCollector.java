@@ -15,12 +15,12 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class GarbageCollector {
     public enum Scope { ACTOR, PROCESS }
 
-    private static final long MIN_REQUEST_INTERVAL_NANOS = Duration.ofMillis(250).toNanos();
+    private static final long MIN_REQUEST_INTERVAL_NANOS = Duration.ofSeconds(1).toNanos();
+    private static final AtomicLong GLOBAL_LAST_REQUEST_NANOS = new AtomicLong(Long.MIN_VALUE);
 
     private final AtomicLong requests = new AtomicLong();
     private final AtomicLong honoredRequests = new AtomicLong();
     private final AtomicLong suppressedRequests = new AtomicLong();
-    private final AtomicLong lastRequestNanos = new AtomicLong(Long.MIN_VALUE);
 
     public GcResult request(Scope scope) {
         if (scope == Scope.ACTOR && !ActorRuntime.inActorExecution()) {
@@ -47,9 +47,9 @@ public final class GarbageCollector {
 
     private boolean reserveGcWindow(long now) {
         while (true) {
-            long previous = lastRequestNanos.get();
+            long previous = GLOBAL_LAST_REQUEST_NANOS.get();
             if (previous != Long.MIN_VALUE && now - previous < MIN_REQUEST_INTERVAL_NANOS) return false;
-            if (lastRequestNanos.compareAndSet(previous, now)) return true;
+            if (GLOBAL_LAST_REQUEST_NANOS.compareAndSet(previous, now)) return true;
         }
     }
 
