@@ -56,8 +56,9 @@ public final class Ast {
         public String stringLiteralValue() { return name.substring("$string$".length()); }
     }
 
-    public record Param(TypeRef type, String name, boolean structural) {
-        public Param(TypeRef type, String name) { this(type, name, false); }
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+        public Param(TypeRef type, String name) { this(type, name, false, false); }
+        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
 
     public record FunctionDecl(
@@ -147,6 +148,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            boolean mutableReceiver,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
             List<Param> parameters,
