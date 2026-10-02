@@ -1,5 +1,6 @@
 package dev.oreslang.types;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -24,7 +25,7 @@ public final class Types {
     public record ClassNamespace(String className) implements Type { }
 
     public record Record(Map<String, Type> members) implements Type {
-        public Record { members = Map.copyOf(members); }
+        public Record { members = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(members)); }
     }
 
     public record Function(List<Type> parameters, Type result) implements Type {
