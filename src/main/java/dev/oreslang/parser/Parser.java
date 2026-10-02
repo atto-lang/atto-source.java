@@ -41,13 +41,16 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 boolean afterDefineAbstract = match(ABSTRACT);
+                boolean singleton = match(SINGLETON);
                 if (match(MODULE)) {
+                    if (afterDefineAbstract) throw error(previous(), "modules cannot be abstract");
                     if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.isStatic || modifiers.isAbstract) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
-                    modules.add(parseModule(annotations));
+                    modules.add(parseModule(annotations, singleton));
                     continue;
                 }
+                if (singleton) throw error(previous(), "'singleton' may only qualify a module");
                 if (match(CLASS)) {
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
@@ -108,13 +111,13 @@ public final class Parser {
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations, boolean singleton) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
-        return new Ast.ModuleDecl(name, annotations, declarations);
+        return new Ast.ModuleDecl(name, singleton, annotations, declarations);
     }
 
     private Ast.Decl parseModuleMember() {
