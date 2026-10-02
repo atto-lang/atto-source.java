@@ -341,44 +341,14 @@ public final class TypeChecker {
         if (stmt instanceof Ast.DestructureStmt destructure) {
             Type source = deref(typeOf(destructure.initializer(), env, generics, self));
             if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
-                if (source instanceof Tuple tuple) {
-                    if (tuple.elements().size() != destructure.bindings().size()) {
-                        throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
-                                + " element(s), pattern has " + destructure.bindings().size());
-                    }
-                    for (int i = 0; i < destructure.bindings().size(); i++) {
-                        defineDestructureBinding(env, destructure.bindings().get(i), tuple.elements().get(i));
-                    }
-                } else if (source instanceof ListType list) {
-                    for (Ast.DestructureBinding binding : destructure.bindings()) {
-                        defineDestructureBinding(env, binding, list.element());
-                    }
-                } else {
-                    throw new IllegalArgumentException("sequence destructuring requires a tuple or array/list value");
+                List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings().size());
+                for (int i = 0; i < destructure.bindings().size(); i++) {
+                    defineDestructureBinding(env, destructure.bindings().get(i), elementTypes.get(i));
                 }
             } else {
-                Record shape;
-                if (source instanceof Record record) {
-                    shape = record;
-                } else if (source instanceof Named named) {
-                    Ast.ClassDecl klass = findClass(named.name());
-                    if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
-                    shape = (Record) substituteGenerics(
-                            publicClassShape(klass, new LinkedHashSet<>()),
-                            classGenericBindings(klass, named));
-                } else if (source == Unknown.INSTANCE) {
-                    shape = null;
-                } else {
-                    throw new IllegalArgumentException("object destructuring requires a record/map-like value");
-                }
-
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (binding.isDiscard()) continue;
-                    Type member = shape == null ? Unknown.INSTANCE : shape.members().get(binding.name());
-                    if (member == null) {
-                        throw new IllegalArgumentException("object destructure requires member '" + binding.name() + "'");
-                    }
-                    env.define(binding.name(), member, binding.kind());
+                    env.define(binding.name(), objectDestructureMemberType(source, binding.name()), binding.kind());
                 }
             }
             return;
@@ -834,14 +804,73 @@ public final class TypeChecker {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
         }
-        if (expected instanceof Tuple && expr instanceof Ast.ListExpr list) {
-            return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+        if (expr instanceof Ast.ListExpr list) {
+            if (expected instanceof Tuple) {
+                return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            }
+            if (expected instanceof Union union
+                    && union.options().stream().allMatch(option -> option instanceof Tuple)) {
+                return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            }
         }
         return typeOf(expr, env, generics, self);
     }
 
     private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
         if (!binding.isDiscard()) env.define(binding.name(), type, binding.kind());
+    }
+
+    private List<Type> sequenceDestructureTypes(Type source, int arity) {
+        source = deref(source);
+        if (source instanceof Tuple tuple) {
+            if (tuple.elements().size() != arity) {
+                throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
+                        + " element(s), pattern has " + arity);
+            }
+            return tuple.elements();
+        }
+        if (source instanceof ListType list) {
+            return java.util.Collections.nCopies(arity, list.element());
+        }
+        if (source instanceof Union union) {
+            List<List<Type>> alternatives = new ArrayList<>(union.options().size());
+            for (Type option : union.options()) {
+                alternatives.add(sequenceDestructureTypes(option, arity));
+            }
+            List<Type> joined = new ArrayList<>(arity);
+            for (int i = 0; i < arity; i++) {
+                final int slot = i;
+                joined.add(Types.unionOf(alternatives.stream().map(items -> items.get(slot)).toList()));
+            }
+            return List.copyOf(joined);
+        }
+        throw new IllegalArgumentException("sequence destructuring requires a tuple or array/list value");
+    }
+
+    private Type objectDestructureMemberType(Type source, String memberName) {
+        source = deref(source);
+        if (source instanceof Record record) {
+            Type member = record.members().get(memberName);
+            if (member == null) throw new IllegalArgumentException("object destructure requires member '" + memberName + "'");
+            return member;
+        }
+        if (source instanceof Named named) {
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
+            Record shape = (Record) substituteGenerics(
+                    publicClassShape(klass, new LinkedHashSet<>()),
+                    classGenericBindings(klass, named));
+            Type member = shape.members().get(memberName);
+            if (member == null) throw new IllegalArgumentException("object destructure requires member '" + memberName + "'");
+            return member;
+        }
+        if (source instanceof Union union) {
+            List<Type> alternatives = new ArrayList<>(union.options().size());
+            for (Type option : union.options()) alternatives.add(objectDestructureMemberType(option, memberName));
+            return Types.unionOf(alternatives);
+        }
+        if (source == Unknown.INSTANCE) return Unknown.INSTANCE;
+        throw new IllegalArgumentException("object destructuring requires a record/map-like value");
     }
 
     private void validateMutexCallback(Ast.LambdaExpr lambda, Type expectedParameter, Env parent, Set<String> generics, Type self) {

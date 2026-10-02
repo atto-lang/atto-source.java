@@ -119,7 +119,7 @@ const {foo, bar} = named();
 // {const foo, const bar} = named();
 ```
 
-A bare `_` is a discard pattern: it consumes that position without declaring a variable, so it can be repeated in the same pattern or reused by later destructures.
+A bare `_` is a sequence discard pattern: it consumes that array/tuple position without declaring a variable, so it can be repeated in the same sequence pattern or reused by later destructures. Object patterns do not accept bare `_` because object destructuring is key-based rather than positional.
 
 ```ores
 [const code, _, let body] = (200, "ignored", "ok");
@@ -129,7 +129,7 @@ A bare `_` is a discard pattern: it consumes that position without declaring a v
 
 `_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
 
-Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. Function-parameter destructuring is intentionally not part of this syntax yet.
+Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
 ## Classes, receivers, multiple inheritance, and interfaces
 

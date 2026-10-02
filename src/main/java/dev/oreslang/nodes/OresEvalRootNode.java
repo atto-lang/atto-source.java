@@ -755,6 +755,18 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            if (declared.isUnion()) {
+                List<String> failures = new ArrayList<>();
+                for (Ast.TypeRef option : declared.arguments()) {
+                    try {
+                        return shapeReturnedValue(option, value, callable, new LinkedHashSet<>(resolving));
+                    } catch (IllegalArgumentException error) {
+                        failures.add(error.getMessage());
+                    }
+                }
+                throw new IllegalArgumentException(callable + " return value does not match any union alternative: " + failures);
+            }
+
             if (declared.isTupleType()) {
                 List<?> items = asSequence(value);
                 if (items.size() != declared.arguments().size()) {
@@ -767,12 +779,50 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return java.util.Arrays.asList(fixed);
             }
+
             if (declared.isRecordType()) {
                 for (Map.Entry<String, Ast.TypeRef> member : declared.recordMembers().entrySet()) {
                     Object nested = destructureMember(value, member.getKey());
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
+                return value;
             }
+
+            if (declared.name().equals("Array") || declared.name().equals("List")) {
+                if (declared.arguments().size() != 1) return value;
+                List<?> items = asSequence(value);
+                ArrayList<Object> shaped = new ArrayList<>(items.size());
+                for (int i = 0; i < items.size(); i++) {
+                    shaped.add(shapeReturnedValue(declared.arguments().getFirst(), items.get(i), callable + "[" + i + "]", resolving));
+                }
+                return shaped;
+            }
+
+            if (declared.name().equals("bool") || declared.name().equals("Bool")) {
+                if (!(value instanceof Boolean)) throw returnTypeMismatch(callable, declared, value);
+                return value;
+            }
+            if (declared.name().equals("string") || declared.name().equals("String")) {
+                if (!(value instanceof String)) throw returnTypeMismatch(callable, declared, value);
+                return value;
+            }
+            if (java.util.Set.of("i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint").contains(declared.name())) {
+                if (!(value instanceof Number number) || !isIntegral(number)) throw returnTypeMismatch(callable, declared, value);
+                return value;
+            }
+            if (java.util.Set.of("f32","f64","float","decimal").contains(declared.name())) {
+                if (!(value instanceof Number)) throw returnTypeMismatch(callable, declared, value);
+                return value;
+            }
+            if (java.util.Set.of("complex64","complex128","complex").contains(declared.name())) {
+                if (!(value instanceof Number) && !(value instanceof Complex)) throw returnTypeMismatch(callable, declared, value);
+                return value;
+            }
+            if (declared.name().equals("void")) {
+                if (value != null) throw returnTypeMismatch(callable, declared, value);
+                return null;
+            }
+
             return value;
         }
 
@@ -783,6 +833,11 @@ public final class OresEvalRootNode extends RootNode {
                     ref.name(),
                     ref.arguments().stream().map(arg -> substituteReturnType(arg, substitutions)).toList(),
                     ref.inferArguments());
+        }
+
+        private IllegalArgumentException returnTypeMismatch(String callable, Ast.TypeRef declared, Object value) {
+            return new IllegalArgumentException(callable + " returned " + (value == null ? "null" : value.getClass().getSimpleName())
+                    + " but declared " + declared);
         }
 
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }

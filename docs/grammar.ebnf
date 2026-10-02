@@ -85,9 +85,12 @@ binding_kind    = "val" | "const" | "let" ;
 
 destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
                 | [ binding_kind ] object_pattern "=" expression stmt_terminator ;
-sequence_pattern= "[" destructure_item { "," destructure_item } "]" ;
-object_pattern  = "{" destructure_item { "," destructure_item } "}" ;
-destructure_item= [ binding_kind ] IDENT | "_" ;
+sequence_pattern= "[" sequence_destructure_item { "," sequence_destructure_item } "]" ;
+object_pattern  = "{" object_destructure_item { "," object_destructure_item } "}" ;
+sequence_destructure_item
+                = [ binding_kind ] IDENT | "_" ;
+object_destructure_item
+                = [ binding_kind ] IDENT ;
 
 block           = "{" { statement } "}" ;
 statement       = binding_decl
