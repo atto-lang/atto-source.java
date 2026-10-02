@@ -650,9 +650,14 @@ public final class ActorRuntime implements AutoCloseable {
             Supplier<? extends Behavior<M>> behaviorFactory) {
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
-        return spawn(ActorKind.PRIVATE, policy, context -> behaviorFactory.get());
+        return spawnInternal(ActorKind.PRIVATE, policy, context -> behaviorFactory.get(), true);
     }
 
+    /**
+     * Isolation-safe private actor construction. The factory itself must be
+     * stateless/capture-free; mutable actor state must be created after the
+     * actor context is installed and stored in actor-owned memory.
+     */
     public <M> ActorRef<M> spawnPrivate(BehaviorFactory<M> behaviorFactory) {
         return spawn(ActorKind.PRIVATE, policyCeiling, behaviorFactory);
     }
@@ -661,6 +666,23 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
         return spawn(ActorKind.PRIVATE, policy, behaviorFactory);
+    }
+
+    /**
+     * Explicit host-only escape hatch for tests/embedding code that needs a
+     * context-aware factory with captured Java objects. Never used by Oreslang
+     * compiler lowering and forbidden for adversarial policies.
+     */
+    public <M> ActorRef<M> spawnPrivateTrusted(BehaviorFactory<M> behaviorFactory) {
+        return spawnPrivateTrusted(policyCeiling, behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnPrivateTrusted(
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(behaviorFactory);
+        requireTrustedSupplierPolicy(policy);
+        return spawnInternal(ActorKind.PRIVATE, policy, behaviorFactory, true);
     }
 
     public <M> ActorRef<M> spawnShared(Supplier<? extends Behavior<M>> behaviorFactory) {
@@ -692,7 +714,7 @@ public final class ActorRuntime implements AutoCloseable {
             Supplier<? extends Behavior<M>> behaviorFactory) {
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
-        return spawn(kind, policy, context -> behaviorFactory.get());
+        return spawnInternal(kind, policy, context -> behaviorFactory.get(), kind == ActorKind.PRIVATE);
     }
 
     private static void requireStatelessPrivateFactory(Object factory) {
@@ -722,6 +744,14 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
+        return spawnInternal(kind, policy, behaviorFactory, false);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedPrivateFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
@@ -732,7 +762,7 @@ public final class ActorRuntime implements AutoCloseable {
                 : policy;
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
-        } else if (effectivePolicy.adversarial()) {
+        } else if (!trustedPrivateFactory) {
             requireStatelessPrivateFactory(behaviorFactory);
         }
         reserveActorSlot();
