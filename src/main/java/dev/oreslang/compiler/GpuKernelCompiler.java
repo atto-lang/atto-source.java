@@ -1060,7 +1060,20 @@ public final class GpuKernelCompiler {
             }
             return arithmeticResultType(module, binary.left(), left, binary.right(), right, binary.operator());
         }
-        if (expr instanceof Ast.AssignExpr assignment) return inferExprType(module, assignment.value(), env);
+        if (expr instanceof Ast.AssignExpr assignment) {
+            Ast.TypeRef targetType;
+            if (assignment.target() instanceof Ast.NameExpr name) {
+                targetType = env.lookup(name.name());
+                if (targetType == null) throw new IllegalArgumentException("unknown GPU assignment target '" + name.name() + "'");
+            } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                targetType = inferExprType(module, indexed, env);
+            } else {
+                throw new IllegalArgumentException("GPU assignment target is not lowerable");
+            }
+            Ast.TypeRef actual = inferExprType(module, assignment.value(), env);
+            requireExactAssignable(module, assignment.value(), actual, targetType, "GPU assignment");
+            return resolveAlias(targetType, module);
+        }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             return joinTypes(module, inferExprType(module, conditional.whenTrue(), env), inferExprType(module, conditional.whenFalse(), env));
         }
