@@ -1113,6 +1113,15 @@ public final class TypeChecker {
 
     private boolean constant(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.OldExpr old) return constant(old.expression());
+        if (expr instanceof Ast.MatchExpr matched) {
+            if (!constant(matched.subject())) return false;
+            for (Ast.MatchArm arm : matched.arms()) {
+                if (arm.guard() != null && !constant(arm.guard())) return false;
+                if (!constant(arm.value())) return false;
+            }
+            return true;
+        }
         if (expr instanceof Ast.UnaryExpr unary) return constant(unary.operand());
         if (expr instanceof Ast.BinaryExpr binary) return constant(binary.left()) && constant(binary.right());
         if (expr instanceof Ast.ConditionalExpr conditional) return constant(conditional.condition()) && constant(conditional.whenTrue()) && constant(conditional.whenFalse());
@@ -1462,6 +1471,9 @@ public final class TypeChecker {
         else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
+        else if (stmt instanceof Ast.AssertStmt s) collectCalls(s.condition(), module, out);
+        else if (stmt instanceof Ast.AssumeStmt s) collectCalls(s.condition(), module, out);
+        else if (stmt instanceof Ast.InvariantStmt s) collectCalls(s.condition(), module, out);
         else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch b : s.branches()) {
                 collectCalls(b.condition(), module, out);
@@ -1502,6 +1514,14 @@ public final class TypeChecker {
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField f : e.fields()) collectCalls(f.value(), module, out);
+        else if (expr instanceof Ast.MatchExpr e) {
+            collectCalls(e.subject(), module, out);
+            for (Ast.MatchArm arm : e.arms()) {
+                if (arm.guard() != null) collectCalls(arm.guard(), module, out);
+                collectCalls(arm.value(), module, out);
+            }
+        }
+        else if (expr instanceof Ast.OldExpr e) collectCalls(e.expression(), module, out);
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) collectCalls(e.expressionBody(), module, out);
             if (e.blockBody() != null) for (Ast.Stmt nested : e.blockBody()) collectCalls(nested, module, out);
