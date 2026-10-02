@@ -352,6 +352,17 @@ public final class OwnershipChecker {
                 }
             }
             checkExpr(member.receiver(), scope, false);
+            Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            if (klass != null) {
+                ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
+                if (target != null) {
+                    Ast.TypeRef fieldType = substituteType(
+                            target.field().type(),
+                            genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
+                    return new ValueInfo(fieldType, kindOfType(fieldType), null);
+                }
+            }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
@@ -966,27 +977,6 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return false;
-    }
-
-    private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
-        if (!seen.add(klass)) return null;
-        for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
-                seen.remove(klass);
-                return method;
-            }
-        }
-        for (Ast.TypeRef parent : klass.parents()) {
-            Ast.ClassDecl p = findClass(parent.name());
-            if (p == null) continue;
-            Ast.MethodDecl found = findMethod(p, name, arity, seen);
-            if (found != null) {
-                seen.remove(klass);
-                return found;
-            }
-        }
-        seen.remove(klass);
-        return null;
     }
 
     private Ast.FunctionDecl findFunction(String name) {
