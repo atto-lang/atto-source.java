@@ -65,6 +65,12 @@ Expected failure belongs in typed values such as `Result<T,E>` / `Option<T>`. Ex
 
 Expected runtime language failures cross Truffle as Oreslang guest exceptions. Arbitrary JVM exceptions are implementation failures, not part of the source-language exception taxonomy; Graal must not report normal Oreslang arithmetic errors as "Internal GraalVM error."
 
+## Recursion and host-stack isolation
+
+Guest recursion must not inherit the JVM stack as an undocumented language limit. The reference interpreter places a conservative call-depth guard on functions, methods, and lambdas and inserts a scheduler safepoint at every guest call boundary. Deep recursion therefore fails as an Oreslang runtime error and remains cancellable rather than escaping as `StackOverflowError` or bypassing actor/async wall-time checks.
+
+This guard is a safety mechanism, not the long-term performance model. Tail-recursive code should eventually lower to a trampoline/loop so Erlang-style constant-stack recursion can be supported without exposing backend stack behavior.
+
 ## Resource-lifecycle contract
 
 Correctness must not depend on GC/finalizers closing semantic resources. Actor stop/join is explicit, monitors are accounted, hot-reload generations use leases and retained-generation caps, contexts close deterministically, and future sockets/files/database handles must follow explicit ownership.
