@@ -8,6 +8,11 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class GpuExecutionTest {
@@ -437,6 +442,67 @@ final class GpuExecutionTest {
                         end
                         """));
         assertTrue(forOf.getMessage().contains("for-of is not supported inside GPU code"));
+    }
+
+    @Test
+    void generatedGpuProgramsPassARealOpenClFrontendWhenValidationIsEnabled() throws Exception {
+        if (!"1".equals(System.getenv("ORES_GPU_VALIDATE_OPENCL"))) return;
+
+        validateOpenCl(OresCompiler.compile("""
+                gpu fnc add(i32 a, i32 b) => i32 {
+                  return a + b;
+                }
+                """).gpuProgram());
+
+        validateOpenCl(OresCompiler.compile("""
+                gpu fnc scale(Array<f32> mut xs, i64 n, f32 factor) => void {
+                  for (let i64 i = 0; i < n; i = i + 1) {
+                    xs[i] = xs[i] * factor;
+                  }
+                  return;
+                }
+                """).gpuProgram());
+
+        validateOpenCl(OresCompiler.compile("""
+                gpu fnc load(Array<f32> xs, i64 i) => f32 {
+                  return xs[i];
+                }
+                gpu fnc outer(Array<f32> xs, i64 i) => f32 {
+                  return load(xs, i);
+                }
+                """).gpuProgram());
+
+        validateOpenCl(OresCompiler.compile("""
+                fnc host() => void {
+                  const funcs = gpu parallel List.of(
+                    || -> { return; },
+                    || -> { return; },
+                    || -> { return; }
+                  );
+                  return;
+                }
+                """).gpuProgram());
+    }
+
+    private static void validateOpenCl(GpuKernelCompiler.GpuProgram program) throws Exception {
+        Path source = Files.createTempFile("ores-gpu-", ".cl");
+        try {
+            Files.writeString(source, program.source(), StandardCharsets.UTF_8);
+            Process process = new ProcessBuilder(
+                    "clang",
+                    "-x", "cl",
+                    "-cl-std=CL1.2",
+                    "-fsyntax-only",
+                    source.toString())
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(process.waitFor(30, TimeUnit.SECONDS), "clang OpenCL validation timed out");
+            assertEquals(0, process.exitValue(),
+                    () -> "generated OpenCL failed frontend validation:\n" + output + "\nSOURCE:\n" + program.source());
+        } finally {
+            Files.deleteIfExists(source);
+        }
     }
 
     @Test
