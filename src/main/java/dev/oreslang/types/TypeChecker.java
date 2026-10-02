@@ -67,6 +67,7 @@ public final class TypeChecker {
         checker.validateRoutineRecursion();
         checker.validate(composed);
         OwnershipChecker.check(composed);
+        EffectChecker.check(composed);
         return composed;
     }
 
