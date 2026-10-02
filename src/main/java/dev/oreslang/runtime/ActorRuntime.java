@@ -531,11 +531,13 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     private void sendDown(ActorId watcherId, MonitorRef monitor, String reason, ActorFailure failure) {
+        if (closed.get()) return;
         ActorCell<?> watcherCell = actors.get(watcherId);
         if (watcherCell == null) return;
 
         Map<String, Object> down = new LinkedHashMap<>();
         down.put("type", "DOWN");
+        down.put("event", "DOWN");
         down.put("monitor_id", monitor.value().toString());
         down.put("actor_id", monitor.target().toString());
         down.put("reason", reason);
