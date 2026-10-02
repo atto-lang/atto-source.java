@@ -880,4 +880,43 @@ final class LanguageHardeningTest {
                         """)));
         assertTrue(mismatch.getMessage().contains("does not implement interface"));
     }
+    @Test
+    void aggregateFieldAssignmentRespectsValConstAndLet() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct MutablePoint {
+                  let int x;
+                }
+
+                fnc move(MutablePoint mut point) => MutablePoint {
+                  point.x = 9;
+                  return point;
+                }
+                """)));
+
+        IllegalArgumentException structVal = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Point {
+                          int x;
+                        }
+
+                        fnc bad(Point mut point) => void {
+                          point.x = 9;
+                          return;
+                        }
+                        """)));
+        assertTrue(structVal.getMessage().contains("cannot be assigned"));
+
+        IllegalArgumentException classConst = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Config as
+                          pub const int version = 1;
+                        end
+
+                        fnc bad(Config mut config) => void {
+                          config.version = 2;
+                          return;
+                        }
+                        """)));
+        assertTrue(classConst.getMessage().contains("cannot be assigned"));
+    }
 }
