@@ -1,0 +1,31 @@
+interface Named {
+  String name;
+}
+
+define struct LegacyPoint as
+  int x;
+  int y;
+end
+
+define module app
+  struct Point is Named {
+    pub String name;
+    int x;
+    int y;
+
+    pub sum() => int {
+      return self.x + self.y;
+    }
+  }
+
+  pub fnc main() => void {
+    val a = Point { name = "a", x = 2, y = 3 };
+    val b = Point { name = "a", x = 2, y = 3 };
+    val anon = struct { x = 20, y = 22 };
+
+    stdio.println(a == b);
+    stdio.println(a.sum());
+    stdio.println(anon.x + anon.y);
+    return;
+  }
+end
