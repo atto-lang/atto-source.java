@@ -510,7 +510,7 @@ public final class GpuKernelCompiler {
             out.append("  ").append(cScalar(inductionType)).append(' ').append(sanitize(initializer.name()))
                     .append(" = (").append(cScalar(inductionType)).append(")get_global_id(0);\n");
             String bound = renderExpr(target.module, parallelLoop.bound, env);
-            launchExtent = parallelLoop.operator.equals("<") ? bound : "(" + bound + " + 1)";
+            launchExtent = bound;
             out.append("  if (!(").append(sanitize(initializer.name())).append(' ')
                     .append(parallelLoop.operator).append(' ').append(bound).append(")) return;\n");
             emitStatements(out, target.module, parallelLoop.loop.body(), env, "  ");
@@ -561,7 +561,7 @@ public final class GpuKernelCompiler {
         if (!(init.initializer() instanceof Ast.LiteralExpr zero)
                 || !(zero.value() instanceof Long n) || n != 0L) return null;
         if (!(loop.condition() instanceof Ast.BinaryExpr condition)
-                || !(condition.operator().equals("<") || condition.operator().equals("<="))
+                || !condition.operator().equals("<")
                 || !(condition.left() instanceof Ast.NameExpr left)
                 || !left.name().equals(init.name())) return null;
         if (!isCanonicalIncrement(loop.update(), init.name())) return null;
@@ -835,7 +835,8 @@ public final class GpuKernelCompiler {
         String zero = "((" + cScalar(access.elementType) + ")0)";
         return "((" + access.boundsCondition + ") ? ("
                 + access.bufferName + "[" + access.indexExpression + "] = " + renderedValue + ") : "
-                + "(__ores_error[get_global_id(0)] |= ORES_GPU_ERR_BOUNDS, " + zero + "))";
+                + "((void)(" + renderedValue + "), "
+                + "__ores_error[get_global_id(0)] |= ORES_GPU_ERR_BOUNDS, " + zero + "))";
     }
 
     private BufferAccess bufferAccess(String module, Ast.IndexExpr indexed, LoweringEnv env) {
