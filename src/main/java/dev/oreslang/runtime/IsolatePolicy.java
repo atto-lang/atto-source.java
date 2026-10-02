@@ -98,8 +98,12 @@ public record IsolatePolicy(
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile) {
+        HostAccess hostAccess = adversarial
+                ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
+                : HostAccess.NONE;
+
         Context.Builder builder = Context.newBuilder(OresLanguage.ID)
-                .allowHostAccess(HostAccess.NONE)
+                .allowHostAccess(hostAccess)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
                 .allowEnvironmentAccess(EnvironmentAccess.NONE)
                 .allowNativeAccess(false)
