@@ -1408,7 +1408,7 @@ public final class TypeChecker {
             if (receiver instanceof SingletonProxy proxy) {
                 Ast.ClassDecl klass = findClass(proxy.target().name());
                 if (klass == null) throw new IllegalArgumentException("unknown singleton proxy class '" + proxy.target().name() + "'");
-                if (findFieldType(klass, member.member(), proxy.target(), new LinkedHashSet<>()) != null) {
+                if (hasFieldNamed(klass, member.member(), new LinkedHashSet<>())) {
                     throw new IllegalArgumentException("singleton object fields are actor-private; invoke a public method on "
                             + proxy.moduleName() + "." + proxy.fieldName());
                 }
@@ -1814,7 +1814,7 @@ public final class TypeChecker {
         if (iterable instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Ast.MethodDecl iterator = findMethod(klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                Ast.MethodDecl iterator = findProtocolMethod(klass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator != null) {
                     Type result = resolve(iterator.returnType(), Set.copyOf(iterator.genericParameters()), named);
                     if (result instanceof ListType list) return list.element();
@@ -2008,6 +2008,28 @@ public final class TypeChecker {
         return List.copyOf(fields.values());
     }
 
+    private boolean hasFieldNamed(
+            Ast.ClassDecl klass,
+            String name,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.name().equals(name)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null && hasFieldNamed(parent, name, seen)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        seen.remove(klass);
+        return false;
+    }
+
     private Type findFieldType(
             Ast.ClassDecl klass,
             String name,
@@ -2063,6 +2085,37 @@ public final class TypeChecker {
         throw new IllegalArgumentException(
                 "trait-private method '" + method.compositionOwner() + "." + method.name()
                         + "' is not accessible from " + where);
+    }
+
+    /**
+     * Compiler-internal protocol lookup. Protocol hooks such as
+     * [Symbol.iterator]() are invoked by language lowering rather than by
+     * ordinary source member access, so their visibility is not an external
+     * capability boundary.
+     */
+    private Ast.MethodDecl findProtocolMethod(
+            Ast.ClassDecl klass,
+            String name,
+            int arity,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                seen.remove(klass);
+                return method;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.MethodDecl candidate = findProtocolMethod(parent, name, arity, seen);
+            if (candidate != null) {
+                seen.remove(klass);
+                return candidate;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
