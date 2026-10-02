@@ -15,18 +15,26 @@ public final class CapabilityChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
-                    IsolatePolicy actorPolicy = fn.actorKind() == Ast.ActorKind.PRIVATE
-                            ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
-                            : policy;
+                    IsolatePolicy actorPolicy = switch (fn.actorKind()) {
+                        case PRIVATE -> policy.withoutCapabilities(
+                                IsolatePolicy.Capability.SHARED_MEMORY,
+                                IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+                        case UNTRUSTED -> IsolatePolicy.untrustedActor();
+                        default -> policy;
+                    };
                     if (fn.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
                     }
                     checkCallableTypes(fn.parameters(), fn.returnType(), actorPolicy);
                     checkStatements(fn.body(), actorPolicy);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
-                    IsolatePolicy actorPolicy = klass.actorKind() == Ast.ActorKind.PRIVATE
-                            ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
-                            : policy;
+                    IsolatePolicy actorPolicy = switch (klass.actorKind()) {
+                        case PRIVATE -> policy.withoutCapabilities(
+                                IsolatePolicy.Capability.SHARED_MEMORY,
+                                IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+                        case UNTRUSTED -> IsolatePolicy.untrustedActor();
+                        default -> policy;
+                    };
                     if (klass.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor " + klass.name());
                     }
