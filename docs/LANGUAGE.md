@@ -335,6 +335,32 @@ pub routine main() => void {
 
 For large immutable payloads, `process.share_readonly(value)` freezes the graph once and returns an opaque shared-region handle. Sending that handle reuses the immutable backing graph instead of copying it again.
 
+Actors may also keep explicit private state without closing over caller memory. `actor.spawn(handler, initial_state)` deep-freezes/copies the initial state into the actor boundary, then calls `handler(message, state)` for each mailbox item; the handler's return value becomes the next actor-local state. The one-argument `actor.spawn(handler)` form remains stateless.
+
+```ores
+fnc counter(str message, int state) => int {
+  stdio.stdout.write(state);
+  return state + 1;
+}
+
+val counter_ref = actor.spawn(counter, 0);
+actor.send(counter_ref, "tick");
+actor.send(counter_ref, "tick");
+```
+
+`ActorRef` values are PID-like immutable/copyable handles. Sending a message is non-consuming: the sender retains its own value while the runtime freezes/copies the transport representation.
+
+### Monitors and supervision
+
+`actor.monitor(target)` creates a one-way Erlang-style monitor from the current actor to `target`. Runtime/control-plane code may use `actor.monitor(target, watcher)` explicitly. When the target exits, the watcher receives one immutable message with at least:
+
+- `type = "DOWN"`
+- `monitor_id`
+- `actor_id`
+- `reason = "normal" | "failed" | "noproc"`
+
+Failures also include `error_type` and `error_message`. `actor.demonitor(...)` removes a monitor. This is deliberately lower-level than a built-in restart strategy: supervisors can implement one-for-one, one-for-all, rest-for-one, backoff, and escalation as ordinary Oreslang actor logic on top of typed monitor messages.
+
 ### Singleton actors
 
 `actor.singleton(name, handler)` returns one named actor instance per Oreslang runtime/context. This is the safe singleton primitive for mutable state: the state remains inside that actor's heap and every other actor accesses it by sending messages.
