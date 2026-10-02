@@ -130,12 +130,21 @@ public final class Ast {
 
     public record InterfaceFunctionDecl(
             String name,
+            boolean async,
             List<String> genericParameters,
             List<Param> parameters,
             TypeRef returnType) implements InterfaceMember {
         public InterfaceFunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+        }
+
+        public InterfaceFunctionDecl(
+                String name,
+                List<String> genericParameters,
+                List<Param> parameters,
+                TypeRef returnType) {
+            this(name, false, genericParameters, parameters, returnType);
         }
     }
 
