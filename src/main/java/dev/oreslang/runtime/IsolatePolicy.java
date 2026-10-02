@@ -29,6 +29,7 @@ public record IsolatePolicy(
         STDIN,
         STDOUT,
         PROCESS_INFO,
+        PROCESS_SINGLETON,
         ACTOR_SHARE_READONLY,
         NETWORK,
         FILESYSTEM_READ,
@@ -69,7 +70,7 @@ public record IsolatePolicy(
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
                 Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO,
-                        Capability.ACTOR_SHARE_READONLY, Capability.HOT_CODE_LOAD),
+                        Capability.PROCESS_SINGLETON, Capability.ACTOR_SHARE_READONLY, Capability.HOT_CODE_LOAD),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 
