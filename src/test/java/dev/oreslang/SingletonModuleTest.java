@@ -885,6 +885,78 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void failedSingletonRequestRollsBackAllProcessStateMutation() throws Exception {
+        String output = eval("""
+                define singleton module transactional_failure_guard as
+                  let int count = 0;
+
+                  pub fnc mutate_then_fail() => int {
+                    count = count + 1;
+                    return 1 / 0;
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      val int ignored = await transactional_failure_guard.mutate_then_fail();
+                    } catch (err) {
+                    }
+                    stdio.println(await transactional_failure_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-transaction-failure.ores");
+
+        assertTrue(output.contains("0"), output);
+    }
+
+    @Test
+    void timedOutSingletonRequestCannotCommitPartialState() throws Exception {
+        IsolatePolicy shortBudget = new IsolatePolicy(
+                Set.of(
+                        IsolatePolicy.Capability.STDOUT,
+                        IsolatePolicy.Capability.PROCESS_SINGLETON),
+                64L * 1024 * 1024,
+                64,
+                Duration.ofMillis(30));
+
+        String output = evalWithPolicy("""
+                define singleton module transactional_timeout_guard as
+                  let int count = 0;
+
+                  pub routine mutate_then_spin() => void {
+                    count = count + 1;
+                    for (;;) {
+                    }
+                    return;
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      await transactional_timeout_guard.mutate_then_spin();
+                    } catch (err) {
+                    }
+                    stdio.println(await transactional_timeout_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-transaction-timeout.ores", shortBudget);
+
+        assertTrue(output.contains("0"), output);
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
