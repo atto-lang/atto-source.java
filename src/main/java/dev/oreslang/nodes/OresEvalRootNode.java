@@ -62,13 +62,13 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final String codeUnitId;
+        private final String codeUnitDigest;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
-        private final IdentityHashMap<Ast.ModuleDecl, String> singletonCodeDigests = new IdentityHashMap<>();
         private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new ConcurrentHashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
@@ -77,6 +77,7 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             this.codeUnitId = codeUnitId;
+            this.codeUnitDigest = digestText(program.toString());
             indexDeclarations();
         }
 
@@ -228,15 +229,19 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String singletonCodeDigest(Ast.ModuleDecl module) {
-            return singletonCodeDigests.computeIfAbsent(module, ignored -> {
-                try {
-                    byte[] digest = MessageDigest.getInstance("SHA-256")
-                            .digest(module.toString().getBytes(StandardCharsets.UTF_8));
-                    return HexFormat.of().formatHex(digest);
-                } catch (Exception impossible) {
-                    throw new IllegalStateException(impossible);
-                }
-            });
+            // The whole checked code unit is the behavior provenance boundary:
+            // singleton code may call helpers declared outside the module.
+            return codeUnitDigest;
+        }
+
+        private static String digestText(String text) {
+            try {
+                byte[] digest = MessageDigest.getInstance("SHA-256")
+                        .digest(text.getBytes(StandardCharsets.UTF_8));
+                return HexFormat.of().formatHex(digest);
+            } catch (Exception impossible) {
+                throw new IllegalStateException(impossible);
+            }
         }
 
         private void authorizeSingletonCodeGeneration(SingletonState state, Ast.ModuleDecl module) {
