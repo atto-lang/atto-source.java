@@ -164,6 +164,40 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void staticFunctionsOwnTheirGenericParametersAndCannotCaptureClassGenerics() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub static fnc identity<U>(U value) => U {
+                      return value;
+                    }
+                  end
+                end
+
+                define module app
+                  fnc use() => void {
+                    val value = model.Box.identity<>(7);
+                    stdio.println(value);
+                    stdio.println(value);
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException captured = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          define class Bad<T>
+                            pub static fnc leak(T value) => T {
+                              return value;
+                            }
+                          end
+                        end
+                        """)));
+        assertTrue(captured.getMessage().contains("cannot reference enclosing class generic"));
+    }
+
+    @Test
     void inferredConstructorsBindClassGenericsIncludingInheritedFields() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
