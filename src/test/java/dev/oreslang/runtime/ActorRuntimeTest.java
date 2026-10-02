@@ -86,6 +86,39 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void inFlightMessageRemainsChargedToActorHeapUntilHandlerReturns() throws Exception {
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            ActorRuntime.ActorRef<Object> actor = runtime.spawnOwned(
+                    policy,
+                    1024L,
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        assertTrue(release.await(2, TimeUnit.SECONDS));
+                    });
+
+            runtime.send(actor, "x".repeat(100_000));
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            ActorRuntime.ActorSnapshot snapshot = runtime.snapshot(actor);
+            assertEquals(0L, snapshot.mailboxBytes());
+            assertTrue(snapshot.activeMessageBytes() > 100_000L);
+            assertEquals(1024L, snapshot.ownedStateBytes());
+
+            release.countDown();
+            assertTrue(runtime.stop(actor));
+            assertTrue(runtime.join(actor, Duration.ofSeconds(2)));
+        }
+    }
+
+    @Test
     void logicalActorHeapTracksPersistentStateSeparatelyFromMailbox() throws Exception {
         IsolatePolicy policy = new IsolatePolicy(
                 IsolatePolicy.developer().capabilities(),
