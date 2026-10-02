@@ -314,11 +314,12 @@ public final class ChannelRuntime {
                     immediate = sender.value;
                     claimSend(sender, completions);
                 } else {
-                    node = new ReceiveNode(channel, null, -1);
-                    WaitFuture<Object> future = new WaitFuture<>(() -> cancelOrdinary(nodeRef(node)));
-                    node.future = future;
-                    channel.receivers.addLast(node);
-                    node.registered = true;
+                    ReceiveNode waitingNode = new ReceiveNode(channel, null, -1);
+                    WaitFuture<Object> future = new WaitFuture<>(() -> cancelOrdinary(waitingNode));
+                    waitingNode.future = future;
+                    channel.receivers.addLast(waitingNode);
+                    waitingNode.registered = true;
+                    node = waitingNode;
                 }
             }
         } finally {
@@ -331,14 +332,6 @@ public final class ChannelRuntime {
         @SuppressWarnings("unchecked")
         CompletionStage<T> result = (CompletionStage<T>) (CompletionStage<?>) waiting.future;
         return result;
-    }
-
-    /*
-     * Helper used only to make the cancellation lambda capture a stable node
-     * reference after construction.
-     */
-    private static ReceiveNode nodeRef(ReceiveNode node) {
-        return node;
     }
 
     @SuppressWarnings("unchecked")
