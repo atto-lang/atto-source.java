@@ -50,6 +50,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     // Set only while checking a method expanded from a trait.
     private String activeTraitOwner;
@@ -74,11 +75,13 @@ public final class TypeChecker {
             if (imported.wildcard()) {
                 if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
                 if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
+                importedNames.add(imported.namespace());
                 importedValues.add(imported.namespace());
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                    importedNames.add(name);
                     if (imported.kind() != Ast.ImportKind.CLASS && imported.kind() != Ast.ImportKind.STRUCT) importedValues.add(name);
                 }
             }
@@ -187,6 +190,10 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), all, null);
+            } else {
+                Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
+                if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
+                resolve(field.type(), generics, null);
             }
         }
     }
@@ -1053,6 +1060,7 @@ public final class TypeChecker {
                     if (klass != null) {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
+                        requireTraitMethodAccessible(method, named.name() + "." + member.member());
                         Function signature = methodFunctionType(method, klass, named);
                         for (int i = 0; i < call.arguments().size(); i++) {
                             Type expected = signature.parameters().get(i);
@@ -1157,6 +1165,7 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
+                        requireTraitMethodAccessible(method, named.name() + "." + member.member());
                         return methodFunctionType(method, klass, named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
@@ -1784,6 +1793,14 @@ public final class TypeChecker {
         }
         seen.remove(klass);
         return List.copyOf(functions.values());
+    }
+
+    private void requireTraitMethodAccessible(Ast.MethodDecl method, String where) {
+        if (!method.composed() || method.visibility() == Ast.Visibility.PUBLIC) return;
+        if (activeTraitOwner != null && activeTraitOwner.equals(method.compositionOwner())) return;
+        throw new IllegalArgumentException(
+                "trait-private method '" + method.compositionOwner() + "." + method.name()
+                        + "' is not accessible from " + where);
     }
 
     private boolean methodAccessible(Ast.ClassDecl owner, Ast.MethodDecl method) {
