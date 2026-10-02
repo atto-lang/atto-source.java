@@ -366,6 +366,42 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void privateSingletonFunctionsCannotEscapeThroughTheGlobalFunctionIndex() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module private_calls
+                          fnc reset_secret() => int { return 99; }
+                          pub fnc read() => int { return 1; }
+                        end
+
+                        define module app
+                          pub fnc main() => void {
+                            val int leaked = await reset_secret();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("actor-private"));
+    }
+
+    @Test
+    void singletonHelperClassesCannotBeInheritedOutsideTheirActorModule() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module inherited_helpers
+                          define class Helper
+                            pub value() => int { return 1; }
+                          end
+                          pub fnc read() => int { return 1; }
+                        end
+
+                        define class Escape extends Helper
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("cannot be inherited"));
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
