@@ -93,6 +93,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
+    private final AtomicLong sharedMemoryBytes = new AtomicLong();
+    private final Object memoryBudgetLock = new Object();
+    private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final ExecutorService privateDispatcher;
@@ -119,6 +122,8 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
+    public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
+    public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
 
     /**
      * Logical actor-confined memory slice for one private actor.
@@ -248,20 +253,28 @@ public final class ActorRuntime implements AutoCloseable {
      * mutation of actor-owned state. SyncCell is for state intentionally shared
      * by multiple SHARED actors.
      */
-    public final class SyncCell<T> {
+    public final class SyncCell<T> implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock();
+        private final AtomicBoolean cellClosed = new AtomicBoolean();
         private T value;
+        private long reservedBytes;
 
         @SuppressWarnings("unchecked")
         private SyncCell(T initialValue) {
             Object frozen = freeze(initialValue);
             rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
+            long bytes = estimateFrozenBytes(frozen);
+            reserveSharedRuntimeBytes(bytes, "shared SyncCell");
             this.value = (T) frozen;
+            this.reservedBytes = bytes;
         }
+
+        public boolean closed() { return cellClosed.get(); }
 
         public T snapshot() {
             lock.lock();
             try {
+                requireOpen();
                 return value;
             } finally {
                 lock.unlock();
@@ -270,10 +283,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         public <R> R read(Function<? super T, ? extends R> reader) {
             Objects.requireNonNull(reader);
+            requireSharedActorTurn();
             lock.lock();
             try {
+                requireOpen();
+                Object frozen = freeze(reader.apply(value));
+                rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
                 @SuppressWarnings("unchecked")
-                R result = (R) freeze(reader.apply(value));
+                R result = (R) frozen;
                 return result;
             } finally {
                 lock.unlock();
@@ -286,10 +303,35 @@ public final class ActorRuntime implements AutoCloseable {
             requireSharedActorTurn();
             lock.lock();
             try {
+                requireOpen();
                 Object frozen = freeze(updater.apply(value));
                 rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
+                long nextBytes = estimateFrozenBytes(frozen);
+                long delta = nextBytes - reservedBytes;
+                if (delta > 0) reserveSharedRuntimeBytes(delta, "shared SyncCell update");
                 value = (T) frozen;
+                if (delta < 0) releaseSharedRuntimeBytes(-delta);
+                reservedBytes = nextBytes;
                 return value;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private void requireOpen() {
+            if (cellClosed.get()) throw new IllegalStateException("SyncCell is closed");
+        }
+
+        @Override
+        public void close() {
+            lock.lock();
+            try {
+                if (!cellClosed.compareAndSet(false, true)) return;
+                long bytes = reservedBytes;
+                reservedBytes = 0L;
+                value = null;
+                releaseSharedRuntimeBytes(bytes);
+                syncCells.remove(this);
             } finally {
                 lock.unlock();
             }
@@ -450,7 +492,13 @@ public final class ActorRuntime implements AutoCloseable {
 
     public <T> SyncCell<T> syncCell(T initialValue) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        return new SyncCell<>(initialValue);
+        ActorCell<?> current = currentActor.get();
+        if (current != null && current.kind == ActorKind.PRIVATE) {
+            throw new IllegalStateException("private actors cannot create synchronized shared-memory cells");
+        }
+        SyncCell<T> cell = new SyncCell<>(initialValue);
+        syncCells.add(cell);
+        return cell;
     }
 
     private void requireSharedActorTurn() {
@@ -461,20 +509,51 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void reservePrivateRuntimeBytes(long bytes, ActorId owner, String purpose) {
-        while (true) {
-            long current = privateMemoryBytes.get();
-            long next;
+        synchronized (memoryBudgetLock) {
+            long privateBytes = privateMemoryBytes.get();
+            long sharedBytes = sharedMemoryBytes.get();
+            long total;
             try {
-                next = Math.addExact(current, bytes);
+                total = Math.addExact(Math.addExact(privateBytes, sharedBytes), bytes);
             } catch (ArithmeticException overflow) {
                 throw new IllegalStateException(purpose + " aggregate accounting overflow");
             }
-            if (next > policyCeiling.maxHeapBytes()) {
+            if (total > policyCeiling.maxHeapBytes()) {
                 throw new IllegalStateException(purpose + " aggregate runtime limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current
-                        + " runtimeLimit=" + policyCeiling.maxHeapBytes());
+                        + ": requested=" + bytes + " privateUsed=" + privateBytes
+                        + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
             }
-            if (privateMemoryBytes.compareAndSet(current, next)) return;
+            privateMemoryBytes.addAndGet(bytes);
+        }
+    }
+
+    private void reserveSharedRuntimeBytes(long bytes, String purpose) {
+        if (bytes < 0) throw new IllegalArgumentException("shared memory reservation cannot be negative");
+        if (bytes == 0) return;
+        synchronized (memoryBudgetLock) {
+            long privateBytes = privateMemoryBytes.get();
+            long sharedBytes = sharedMemoryBytes.get();
+            long total;
+            try {
+                total = Math.addExact(Math.addExact(privateBytes, sharedBytes), bytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException(purpose + " aggregate accounting overflow");
+            }
+            if (total > policyCeiling.maxHeapBytes()) {
+                throw new IllegalStateException(purpose + " aggregate runtime limit exceeded"
+                        + ": requested=" + bytes + " privateUsed=" + privateBytes
+                        + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
+            }
+            sharedMemoryBytes.addAndGet(bytes);
+        }
+    }
+
+    private void releaseSharedRuntimeBytes(long bytes) {
+        if (bytes == 0) return;
+        long remaining = sharedMemoryBytes.addAndGet(-bytes);
+        if (remaining < 0) {
+            sharedMemoryBytes.set(0);
+            throw new IllegalStateException("shared actor memory accounting underflow");
         }
     }
 
@@ -818,6 +897,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         for (ActorCell<?> cell : actors.values()) cell.stop();
         actors.clear();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.close();
+        syncCells.clear();
         privateDispatcher.shutdownNow();
         sharedDispatcher.shutdownNow();
     }
