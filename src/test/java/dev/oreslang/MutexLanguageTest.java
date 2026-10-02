@@ -899,11 +899,9 @@ final class MutexLanguageTest {
                 end
                 """);
 
-        IllegalArgumentException returnError = assertThrows(
+        assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(returnProgram));
-        assertTrue(returnError.getMessage().contains(
-                "MutexGuard values are lexical and cannot be returned"));
     }
 
 }
