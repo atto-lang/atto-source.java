@@ -688,6 +688,17 @@ public final class ActorRuntime implements AutoCloseable {
 
         if (cell.kind == ActorKind.SHARED) {
             requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
+        } else {
+            long actorRemaining = cell.memorySlice.remainingBytes();
+            long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
+            long allowed = Math.min(actorRemaining, runtimeRemaining);
+            try {
+                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
+            } catch (IllegalStateException tooLarge) {
+                throw new IllegalStateException(
+                        "private actor mailbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
+                        tooLarge);
+            }
         }
         Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freeze(message);
         MemoryReservation reservation = null;
@@ -969,6 +980,129 @@ public final class ActorRuntime implements AutoCloseable {
         } finally {
             visiting.remove(value);
         }
+    }
+
+    /**
+     * Validates and estimates a private-actor message before allocating its
+     * isolation copy. The walk short-circuits as soon as the destination or
+     * parent-runtime budget cannot admit the logical graph.
+     */
+    private static long estimatePrivateTransportBytes(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth,
+            long limit) {
+        requireGraphDepth(depth);
+        if (limit < 0) throw new IllegalStateException("message exceeds remaining actor memory");
+
+        long scalar = scalarLogicalBytes(value);
+        if (scalar >= 0) return requireWithinLimit(scalar, limit);
+
+        if (value instanceof ActorRuntime.SyncCell<?>) {
+            throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
+        }
+        if (value instanceof Shared<?> shared) {
+            return estimatePrivateTransportBytes(shared.value(), visiting, depth + 1, limit);
+        }
+        if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
+
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
+                for (Object item : list) {
+                    total = addWithinLimit(total,
+                            estimatePrivateTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value instanceof Set<?> set) {
+                long total = requireWithinLimit(containerBase(24L, 16L, set.size()), limit);
+                for (Object item : set) {
+                    total = addWithinLimit(total,
+                            estimatePrivateTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value instanceof Map<?, ?> map) {
+                long total = requireWithinLimit(containerBase(24L, 32L, map.size()), limit);
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    total = addWithinLimit(total,
+                            estimatePrivateTransportBytes(entry.getKey(), visiting, depth + 1, limit - total),
+                            limit);
+                    total = addWithinLimit(total,
+                            estimatePrivateTransportBytes(entry.getValue(), visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                long total = requireWithinLimit(containerBase(24L, 8L, length), limit);
+                for (int i = 0; i < length; i++) {
+                    total = addWithinLimit(total,
+                            estimatePrivateTransportBytes(
+                                    Array.get(value, i), visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value instanceof Sendable sendable) {
+                Object frozen = sendable.freezeForSend();
+                if (frozen == value) {
+                    throw new IllegalArgumentException(
+                            "Sendable.freezeForSend() must not return the mutable source object");
+                }
+                return estimatePrivateTransportBytes(frozen, visiting, depth + 1, limit);
+            }
+            throw new IllegalArgumentException("value of type " + value.getClass().getName()
+                    + " is not Sendable; mutable host objects cannot cross actor boundaries");
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
+    private static long scalarLogicalBytes(Object value) {
+        if (value == null) return 8L;
+        if (value instanceof Boolean || value instanceof Byte || value instanceof Short
+                || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
+        if (value instanceof Long || value instanceof Double) return 24L;
+        if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
+        if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
+        if (value instanceof String string) return 40L + (long) string.length() * 2L;
+        if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof Enum<?>) return 24L;
+        return -1L;
+    }
+
+    private static long containerBase(long header, long perEntry, int count) {
+        try {
+            return Math.addExact(header, Math.multiplyExact(perEntry, (long) count));
+        } catch (ArithmeticException overflow) {
+            throw new IllegalStateException("actor message size accounting overflow");
+        }
+    }
+
+    private static long requireWithinLimit(long bytes, long limit) {
+        if (bytes > limit) {
+            throw new IllegalStateException(
+                    "message requires at least " + bytes + " bytes but only " + limit + " remain");
+        }
+        return bytes;
+    }
+
+    private static long addWithinLimit(long left, long right, long limit) {
+        long total;
+        try {
+            total = Math.addExact(left, right);
+        } catch (ArithmeticException overflow) {
+            throw new IllegalStateException("actor message size accounting overflow");
+        }
+        return requireWithinLimit(total, limit);
     }
 
     /**
