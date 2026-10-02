@@ -143,6 +143,7 @@ public final class TypeChecker {
         // the language's arity-only overload rule is diagnosed.
         for (Ast.ClassDecl klass : classOwners.keySet()) validateLocalClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) validateInheritedClassOverloads(klass);
+        for (Ast.ClassDecl klass : classOwners.keySet()) validateAbstractMethodSlots(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
@@ -492,6 +493,58 @@ public final class TypeChecker {
         return owner + origin.ownerType().arguments();
     }
 
+    private void validateAbstractMethodSlots(Ast.ClassDecl klass) {
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isAbstract()) continue;
+            if (method.isStatic()) {
+                throw new IllegalArgumentException(
+                        "static class functions cannot be abstract: " + klass.name() + "." + method.name());
+            }
+            if (method.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "abstract method '" + klass.name() + "." + method.name()
+                                + "' with arity " + method.arity()
+                                + " must be public so subclasses can satisfy the slot");
+            }
+        }
+
+        if (klass.isAbstract()) return;
+
+        Map<Ast.MethodArity, Ast.MethodDecl> effective =
+                effectiveInstanceMethods(klass, new LinkedHashSet<>());
+        for (Map.Entry<Ast.MethodArity, Ast.MethodDecl> entry : effective.entrySet()) {
+            if (!entry.getValue().isAbstract()) continue;
+            throw new IllegalArgumentException(
+                    "concrete class '" + klass.name() + "' has unresolved abstract method '"
+                            + entry.getKey().name() + "' with arity " + entry.getKey().arity()
+                            + "; implement that exact name + arity slot or declare the class abstract");
+        }
+    }
+
+    private Map<Ast.MethodArity, Ast.MethodDecl> effectiveInstanceMethods(
+            Ast.ClassDecl klass,
+            Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) {
+            throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
+        }
+        try {
+            Map<Ast.MethodArity, Ast.MethodDecl> result = new LinkedHashMap<>();
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                for (Map.Entry<Ast.MethodArity, Ast.MethodDecl> inherited :
+                        effectiveInstanceMethods(parent, stack).entrySet()) {
+                    result.putIfAbsent(inherited.getKey(), inherited.getValue());
+                }
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic()) result.put(method.overloadIdentity(), method);
+            }
+            return result;
+        } finally {
+            stack.remove(klass);
+        }
+    }
     private void checkClass(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -1498,6 +1551,9 @@ public final class TypeChecker {
             }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
+            if (klass.isAbstract()) {
+                throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException("actor '" + klass.name()
                         + "' cannot be constructed with new; actor instances must be created through the actor runtime");
