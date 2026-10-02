@@ -15,6 +15,39 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorRuntimeTest {
 
     @Test
+    void actorCountLimitIsAtomicAndSlotsReturnAfterTermination() {
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                2,
+                Duration.ofSeconds(5),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            ActorRuntime.ActorRef<Object> first = runtime.spawn(() -> (message, context) -> { });
+            ActorRuntime.ActorRef<Object> second = runtime.spawn(() -> (message, context) -> { });
+
+            assertEquals(2, runtime.activeActorCount());
+            IllegalStateException full = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.spawn(() -> (message, context) -> { }));
+            assertTrue(full.getMessage().contains("maxActors"));
+
+            assertTrue(runtime.stop(first));
+            assertTrue(runtime.join(first, Duration.ofSeconds(2)));
+            assertEquals(1, runtime.activeActorCount());
+
+            ActorRuntime.ActorRef<Object> replacement = runtime.spawn(() -> (message, context) -> { });
+            assertNotEquals(first.id(), replacement.id());
+            assertEquals(2, runtime.activeActorCount());
+
+            runtime.stop(second);
+            runtime.stop(replacement);
+        }
+    }
+
+    @Test
     void actorsOwnBehaviorAndCommunicateThroughFrozenMessages() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
