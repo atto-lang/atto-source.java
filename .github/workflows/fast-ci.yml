@@ -31,3 +31,4 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+          mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/modules-namespaces-callables.ores"
