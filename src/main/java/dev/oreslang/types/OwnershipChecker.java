@@ -943,7 +943,8 @@ public final class OwnershipChecker {
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
-        if (type == null || type.isBorrow()) return false;
+        if (type == null) return false;
+        if (type.isBorrow()) return containsMutexGuardType(type.borrowedTarget());
         if (isMutexGuardType(type)) return true;
         for (Ast.TypeRef argument : type.arguments()) {
             if (containsMutexGuardType(argument)) return true;
