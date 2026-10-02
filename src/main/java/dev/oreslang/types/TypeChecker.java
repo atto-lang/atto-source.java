@@ -496,7 +496,7 @@ public final class TypeChecker {
                     && namespace.name().equals("List")
                     && builtin.member().equals("of")) {
                 return new Tuple(call.arguments().stream()
-                        .map(argument -> widenCollectionElement(typeOf(argument, env, generics, self)))
+                        .map(argument -> typeOf(argument, env, generics, self))
                         .toList());
             }
             if (call.callee() instanceof Ast.MemberExpr builtin
