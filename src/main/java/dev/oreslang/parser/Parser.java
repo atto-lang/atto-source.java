@@ -148,15 +148,21 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
-        if (match(ACTOR)) {
-            Ast.ActorKind actorKind = modifiers.shared ? Ast.ActorKind.SHARED : Ast.ActorKind.PRIVATE;
+        if (match(ACTOR, ISOACTOR)) {
+            Token actorToken = previous();
+            boolean isolated = actorToken.type() == ISOACTOR;
+            if (isolated && modifiers.shared) {
+                throw error(actorToken, "'shared isoactor' is contradictory; use either actor/shared actor or isoactor");
+            }
+            Ast.ActorKind actorKind = isolated ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
+            if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
-                throw error(previous(), "actor declarations do not accept async, nlex, static, or abstract modifiers");
+                throw error(actorToken, "actor declarations do not accept async, nlex, static, or abstract modifiers");
             }
             return parseActorClass(actorKind);
         }
-        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration or actor fnc");
+        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
@@ -177,9 +183,6 @@ public final class Parser {
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
-        if (kind == Ast.CallableKind.ROUTINE && actorKind != Ast.ActorKind.NONE) {
-            throw error(previous(), "actor entry points use fnc, not routine");
-        }
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");

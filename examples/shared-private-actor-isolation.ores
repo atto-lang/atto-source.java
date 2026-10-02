@@ -42,11 +42,11 @@ shared actor SharedCounter {
 }
 
 // PRIVATE / isolated actor:
-// - unqualified "actor" means private
+// - "isoactor" explicitly means private / isolated
 // - owns its mutable state exclusively
 // - receives a private actor memory slice at runtime
 // - SHARED_MEMORY capability is stripped from this actor domain
-actor PrivateCounter {
+isoactor PrivateCounter {
   let int value = 10;
 
   pub fnc increment() => void {
@@ -75,7 +75,7 @@ actor PrivateCounter {
  *
  * process.share_readonly(...) is therefore private-actor forbidden too.
  *
- * actor BrokenPrivateCounter {
+ * isoactor BrokenPrivateCounter {
  *   let SharedMutex<CounterState> shared_count =
  *       SharedMutex.new(new CounterState());
  *
