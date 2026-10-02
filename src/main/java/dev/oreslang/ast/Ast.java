@@ -38,7 +38,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Decl permits FunctionDecl, InitDecl, ClassDecl, TraitDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, InitDecl, ClassDecl, StructDecl, TraitDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -132,6 +132,27 @@ public final class Ast {
     }
 
     /**
+     * Value-semantic aggregate type. Struct declarations are compile-time type
+     * declarations; callable-local structs are lexically scoped and erased at
+     * runtime. The compact field form is name-first: `field: Type`.
+     */
+    public record StructField(String name, TypeRef type) { }
+
+    public record StructDecl(
+            String name,
+            Visibility visibility,
+            List<String> genericParameters,
+            List<StructField> fields) implements Decl, Stmt {
+        public StructDecl {
+            genericParameters = List.copyOf(genericParameters);
+            fields = List.copyOf(fields);
+        }
+        public StructDecl(String name, List<String> genericParameters, List<StructField> fields) {
+            this(name, Visibility.PRIVATE, genericParameters, fields);
+        }
+    }
+
+    /**
      * Compile-time composition unit. Traits have reusable instance state and
      * behavior but no independent object identity and cannot be instantiated.
      */
@@ -170,7 +191,7 @@ public final class Ast {
             Visibility visibility,
             List<String> genericParameters,
             List<TypeRef> parents,
-            List<InterfaceMember> members) implements Decl {
+            List<InterfaceMember> members) implements Decl, Stmt {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
@@ -221,7 +242,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits StructDecl, InterfaceDecl, BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
             IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
