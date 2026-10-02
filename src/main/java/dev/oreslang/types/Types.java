@@ -138,6 +138,7 @@ public final class Types {
         }
         if (flattened.isEmpty()) return Unknown.INSTANCE;
         if (flattened.size() == 1) return flattened.getFirst();
+        flattened.sort(java.util.Comparator.comparing(Object::toString));
         return new Union(flattened);
     }
 
