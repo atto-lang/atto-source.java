@@ -132,8 +132,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callSingletonFunction(SingletonState state, Ast.FunctionDecl fn, List<?> args) {
-            if (!state.key.equals(singletonKey(ownerModule(fn)))) {
+            Ast.ModuleDecl owner = ownerModule(fn);
+            if (!state.key.equals(singletonKey(owner))) {
                 throw new IllegalStateException("singleton function dispatched to wrong actor state");
+            }
+            String currentSchema = singletonSchema(owner);
+            if (!state.schema.equals(currentSchema)) {
+                throw new IllegalStateException("singleton module state schema changed for " + owner.name()
+                        + "; process-lifetime state cannot be reinterpreted without an explicit migration");
             }
             Env env = new Env(state.fields, state);
             return executeFunctionBody(fn, args, env);
@@ -167,7 +173,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private SingletonState initializeSingleton(Ast.ModuleDecl module) {
-            SingletonState state = new SingletonState(singletonKey(module));
+            SingletonState state = new SingletonState(singletonKey(module), singletonSchema(module));
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)) continue;
                 if (field.initializer() == null) {
@@ -183,6 +189,18 @@ public final class OresEvalRootNode extends RootNode {
             String namespace = program.namespace();
             String namespaceIdentity = namespace == null || namespace.isBlank() ? "<default>" : namespace;
             return "ores:" + codeUnitId + ":" + namespaceIdentity + ":" + module.name();
+        }
+
+        private String singletonSchema(Ast.ModuleDecl module) {
+            StringBuilder schema = new StringBuilder();
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field)) continue;
+                schema.append(field.name())
+                        .append(':').append(field.bindingKind())
+                        .append(':').append(field.type())
+                        .append(';');
+            }
+            return schema.toString();
         }
 
         private Ast.ModuleDecl ownerModule(Ast.FunctionDecl fn) {
@@ -710,10 +728,12 @@ public final class OresEvalRootNode extends RootNode {
 
     private static final class SingletonState {
         private final String key;
+        private final String schema;
         private final Env fields;
 
-        private SingletonState(String key) {
+        private SingletonState(String key, String schema) {
             this.key = key;
+            this.schema = schema;
             this.fields = new Env(null, this);
         }
     }
