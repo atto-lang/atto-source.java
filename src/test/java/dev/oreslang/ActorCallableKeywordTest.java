@@ -102,6 +102,10 @@ final class ActorCallableKeywordTest {
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                async actor fnc invalid_async_actor() => void { return; }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define class Invalid
                   actor run() => void { return; }
                 end
