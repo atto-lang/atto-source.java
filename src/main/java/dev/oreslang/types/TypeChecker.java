@@ -170,7 +170,7 @@ public final class TypeChecker {
                 for (String generic : fn.genericParameters()) {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
-                functionType(fn.parameters(), fn.returnType(), all, null);
+                functionType(fn.parameters(), fn.returnType(), all, null, fn.async());
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
@@ -597,6 +597,18 @@ public final class TypeChecker {
                 if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
                 return result;
             }
+            if (receiver instanceof Named named && named.name().equals("ActorHandle") && named.arguments().size() == 1) {
+                Type result = named.arguments().getFirst();
+                return switch (member.member()) {
+                    case "id" -> new Named("ActorId", List.of());
+                    case "kind" -> new Named("ActorKind", List.of());
+                    case "status" -> new Function(List.of(), new Named("ActorStatus", List.of()));
+                    case "is_alive" -> new Function(List.of(), Primitive.BOOL);
+                    case "stop" -> new Function(List.of(), Primitive.VOID);
+                    case "result" -> new Function(List.of(), new Named("Future", List.of(result)));
+                    default -> throw new IllegalArgumentException("unknown ActorHandle member '" + member.member() + "'");
+                };
+            }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
@@ -857,7 +869,7 @@ public final class TypeChecker {
                 Set<String> all = new HashSet<>(generics);
                 all.addAll(fn.genericParameters());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()),
-                        functionType(fn.parameters(), fn.returnType(), all, null), "interface " + iface.name());
+                        functionType(fn.parameters(), fn.returnType(), all, null, fn.async()), "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
             }
