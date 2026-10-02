@@ -1183,13 +1183,15 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("'" + created.type().name() + "' is not a struct type");
             }
 
-            LinkedHashMap<String, Ast.FieldDecl> declared = new LinkedHashMap<>();
-            for (Ast.FieldDecl field : struct.fields()) declared.put(field.name(), field);
+            LinkedHashMap<String, Ast.FieldDecl> callerFields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : struct.fields()) {
+                if (!field.composed()) callerFields.put(field.name(), field);
+            }
 
             LinkedHashMap<String, Ast.Expr> supplied = new LinkedHashMap<>();
             for (Ast.ObjectField field : created.fields()) {
-                if (!declared.containsKey(field.name())) {
-                    throw new IllegalArgumentException("unknown struct field '" + struct.name() + "." + field.name() + "'");
+                if (!callerFields.containsKey(field.name())) {
+                    throw new IllegalArgumentException("unknown or trait-owned struct field '" + struct.name() + "." + field.name() + "'");
                 }
                 if (supplied.putIfAbsent(field.name(), field.value()) != null) {
                     throw new IllegalArgumentException("duplicate struct field '" + struct.name() + "." + field.name() + "'");
@@ -1199,6 +1201,12 @@ public final class TypeChecker {
             Type nominal = nominalClassType(struct);
             Set<String> structGenerics = Set.copyOf(struct.genericParameters());
             for (Ast.FieldDecl field : struct.fields()) {
+                if (field.composed()) {
+                    if (field.initializer() == null) {
+                        throw new IllegalArgumentException("composed trait state '" + struct.name() + "." + field.name() + "' requires an initializer");
+                    }
+                    continue;
+                }
                 Ast.Expr value = supplied.get(field.name());
                 if (value != null) {
                     requireAssignable(typeOf(value, env, generics, self),
@@ -1344,6 +1352,8 @@ public final class TypeChecker {
             validateSingletonTransportExpr(indexed.index(), currentModule);
         } else if (expr instanceof Ast.NewExpr created) {
             for (Ast.Expr argument : created.arguments()) validateSingletonTransportExpr(argument, currentModule);
+        } else if (expr instanceof Ast.StructInitExpr created) {
+            for (Ast.ObjectField field : created.fields()) validateSingletonTransportExpr(field.value(), currentModule);
         } else if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) validateSingletonTransportExpr(item, currentModule);
         } else if (expr instanceof Ast.TupleExpr tuple) {
@@ -1938,13 +1948,32 @@ public final class TypeChecker {
                 for (Ast.FieldDecl field : effectiveFields(struct, new LinkedHashSet<>())) {
                     expectedFields.put(field.name(), field);
                 }
-                if (!record.members().keySet().equals(expectedFields.keySet())) {
-                    throw new IllegalArgumentException(where + " does not match struct '" + struct.name()
-                            + "': expected fields " + expectedFields.keySet() + " but got " + record.members().keySet());
+                LinkedHashSet<String> callerFields = new LinkedHashSet<>();
+                for (Ast.FieldDecl field : expectedFields.values()) if (!field.composed()) callerFields.add(field.name());
+
+                LinkedHashSet<String> extras = new LinkedHashSet<>(record.members().keySet());
+                extras.removeAll(callerFields);
+                if (!extras.isEmpty()) {
+                    throw new IllegalArgumentException(where + " has unknown or trait-owned fields for struct '" + struct.name()
+                            + "': " + extras);
                 }
+
                 Type nominal = nominalClassType(struct);
                 for (Ast.FieldDecl field : expectedFields.values()) {
+                    if (field.composed()) {
+                        if (field.initializer() == null) {
+                            throw new IllegalArgumentException("composed trait state '" + struct.name() + "." + field.name()
+                                    + "' requires an initializer");
+                        }
+                        continue;
+                    }
                     Type supplied = record.members().get(field.name());
+                    if (supplied == null) {
+                        if (field.initializer() == null) {
+                            throw new IllegalArgumentException(where + " is missing required struct field '" + field.name() + "'");
+                        }
+                        continue;
+                    }
                     Type required = resolve(field.type(), Set.copyOf(struct.genericParameters()), nominal);
                     if (!assignable(supplied, required)) {
                         throw new IllegalArgumentException(where + " field '" + field.name() + "' expects "
