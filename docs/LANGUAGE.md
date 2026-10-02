@@ -301,7 +301,7 @@ define class Worker with Counter as
 end
 ```
 
-The compiler flattens trait state and behavior into the host class before ordinary type, ownership, capability, and runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes and foreign traits cannot reach it directly.
+The compiler flattens trait state and behavior into the host class before ordinary type, ownership, capability, and runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes and foreign traits cannot reach it directly. Private trait helper methods are lexical as well: they remain callable from methods originating in that same trait but are not exposed to the consuming class.
 
 Traits must declare their dependencies. If a trait method needs host behavior, it declares an abstract method requirement instead of silently reaching into the host class:
 
