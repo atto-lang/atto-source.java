@@ -357,7 +357,9 @@ public final class TypeChecker {
                 } else if (source instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
-                    shape = publicClassShape(klass, new LinkedHashSet<>());
+                    shape = (Record) substituteGenerics(
+                            publicClassShape(klass, new LinkedHashSet<>()),
+                            classGenericBindings(klass, named));
                 } else if (source == Unknown.INSTANCE) {
                     shape = null;
                 } else {
