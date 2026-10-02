@@ -21,9 +21,7 @@ public final class Ast {
             boolean wildcard,
             String namespace,
             String path) {
-        public ImportDecl {
-            names = List.copyOf(names);
-        }
+        public ImportDecl { names = List.copyOf(names); }
     }
 
     public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
@@ -37,27 +35,27 @@ public final class Ast {
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
+    public enum CallableKind { FNC, ROUTINE }
 
     public record Annotation(String name, List<TypeRef> arguments) {
-        public Annotation {
-            arguments = List.copyOf(arguments);
-        }
+        public Annotation { arguments = List.copyOf(arguments); }
     }
 
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
-        public TypeRef {
-            arguments = List.copyOf(arguments);
-        }
-
-        public static TypeRef simple(String name) {
-            return new TypeRef(name, List.of(), false);
-        }
+        public TypeRef { arguments = List.copyOf(arguments); }
+        public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        public static TypeRef stringLiteral(String value) { return new TypeRef("$string$" + value, List.of(), false); }
+        public boolean isStringLiteral() { return name.startsWith("$string$"); }
+        public String stringLiteralValue() { return name.substring("$string$".length()); }
     }
 
-    public record Param(TypeRef type, String name) { }
+    public record Param(TypeRef type, String name, boolean structural) {
+        public Param(TypeRef type, String name) { this(type, name, false); }
+    }
 
     public record FunctionDecl(
             String name,
+            CallableKind kind,
             Visibility visibility,
             boolean async,
             List<String> genericParameters,
@@ -70,6 +68,10 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+        }
+        public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
+            this(name, CallableKind.FNC, visibility, async, genericParameters, parameters, returnType, annotations, body);
         }
     }
 
@@ -111,11 +113,17 @@ public final class Ast {
 
     public record InterfaceDecl(
             String name,
+            Visibility visibility,
             List<String> genericParameters,
+            List<TypeRef> parents,
             List<InterfaceMember> members) implements Decl {
         public InterfaceDecl {
             genericParameters = List.copyOf(genericParameters);
+            parents = List.copyOf(parents);
             members = List.copyOf(members);
+        }
+        public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
+            this(name, Visibility.PRIVATE, genericParameters, List.of(), members);
         }
     }
 
@@ -144,38 +152,31 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+        public int arity() { return parameters.size(); }
     }
 
     public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
-        public TypeAliasDecl {
-            genericParameters = List.copyOf(genericParameters);
-        }
+        public TypeAliasDecl { genericParameters = List.copyOf(genericParameters); }
     }
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt, IfStmt, TryStmt { }
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+            IfStmt, TryStmt, ForOfStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
-
     public record DestructureBinding(BindingKind kind, String name) { }
 
     public record DestructureStmt(List<DestructureBinding> bindings, Expr initializer) implements Stmt {
-        public DestructureStmt {
-            bindings = List.copyOf(bindings);
-        }
+        public DestructureStmt { bindings = List.copyOf(bindings); }
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
-
     public record ExprStmt(Expr expression) implements Stmt { }
-
     public record DeferStmt(Expr expression) implements Stmt { }
 
     public record IfBranch(Expr condition, List<Stmt> body) {
-        public IfBranch {
-            body = List.copyOf(body);
-        }
+        public IfBranch { body = List.copyOf(body); }
     }
 
     public record IfStmt(List<IfBranch> branches, List<Stmt> elseBody) implements Stmt {
@@ -193,57 +194,46 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, CallExpr,
-            MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+    public record ForOfStmt(BindingKind bindingKind, String bindingName, Expr iterable, List<Stmt> body) implements Stmt {
+        public ForOfStmt { body = List.copyOf(body); }
+    }
+
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
-
     public record Imaginary(double coefficient) { }
-
     public record NameExpr(String name) implements Expr { }
-
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
-
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
-
     public record AssignExpr(Expr target, Expr value) implements Expr { }
+    public record ConditionalExpr(Expr condition, Expr whenTrue, Expr whenFalse) implements Expr { }
 
     public record CallExpr(Expr callee, List<Expr> arguments) implements Expr {
-        public CallExpr {
-            arguments = List.copyOf(arguments);
-        }
+        public CallExpr { arguments = List.copyOf(arguments); }
     }
 
     public record MemberExpr(Expr receiver, String member) implements Expr { }
-
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
-        public NewExpr {
-            arguments = List.copyOf(arguments);
-        }
+        public NewExpr { arguments = List.copyOf(arguments); }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
 
     public record ListExpr(List<Expr> elements) implements Expr {
-        public ListExpr {
-            elements = List.copyOf(elements);
-        }
+        public ListExpr { elements = List.copyOf(elements); }
     }
 
     public record TupleExpr(List<Expr> elements) implements Expr {
-        public TupleExpr {
-            elements = List.copyOf(elements);
-        }
+        public TupleExpr { elements = List.copyOf(elements); }
     }
 
     public record ObjectField(String name, Expr value) { }
 
     public record ObjectExpr(List<ObjectField> fields) implements Expr {
-        public ObjectExpr {
-            fields = List.copyOf(fields);
-        }
+        public ObjectExpr { fields = List.copyOf(fields); }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) implements Expr {
