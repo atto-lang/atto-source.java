@@ -52,6 +52,16 @@ The strict production direction is:
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
 
 
+## Async task boundary
+
+Source-level `async` means task/continuation execution with an Oreslang `Future<T>` result. It does **not** promise, expose, or require a Java `Thread`, virtual thread, executor, `CompletableFuture`, or any other JVM scheduling primitive. Those are backend choices.
+
+The JVM backend may represent a ready/pending Oreslang future with `CompletionStage` / `CompletableFuture` internally, and may use virtual threads around blocking host APIs. It must not define async guest semantics as “run this guest AST on a new virtual thread.” Suspension must preserve the Oreslang ownership domain, release the carrier, and resume through a scheduler continuation. Ordinary borrows cannot cross that suspension boundary; actor-owned `self` may because its owner token is the actor identity rather than the carrier thread.
+
+The current reference evaluator does not yet contain the async continuation lowering. It therefore fails closed if an `async` body reaches interpreter execution instead of silently running it synchronously. This is deliberate: synchronous fallback would make the static `Future<T>` contract false, while dispatching guest ASTs to virtual threads would violate the current Truffle thread-access policy.
+
+Actor entrypoints are a separate concurrency primitive. Invoking `actor fnc ... => T` is specified to produce `ActorHandle<T>`; the handle contains actor identity/lifecycle capability and exposes an explicit completion `Future<T>` through `result()`. `async actor fnc` and async actor methods are invalid.
+
 ## Truffle thread boundary
 
 `ActorRuntime` is the host scheduling substrate. Its private/shared executors must not be confused with permission to execute Ores guest ASTs concurrently inside one Truffle language context.
