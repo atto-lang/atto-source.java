@@ -54,7 +54,7 @@ final class ParserTest {
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
                 define module model as
-                  define class x
+                  define class x as
                     @Ret<self>
                     find() {
                       return self;

@@ -16,7 +16,7 @@ final class RoutineAndLoopTest {
     void exactFncProgramCompilesAndRuns() throws Exception {
         String program = """
                 define module x as
-                  define class y
+                  define class y as
                   end
                 end
 
@@ -33,7 +33,7 @@ final class RoutineAndLoopTest {
     void routineMainCompilesWithSafeSemicolonOmission() throws Exception {
         String program = """
                 define module x as
-                  define class y
+                  define class y as
                   end
                 end
 
@@ -70,7 +70,7 @@ final class RoutineAndLoopTest {
     void methodsOverloadOnlyByArity() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module m as
-                  define class C
+                  define class C as
                     pub find() => int { return 0; }
                     pub find(int value) => int { return value; }
                   end
@@ -79,7 +79,7 @@ final class RoutineAndLoopTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module m as
-                  define class C
+                  define class C as
                     pub find(int value) => int { return value; }
                     pub find(String value) => int { return 1; }
                   end

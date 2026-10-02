@@ -101,10 +101,10 @@ final class LanguageHardeningTest {
                     fnc b() => int;
                   end
 
-                  define class A
+                  define class A as
                     pub a() => int { return 1; }
                   end
-                  define class B
+                  define class B as
                     pub b() => int { return 2; }
                   end
 
@@ -132,10 +132,10 @@ final class LanguageHardeningTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module m as
-                  define class A
+                  define class A as
                     pub val int id = 1;
                   end
-                  define class B
+                  define class B as
                     pub val String id = "b";
                   end
                   define class C extends A, B as

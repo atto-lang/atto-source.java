@@ -366,7 +366,7 @@ Named modules remain the normal namespace unit, but a source file may also conta
 
 ```ores
 define module x as
-  define class y
+  define class y as
   end
 end
 
