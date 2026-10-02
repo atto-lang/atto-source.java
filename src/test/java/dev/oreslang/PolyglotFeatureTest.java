@@ -56,4 +56,46 @@ final class PolyglotFeatureTest {
         assertTrue(text.contains("7"));
         assertTrue(text.contains("ores"));
     }
+    @Test
+    void executesStructMethodsAndValueEquality() throws Exception {
+        String program = """
+                define module app
+                  struct Point {
+                    int x;
+                    int y;
+
+                    pub sum() => int {
+                      return self.x + self.y;
+                    }
+                  }
+
+                  pub fnc main() => void {
+                    val a = Point { x = 2, y = 3 };
+                    val b = Point { x = 2, y = 3 };
+                    val c = Point { x = 2, y = 4 };
+                    stdio.println(a == b);
+                    stdio.println(a == c);
+                    stdio.println(a.sum());
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "structs.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("true"));
+        assertTrue(text.contains("false"));
+        assertTrue(text.contains("5"));
+    }
 }
