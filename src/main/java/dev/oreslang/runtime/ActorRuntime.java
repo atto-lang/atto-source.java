@@ -1500,6 +1500,58 @@ public final class ActorRuntime implements AutoCloseable {
         };
     }
 
+    private static final class MailboxReceiveFuture<T> extends CompletableFuture<T> {
+        @Override
+        public boolean complete(T value) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        @Override
+        public boolean completeExceptionally(Throwable failure) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        @Override
+        public void obtrudeValue(T value) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        @Override
+        public void obtrudeException(Throwable failure) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        @Override
+        public CompletableFuture<T> completeAsync(java.util.function.Supplier<? extends T> supplier) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        @Override
+        public CompletableFuture<T> completeAsync(
+                java.util.function.Supplier<? extends T> supplier,
+                java.util.concurrent.Executor executor) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        @Override
+        public CompletableFuture<T> completeOnTimeout(T value, long timeout, TimeUnit unit) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        @Override
+        public CompletableFuture<T> orTimeout(long timeout, TimeUnit unit) {
+            throw new UnsupportedOperationException("actor mailbox receive completion is runtime-owned");
+        }
+
+        private boolean completeFromMailbox(T value) {
+            return super.complete(value);
+        }
+
+        private boolean failFromRuntime(Throwable failure) {
+            return super.completeExceptionally(failure);
+        }
+    }
+
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
         private final ActorKind kind;
@@ -1512,7 +1564,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private Behavior<M> behavior;
-        private CompletableFuture<M> pendingReceive;
+        private MailboxReceiveFuture<M> pendingReceive;
         private int operationsRemaining;
 
         private ActorCell(
@@ -1550,7 +1602,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private CompletionStage<M> receive() {
             requireCurrentTurn("actor.receive");
-            CompletableFuture<M> waiter;
+            MailboxReceiveFuture<M> waiter;
             synchronized (lifecycleLock) {
                 if (stopped.get() || closed.get()) {
                     return CompletableFuture.failedFuture(terminated(ref));
@@ -1559,7 +1611,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor.receive already has a pending receive; one actor may suspend on only one mailbox receive at a time");
                 }
-                pendingReceive = new CompletableFuture<>();
+                pendingReceive = new MailboxReceiveFuture<>();
                 waiter = pendingReceive;
             }
 
@@ -1597,7 +1649,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private ReceiveService servicePendingReceive() {
-            CompletableFuture<M> waiter;
+            MailboxReceiveFuture<M> waiter;
             MessageEnvelope envelope;
             synchronized (lifecycleLock) {
                 waiter = pendingReceive;
@@ -1612,7 +1664,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             try (envelope) {
-                waiter.complete((M) envelope.value());
+                waiter.completeFromMailbox((M) envelope.value());
             }
             return ReceiveService.DELIVERED;
         }
@@ -1745,7 +1797,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void fail(Throwable failure) {
-            CompletableFuture<M> waiter;
+            MailboxReceiveFuture<M> waiter;
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
@@ -1755,7 +1807,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (memorySlice != null) memorySlice.close();
                 unregisterActor(this);
             }
-            if (waiter != null) waiter.completeExceptionally(terminated(ref));
+            if (waiter != null) waiter.failFromRuntime(terminated(ref));
         }
 
         private void stop() {
