@@ -15,13 +15,11 @@ final class RoutineAndLoopTest {
     @Test
     void exactFncProgramCompilesAndRuns() throws Exception {
         String program = """
-                define module x
-                  define class y
-                  end
+                define class y
                 end
 
                 pub fnc main() => void {
-                  val y = new x.y();
+                  val y = new y();
                   stdio.stdout.write(y);
                 }
                 """;
@@ -32,13 +30,11 @@ final class RoutineAndLoopTest {
     @Test
     void routineMainCompilesWithSafeSemicolonOmission() throws Exception {
         String program = """
-                define module x
-                  define class y
-                  end
+                define class y
                 end
 
                 pub routine main() => void {
-                  val y = new x.y();
+                  val y = new y();
                   stdio.stdout.write(y)
                 }
                 """;
@@ -69,20 +65,16 @@ final class RoutineAndLoopTest {
     @Test
     void methodsOverloadOnlyByArity() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module m
-                  define class C
-                    pub find() => int { return 0; }
-                    pub find(int value) => int { return value; }
-                  end
+                define class C
+                  pub find() => int { return 0; }
+                  pub find(int value) => int { return value; }
                 end
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module m
-                  define class C
-                    pub find(int value) => int { return value; }
-                    pub find(String value) => int { return 1; }
-                  end
+                define class C
+                  pub find(int value) => int { return value; }
+                  pub find(String value) => int { return 1; }
                 end
                 """)));
 
@@ -182,16 +174,14 @@ final class RoutineAndLoopTest {
     @Test
     void customJavascriptStyleIteratorDrivesForOf() throws Exception {
         String output = run("""
-                define module collections
-                  define class Bag
-                    [Symbol.iterator]() => Array<int> {
-                      return arr[4, 5];
-                    }
-                  end
+                define class Bag
+                  [Symbol.iterator]() => Array<int> {
+                    return arr[4, 5];
+                  }
                 end
 
                 pub routine main() => void {
-                  val bag = new collections.Bag();
+                  val bag = new Bag();
                   for (val item of bag) {
                     stdio.stdout.write(item)
                   }
