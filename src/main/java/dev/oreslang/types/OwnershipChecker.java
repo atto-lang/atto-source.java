@@ -146,11 +146,25 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.IfStmt conditional) {
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+
             for (Ast.IfBranch branch : conditional.branches()) {
+                restoreState(base);
                 checkExpr(branch.condition(), scope, false);
                 checkBlock(branch.body(), scope, returnType);
+                exits.add(stateSnapshot(scope));
             }
-            checkBlock(conditional.elseBody(), scope, returnType);
+
+            restoreState(base);
+            if (!conditional.elseBody().isEmpty()) {
+                checkBlock(conditional.elseBody(), scope, returnType);
+                exits.add(stateSnapshot(scope));
+            } else {
+                exits.add(base); // condition may be false with no else
+            }
+
+            mergeBranchState(base, exits);
             return;
         }
         if (stmt instanceof Ast.TryStmt attempted) {
@@ -257,9 +271,19 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             checkExpr(conditional.condition(), scope, false);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+
             ValueInfo left = checkExpr(conditional.whenTrue(), scope, consuming);
+            Map<VarState, StateSnapshot> leftExit = stateSnapshot(scope);
+
+            restoreState(base);
             ValueInfo right = checkExpr(conditional.whenFalse(), scope, consuming);
-            return left.kind == ValueKind.COPY && right.kind == ValueKind.COPY ? left : new ValueInfo(left.type, ValueKind.MOVE_ONLY, null);
+            Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
+
+            mergeBranchState(base, List.of(leftExit, rightExit));
+            return left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
+                    ? left
+                    : new ValueInfo(left.type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
@@ -638,6 +662,36 @@ public final class OwnershipChecker {
         return state;
     }
 
+    private Map<VarState, StateSnapshot> stateSnapshot(Scope scope) {
+        Map<VarState, StateSnapshot> result = new IdentityHashMap<>();
+        for (VarState state : scope.visibleStates()) {
+            result.put(state, new StateSnapshot(state.moved, state.immutableBorrows, state.mutableBorrowed));
+        }
+        return result;
+    }
+
+    private void restoreState(Map<VarState, StateSnapshot> snapshot) {
+        for (Map.Entry<VarState, StateSnapshot> entry : snapshot.entrySet()) {
+            VarState state = entry.getKey();
+            StateSnapshot saved = entry.getValue();
+            state.moved = saved.moved();
+            state.immutableBorrows = saved.immutableBorrows();
+            state.mutableBorrowed = saved.mutableBorrowed();
+        }
+    }
+
+    private void mergeBranchState(Map<VarState, StateSnapshot> base, List<Map<VarState, StateSnapshot>> exits) {
+        restoreState(base);
+        for (VarState state : base.keySet()) {
+            boolean movedOnAnyPath = base.get(state).moved();
+            for (Map<VarState, StateSnapshot> exit : exits) {
+                StateSnapshot saved = exit.get(state);
+                if (saved != null) movedOnAnyPath |= saved.moved();
+            }
+            state.moved = movedOnAnyPath;
+        }
+    }
+
     private Map<VarState,Boolean> movedSnapshot(Scope scope) {
         Map<VarState,Boolean> result = new IdentityHashMap<>();
         for (VarState state : scope.visibleStates()) result.put(state, state.moved);
@@ -749,6 +803,8 @@ public final class OwnershipChecker {
             }
         }
     }
+
+    private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
 
     private record Capture(String name, VarState source, boolean write) { }
 
