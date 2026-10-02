@@ -170,7 +170,7 @@ final class GpuExecutionTest {
         assertTrue(gpu.source().contains("__kernel void ores_kernel_math_add_a2"));
         assertTrue(gpu.source().contains("__global int* restrict __ores_out"));
         assertTrue(gpu.source().contains("__global int* restrict __ores_error"));
-        assertTrue(gpu.source().contains("__ores_out[0] = ores_dev_math_add_a2(a, b, __ores_error)"));
+        assertTrue(gpu.source().contains("__ores_out[0] = ores_dev_math_add_a2(ores_v_a, ores_v_b, __ores_error)"));
         assertTrue(kernel.hiddenParameters().stream()
                 .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.RESULT));
         assertTrue(kernel.hiddenParameters().stream()
@@ -194,12 +194,12 @@ final class GpuExecutionTest {
         assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, kernel.executionShape());
         assertEquals("n", kernel.launchExtentExpression());
         String source = compilation.gpuProgram().source();
-        assertTrue(source.contains("__global float* restrict xs"));
-        assertTrue(source.contains("ulong xs__len"));
+        assertTrue(source.contains("__global float* restrict ores_v_xs"));
+        assertTrue(source.contains("ulong __ores_len_xs"));
         assertTrue(source.contains("__global int* restrict __ores_error"));
         assertTrue(source.contains("#define ORES_GPU_ERR_BOUNDS 1"));
         assertTrue(source.contains("get_global_id(0)"));
-        assertTrue(source.contains("xs__len"));
+        assertTrue(source.contains("__ores_len_xs"));
         assertTrue(source.contains("__ores_error[get_global_id(0)] |= ORES_GPU_ERR_BOUNDS"));
         assertTrue(kernel.hiddenParameters().stream()
                 .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.BUFFER_LENGTH
@@ -255,8 +255,8 @@ final class GpuExecutionTest {
                 """);
 
         String source = compilation.gpuProgram().source();
-        assertTrue(source.contains("ores_dev_math_load_a2(xs, xs__len, i, __ores_error)"));
-        assertTrue(source.contains("((ulong)(i) < xs__len)"));
+        assertTrue(source.contains("ores_dev_math_load_a2(ores_v_xs, __ores_len_xs, ores_v_i, __ores_error)"));
+        assertTrue(source.contains("((ulong)(ores_v_i) < __ores_len_xs)"));
         assertTrue(source.contains("ORES_GPU_ERR_BOUNDS"));
     }
 
