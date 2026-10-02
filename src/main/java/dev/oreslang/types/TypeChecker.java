@@ -948,9 +948,13 @@ public final class TypeChecker {
         if (iterable instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Ast.MethodDecl iterator = findMethod(klass, "Symbol.iterator", 0, new LinkedHashSet<>());
-                if (iterator != null) {
-                    Type result = resolve(iterator.returnType(), Set.copyOf(iterator.genericParameters()), named);
+                ResolvedMethod iteratorTarget = findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
+                if (iteratorTarget != null) {
+                    Ast.MethodDecl iterator = iteratorTarget.method();
+                    Set<String> iteratorGenerics = new HashSet<>(iteratorTarget.owner().genericParameters());
+                    iteratorGenerics.addAll(iterator.genericParameters());
+                    Type result = resolve(iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
+                    result = substituteGenerics(result, classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
                     if (result instanceof ListType list) return list.element();
                     if (result instanceof Tuple tuple) return iterableElementType(tuple);
                     throw new IllegalArgumentException("[Symbol.iterator]() must return Array<T>, List<T>, or a tuple in v0");
