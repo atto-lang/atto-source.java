@@ -4,7 +4,10 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,6 +28,9 @@ import java.util.function.Supplier;
  * Frozen values rather than sharing Java object references.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final int MAX_FREEZE_DEPTH = 256;
+    private static final int MAX_FREEZE_NODES = 100_000;
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
@@ -151,36 +157,108 @@ public final class ActorRuntime implements AutoCloseable {
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
+        return freeze(value, new IdentityHashMap<>(), new FreezeBudget(), 0);
+    }
+
+    private static Object freeze(
+            Object value,
+            IdentityHashMap<Object, Boolean> path,
+            FreezeBudget budget,
+            int depth) {
         if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
             return value;
         }
-        if (value instanceof Shared<?> shared) return shared;
+        if (depth > MAX_FREEZE_DEPTH) {
+            throw new IllegalArgumentException("actor message exceeds maximum nesting depth " + MAX_FREEZE_DEPTH);
+        }
+        if (++budget.nodes > MAX_FREEZE_NODES) {
+            throw new IllegalArgumentException("actor message exceeds maximum graph size " + MAX_FREEZE_NODES);
+        }
+
+        /*
+         * Shared is public host API, so do not trust an externally constructed
+         * Shared wrapper to already contain frozen data. Re-freeze its payload.
+         */
+        if (value instanceof Shared<?> shared) {
+            return new Shared<>(freeze(shared.value(), path, budget, depth + 1));
+        }
         if (value instanceof ActorRef<?> ref) return ref;
+
         if (value instanceof List<?> list) {
-            List<Object> frozen = new ArrayList<>(list.size());
-            for (Object item : list) frozen.add(freeze(item));
-            return List.copyOf(frozen);
+            enterComposite(value, path);
+            try {
+                List<Object> frozen = new ArrayList<>(list.size());
+                for (Object item : list) frozen.add(freeze(item, path, budget, depth + 1));
+                return Collections.unmodifiableList(frozen);
+            } finally {
+                path.remove(value);
+            }
         }
         if (value instanceof Set<?> set) {
-            return set.stream().map(ActorRuntime::freeze).collect(java.util.stream.Collectors.toUnmodifiableSet());
+            enterComposite(value, path);
+            try {
+                Set<Object> frozen = new LinkedHashSet<>();
+                for (Object item : set) frozen.add(freeze(item, path, budget, depth + 1));
+                return Collections.unmodifiableSet(frozen);
+            } finally {
+                path.remove(value);
+            }
         }
         if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> frozen = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) frozen.put(freeze(entry.getKey()), freeze(entry.getValue()));
-            return Map.copyOf(frozen);
+            enterComposite(value, path);
+            try {
+                Map<Object, Object> frozen = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    Object key = freeze(entry.getKey(), path, budget, depth + 1);
+                    Object item = freeze(entry.getValue(), path, budget, depth + 1);
+                    if (frozen.putIfAbsent(key, item) != null) {
+                        throw new IllegalArgumentException("actor message map keys collide after freezing");
+                    }
+                }
+                return Collections.unmodifiableMap(frozen);
+            } finally {
+                path.remove(value);
+            }
         }
         if (value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            List<Object> frozen = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i)));
-            return List.copyOf(frozen);
+            enterComposite(value, path);
+            try {
+                int length = Array.getLength(value);
+                List<Object> frozen = new ArrayList<>(length);
+                for (int i = 0; i < length; i++) {
+                    frozen.add(freeze(Array.get(value, i), path, budget, depth + 1));
+                }
+                return Collections.unmodifiableList(frozen);
+            } finally {
+                path.remove(value);
+            }
         }
-        if (value instanceof Sendable sendable) return sendable.freezeForSend();
+
+        /*
+         * Sendable is implemented only by trusted/generated immutable Oreslang
+         * value types. Its contract is that freezeForSend() returns a deeply
+         * immutable representation.
+         */
+        if (value instanceof Sendable sendable) {
+            Object frozen = sendable.freezeForSend();
+            if (frozen == null) return null;
+            return frozen;
+        }
         throw new IllegalArgumentException("value of type " + value.getClass().getName()
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
+    }
+
+    private static void enterComposite(Object value, IdentityHashMap<Object, Boolean> path) {
+        if (path.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic actor message graphs are not Sendable");
+        }
+    }
+
+    private static final class FreezeBudget {
+        private int nodes;
     }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
