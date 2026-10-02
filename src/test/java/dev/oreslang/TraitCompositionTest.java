@@ -620,4 +620,117 @@ final class TraitCompositionTest {
 
         assertTrue(leak.getMessage().contains("private to that trait"));
     }
+    @Test
+    void callableLocalTraitsComposeLexicallyAndAreErased() {
+        Ast.Program checked = TypeChecker.check(Parser.parse("""
+                define module app as
+                  fnc make() => T {
+                    trait Answering {
+                      private val int seed = 41;
+                      pub answer() => int { return self.seed + 1; }
+                    }
+
+                    struct T with Answering {
+                      pub value: int;
+                    }
+
+                    return T { value = 1 };
+                  }
+                end
+                """));
+
+        Ast.FunctionDecl make = checked.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("make"))
+                .findFirst().orElseThrow();
+
+        assertFalse(make.body().stream().anyMatch(stmt ->
+                stmt instanceof Ast.TypeDeclStmt local && local.declaration() instanceof Ast.TraitDecl));
+
+        Ast.ClassDecl localStruct = make.body().stream()
+                .filter(Ast.TypeDeclStmt.class::isInstance)
+                .map(Ast.TypeDeclStmt.class::cast)
+                .map(Ast.TypeDeclStmt::declaration)
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+
+        assertTrue(localStruct.traits().isEmpty(), "local traits must be flattened before later compiler passes");
+        assertTrue(localStruct.methods().stream().anyMatch(method -> method.name().equals("answer")));
+        assertTrue(localStruct.fields().stream().anyMatch(field -> field.name().equals("seed") && field.composed()));
+    }
+
+    @Test
+    void callableLocalTraitScopeDoesNotLeakAcrossFunctions() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc first() => A {
+                          trait Local {
+                            pub value() => int { return 1; }
+                          }
+                          struct A with Local {}
+                          return A {};
+                        }
+
+                        fnc second() => B {
+                          struct B with Local {}
+                          return B {};
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("unknown trait 'Local'"));
+    }
+
+    @Test
+    void callableLocalTraitNamesShareTheLocalTypeNamespace() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc make() => T {
+                          trait Same {
+                            pub value() => int { return 1; }
+                          }
+
+                          struct Same {
+                            value: int;
+                          }
+
+                          struct T with Same {
+                            value: int;
+                          }
+                          return T { value = 1 };
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("callable-local type name 'Same'"));
+    }
+
+    @Test
+    void callableLocalTraitsCannotBeUsedAsRuntimeValues() {
+        IllegalArgumentException parameter = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          trait Local {
+                            pub value() => int { return 1; }
+                          }
+
+                          let Local value;
+                          return;
+                        }
+                        """)));
+        assertTrue(parameter.getMessage().contains("trait 'Local'"));
+
+        IllegalArgumentException initializer = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          trait Local {
+                            pub value() => int { return 1; }
+                          }
+
+                          val value = Local {};
+                          return;
+                        }
+                        """)));
+        assertTrue(initializer.getMessage().contains("cannot be"));
+    }
 }
