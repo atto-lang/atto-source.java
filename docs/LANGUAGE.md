@@ -245,7 +245,7 @@ The type namespace is separate from the value namespace, so a block may contain 
 
 Every local binding is declared as exactly one of:
 
-- `const`: compile-time constant; cannot be reassigned.
+- `const`: immutable binding; a direct `const x = ...` declaration additionally requires a compile-time-constant initializer. Destructured `const` bindings are initialized from the runtime extraction and are immutable thereafter.
 - `val`: runtime single-assignment binding; cannot be reassigned.
 - `let`: mutable binding and the only local binding kind that may be reassigned.
 
