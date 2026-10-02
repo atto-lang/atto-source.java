@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class MutexRuntimeTest {
     @Test
-    void localMutexIsNonReentrantAndThreadConfined() throws Exception {
+    void localMutexIsNonReentrantAndExecutionDomainConfined() throws Exception {
         var mutex = OresMutex.local(new int[]{0});
         var guard = mutex.lock();
         guard.value()[0] = 7;
@@ -38,6 +38,43 @@ final class MutexRuntimeTest {
         var again = mutex.lock();
         assertEquals(7, again.value()[0]);
         again.release();
+    }
+
+    @Test
+    void actorLocalMutexCannotBeUsedByAnotherActorEvenInSameProcess() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch created = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<OresMutex.Local<int[]>> local = new AtomicReference<>();
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var owner = runtime.<String>spawn(() -> (message, context) -> {
+                var mutex = OresMutex.local(new int[]{0});
+                mutex.withLock(value -> {
+                    value[0] = 41;
+                    return null;
+                });
+                local.set(mutex);
+                created.countDown();
+            });
+
+            var other = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    assertTrue(created.await(2, TimeUnit.SECONDS));
+                    assertThrows(OresMutex.WrongMutexDomainException.class, () -> local.get().tryLock());
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            owner.send("create");
+            other.send("check");
+
+            assertTrue(checked.await(3, TimeUnit.SECONDS));
+            assertNull(failure.get());
+        }
     }
 
     @Test
