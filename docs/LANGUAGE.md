@@ -99,7 +99,7 @@ Destructuring carries mutability per element. A bare `_` is a discard pattern: i
 
 ## Pattern matching and expected errors
 
-Oreslang supports tagged-result matching for expected failures. A `match` evaluates its input exactly once, then tries arms from top to bottom. Tuple patterns use `(...)`; finite-list patterns use `[...]`; both require exact runtime arity.
+Oreslang supports tagged-result matching for expected failures. A `match` evaluates its input exactly once, then tries arms from top to bottom. Tuple patterns use `(...)`; finite-list patterns use `[...]`; both require exact runtime arity. The shapes are distinct: tuple patterns match tuples, while list patterns match list/array values.
 
 Bare identifiers are immutable `val` captures. Use `let name` when the arm needs to mutate a capture, and `_` to discard a position.
 
