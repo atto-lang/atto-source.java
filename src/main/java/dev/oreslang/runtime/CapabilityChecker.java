@@ -75,6 +75,10 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
             }
             checkExpr(m.receiver(), policy);
+        } else if (expr instanceof Ast.TemplateExpr e) {
+            for (Ast.TemplatePart part : e.parts()) {
+                if (part instanceof Ast.TemplateInterpolation interpolation) checkExpr(interpolation.expression(), policy);
+            }
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
         else if (expr instanceof Ast.UnaryExpr e) checkExpr(e.operand(), policy);
         else if (expr instanceof Ast.AssignExpr e) checkExpr(e.value(), policy);
