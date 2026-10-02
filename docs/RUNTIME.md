@@ -163,3 +163,24 @@ Persistent generated actor state reserves from the same slice. Actor teardown cl
 The logical size metric intentionally does not claim to equal JVM object layout. It exists to enforce Oreslang memory-domain policy while actors remain multiplexed on one JVM. A hardened backend may replace the accounting implementation with arena/region allocation or a Graal/native isolate without changing source semantics.
 
 A private actor's memory owner is its **ActorId**, never its carrier thread. Successive mailbox turns may execute on different private-dispatcher workers. Consequently a future FFM/off-heap backend must not make `Arena.ofConfined()` carrier-thread identity part of Oreslang semantics. It should use a cross-thread-capable region whose access is guarded by the actor owner token, or map the private actor to a true Graal/native isolate when physical heap isolation is required.
+
+
+## Runtime garbage collection and resource reclamation
+
+The runtime uses a hybrid model:
+
+1. **Ownership/borrows are authoritative for guest semantics.** Ordinary Ores values are not registered with the fallback collector.
+2. **Actor lifecycle is deterministic.** Actor-private runtime resources are invalidated and released when the actor terminates, even if a host reference leaked.
+3. **Runtime-owned escape-prone resources use phantom/weak tracking.** Shared wrappers, synchronized runtime cells, private memory reservations/blocks, and future reflection/FFI/proxy handles can register cleanup actions without being strongly retained by the runtime registry.
+4. **Periodic collection is cooperative.** Scheduler safepoints drain resources that the host GC has already proven unreachable. There is no dedicated collector thread.
+5. **Manual collection is scoped.** `actor.gc()` drains only the current actor's unreachable runtime resources and never calls `System.gc()`. `process.gc()` drains process/runtime resources and may issue a best-effort JVM GC hint; it is gated by `GC_CONTROL`.
+
+The collector checks at runtime safepoints and performs a queue drain every 256 safepoints, or earlier when the tracked-resource count reaches the pressure threshold. These are runtime tuning values, not source-language guarantees.
+
+A GC cleanup action must be idempotent and must not strongly capture its referent. Explicit close/drop and fallback GC share the same atomic cleanup state, so a resource can be reclaimed exactly once. Process teardown closes all remaining tracked resources; actor teardown deterministically releases all actor-scoped registrations.
+
+The JVM's own collector remains responsible for ordinary Java/Graal heap pages. Oreslang's fallback collector is specifically for **runtime roots and external/accounted resources** that could otherwise remain reachable from registries after the guest has abandoned them.
+
+### Lifetime interaction
+
+Borrow checking is intentionally independent of runtime GC. A borrow is invalid if it outlives its owner even if the host object would happen to remain reachable. Returned borrows preserve their source provenance across call boundaries. Until explicit named lifetime parameters are introduced, ambiguous multi-source borrowed-return signatures are rejected rather than inferred unsafely; single-source borrowed returns preserve their source provenance automatically.
