@@ -314,10 +314,16 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.MatchStmt matched) {
             Type source = typeOf(matched.value(), env, generics, self);
+            boolean sawIrrefutableArm = false;
             for (Ast.MatchArm arm : matched.arms()) {
+                if (sawIrrefutableArm) {
+                    throw new IllegalArgumentException("unreachable match arm after an irrefutable pattern");
+                }
+                validateUniquePatternBindings(arm.pattern(), new HashSet<>());
                 Env armEnv = new Env(env);
                 checkPattern(arm.pattern(), source, armEnv, generics, self);
                 checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                sawIrrefutableArm = isIrrefutablePattern(arm.pattern(), source);
             }
             return;
         }
@@ -361,7 +367,37 @@ public final class TypeChecker {
             if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            return;
         }
+        throw new IllegalArgumentException("type checker does not handle statement kind " + stmt.getClass().getSimpleName());
+    }
+
+    private void validateUniquePatternBindings(Ast.Pattern pattern, Set<String> names) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            if (!names.add(binding.name())) {
+                throw new IllegalArgumentException("duplicate capture '" + binding.name() + "' in match pattern");
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) validateUniquePatternBindings(element, names);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern element : list.elements()) validateUniquePatternBindings(element, names);
+        }
+    }
+
+    private boolean isIrrefutablePattern(Ast.Pattern pattern, Type source) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
+        if (pattern instanceof Ast.TuplePattern tuplePattern && source instanceof Tuple tuple) {
+            if (tuplePattern.elements().size() != tuple.elements().size()) return false;
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                if (!isIrrefutablePattern(tuplePattern.elements().get(i), tuple.elements().get(i))) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     private void checkPattern(Ast.Pattern pattern, Type source, Env env, Set<String> generics, Type self) {
@@ -1200,7 +1236,12 @@ public final class TypeChecker {
     private void collectCalls(Ast.Stmt stmt, String module, Set<Ast.FunctionDecl> out) {
         if (stmt instanceof Ast.BindingStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.DestructureStmt s) collectCalls(s.initializer(), module, out);
-        else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
+        else if (stmt instanceof Ast.MatchStmt s) {
+            collectCalls(s.value(), module, out);
+            for (Ast.MatchArm arm : s.arms()) for (Ast.Stmt nested : arm.body()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.ReturnStmt s) {
+            if (s.value() != null) collectCalls(s.value(), module, out);
+        }
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.IfStmt s) {
@@ -1221,6 +1262,8 @@ public final class TypeChecker {
             if (s.condition() != null) collectCalls(s.condition(), module, out);
             if (s.update() != null) collectCalls(s.update(), module, out);
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        } else {
+            throw new IllegalArgumentException("call-graph analysis does not handle statement kind " + stmt.getClass().getSimpleName());
         }
     }
 
@@ -1233,7 +1276,10 @@ public final class TypeChecker {
         } else if (expr instanceof Ast.BinaryExpr e) {
             collectCalls(e.left(), module, out); collectCalls(e.right(), module, out);
         } else if (expr instanceof Ast.UnaryExpr e) collectCalls(e.operand(), module, out);
-        else if (expr instanceof Ast.AssignExpr e) collectCalls(e.value(), module, out);
+        else if (expr instanceof Ast.AssignExpr e) {
+            collectCalls(e.target(), module, out);
+            collectCalls(e.value(), module, out);
+        }
         else if (expr instanceof Ast.ConditionalExpr e) {
             collectCalls(e.condition(), module, out); collectCalls(e.whenTrue(), module, out); collectCalls(e.whenFalse(), module, out);
         } else if (expr instanceof Ast.MemberExpr e) collectCalls(e.receiver(), module, out);
