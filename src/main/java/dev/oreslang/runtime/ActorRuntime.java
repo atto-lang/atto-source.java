@@ -782,6 +782,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
         requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
         if (cell.mailbox.remainingCapacity() == 0) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
@@ -877,6 +878,66 @@ public final class ActorRuntime implements AutoCloseable {
         return shared;
     }
 
+    private void requireMutexTransport(
+            ActorCell<?> target,
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value instanceof OresMutex.Local<?>) {
+            throw new IllegalArgumentException("Mutex<T> is actor-local state and cannot cross actor mailboxes");
+        }
+        if (value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("MutexGuard<T> is lexical and cannot cross actor mailboxes");
+        }
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            if (target.kind != ActorKind.SHARED) {
+                throw new SecurityException("private actors cannot receive SharedMutex<T>");
+            }
+            target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor transport");
+            if (!sharedMutex.bindToRuntime(this)) {
+                throw new IllegalArgumentException("SharedMutex belongs to another ActorRuntime");
+            }
+            requireOwnedActorRefs(sharedMutex.transportValue(), new IdentityHashMap<>(), depth + 1);
+            return;
+        }
+        if (value instanceof Shared<?> shared) {
+            requireMutexTransport(target, shared.value(), visiting, depth + 1);
+            return;
+        }
+        if (value instanceof SyncCell<?>) return;
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            requireOwnedActorRefs(sharedMutex.transportValue(), visiting, depth + 1);
+            return;
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
+        }
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) requireMutexTransport(target, item, visiting, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) requireMutexTransport(target, item, visiting, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    requireMutexTransport(target, entry.getKey(), visiting, depth + 1);
+                    requireMutexTransport(target, entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    requireMutexTransport(target, Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
     private void requireOwnedActorRefs(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
@@ -948,6 +1009,15 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.closed()) throw new IllegalArgumentException("SyncCell is closed");
             return;
         }
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            if (!sharedMutex.bindToRuntime(this)) {
+                throw new IllegalArgumentException("SharedMutex belongs to another ActorRuntime");
+            }
+            return;
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross shared-memory domains");
+        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
@@ -980,6 +1050,12 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
+        }
+        if (value instanceof OresMutex.Shared<?>) {
+            throw new IllegalArgumentException("SharedMutex is mutable shared state and cannot be wrapped as Shared");
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot be wrapped as Shared");
         }
         if (value instanceof Shared<?> shared) {
             shared.value();
@@ -1039,6 +1115,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
+        if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
@@ -1092,6 +1172,18 @@ public final class ActorRuntime implements AutoCloseable {
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
+        }
+        if (value instanceof OresMutex.Shared<?>) {
+            throw new IllegalArgumentException("private actors cannot receive SharedMutex<T>");
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
+        }
+        if (value instanceof OresMutex.Shared<?>) {
+            throw new IllegalArgumentException("private actors cannot receive SharedMutex<T>");
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
         if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
@@ -1207,6 +1299,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return scalar;
         if (value instanceof Shared<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
+        if (value instanceof OresMutex.Shared<?>) return 64L;
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
+        }
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
@@ -1375,6 +1471,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
+        if (value instanceof OresMutex.Shared<?>) return 64L;
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot be frozen");
+        }
         if (value instanceof Shared<?> shared) return estimateFrozenBytes(shared.value(), seen, depth + 1);
 
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
