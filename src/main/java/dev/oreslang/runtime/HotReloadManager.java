@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
  * Versioned source hot loader.
@@ -28,14 +29,23 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class HotReloadManager implements AutoCloseable {
     private final IsolatePolicy policy;
     private final ExecutionProfile executionProfile;
+    private final Supplier<Context> contextFactory;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
     public HotReloadManager(IsolatePolicy policy, ExecutionProfile executionProfile) {
-        this.policy = policy;
-        this.executionProfile = executionProfile;
+        this(policy, executionProfile, () -> policy.restrictedContextBuilder(executionProfile).build());
+    }
+
+    HotReloadManager(
+            IsolatePolicy policy,
+            ExecutionProfile executionProfile,
+            Supplier<Context> contextFactory) {
+        this.policy = java.util.Objects.requireNonNull(policy, "policy");
+        this.executionProfile = java.util.Objects.requireNonNull(executionProfile, "executionProfile");
+        this.contextFactory = java.util.Objects.requireNonNull(contextFactory, "contextFactory");
         if (!policy.allows(IsolatePolicy.Capability.HOT_CODE_LOAD)) {
             throw new SecurityException("HOT_CODE_LOAD capability is required");
         }
@@ -61,7 +71,7 @@ public final class HotReloadManager implements AutoCloseable {
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
         long id = sequence.incrementAndGet();
-        Context context = policy.restrictedContextBuilder(executionProfile).build();
+        Context context = contextFactory.get();
         try {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
