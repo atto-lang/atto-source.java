@@ -281,13 +281,17 @@ Inside an `nlex` region:
   one-way so an inner helper cannot accidentally regain access to private outer
   activation data.
 
-For named top-level/module `fnc` and `routine` declarations, `nlex` is
-mainly a compile-time guarantee about any closures created in their bodies:
-those named callables already begin with their own invocation frame. The
+For named top-level/module `fnc` and `routine` declarations, `lex` and
+`lexical` explicitly document the normal lexical policy, while `nlex` is
+mainly a compile-time guarantee about any closures created in their bodies.
+Named callables already begin with their own invocation frame. The
 runtime benefit is at lambda creation. Ordinary lambdas retain only the
 specific lexical slots in their compiler-produced capture plan; an `nlex`
 lambda takes the no-environment path. Capture-free lexical lambdas are lowered
-to that same no-environment representation.
+to that same no-environment representation. An immediately invoked lambda is
+lowered as a direct invocation and does not allocate a first-class closure
+environment at all; if that invocation creates a nested escaping closure, the
+nested closure still performs the normal selective capture analysis.
 
 Nested lexical lambdas are analyzed transitively. If an inner lambda needs a
 grandparent local, the enclosing closure retains that specific local so the
