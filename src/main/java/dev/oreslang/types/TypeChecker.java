@@ -41,6 +41,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -857,12 +858,32 @@ public final class TypeChecker {
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
+        if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) return self == null ? Unknown.INSTANCE : self;
         if (ref.name().equals("null")) {
             if (!allowNullMarker) throw new IllegalArgumentException("null is not a standalone type; it is only legal as Option<null>");
             return Primitive.NULL;
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
+
+        Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
+        if (alias != null) {
+            if (alias.genericParameters().size() != ref.arguments().size()) {
+                throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
+                        + " type argument(s), got " + ref.arguments().size());
+            }
+            if (!resolvingAliases.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            try {
+                Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+                for (int i = 0; i < alias.genericParameters().size(); i++) {
+                    substitutions.put(alias.genericParameters().get(i), ref.arguments().get(i));
+                }
+                return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
+            } finally {
+                resolvingAliases.remove(alias);
+            }
+        }
+
         return switch (ref.name()) {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
@@ -888,6 +909,19 @@ public final class TypeChecker {
             }
             default -> new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
         };
+    }
+
+    private Type resolveAlias(Ast.TypeAliasDecl alias, Set<String> generics, Type self, Set<String> ignored) {
+        return resolve(new Ast.TypeRef(alias.name(), List.of(), false), generics, self);
+    }
+
+    private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
+        Ast.TypeRef replacement = substitutions.get(ref.name());
+        if (replacement != null && ref.arguments().isEmpty() && !ref.inferArguments()) return replacement;
+        return new Ast.TypeRef(
+                ref.name(),
+                ref.arguments().stream().map(arg -> substituteAliasType(arg, substitutions)).toList(),
+                ref.inferArguments());
     }
 
     private Type nominalClassType(Ast.ClassDecl klass) {
@@ -970,6 +1004,11 @@ public final class TypeChecker {
     private Ast.InterfaceDecl findInterface(String name) {
         if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface name '" + name + "'; qualify it with its module");
         return interfaces.get(name);
+    }
+
+    private Ast.TypeAliasDecl findTypeAlias(String name) {
+        if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
+        return typeAliases.get(name);
     }
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
