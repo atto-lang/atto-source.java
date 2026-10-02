@@ -170,6 +170,7 @@ argument_list   = expression { "," expression } ;
 
 primary         = literal
                 | channel_expr
+                | channel_operation
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
@@ -193,6 +194,11 @@ object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 
 channel_expr    = "channel" "<" type_ref ">" "(" expression ")" ;
+channel_operation
+                = "receive" "(" [ expression ] ")"
+                | "try_receive" "(" [ expression ] ")"
+                | "send" "(" expression "," expression ")"
+                | "try_send" "(" expression "," expression ")" ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
@@ -249,6 +255,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      scheduling/ownership lowering; they are not normalized into ordinary calls.
    - receive loop is a suspending actor-mailbox loop. try_receive loop drains
      immediately available mailbox messages and does not wait when empty.
+   - Until actor Protocol<M> is carried through source declarations, receive-loop
+     bindings require an explicit message type even though the grammar permits
+     omission for the future inferred form.
    - blocking send/receive/select suspension hoists live actor locals into a
      continuation frame; actor state is not encoded as recursive loop arguments.
    - every actor statement/backedge and concurrency operation consumes a separate
