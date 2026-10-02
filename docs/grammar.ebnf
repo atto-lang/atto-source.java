@@ -157,7 +157,7 @@ anonymous_new_body
                 = "{" { anonymous_new_member } "}" ;
 anonymous_new_member
                 = object_field [ "," | ";" ]
-                | { annotation } visibility { callable_modifier } method_decl [ "," ] ;
+                | method_decl [ "," ] ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
