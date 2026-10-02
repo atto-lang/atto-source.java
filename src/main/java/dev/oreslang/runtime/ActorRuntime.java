@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -94,6 +95,11 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.kind();
     }
 
+    public static ActorId currentActorId() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.actorId();
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
@@ -168,21 +174,36 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Deeply immutable runtime-owned shared value. The backing graph is frozen
-     * once, quota-accounted once, and retained until runtime teardown.
+     * once and quota-accounted once. The handle is weakly registered so an
+     * abandoned Shared value does not stay rooted until runtime teardown.
      */
     public final class Shared<T> {
         private final AtomicBoolean sharedClosed = new AtomicBoolean();
+        private final AtomicLong reservedBytes = new AtomicLong();
+        private final RuntimeGarbageCollector.Registration gcRegistration;
         private T value;
-        private long reservedBytes;
 
         private Shared(T value, long reservedBytes) {
             this.value = value;
-            this.reservedBytes = reservedBytes;
+            this.reservedBytes.set(reservedBytes);
+
+            AtomicBoolean closedState = this.sharedClosed;
+            AtomicLong reservedState = this.reservedBytes;
+            this.gcRegistration = garbageCollector.trackProcess(
+                    this,
+                    "actor-shared-readonly",
+                    () -> {
+                        if (!closedState.compareAndSet(false, true)) return;
+                        long bytes = reservedState.getAndSet(0L);
+                        releaseSharedRuntimeBytes(bytes);
+                    });
         }
 
         public T value() {
             rejectPrivateActorSharedMemoryAccess("Shared.value");
-            if (sharedClosed.get()) throw new IllegalStateException("Shared value belongs to a closed actor runtime");
+            if (sharedClosed.get() || closed.get()) {
+                throw new IllegalStateException("Shared value belongs to a closed actor runtime");
+            }
             return value;
         }
 
@@ -191,12 +212,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void closeFromRuntime() {
-            if (!sharedClosed.compareAndSet(false, true)) return;
-            long bytes = reservedBytes;
-            reservedBytes = 0L;
+            gcRegistration.close();
             value = null;
-            releaseSharedRuntimeBytes(bytes);
-            sharedValues.remove(this);
+            removeWeak(sharedValues, this);
         }
     }
 
@@ -207,8 +225,10 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Object runtimeLifecycleLock = new Object();
-    private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
-    private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    private final Set<WeakReference<SyncCell<?>>> syncCells = ConcurrentHashMap.newKeySet();
+    private final Set<WeakReference<Shared<?>>> sharedValues = ConcurrentHashMap.newKeySet();
+    private final RuntimeGarbageCollector garbageCollector;
+    private final boolean ownsGarbageCollector;
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
@@ -244,9 +264,28 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, new RuntimeGarbageCollector(), true);
+    }
+
+    ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            RuntimeGarbageCollector garbageCollector) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, garbageCollector, false);
+    }
+
+    private ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            RuntimeGarbageCollector garbageCollector,
+            boolean ownsGarbageCollector) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        this.garbageCollector = Objects.requireNonNull(garbageCollector);
+        this.ownsGarbageCollector = ownsGarbageCollector;
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
                 dispatcherConfig.maxActors(),
@@ -264,6 +303,54 @@ public final class ActorRuntime implements AutoCloseable {
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
+
+    public RuntimeGarbageCollector.GcReport collectProcessGarbage() {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        IsolatePolicy callerPolicy = currentActorPolicy();
+        if (callerPolicy != null) {
+            callerPolicy.require(IsolatePolicy.Capability.GC_CONTROL, "process.gc");
+        } else {
+            policyCeiling.require(IsolatePolicy.Capability.GC_CONTROL, "process.gc");
+        }
+        RuntimeGarbageCollector.GcReport report = garbageCollector.collectProcess();
+        pruneWeakRegistries();
+        return report;
+    }
+
+    public RuntimeGarbageCollector.GcReport collectCurrentActorGarbage() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null || current.runtime() != this) {
+            throw new IllegalStateException("actor.gc() is valid only during the current actor mailbox turn");
+        }
+        RuntimeGarbageCollector.GcReport report = garbageCollector.collectActor(current.actorId());
+        pruneWeakRegistries();
+        return report;
+    }
+
+    public RuntimeGarbageCollector.GcReport garbageCollectorStats() {
+        return garbageCollector.stats();
+    }
+
+    private static <T> void addWeak(Set<WeakReference<T>> registry, T value) {
+        pruneWeak(registry);
+        registry.add(new WeakReference<>(value));
+    }
+
+    private static <T> void removeWeak(Set<WeakReference<T>> registry, T value) {
+        registry.removeIf(reference -> {
+            T current = reference.get();
+            return current == null || current == value;
+        });
+    }
+
+    private static <T> void pruneWeak(Set<WeakReference<T>> registry) {
+        registry.removeIf(reference -> reference.get() == null);
+    }
+
+    private void pruneWeakRegistries() {
+        pruneWeak(syncCells);
+        pruneWeak(sharedValues);
+    }
 
     /**
      * Logical actor-confined memory slice for one private actor.
@@ -535,8 +622,9 @@ public final class ActorRuntime implements AutoCloseable {
     public final class SyncCell<T> implements AutoCloseable {
         private final ReentrantLock lock = new ReentrantLock(true);
         private final AtomicBoolean cellClosed = new AtomicBoolean();
+        private final AtomicLong reservedBytes = new AtomicLong();
+        private final RuntimeGarbageCollector.Registration gcRegistration;
         private T value;
-        private long reservedBytes;
 
         @SuppressWarnings("unchecked")
         private SyncCell(T initialValue) {
@@ -545,7 +633,18 @@ public final class ActorRuntime implements AutoCloseable {
             long bytes = estimateFrozenBytes(frozen);
             reserveSharedRuntimeBytes(bytes, "shared SyncCell");
             this.value = (T) frozen;
-            this.reservedBytes = bytes;
+            this.reservedBytes.set(bytes);
+
+            AtomicBoolean closedState = this.cellClosed;
+            AtomicLong reservedState = this.reservedBytes;
+            this.gcRegistration = garbageCollector.trackProcess(
+                    this,
+                    "actor-sync-cell",
+                    () -> {
+                        if (!closedState.compareAndSet(false, true)) return;
+                        long reserved = reservedState.getAndSet(0L);
+                        releaseSharedRuntimeBytes(reserved);
+                    });
         }
 
         public boolean closed() { return cellClosed.get(); }
@@ -598,11 +697,12 @@ public final class ActorRuntime implements AutoCloseable {
                 requireOpen();
                 if (closed.get()) throw new IllegalStateException("actor runtime is closed");
                 long nextBytes = estimateFrozenBytes(frozen);
-                long delta = nextBytes - reservedBytes;
+                long previousBytes = reservedBytes.get();
+                long delta = nextBytes - previousBytes;
                 if (delta > 0) reserveSharedRuntimeBytes(delta, "shared SyncCell update");
                 value = (T) frozen;
                 if (delta < 0) releaseSharedRuntimeBytes(-delta);
-                reservedBytes = nextBytes;
+                reservedBytes.set(nextBytes);
                 return value;
             } finally {
                 lock.unlock();
@@ -611,7 +711,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void requireOpen() {
-            if (cellClosed.get()) throw new IllegalStateException("SyncCell is closed");
+            if (cellClosed.get() || closed.get()) throw new IllegalStateException("SyncCell is closed");
         }
 
         @Override
@@ -628,20 +728,16 @@ public final class ActorRuntime implements AutoCloseable {
         private void closeFromRuntime() {
             lock.lock();
             try {
-                if (!cellClosed.compareAndSet(false, true)) return;
-                long bytes = reservedBytes;
-                reservedBytes = 0L;
+                gcRegistration.close();
                 value = null;
-                releaseSharedRuntimeBytes(bytes);
-                syncCells.remove(this);
+                removeWeak(syncCells, this);
             } finally {
                 lock.unlock();
             }
         }
 
         private void invalidateFromRuntime() {
-            cellClosed.set(true);
-            syncCells.remove(this);
+            closeFromRuntime();
         }
     }
 
@@ -1188,7 +1284,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         rejectPrivateActorSharedMemoryAccess("SyncCell creation");
         SyncCell<T> cell = new SyncCell<>(initialValue);
-        syncCells.add(cell);
+        addWeak(syncCells, cell);
         if (closed.get()) {
             cell.close();
             throw new IllegalStateException("actor runtime is closed");
@@ -1468,6 +1564,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (Thread.currentThread().isInterrupted()) {
             throw new CancellationException("actor execution interrupted");
         }
+        garbageCollector.maybeCollect();
+        pruneWeakRegistries();
         Thread.yield();
     }
 
@@ -1488,7 +1586,7 @@ public final class ActorRuntime implements AutoCloseable {
         long bytes = estimateFrozenBytes(frozen);
         reserveSharedRuntimeBytes(bytes, "shared readonly value");
         Shared<T> shared = new Shared<>((T) frozen, bytes);
-        sharedValues.add(shared);
+        addWeak(sharedValues, shared);
         if (closed.get()) {
             shared.closeFromRuntime();
             throw new IllegalStateException("actor runtime is closed");
@@ -2384,11 +2482,16 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
+        for (WeakReference<SyncCell<?>> reference : List.copyOf(syncCells)) {
+            SyncCell<?> cell = reference.get();
+            if (cell != null) cell.invalidateFromRuntime();
+        }
         syncCells.clear();
-        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        for (WeakReference<Shared<?>> reference : List.copyOf(sharedValues)) {
+            Shared<?> shared = reference.get();
+            if (shared != null) shared.closeFromRuntime();
+        }
         sharedValues.clear();
-        sharedMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || interrupted) {
@@ -2405,6 +2508,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         actors.clear();
         actorCount.set(0);
+        if (ownsGarbageCollector) garbageCollector.close();
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
@@ -2664,6 +2768,8 @@ public final class ActorRuntime implements AutoCloseable {
                 if (turnActive) endTurn();
                 CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
+                garbageCollector.maybeCollect();
+                pruneWeakRegistries();
                 scheduled.set(false);
 
                 if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
