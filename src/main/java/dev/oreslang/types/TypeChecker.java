@@ -178,6 +178,12 @@ public final class TypeChecker {
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+        validateAsyncSignature(
+                (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + module + "." + fn.name(),
+                fn.async(),
+                true,
+                fn.parameters(),
+                fn.returnType());
         Env env = new Env(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
@@ -187,6 +193,29 @@ public final class TypeChecker {
         }
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
             throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+        }
+    }
+
+    private void validateAsyncSignature(
+            String label,
+            boolean async,
+            boolean receiverSafe,
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType) {
+        if (!async) return;
+        if (!receiverSafe) {
+            throw new IllegalArgumentException(
+                    label + " cannot be async yet: async instance receivers would outlive the call boundary; use a static/top-level async callable or transfer state to an actor");
+        }
+        for (Ast.Param parameter : parameters) {
+            if (parameter.type().isBorrow()) {
+                throw new IllegalArgumentException(
+                        label + " cannot accept Borrow/BorrowMut parameters because async execution outlives the call boundary");
+            }
+        }
+        if (returnType != null && returnType.isBorrow()) {
+            throw new IllegalArgumentException(
+                    label + " cannot return Borrow/BorrowMut from an async callable");
         }
     }
 
@@ -223,6 +252,12 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            validateAsyncSignature(
+                    "method " + klass.name() + "." + method.name(),
+                    method.async(),
+                    method.isStatic(),
+                    method.parameters(),
+                    method.returnType());
             Set<String> generics = new HashSet<>(classGenerics);
             for (String generic : method.genericParameters()) {
                 if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
