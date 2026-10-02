@@ -68,7 +68,9 @@ annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
-param           = [ "@Structural" ] type_ref IDENT ;
+param           = type_ref IDENT
+                | "@Structural" type_ref IDENT
+                | IDENT "structural" type_ref ;
 
 binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
@@ -163,10 +165,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - fnc and routine declarations do not overload.
    - methods may overload only when arity differs.
    - named class/interface types are nominal by default.
-   - @Structural opts a parameter into public-shape compatibility.
+   - @Structural, name structural Type, or @AllowStructural(name) opt a parameter into public-shape compatibility.
    - every loop iteration contains an injected scheduler safepoint.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
+   - "structural" is contextual in parameter position, not globally reserved.
+   - self is an immutable receiver binding and cannot be rebound.
+
 *)
