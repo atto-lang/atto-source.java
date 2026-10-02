@@ -331,6 +331,59 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void failedActorHeapStartupIsReleased() {
+        AtomicInteger exited = new AtomicInteger();
+
+        ActorRuntime.GarbageCollector collector = new ActorRuntime.GarbageCollector() {
+            @Override public void actorStarted(ActorRuntime.ActorId actorId, IsolatePolicy policy) {
+                throw new IllegalStateException("allocation failed");
+            }
+
+            @Override public void collectActor(ActorRuntime.ActorId actorId) { }
+
+            @Override public void actorExited(ActorRuntime.ActorId actorId) {
+                exited.incrementAndGet();
+            }
+
+            @Override public void collectProcess() { }
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), collector)) {
+            assertThrows(IllegalStateException.class,
+                    () -> runtime.<String>spawn(() -> (message, context) -> { }));
+            assertEquals(1, exited.get());
+        }
+    }
+
+    @Test
+    void reentrantShutdownDuringActorHeapStartupCannotStartActor() {
+        AtomicReference<ActorRuntime> holder = new AtomicReference<>();
+        AtomicInteger exited = new AtomicInteger();
+
+        ActorRuntime.GarbageCollector collector = new ActorRuntime.GarbageCollector() {
+            @Override public void actorStarted(ActorRuntime.ActorId actorId, IsolatePolicy policy) {
+                holder.get().close();
+            }
+
+            @Override public void collectActor(ActorRuntime.ActorId actorId) { }
+
+            @Override public void actorExited(ActorRuntime.ActorId actorId) {
+                exited.incrementAndGet();
+            }
+
+            @Override public void collectProcess() { }
+        };
+
+        ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), collector);
+        holder.set(runtime);
+
+        IllegalStateException failure = assertThrows(IllegalStateException.class,
+                () -> runtime.<String>spawn(() -> (message, context) -> { }));
+        assertTrue(failure.getMessage().contains("closed during actor startup"));
+        assertEquals(1, exited.get());
+    }
+
+    @Test
     void gcRequestsAreRejectedAfterRuntimeClose() {
         ActorRuntime runtime = new ActorRuntime();
         runtime.close();
