@@ -96,7 +96,7 @@ The trusted compiler pipeline is:
 3. lower every admitted GPU callable/lambda to deterministic OpenCL C 1.2;
 4. retain kernel/ABI/batch metadata and a device-source digest in the compilation result and incremental code unit.
 
-Named GPU callables lower to a reusable device helper and a kernel entrypoint. Scalar results use an explicit `__global` result pointer. Flat array/list parameters lower to `__global` pointers, with `const` and `restrict` qualifiers derived from source mutability/ownership.
+Named GPU callables lower to a reusable device helper and a kernel entrypoint. The GPU lowering layer preserves exact source ABI widths even though the general front-end currently groups numeric families more coarsely; the generated device artifact therefore rejects ambiguous implicit narrowing/mixed-sign operations instead of relying on OpenCL C's implicit-conversion rules. Scalar results use an explicit `__global` result pointer. Flat array/list parameters lower to `__global` pointers, with `const` and `restrict` qualifiers derived from source mutability/ownership.
 
 A canonical top-level elementwise loop can lower from serial source semantics to a 1-D SPMD kernel using `get_global_id(0)`, but only after the compiler proves the loop induction shape and verifies that accesses to mutable buffers are per-work-item. If that proof fails, the generated kernel retains single-work-item execution rather than risking a data race.
 
