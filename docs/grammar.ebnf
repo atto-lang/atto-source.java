@@ -65,6 +65,7 @@ struct_member   = struct_field_decl
 
 struct_field_decl
                 = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator
+                | visibility binding_kind IDENT ":" type_ref [ "=" expression ] struct_field_terminator
                 | visibility type_ref IDENT [ "=" expression ] stmt_terminator
                 | visibility IDENT ":" type_ref [ "=" expression ] struct_field_terminator ;
 
