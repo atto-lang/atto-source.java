@@ -81,8 +81,19 @@ final class IncrementalFunctorStaticTest {
 
         var third = compiler.compile(changed);
         assertTrue(third.rebuilt("math.ores"));
-        assertTrue(third.rebuilt("app.ores"));
+        assertTrue(third.reused("app.ores"), "implementation-only dependency edits must not rebuild importers");
         assertTrue(third.reused("unrelated.ores"));
+
+        Map<String, String> abiChanged = new LinkedHashMap<>(changed);
+        abiChanged.put("math.ores", """
+                namespace mathpkg;
+                pub fnc answer() => String { return "43"; }
+                """);
+
+        var fourth = compiler.compile(abiChanged);
+        assertTrue(fourth.rebuilt("math.ores"));
+        assertTrue(fourth.rebuilt("app.ores"), "public ABI changes must invalidate direct importers");
+        assertTrue(fourth.reused("unrelated.ores"));
     }
 
     @Test
