@@ -48,6 +48,46 @@ The strict production direction is:
 - cross-actor values must pass sendability/freezing rules;
 - hot-loaded code gets a new generation and new policy admission.
 
+## Load/link/init startup barrier
+
+Multi-file startup is a host-controlled two-phase link plus initialization
+protocol. Guest imports never recursively execute imported source.
+
+```text
+discover reachable import graph
+        ↓
+parse every code unit
+        ↓
+link every evaluator into one OresContext
+        ↓
+run dependency-first SCC init barriers
+        ↓
+READY
+        ↓
+entry-unit main
+```
+
+Each evaluator has explicit startup states:
+
+- `CREATED`: declarations parsed/indexed, not yet installed in the context;
+- `LINKED`: installed and available to imports, but lifecycle init has not run;
+- `INITIALIZING`: this unit's file/module init hooks are executing;
+- `READY`: all init hooks completed successfully;
+- `FAILED`: initialization escaped with an unrecovered failure.
+
+`MAIN_ONLY` requires `READY`; it cannot bypass initialization. A failed unit
+does not silently become initialized and is not retried by ordinary execution.
+
+The evaluator indexes all declarations before any init hook runs. During
+`INITIALIZING`, init code may call already-linked helper declarations, including
+helpers in a peer that belongs to the same circular-import SCC. That is safe
+because the SCC load barrier has already linked every peer. It does not mean
+that peer init hooks have necessarily executed yet.
+
+Every file/root or module `init` hook is invoked exactly once by startup, in
+deterministic module declaration order within its code unit. Direct guest calls
+to lifecycle init hooks are rejected.
+
 ## Receiver implementation
 
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
