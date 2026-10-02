@@ -422,7 +422,7 @@ public final class ProcessSingletonRegistry {
                     checkExecutionBudget();
                     @SuppressWarnings("unchecked")
                     List<Object> ownedArguments =
-                            (List<Object>) ActorRuntime.ownedCopyOfFrozen(request.arguments);
+                            (List<Object>) ActorRuntime.materializeOwned(request.arguments);
                     Object result = request.operation.apply(state, ownedArguments);
                     checkExecutionBudget();
                     if (!request.reply.isDone()) request.reply.complete(ActorRuntime.freeze(result));
