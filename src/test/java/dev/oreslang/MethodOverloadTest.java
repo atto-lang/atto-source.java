@@ -479,6 +479,79 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void genericInterfaceMethodSlotUsesConcreteTypeArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub interface Lookup<T> {
+                  fnc find(T value) => T;
+                }
+
+                define module m
+                  define class C implements Lookup<int>
+                    pub find(int value) => int { return value; }
+                  end
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub interface Lookup<T> {
+                  fnc find(T value) => T;
+                }
+
+                define module m
+                  define class C implements Lookup<int>
+                    pub find(String value) => String { return value; }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void sameGenericInterfaceDiamondViewIsCompatible() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub interface Base<T> {
+                  fnc pick(T value) => T;
+                }
+
+                pub interface Left extends Base<int> {
+                }
+
+                pub interface Right extends Base<int> {
+                }
+
+                pub interface Combined extends Left, Right {
+                }
+
+                define module m
+                  define class C implements Combined
+                    pub pick(int value) => int { return value; }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void conflictingGenericInterfaceDiamondCannotBecomeTypeBasedOverloads() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub interface Base<T> {
+                          fnc pick(T value) => T;
+                        }
+
+                        pub interface Left extends Base<int> {
+                        }
+
+                        pub interface Right extends Base<String> {
+                        }
+
+                        pub interface Combined extends Left, Right {
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("conflicting member"));
+        assertTrue(error.getMessage().contains("pick$arity1"));
+    }
+
+    @Test
     void overloadedMethodValueRequiresCallArityForSelection() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
