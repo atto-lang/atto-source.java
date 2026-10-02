@@ -623,4 +623,46 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void runtimeCloseDoesNotBlockOnActorHeldSyncCellLock() throws Exception {
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8));
+        var cell = runtime.syncCell(1);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawnShared(() -> (message, context) ->
+                cell.update(value -> {
+                    entered.countDown();
+                    boolean done = false;
+                    while (!done) {
+                        try {
+                            done = release.await(25, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException ignored) {
+                            // Deliberately ignore shutdown interruption to prove
+                            // runtime.close() does not wait on this user lock.
+                        }
+                    }
+                    return value;
+                }));
+
+        ref.send("hold");
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+        Thread closer = new Thread(runtime::close);
+        closer.start();
+        closer.join(500);
+
+        try {
+            assertFalse(closer.isAlive(), "runtime close must not wait for user code holding a SyncCell lock");
+            assertTrue(cell.closed());
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        } finally {
+            release.countDown();
+            closer.join(2000);
+        }
+    }
+
+
 }
