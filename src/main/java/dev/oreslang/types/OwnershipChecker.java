@@ -97,7 +97,7 @@ public final class OwnershipChecker {
     }
 
     private VarState stateForParam(Ast.Param param) {
-        ValueKind kind = kindOfType(param.type());
+        ValueKind kind = param.structural() && !param.type().isBorrow() ? ValueKind.IMM_BORROW : kindOfType(param.type());
         boolean mutableOwner = param.mutable();
         if (param.type().isBorrow() && param.type().mutableBorrow()) mutableOwner = false;
         return new VarState(param.type(), mutableOwner, kind, Origin.PARAM);
@@ -327,6 +327,10 @@ public final class OwnershipChecker {
         for (int i = 0; i < arguments.size(); i++) {
             Ast.Expr arg = arguments.get(i);
             Ast.Param param = params.get(i);
+            if (param.structural() && !param.type().isBorrow()) {
+                checkExpr(arg, scope, false);
+                continue;
+            }
             if (param.type().isBorrow()) {
                 boolean mutable = param.type().mutableBorrow();
                 if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
