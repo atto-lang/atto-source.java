@@ -15,6 +15,21 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ActorRuntimeTest {
 
     @Test
+    void processGcDoesNotInvokeJvmWideGcUnlessHostOptsIn() {
+        String previous = System.getProperty("oreslang.gc.host-hint");
+        System.clearProperty("oreslang.gc.host-hint");
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            GcController gc = new GcController(runtime);
+            var result = gc.collectProcess();
+            assertEquals(false, result.get("host_gc_hint_enabled"));
+            assertEquals(false, result.get("host_gc_hint_executed"));
+        } finally {
+            if (previous == null) System.clearProperty("oreslang.gc.host-hint");
+            else System.setProperty("oreslang.gc.host-hint", previous);
+        }
+    }
+
+    @Test
     void actorCountLimitIsAtomicAndSlotsReturnAfterTermination() {
         IsolatePolicy policy = new IsolatePolicy(
                 IsolatePolicy.developer().capabilities(),
