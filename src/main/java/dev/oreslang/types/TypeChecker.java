@@ -470,6 +470,27 @@ public final class TypeChecker {
                     return resolve(fn.returnType(), fnGenerics, null);
                 }
                 if (receiver instanceof Named named) {
+                    if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
+                            && named.arguments().size() == 1
+                            && (member.member().equals("with_lock") || member.member().equals("recover"))) {
+                        if (member.member().equals("recover") && !named.name().equals("SharedMutex")) {
+                            throw new IllegalArgumentException("recover is only available on SharedMutex<T>");
+                        }
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException(member.member() + " expects exactly one callback");
+                        }
+                        Ast.Expr callback = call.arguments().getFirst();
+                        if (callback instanceof Ast.LambdaExpr lambda) {
+                            validateMutexCallback(lambda, named.arguments().getFirst(), env, generics, self);
+                        } else {
+                            Type callbackType = typeOf(callback, env, generics, self);
+                            if (!(callbackType instanceof Function fn) || fn.parameters().size() != 1) {
+                                throw new IllegalArgumentException(member.member() + " expects a one-argument function");
+                            }
+                            requireAssignable(named.arguments().getFirst(), fn.parameters().getFirst(), member.member() + " callback parameter");
+                        }
+                        return Unknown.INSTANCE;
+                    }
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
@@ -608,6 +629,22 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private void validateMutexCallback(Ast.LambdaExpr lambda, Type expectedParameter, Env parent, Set<String> generics, Type self) {
+        if (lambda.expressionBody() != null) {
+            throw new IllegalArgumentException("mutex callbacks require a block body");
+        }
+        if (lambda.parameters().size() != 1) {
+            throw new IllegalArgumentException("mutex callback must accept exactly one protected-value parameter");
+        }
+        Ast.Param param = lambda.parameters().getFirst();
+        Type declared = param.type().name().equals("$infer$") ? expectedParameter : resolveParam(param, generics, self);
+        requireAssignable(expectedParameter, declared, "mutex callback parameter " + param.name());
+        requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
+        Env lambdaEnv = new Env(parent);
+        lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
     }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
