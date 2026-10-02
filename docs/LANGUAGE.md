@@ -276,7 +276,7 @@ Generic bindings are substituted through inherited class fields/methods, constru
 
 `Type<>` is reserved for inferred type arguments in type contexts that explicitly support inference; it is **not** an expression operator. Oreslang uses `^^` for logical XOR and `^` for bitwise XOR.
 
-Logical operators are `!`, `&&`, `^^`, and `||`. `&&` and `||` short-circuit; `^^` evaluates both boolean operands. Bitwise operators are integer-only: unary `~`, binary `&`, `^`, `|`, and shifts `<<`, `>>`, `>>>`. Shift distances must be in the range 0 through 63 in the current 64-bit integer runtime.
+Logical operators are `!`, `&&`, `^^`, and `||`. `&&` and `||` short-circuit; `^^` evaluates both boolean operands. Bitwise operators are integer-only: unary `~`, binary `&`, `^`, `|`, and shifts `<<`, `>>`, `>>>`. In the current runtime all integral spellings share one signed 64-bit bitwise lane: `~` flips all 64 bits, `<<` shifts left, `>>` is arithmetic/sign-extending right shift, and `>>>` is logical/zero-filling right shift. Shift distances must be in the range 0 through 63. Width-specific masking/sign behavior can be introduced later when the runtime preserves distinct i8/i16/i32/i64/u* representations instead of collapsing them to the current integral type.
 
 From tighter to looser binding, the relevant binary precedence is: multiplicative, additive, shifts, comparisons, equality, bitwise AND, bitwise XOR, bitwise OR, logical AND, logical XOR, logical OR, ternary, assignment. Prefix borrow `&value` / `&mut value` remains unambiguous because bitwise `&` is infix.
 
