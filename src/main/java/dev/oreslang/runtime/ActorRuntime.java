@@ -1418,6 +1418,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private volatile boolean terminated;
         private volatile Thread privateActorThread;
+        private volatile Thread sharedExecutingThread;
         private volatile Behavior<M> sharedBehavior;
         private volatile ActorContext<M> sharedContext;
 
@@ -1484,6 +1485,10 @@ public final class ActorRuntime implements AutoCloseable {
                                         "ores-private-actor-"
                                                 + ref.id().value())
                                 .start(this::runPrivateActor);
+            } else {
+                // Eagerly initialize shared behavior so factory/startup
+                // failures remove the actor even before its first message.
+                scheduleSharedTurn();
             }
         }
 
@@ -1558,9 +1563,13 @@ public final class ActorRuntime implements AutoCloseable {
         private void runSharedTurn() {
             Throwable terminalFailure = null;
             boolean reschedule = false;
+            Thread worker = Thread.currentThread();
             installActorThreadLocals();
             try {
-                if (stopped.get() || closed.get()) return;
+                synchronized (this) {
+                    if (terminated || stopped.get() || closed.get()) return;
+                    sharedExecutingThread = worker;
+                }
 
                 Behavior<M> behavior = sharedBehavior;
                 ActorContext<M> context = sharedContext;
@@ -1598,7 +1607,17 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable failure) {
                 terminalFailure = failure;
             } finally {
+                synchronized (this) {
+                    if (sharedExecutingThread == worker) {
+                        sharedExecutingThread = null;
+                    }
+                }
                 clearActorThreadLocals();
+
+                // Never leak actor cancellation interrupt state back into the
+                // shared ForkJoinPool worker's next unrelated task.
+                if (worker.isInterrupted()) Thread.interrupted();
+
                 sharedTurnScheduled.set(false);
 
                 if (terminalFailure != null
@@ -1719,6 +1738,13 @@ public final class ActorRuntime implements AutoCloseable {
                     actorThread.interrupt();
                 }
             } else {
+                Thread worker;
+                synchronized (this) {
+                    worker = sharedExecutingThread;
+                }
+                if (worker != null && worker != Thread.currentThread()) {
+                    worker.interrupt();
+                }
                 scheduleSharedTurn();
             }
         }
