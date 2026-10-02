@@ -186,8 +186,64 @@ public final class TypeChecker {
 
     private void checkInit(Ast.ModuleDecl module, Ast.InitDecl init) {
         Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
+        if (module.singleton()) validatePureSingletonInit(module, init);
         validateSingletonTransportStatements(init.body(), module.name());
         checkBlock(init.body(), env, Set.of(), Primitive.VOID, null);
+    }
+
+    /**
+     * Process init cannot inherit ambient authority from whichever actor or
+     * tenant first touches the singleton. Keep it deterministic and confined
+     * to already-declared singleton state until a supervisor-owned init
+     * capability model exists.
+     */
+    private void validatePureSingletonInit(Ast.ModuleDecl module, Ast.InitDecl init) {
+        Set<String> names = new LinkedHashSet<>();
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FieldDecl field) names.add(field.name());
+        }
+        validatePureSingletonInitStatements(module, init.body(), names);
+    }
+
+    private void validatePureSingletonInitStatements(
+            Ast.ModuleDecl module,
+            List<Ast.Stmt> statements,
+            Set<String> visibleNames) {
+        Set<String> names = new LinkedHashSet<>(visibleNames);
+        for (Ast.Stmt stmt : statements) {
+            if (stmt instanceof Ast.BindingStmt binding) {
+                if (!isPureSingletonInitializer(binding.initializer(), names)) {
+                    throw impureSingletonInit(module, "local binding '" + binding.name() + "'");
+                }
+                names.add(binding.name());
+                continue;
+            }
+            if (stmt instanceof Ast.ExprStmt expression
+                    && expression.expression() instanceof Ast.AssignExpr assignment
+                    && assignment.target() instanceof Ast.NameExpr target
+                    && names.contains(target.name())
+                    && isPureSingletonInitializer(assignment.value(), names)) {
+                continue;
+            }
+            if (stmt instanceof Ast.ReturnStmt ret && ret.value() == null) continue;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (!isPureSingletonInitializer(branch.condition(), names)) {
+                        throw impureSingletonInit(module, "if condition");
+                    }
+                    validatePureSingletonInitStatements(module, branch.body(), names);
+                }
+                validatePureSingletonInitStatements(module, conditional.elseBody(), names);
+                continue;
+            }
+            throw impureSingletonInit(module, stmt.getClass().getSimpleName());
+        }
+    }
+
+    private IllegalArgumentException impureSingletonInit(Ast.ModuleDecl module, String construct) {
+        return new IllegalArgumentException("singleton init routine '" + module.name()
+                + "' must be deterministic and context-free; " + construct
+                + " would make process state depend on the first caller");
     }
 
     private Env moduleBindingEnv(Ast.ModuleDecl module) {
