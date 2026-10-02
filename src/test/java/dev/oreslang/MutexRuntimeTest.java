@@ -698,4 +698,43 @@ final class MutexRuntimeTest {
         }
     }
 
+
+    @Test
+    void mixedRuntimePublicationFailsAtomicallyAcrossAllHandles() throws Exception {
+        var unbound = OresMutex.shared(new int[]{1});
+        var foreign = OresMutex.shared(new int[]{2});
+
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime();
+             ActorRuntime runtimeC = new ActorRuntime()) {
+            CountDownLatch boundForeign = new CountDownLatch(1);
+            var owner = runtimeA.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+                assertFalse(mutex.isPoisoned());
+                boundForeign.countDown();
+            });
+            owner.send(foreign);
+            assertTrue(boundForeign.await(2, TimeUnit.SECONDS));
+
+            var rejected = runtimeB.<List<OresMutex.Shared<int[]>>>spawn(
+                    () -> (message, context) -> { });
+
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> rejected.send(List.of(unbound, foreign)));
+            assertTrue(error.getMessage().contains("owning ActorRuntime"));
+
+            CountDownLatch delivered = new CountDownLatch(1);
+            var receiver = runtimeC.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+                var guard = mutex.tryLock().orElseThrow();
+                guard.value()[0] = 11;
+                guard.release();
+                delivered.countDown();
+            });
+
+            assertDoesNotThrow(() -> receiver.send(unbound));
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertEquals(11, unbound.withLock(value -> value[0]).intValue());
+        }
+    }
+
 }
