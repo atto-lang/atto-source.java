@@ -648,8 +648,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Invokable handler = actorHandler(args.getFirst());
                 boolean stateful = args.size() == 2;
-                Object initialState = stateful ? actorOwnedInitialState(args.get(1)) : null;
-                long initialStateBytes = stateful ? estimateActorStateBytes(initialState) : 0L;
+                Object initialArgument = stateful ? args.get(1) : null;
+                long initialStateBytes = stateful ? estimateActorStateBytes(initialArgument) : 0L;
+                Object initialState = stateful ? actorOwnedInitialState(initialArgument) : null;
                 ActorRuntime.ActorRef<Object> ref = context.actors().spawnOwned(
                         context.isolatePolicy(),
                         initialStateBytes,
@@ -667,8 +668,9 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Invokable handler = actorHandler(args.get(1));
                 boolean stateful = args.size() == 3;
-                Object initialState = stateful ? actorOwnedInitialState(args.get(2)) : null;
-                long initialStateBytes = stateful ? estimateActorStateBytes(initialState) : 0L;
+                Object initialArgument = stateful ? args.get(2) : null;
+                long initialStateBytes = stateful ? estimateActorStateBytes(initialArgument) : 0L;
+                Object initialState = stateful ? actorOwnedInitialState(initialArgument) : null;
                 ActorRuntime.ActorRef<Object> ref = context.actors().spawnSingletonOwned(
                         name,
                         initialStateBytes,
