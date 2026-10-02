@@ -569,6 +569,26 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void exportedSingletonObjectCannotCaptureActorLocalModuleState() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        let int actor_local_value = 41;
+
+                        define class CapturingFoo as
+                          pub read() => int {
+                            return actor_local_value;
+                          }
+                        end
+
+                        define singleton module process_owner as
+                          pub val CapturingFoo foo = new CapturingFoo();
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot capture actor-local module state"));
+    }
+
+    @Test
     void singletonObjectProxyCallsMustBeAwaitedAndFieldsStayPrivate() {
         IllegalArgumentException unawaited = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
