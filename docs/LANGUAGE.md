@@ -139,6 +139,75 @@ end
 
 Inline object and array literals are values, not classes, and cannot be inherited from.
 
+## Structs and compact type declarations
+
+Structs are nominal value types. They carry fields and methods like classes, but they do not have class identity, cannot extend classes, cannot be used as class base types, and are constructed without `new`.
+
+The long and compact struct forms are semantically identical:
+
+```ores
+define struct Point as
+  f64 x;
+  f64 y;
+
+  pub length_squared() => f64 {
+    return self.x * self.x + self.y * self.y;
+  }
+end
+
+struct Point {
+  f64 x;
+  f64 y;
+
+  pub length_squared() => f64 {
+    return self.x * self.x + self.y * self.y;
+  }
+}
+```
+
+Bare struct fields default to `val`. Use `let` explicitly when a field is intended to be mutable. Structs are move-only in the current ownership model; a later `Copy` facility may make eligible all-Copy structs implicitly or explicitly copyable without changing struct identity semantics.
+
+Named struct initialization is field-based:
+
+```ores
+val p = Point { x = 3.0, y = 4.0 };
+```
+
+`new Point(...)` is invalid because `new` is reserved for identity-bearing class allocation. Named structs compare by struct type and field values.
+
+Anonymous structs are structural values:
+
+```ores
+val p = struct { x = 3, y = 4 };
+stdio.println(p.x);
+```
+
+A struct may satisfy interfaces with `is` (or the existing `implements` / `impl` spellings):
+
+```ores
+interface Named {
+  String name;
+}
+
+struct User is Named {
+  pub String name;
+}
+```
+
+Interfaces also have equivalent long and compact declaration forms:
+
+```ores
+define interface Lock<T> as
+  fnc lock() => T;
+end
+
+interface Lock<T> {
+  fnc lock() => T;
+}
+```
+
+The compact `{ ... }` syntax is intentional sugar for lightweight contracts and value types. Classes remain `define class ... end` declarations because they carry identity and lifecycle/allocation semantics.
+
 ## Inline values
 
 Structural inline object:
