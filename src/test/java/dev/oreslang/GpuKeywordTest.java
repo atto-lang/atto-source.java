@@ -180,6 +180,49 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void gpuResultsReenterGuestAsOwnedMutableArrays() throws Exception {
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "array-result-test"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) {
+                return java.util.List.of(1L);
+            }
+        });
+
+        String output = run("""
+                gpu fnc make_values() => Array<int> {
+                  return arr[0];
+                }
+
+                pub routine main() => void {
+                  let Array<int> values = make_values();
+                  values[0] = 42;
+                  stdio.stdout.write(values[0]);
+                }
+                """);
+
+        assertEquals("42", output);
+    }
+
+    @Test
+    void gpuWireFormatRejectsNullEscapes() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new GpuRuntime.OptionValue(true, null));
+
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "null-result-test"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) {
+                return java.util.Arrays.asList((Object) null);
+            }
+        });
+
+        assertThrows(GpuRuntime.GpuTransferException.class,
+                () -> new GpuRuntime().dispatch(
+                        "test.kernel",
+                        GpuRuntime.CallableKind.FNC,
+                        java.util.List.of(1L)));
+    }
+
+    @Test
     void gpuNeverSilentlyFallsBackToCpu() {
         PolyglotException failure = assertThrows(PolyglotException.class, () -> run("""
                 pub gpu routine main() => void {
