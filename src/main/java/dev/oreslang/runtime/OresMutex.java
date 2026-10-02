@@ -212,6 +212,14 @@ public final class OresMutex {
             return owningRuntime.get() == runtime;
         }
 
+        private void requireActorRuntimeAffinity() {
+            ActorRuntime current = ActorRuntime.currentActorRuntime();
+            if (current != null && !bindToRuntime(current)) {
+                throw new WrongMutexDomainException(
+                        "SharedMutex belongs to another ActorRuntime");
+            }
+        }
+
         private void rejectBlockingActorAcquisition() {
             if (ActorRuntime.inActorExecution()) {
                 throw new WrongMutexDomainException(
@@ -225,6 +233,7 @@ public final class OresMutex {
          * deadlocking, even when the actor migrates JVM workers.
          */
         private Object reserveDomain(boolean tryOnly) {
+            requireActorRuntimeAffinity();
             Object domain = ActorRuntime.currentExecutionDomain();
             if (activeDomains.add(domain)) return domain;
             if (tryOnly) return null;
@@ -427,6 +436,7 @@ public final class OresMutex {
 
         @Override
         public boolean isPoisoned() {
+            requireActorRuntimeAffinity();
             return poisoned.get();
         }
 
