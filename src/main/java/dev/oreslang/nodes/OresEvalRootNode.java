@@ -185,8 +185,12 @@ public final class OresEvalRootNode extends RootNode {
                 catch (ReturnSignal signal) { throw signal; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
-                    catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv);
+                    try {
+                        catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
+                        executeBlock(tried.catchBody(), catchEnv);
+                    } finally {
+                        catchEnv.release();
+                    }
                 } finally { executeBlock(tried.finallyBody(), env); }
                 return;
             }
@@ -195,18 +199,26 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : iterableValues(iterable)) {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
-                    iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    executeBlock(loop.body(), iteration);
+                    try {
+                        iteration.define(loop.bindingName(), item, loop.bindingKind());
+                        executeBlock(loop.body(), iteration);
+                    } finally {
+                        iteration.release();
+                    }
                 }
                 return;
             }
             if (stmt instanceof Ast.ForStmt loop) {
                 Env loopEnv = new Env(env);
-                if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<>());
-                while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
-                    context.schedulerSafepoint();
-                    executeBlock(loop.body(), loopEnv);
-                    if (loop.update() != null) eval(loop.update(), loopEnv);
+                try {
+                    if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<>());
+                    while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
+                        context.schedulerSafepoint();
+                        executeBlock(loop.body(), loopEnv);
+                        if (loop.update() != null) eval(loop.update(), loopEnv);
+                    }
+                } finally {
+                    loopEnv.release();
                 }
             }
         }
