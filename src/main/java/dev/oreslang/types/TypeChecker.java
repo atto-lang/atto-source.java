@@ -511,6 +511,10 @@ public final class TypeChecker {
                     && factoryCall.member().equals("new")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
+                if (element instanceof Borrow) {
+                    throw new IllegalArgumentException(
+                            factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
+                }
                 if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
                             "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
@@ -829,9 +833,10 @@ public final class TypeChecker {
             // generic environment. Flattening inherited fields here is unsafe:
             // a parent T must never be resolved as an unrelated child T.
             for (Ast.FieldDecl field : klass.fields()) {
-                Type fieldType = resolveSharedGeneric(
-                        resolve(field.type(), classGenerics, nominal),
-                        classBindings);
+                Type rawFieldType = field.type() != null
+                        ? resolve(field.type(), classGenerics, nominal)
+                        : typeOf(field.initializer(), new Env(null), classGenerics, nominal);
+                Type fieldType = resolveSharedGeneric(rawFieldType, classBindings);
                 if (!isSharedSafe(fieldType, seen, classBindings)) return false;
             }
 
@@ -1248,11 +1253,20 @@ public final class TypeChecker {
             }
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
-            case "Mutex", "Future" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+            case "Mutex" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Mutex requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                if (element == Primitive.VOID) throw new IllegalArgumentException(ref.name() + "<void> is invalid");
-                yield new Named(ref.name(), List.of(element));
+                if (element == Primitive.VOID) throw new IllegalArgumentException("Mutex<void> is invalid");
+                if (element instanceof Borrow) {
+                    throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
+                }
+                yield new Named("Mutex", List.of(element));
+            }
+            case "Future" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
+                yield new Named("Future", List.of(element));
             }
             case "SharedMutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
