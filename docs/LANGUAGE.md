@@ -211,7 +211,7 @@ Numeric widening is loss-aware; real values can widen toward complex values, but
 ## Lambdas
 
 Lambdas are lexical closures by default and use `->`. The explicit `lex`
-and `lexical` prefixes are aliases for that default when capture intent should
+and `lex` prefixes are aliases for that default when capture intent should
 be visible in source. The canonical block form keeps returns explicit:
 
 ```ores
@@ -277,12 +277,11 @@ Inside an `nlex` region:
 - an enclosing activation-local binding is not available for capture;
 - lambdas created inside an `nlex fnc`, `nlex routine`, or `nlex` lambda
   inherit the capture barrier recursively;
-- `lex`/`lexical` may not reopen an inherited `nlex` region. The barrier is
+- `lex` may not reopen an inherited `nlex` region. The barrier is
   one-way so an inner helper cannot accidentally regain access to private outer
   activation data.
 
-For named top-level/module `fnc` and `routine` declarations, `lex` and
-`lexical` explicitly document the normal lexical policy, while `nlex` is
+For named top-level/module `fnc` and `routine` declarations, `lex` explicitly document the normal lexical policy, while `nlex` is
 mainly a compile-time guarantee about any closures created in their bodies.
 Named callables already begin with their own invocation frame. The
 runtime benefit is at lambda creation. Ordinary lambdas retain only the
