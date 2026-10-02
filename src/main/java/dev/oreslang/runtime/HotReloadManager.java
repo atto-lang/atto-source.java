@@ -110,7 +110,7 @@ public final class HotReloadManager implements AutoCloseable {
 
     /** Active generation for one independently compiled code unit. */
     public synchronized Generation active(String codeUnitId) {
-        return activeByCodeUnit.get(codeUnitId);
+        return activeByCodeUnit.get(normalizeCodeUnitId(codeUnitId));
     }
 
     public synchronized Map<String, Generation> activeGenerations() {
