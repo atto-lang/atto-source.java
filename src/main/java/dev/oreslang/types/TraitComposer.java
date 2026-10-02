@@ -256,10 +256,10 @@ public final class TraitComposer {
                 validateExprTypes(moduleName, e.receiver(), generics);
                 validateExprTypes(moduleName, e.index(), generics);
             } else if (expr instanceof Ast.NewExpr e) {
-                rejectTraitType(moduleName, e.type(), generics, "new expression");
+                rejectTraitConstruction(moduleName, e.type(), "new expression");
                 for (Ast.Expr argument : e.arguments()) validateExprTypes(moduleName, argument, generics);
             } else if (expr instanceof Ast.StructInitExpr e) {
-                rejectTraitType(moduleName, e.type(), generics, "struct initializer");
+                rejectTraitConstruction(moduleName, e.type(), "struct initializer");
                 for (Ast.ObjectField field : e.fields()) validateExprTypes(moduleName, field.value(), generics);
             } else if (expr instanceof Ast.AwaitExpr e) {
                 validateExprTypes(moduleName, e.expression(), generics);
@@ -296,13 +296,23 @@ public final class TraitComposer {
                 Set<String> generics,
                 String where) {
             if (type == null) return;
-            if (!generics.contains(type.name()) && isTraitReference(moduleName, type.name())) {
-                throw new IllegalArgumentException(
-                        "trait '" + type.name() + "' has no runtime/value type identity and cannot be used as " + where
-                                + "; compose it with 'with' and expose behavior through an interface");
-            }
+            // Trait names are legal erased capability types. They still do not
+            // introduce an instantiable runtime representation; construction is
+            // rejected separately below.
             for (Ast.TypeRef argument : type.arguments()) {
                 rejectTraitType(moduleName, argument, generics, where + " type argument");
+            }
+        }
+
+        private void rejectTraitConstruction(
+                String moduleName,
+                Ast.TypeRef type,
+                String where) {
+            if (type == null) return;
+            if (isTraitReference(moduleName, type.name())) {
+                throw new IllegalArgumentException(
+                        "trait '" + type.name() + "' is a capability/composition type and cannot be instantiated by "
+                                + where + "; use 'with' to compose it or construct a class/struct that satisfies it");
             }
         }
 
@@ -322,10 +332,11 @@ public final class TraitComposer {
             for (Ast.ModuleDecl module : program.modules()) {
                 List<Ast.Decl> declarations = new ArrayList<>();
                 for (Ast.Decl declaration : module.declarations()) {
-                    if (declaration instanceof Ast.TraitDecl) {
-                        continue;
-                    }
-                    if (declaration instanceof Ast.ClassDecl klass) {
+                    if (declaration instanceof Ast.TraitDecl trait) {
+                        // Retain the compile-time declaration as capability metadata.
+                        // Traits still have no independent runtime object identity.
+                        declarations.add(trait);
+                    } else if (declaration instanceof Ast.ClassDecl klass) {
                         declarations.add(composeClass(module.name(), klass));
                     } else if (declaration instanceof Ast.FunctionDecl fn) {
                         declarations.add(withBody(fn, composeStatements(module.name(), fn.body())));
@@ -448,7 +459,9 @@ public final class TraitComposer {
                     klass.genericParameters(),
                     klass.parents(),
                     List.copyOf(interfaces.values()),
-                    List.of(),
+                    // Flatten implementation, but retain nominal trait ancestry so
+                    // the type checker can prove "with Trait" capability satisfaction.
+                    klass.traits(),
                     fields,
                     methods));
         }
