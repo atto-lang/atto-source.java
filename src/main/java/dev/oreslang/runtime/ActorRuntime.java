@@ -58,8 +58,17 @@ public final class ActorRuntime implements AutoCloseable {
             return new MemoryPolicy(MemoryMode.SHARED_HEAP, 0);
         }
 
+        /**
+         * Creates a growable private arena policy. `bytes` is the initial
+         * committed segment size; the actor may grow beyond it up to its
+         * IsolatePolicy.maxHeapBytes() and the tenant runtime budget.
+         */
         public static MemoryPolicy privateArena(long bytes) {
             return new MemoryPolicy(MemoryMode.PRIVATE_ARENA, bytes);
+        }
+
+        public long initialArenaBytes() {
+            return arenaBytes;
         }
     }
 
