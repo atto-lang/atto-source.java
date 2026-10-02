@@ -18,8 +18,12 @@ public final class CapabilityChecker {
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.FieldDecl field : klass.fields()) if (field.initializer() != null) checkExpr(field.initializer(), policy);
                     for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
-                } else if (declaration instanceof Ast.FieldDecl field && field.initializer() != null) {
-                    checkExpr(field.initializer(), policy);
+                } else if (declaration instanceof Ast.FieldDecl field) {
+                    if (field.initializer() != null) checkExpr(field.initializer(), policy);
+                } else if (declaration instanceof Ast.InterfaceDecl || declaration instanceof Ast.TypeAliasDecl) {
+                    // Type-only declarations have no executable guest expressions.
+                } else {
+                    throw new IllegalStateException("capability checker does not handle declaration kind " + declaration.getClass().getSimpleName());
                 }
             }
         }
@@ -33,7 +37,9 @@ public final class CapabilityChecker {
                 checkExpr(s.value(), policy);
                 for (Ast.MatchArm arm : s.arms()) checkStatements(arm.body(), policy);
             }
-            else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
+            else if (stmt instanceof Ast.ReturnStmt s) {
+                if (s.value() != null) checkExpr(s.value(), policy);
+            }
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.IfStmt s) {
@@ -54,12 +60,17 @@ public final class CapabilityChecker {
                 if (s.condition() != null) checkExpr(s.condition(), policy);
                 if (s.update() != null) checkExpr(s.update(), policy);
                 checkStatements(s.body(), policy);
+            } else {
+                throw new IllegalStateException("capability checker does not handle statement kind " + stmt.getClass().getSimpleName());
             }
         }
     }
 
     private static void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
+        else if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) {
+            // Literals and ordinary names do not perform privileged work by themselves.
+        }
         else if (expr instanceof Ast.CallExpr c) {
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
@@ -81,7 +92,10 @@ public final class CapabilityChecker {
             checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
         else if (expr instanceof Ast.UnaryExpr e) checkExpr(e.operand(), policy);
-        else if (expr instanceof Ast.AssignExpr e) checkExpr(e.value(), policy);
+        else if (expr instanceof Ast.AssignExpr e) {
+            checkExpr(e.target(), policy);
+            checkExpr(e.value(), policy);
+        }
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
@@ -92,6 +106,8 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
+        } else {
+            throw new IllegalStateException("capability checker does not handle expression kind " + expr.getClass().getSimpleName());
         }
     }
 
