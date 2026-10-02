@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ExecutionTerminated;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresValues;
 import org.junit.jupiter.api.Test;
@@ -222,7 +223,7 @@ final class ActorRuntimeTest {
         runtime.close();
 
         assertTrue(stopped.await(1, TimeUnit.SECONDS));
-        assertThrows(java.util.concurrent.CancellationException.class,
+        assertThrows(ExecutionTerminated.class,
                 () -> runtime.shareReadonly(List.of(1)));
         assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
     }
