@@ -352,7 +352,7 @@ public final class OwnershipChecker {
                         ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                         if (target != null) {
                             Ast.TypeRef fieldType = substituteType(
-                                    target.field().type(),
+                                    fieldTypeRef(target.field()),
                                     genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                             if (!isCopyType(fieldType)) {
                                 throw error("cannot extract move-only field '" + target.owner().name() + "." + member.member()
@@ -376,7 +376,7 @@ public final class OwnershipChecker {
                 ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
                 if (target != null) {
                     Ast.TypeRef fieldType = substituteType(
-                            target.field().type(),
+                            fieldTypeRef(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                     ValueKind fieldKind = kindOfType(fieldType);
                     if (consuming && isRootedAtActorSelf(member.receiver(), scope) && fieldKind != ValueKind.COPY) {
@@ -933,7 +933,7 @@ public final class OwnershipChecker {
         for (int i = 0; i < Math.min(argumentTypes.size(), fields.size()); i++) {
             ResolvedField target = fields.get(i);
             Ast.TypeRef fieldPattern = substituteType(
-                    target.field().type(),
+                    fieldTypeRef(target.field()),
                     genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
             inferGenericBindings(fieldPattern, argumentTypes.get(i), genericNames, bindings, Set.of());
         }
@@ -1285,7 +1285,7 @@ public final class OwnershipChecker {
                 ResolvedField target = findFieldTarget(klass, concrete, name, new LinkedHashSet<>());
                 if (target != null && target.field().visibility() == Ast.Visibility.PUBLIC) {
                     return substituteType(
-                            target.field().type(),
+                            fieldTypeRef(target.field()),
                             genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
                 }
             }
@@ -1300,6 +1300,12 @@ public final class OwnershipChecker {
         if (left.name().equals("$infer$")) return right;
         if (right.name().equals("$infer$")) return left;
         return Ast.TypeRef.union(List.of(left, right));
+    }
+
+    private Ast.TypeRef fieldTypeRef(Ast.FieldDecl field) {
+        if (field.type() != null) return field.type();
+        if (field.initializer() == null) return Ast.TypeRef.inferred();
+        return syntacticType(field.initializer(), new Scope(null));
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
