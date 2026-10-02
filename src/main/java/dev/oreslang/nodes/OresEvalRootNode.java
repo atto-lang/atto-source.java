@@ -546,6 +546,9 @@ public final class OresEvalRootNode extends RootNode {
                     if (receiver instanceof OresObject object) {
                         return invokeMethod(object, methodCall.member(), args, env.singletonState);
                     }
+                    if (receiver instanceof SingletonObjectProxy proxy) {
+                        return invokeSingletonProxy(proxy, methodCall.member(), args);
+                    }
                     if (receiver instanceof ClassFacade klass) {
                         return invokeStaticFunction(klass.klass(), methodCall.member(), args, klass.localState());
                     }
@@ -661,6 +664,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
+            if (receiver instanceof SingletonObjectProxy proxy) {
+                throw new IllegalArgumentException("singleton object proxy members must be invoked directly and awaited: "
+                        + proxy.module().name() + "." + proxy.fieldName() + "." + name + "(...)");
+            }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
                 return new BoundMethod(object, name, singletonState);
@@ -676,6 +683,31 @@ public final class OresEvalRootNode extends RootNode {
             Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
             return callMethod(receiver, method, args, singletonState);
+        }
+
+        private CompletionStage<Object> invokeSingletonProxy(
+                SingletonObjectProxy proxy,
+                String methodName,
+                List<Object> args) {
+            ProcessSingletonRegistry.Handle<SingletonState> handle = singletonHandle(proxy.module());
+            return handle.call(
+                    args,
+                    context.isolatePolicy().maxMailboxMessages(),
+                    context.isolatePolicy().maxWallTime(),
+                    (state, frozenArgs) -> {
+                        authorizeSingletonCodeGeneration(state, proxy.module());
+                        Object value = state.fields.lookup(proxy.fieldName());
+                        if (!(value instanceof OresObject object) || object.klass != proxy.klass()) {
+                            throw new IllegalStateException("singleton object proxy target changed for "
+                                    + proxy.module().name() + "." + proxy.fieldName());
+                        }
+                        Ast.MethodDecl method = findMethod(object.klass, methodName, frozenArgs.size(), new LinkedHashSet<>());
+                        if (method == null || method.visibility() != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException("no public singleton proxy method "
+                                    + object.klass.name() + "." + methodName + " with arity " + frozenArgs.size());
+                        }
+                        return callMethod(object, method, frozenArgs, state);
+                    });
         }
 
         private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args, SingletonState singletonState) {
@@ -743,12 +775,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (module.singleton()) {
-                        throw new IllegalArgumentException(
-                                "singleton module fields are actor-private; export an accessor function instead: "
-                                        + module.name() + "." + name);
+                        if (facade.localState() != null) {
+                            Object local = facade.localState().fields.lookup(name);
+                            if (local == Env.MISSING) throw new IllegalStateException("missing singleton field " + module.name() + "." + name);
+                            return local;
+                        }
+                        Ast.ClassDecl klass = field.type() == null ? null : findClass(field.type().name());
+                        if (klass == null) {
+                            throw new IllegalArgumentException("singleton module exports only class-instance proxy fields: "
+                                    + module.name() + "." + name);
+                        }
+                        return new SingletonObjectProxy(module, field.name(), klass);
                     }
-                    if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
+                    Env state = actorModuleState(module);
+                    Object value = state.lookup(name);
+                    if (value == Env.MISSING) throw new IllegalStateException("missing actor-local module field " + module.name() + "." + name);
+                    return value;
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
@@ -960,6 +1002,13 @@ public final class OresEvalRootNode extends RootNode {
         }
         private void validateSingletonStorageValue(Object value) {
             if (singletonStorage && value != MISSING) {
+                // Singleton-owned class instances stay inside the process
+                // service actor. Validate their field payloads, but never make
+                // the OresObject itself Sendable across actor boundaries.
+                if (value instanceof OresObject object) {
+                    for (Object fieldValue : object.fields.values()) ActorRuntime.freeze(fieldValue);
+                    return;
+                }
                 // Validation happens before mutation. We intentionally keep the
                 // actor-owned mutable value rather than replacing it with the
                 // frozen copy; the freeze pass supplies the graph/size guard.
@@ -993,6 +1042,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
+    private record SingletonObjectProxy(Ast.ModuleDecl module, String fieldName, Ast.ClassDecl klass) { }
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.print");requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.println");requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
