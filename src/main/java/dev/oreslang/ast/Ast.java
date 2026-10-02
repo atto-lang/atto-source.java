@@ -219,10 +219,17 @@ public final class Ast {
         public ForStmt { body = List.copyOf(body); }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits LiteralExpr, TemplateExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
+
+    public sealed interface TemplatePart permits TemplateText, TemplateInterpolation { }
+    public record TemplateText(String value) implements TemplatePart { }
+    public record TemplateInterpolation(Expr expression) implements TemplatePart { }
+    public record TemplateExpr(List<TemplatePart> parts) implements Expr {
+        public TemplateExpr { parts = List.copyOf(parts); }
+    }
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
