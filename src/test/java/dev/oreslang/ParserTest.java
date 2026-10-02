@@ -105,22 +105,31 @@ final class ParserTest {
     }
 
     @Test
-    void actorFncDefaultsPrivateAndCanBeExplicitlyShared() {
-        Ast.Program privateProgram = Parser.parse("""
-                pub actor fnc worker(int value) => int {
-                  return value;
-                }
-                """);
-        Ast.FunctionDecl privateActor = (Ast.FunctionDecl) privateProgram.modules().getFirst().declarations().getFirst();
-        assertEquals(Ast.ActorKind.PRIVATE, privateActor.actorKind());
-
+    void actorFncDefaultsSharedAndIsoactorIsPrivate() {
         Ast.Program sharedProgram = Parser.parse("""
-                pub shared actor fnc worker(int value) => int {
+                pub actor fnc worker(int value) => int {
                   return value;
                 }
                 """);
         Ast.FunctionDecl sharedActor = (Ast.FunctionDecl) sharedProgram.modules().getFirst().declarations().getFirst();
         assertEquals(Ast.ActorKind.SHARED, sharedActor.actorKind());
+
+        Ast.Program explicitSharedProgram = Parser.parse("""
+                pub shared actor fnc worker(int value) => int {
+                  return value;
+                }
+                """);
+        Ast.FunctionDecl explicitShared = (Ast.FunctionDecl) explicitSharedProgram.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorKind.SHARED, explicitShared.actorKind());
+
+        Ast.Program privateProgram = Parser.parse("""
+                pub isoactor routine worker(int value) => int {
+                  return value;
+                }
+                """);
+        Ast.FunctionDecl privateActor = (Ast.FunctionDecl) privateProgram.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorKind.PRIVATE, privateActor.actorKind());
+        assertEquals(Ast.CallableKind.ROUTINE, privateActor.kind());
     }
 
     @Test
@@ -133,13 +142,13 @@ final class ParserTest {
     }
 
     @Test
-    void actorEntrypointsCannotBeCalledOrConstructedAsOrdinaryValues() {
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+    void actorCallablesMayBeCalledButActorClassesCannotBeConstructedOrdinarily() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub actor fnc worker(int value) => int {
                   return value;
                 }
 
-                pub fnc bad() => int {
+                pub fnc good() => int {
                   return worker(1);
                 }
                 """)));
@@ -289,7 +298,7 @@ final class ParserTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                actor Parent {
+                isoactor Parent {
                   let value = 1;
                 }
 
