@@ -48,7 +48,7 @@ Method code is stored once per class declaration. Direct calls dispatch to that 
 
 Oreslang has two deliberately different mutex domains:
 
-- `Mutex<T>` is actor/private-domain state. It owns the protected value, uses no JVM lock, is non-reentrant, and rejects cross-thread access.
+- `Mutex<T>` is actor/private-domain state. It owns the protected value, uses no JVM lock, is non-reentrant, and is confined to the creating semantic actor/execution domain. Shared actors may migrate between JVM workers without changing that domain.
 - `SharedMutex<T>` is an explicit same-OS-process shared-memory capability. It is non-reentrant, uses acquire/release synchronization, may cross actor mailboxes only when both sides have `SHARED_MEMORY`, and must never be treated as a distributed or cross-isolate lock.
 - `MutexGuard<T>` is a lexical linear capability. The runtime releases it on normal scope exit and poisons a shared mutex on abnormal scope exit. Guest code may call `guard.release()` for early release; there is intentionally no `mutex.unlock()`.
 - Guarded values transparently dereference through the guard, e.g. `guard.count = guard.count + 1`.
@@ -69,5 +69,7 @@ val shared_guard = await shared.lock_async();
 shared_guard.put("key", "value");
 shared_guard.release();
 ```
+
+A process-wide `singleton module` is **not** raw shared memory. It is owned by one hidden singleton actor and accessed through its typed mailbox/proxy, so its mutable state is serialized by actor execution and normally requires no mutex. Do not wrap singleton-module state in `SharedMutex<T>` merely because multiple actors can call it. Use `SharedMutex<T>` only when code deliberately opts into a writable same-process memory object that multiple actor/execution domains may dereference directly.
 
 The current reference runtime uses a one-permit JVM semaphore for `SharedMutex<T>`. Java semaphore release/acquire provides the required memory-ordering edge and, unlike a thread-owned `ReentrantLock`, allows an asynchronously acquired guard to be resumed and released by the actor execution context.
