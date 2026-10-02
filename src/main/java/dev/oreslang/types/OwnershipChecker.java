@@ -682,7 +682,7 @@ public final class OwnershipChecker {
         }
         if (lifetimeSources == 0) {
             throw error("borrow-returning callable '" + callable
-                    + "' has no caller-owned borrow/receiver lifetime to attach the result to");
+                    + "' has no caller-owned inferred lifetime; a returned borrow would outlive its owner");
         }
         if (lifetimeSources > 1) {
             throw error("borrow-returning callable '" + callable
