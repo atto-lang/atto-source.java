@@ -1,4 +1,4 @@
-# Oreslang language design (v0.2)
+# Oreslang language design (v0.3)
 
 Oreslang is a statically typed, structurally typed guest language for GraalVM/Truffle. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
@@ -276,3 +276,152 @@ Actors may run inside an isolate. Actor semantics never weaken isolate policy.
 6. checked source is lowered/executed as Truffle guest code.
 
 The parser and static checker execute no user code.
+
+
+## File-level entrypoints
+
+Named modules remain the normal namespace unit, but a source file may also contain file-level callables such as an entrypoint. The compiler places those declarations in an internal file-root namespace; that namespace is not written by user code.
+
+```ores
+define module x
+  define class y
+  end
+end
+
+pub routine main() => void {
+  val y = new x.y();
+  stdio.stdout.write(y)
+}
+```
+
+Qualified names such as `x.y` retain their module namespace.
+
+## `fnc` versus `routine`
+
+`fnc` is the recursive/function form. It may participate in recursive call graphs. Tail-position calls from `fnc` are optimization-eligible, but v0.3 deliberately does **not** promise that every recursive `fnc` executes in constant stack space yet.
+
+`routine` is the non-recursive procedural form:
+
+```ores
+pub routine main() => void {
+  run_app();
+}
+```
+
+The static checker rejects direct or indirect call cycles that contain a routine. Routines are not tail-call-optimization targets. This makes entrypoints, orchestration steps, and lifecycle procedures explicit.
+
+Lambdas may recurse when their binding supplies an explicit function type so the closure's own signature is available while its body is checked:
+
+```ores
+let Fnc<int, int> fact = (int n) -> n == 0 ? 1 : n * fact(n - 1);
+```
+
+## Semicolons
+
+Semicolons are strongly recommended. They remain the canonical formatter output.
+
+They may be omitted only where the parser has an unambiguous structural boundary, such as the final expression immediately before `}`, `fi`, or `end`. Oreslang does not use broad JavaScript-style automatic semicolon insertion.
+
+```ores
+pub routine main() => void {
+  stdio.stdout.write("done")
+}
+```
+
+## Nominal typing and opt-in structural parameters
+
+Named classes and interfaces are nominal by default. Structural matching at an API boundary is explicit with `@Structural`:
+
+```ores
+pub interface Brand {
+  markerBrand: 'marking/branding'
+}
+
+fnc consume(@Structural Brand value) => String {
+  return value.markerBrand;
+}
+```
+
+A value does not need to nominally implement `Brand` for that parameter, but its public/static shape must satisfy the interface. Without `@Structural`, the normal nominal implementation/inheritance rules apply.
+
+Interfaces may inherit from other interfaces and support literal-string marker fields:
+
+```ores
+pub interface Bar {
+  markerBrand: 'marking/branding'
+}
+
+pub interface Foo extends Bar {
+}
+```
+
+Explicit `implements` and module `@AdheresTo(...)` checks remain structural conformance proofs.
+
+## Method overloads
+
+Only methods overload, and only by arity:
+
+```ores
+define class Lookup
+  find() => Option<int> {
+    return None;
+  }
+
+  find(int id) => Option<int> {
+    return Some(id);
+  }
+end
+```
+
+Two methods with the same name and same arity are a compile-time error even when their parameter types differ. Top-level/module `fnc` and `routine` declarations never overload.
+
+## Ternary expressions
+
+The ternary operator is right-associative and lazy in its selected branch:
+
+```ores
+fnc find(bool found) => Option<int> {
+  return found ? Some(42) : None;
+}
+```
+
+## Loops, iterators, and scheduler safepoints
+
+Oreslang supports conventional imperative loops:
+
+```ores
+for (let i = 0; i < 10; i = i + 1) {
+  work(i);
+}
+```
+
+and iterator-style loops:
+
+```ores
+for (val item of values) {
+  work(item);
+}
+```
+
+Classes can expose a JavaScript-like iterator symbol:
+
+```ores
+define class Bag
+  [Symbol.iterator]() => Array<int> {
+    return arr[1, 2, 3];
+  }
+end
+```
+
+The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
+
+This means Oreslang does not require recursion as the only way to loop, while still giving actor/isolate schedulers a compulsory cooperation point inside generated loop execution.
+
+## Standard output
+
+In addition to `stdio.print` and `stdio.println`, the stream-shaped form is available:
+
+```ores
+stdio.stdout.write(value);
+stdio.stdout.println(value);
+```

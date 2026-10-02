@@ -10,6 +10,7 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 public final class OresContext implements AutoCloseable {
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
@@ -20,6 +21,7 @@ public final class OresContext implements AutoCloseable {
     private final PrintWriter output;
     private final ActorRuntime actors = new ActorRuntime();
     private final UUID contextId = UUID.randomUUID();
+    private final AtomicLong schedulerSafepoints = new AtomicLong();
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -39,11 +41,24 @@ public final class OresContext implements AutoCloseable {
     public ActorRuntime actors() { return actors; }
     public UUID contextId() { return contextId; }
 
+    /**
+     * Compiler-injected cooperative scheduling checkpoint. Loops call this on
+     * every iteration so a future supervisor/control mailbox can interrupt
+     * long-running actor code without requiring recursion-only looping.
+     */
+    public void schedulerSafepoint() {
+        schedulerSafepoints.incrementAndGet();
+        actors.schedulerSafepoint();
+    }
+
+    public long schedulerSafepoints() { return schedulerSafepoints.get(); }
+
     public Map<String, Object> processDescriptor() {
         return Map.of(
                 "context_id", contextId.toString(),
                 "runtime", "graalvm-truffle",
-                "language", "oreslang");
+                "language", "oreslang",
+                "scheduler_safepoints", schedulerSafepoints.get());
     }
 
     @Override

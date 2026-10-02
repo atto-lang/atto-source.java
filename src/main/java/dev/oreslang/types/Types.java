@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Record, Function, ListType, Tuple, Generic, Unknown { }
+    public sealed interface Type permits Primitive, Named, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -33,6 +33,8 @@ public final class Types {
 
     public record Generic(String name) implements Type { }
 
+    public record StringLiteral(String value) implements Type { }
+
     public enum Unknown implements Type { INSTANCE }
 
     public static boolean isAssignable(Type from, Type to) {
@@ -41,6 +43,7 @@ public final class Types {
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
+        if (from instanceof StringLiteral && to == Primitive.STRING) return true;
 
         if (from instanceof Named source && to instanceof Named target && source.name().equals(target.name())) {
             if (source.arguments().size() != target.arguments().size()) return false;

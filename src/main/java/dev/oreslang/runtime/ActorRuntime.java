@@ -13,6 +13,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CancellationException;
 import java.util.function.Supplier;
 
 /**
@@ -89,6 +90,18 @@ public final class ActorRuntime implements AutoCloseable {
      * Creates an explicitly read-only shared value. The returned graph is a
      * frozen representation; no mutable source object itself is exposed.
      */
+    /**
+     * Cooperative scheduler hook used by compiler-injected loop safepoints.
+     * It observes runtime shutdown/interruption and yields the carrier so
+     * supervisor/control-plane work can run. This is intentionally a runtime
+     * hook rather than guest-accessible thread control.
+     */
+    public void schedulerSafepoint() {
+        if (closed.get()) throw new CancellationException("actor runtime is closing");
+        if (Thread.currentThread().isInterrupted()) throw new CancellationException("actor execution interrupted");
+        Thread.yield();
+    }
+
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
         return new Shared<>((T) freeze(value));

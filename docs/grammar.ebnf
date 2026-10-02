@@ -1,6 +1,6 @@
-(* Oreslang v0.2 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
+(* Oreslang v0.3 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
-source          = { import_decl } { annotated_module_decl } EOF ;
+source          = { import_decl } { top_level_item } EOF ;
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -11,45 +11,69 @@ import_names    = IDENT
                 | "{" IDENT { "," IDENT } "}"
                 | "*" "as" IDENT ;
 
+top_level_item  = annotated_module_decl
+                | callable_decl
+                | class_decl
+                | interface_decl
+                | type_decl
+                | binding_decl ;
+
 annotated_module_decl = { annotation } "define" "module" qualified_name
                         { module_member } "end" ;
-module_member   = function_decl | class_decl | interface_decl | type_decl | binding_decl ;
+
+module_member   = callable_decl
+                | class_decl
+                | interface_decl
+                | type_decl
+                | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
 modifier        = "static" | "abstract" | "async" ;
 
-function_decl   = { annotation } visibility { modifier } "fnc" IDENT [ generic_params ]
+callable_decl   = { annotation } visibility { modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
+callable_kind   = "fnc" | "routine" ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   { class_member } "end" ;
-class_member    = field_decl | method_decl ;
-field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] ";" ;
 
-method_decl     = { annotation } visibility { modifier } IDENT [ generic_params ] method_head return_spec
-                  ( block | ";" ) ;
+class_member    = field_decl | method_decl ;
+field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
+
+method_decl     = { annotation } visibility { modifier } method_name [ generic_params ]
+                  method_head return_spec ( block | stmt_terminator ) ;
+method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
 explicit_receiver = "self" type_ref ;
 
-interface_decl  = "define" "interface" IDENT [ generic_params ]
-                  { interface_member } "end" ;
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec ";"
-                | [ binding_kind ] type_ref IDENT ";" ;
+interface_decl  = visibility "interface" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  interface_body
+                | "define" "interface" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  interface_body ;
 
-type_decl       = "type" IDENT [ generic_params ] "=" type_ref ";" ;
+interface_body  = "{" { interface_member } "}"
+                | { interface_member } "end" ;
+
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
+                | IDENT ":" type_ref member_terminator
+                | [ binding_kind ] type_ref IDENT member_terminator ;
+
+type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
-param           = type_ref IDENT ;
+param           = [ "@Structural" ] type_ref IDENT ;
 
-binding_decl    = binding_kind [ type_ref ] IDENT "=" expression ";" ;
+binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
 
-destructure_stmt= "[" destructure_item { "," destructure_item } "]" "=" expression ";" ;
+destructure_stmt= "[" destructure_item { "," destructure_item } "]" "=" expression stmt_terminator ;
 destructure_item= binding_kind IDENT ;
 
 block           = "{" { statement } "}" ;
@@ -59,21 +83,30 @@ statement       = binding_decl
                 | if_stmt
                 | try_stmt
                 | defer_stmt
-                | expression ";" ;
+                | for_stmt
+                | expression stmt_terminator ;
 
-return_stmt     = "return" [ expression ] ";" ;
-defer_stmt      = "defer" expression ";" ;
+return_stmt     = "return" [ expression ] stmt_terminator ;
+defer_stmt      = "defer" expression stmt_terminator ;
 
-if_stmt         = "if" condition ";" "do" { statement }
-                  { "elseif" condition ";" "do" { statement } }
+if_stmt         = "if" condition [ ";" ] "do" { statement }
+                  { "elseif" condition [ ";" ] "do" { statement } }
                   [ "else" { statement } ] "fi" ;
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
+for_stmt        = "for" "(" for_of_head ")" block
+                | "for" "(" [ for_init ] ";" [ expression ] ";" [ expression ] ")" block ;
+
+for_of_head     = [ binding_kind ] IDENT "of" expression ;
+for_init        = binding_kind [ type_ref ] IDENT "=" expression
+                | expression ;
+
 expression      = assignment ;
-assignment      = logic_or [ "=" assignment ] ;
+assignment      = conditional [ "=" assignment ] ;
+conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
@@ -109,16 +142,31 @@ literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
 
 type_ref        = qualified_name [ "<" [ type_args ] ">" ]
+                | STRING_LITERAL
                 | "self"
                 | "void"
                 | "null" ;
+
 type_args       = type_ref { "," type_ref } ;
 qualified_name  = IDENT { "." IDENT } ;
 
+(* Semicolons are recommended. stmt_terminator/member_terminator may be omitted
+   only at an unambiguous structural boundary such as immediately before
+   "}", "fi", or "end". Imports keep an explicit semicolon in v0.3. *)
+
+stmt_terminator   = ";" | SAFE_STRUCTURAL_BOUNDARY ;
+member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
+
 (* Semantic restrictions:
-   - assignment targets are local names in v0.2;
-   - `fi` closes only conditionals; `end` closes modules/classes/interfaces;
-   - standalone `null` values are illegal;
-   - the `null` type marker is legal only directly inside Option<null>;
-   - inline `obj{}` / `arr[]` values are not subclass targets. Extend Object or List instead.
+   - fnc declarations may recurse; routines may not participate in a call cycle.
+   - recursive lambdas require an explicit Fnc<..., Result> binding in v0.3.
+   - fnc and routine declarations do not overload.
+   - methods may overload only when arity differs.
+   - named class/interface types are nominal by default.
+   - @Structural opts a parameter into public-shape compatibility.
+   - every loop iteration contains an injected scheduler safepoint.
+   - [Symbol.iterator]() may provide iterator behavior for for-of.
+   - standalone null values are illegal.
+   - null is a type marker only directly inside Option<null>.
+   - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
 *)
