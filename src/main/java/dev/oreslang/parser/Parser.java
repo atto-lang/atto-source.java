@@ -42,17 +42,19 @@ public final class Parser {
             if (match(DEFINE)) {
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.isStatic || modifiers.isAbstract) {
-                        throw error(previous(), "modules do not accept function/class modifiers");
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.isStatic || modifiers.isAbstract || modifiers.gpu) {
+                        throw error(previous(), "modules do not accept function/class/gpu modifiers");
                     }
                     modules.add(parseModule(annotations));
                     continue;
                 }
                 if (match(CLASS)) {
+                    if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not classes");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
+                    if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not interfaces");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -123,8 +125,14 @@ public final class Parser {
 
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
-            if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
-            if (match(INTERFACE)) return parseInterface(modifiers.visibility);
+            if (match(CLASS)) {
+                if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not classes");
+                return parseClass(modifiers.isAbstract || afterDefineAbstract);
+            }
+            if (match(INTERFACE)) {
+                if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not interfaces");
+                return parseInterface(modifiers.visibility);
+            }
             throw error(previous(), "expected class or interface after 'define'");
         }
 
@@ -136,6 +144,7 @@ public final class Parser {
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        if (modifiers.gpu) throw error(peek(), "'gpu' may modify a callable, not a type/interface/binding declaration");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
@@ -148,13 +157,14 @@ public final class Parser {
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
-        java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
-        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
+        List<Ast.Annotation> callableAnnotations = withGpuPlacement(annotations, modifiers.gpu);
+        java.util.Set<String> structuralNames = structuralAnnotationNames(callableAnnotations);
+        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), callableAnnotations);
         consume(RPAREN, "expected ')' after parameters");
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = parseReturnType(callableAnnotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, generics, params,
-                returnType, annotations, body);
+                returnType, callableAnnotations, body);
     }
 
     private Ast.ClassDecl parseClass(boolean isAbstract) {
@@ -169,6 +179,7 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isBindingKind(peek().type())) {
+                if (mods.gpu) throw error(peek(), "'gpu' may modify a callable, not a class field");
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
                 continue;
@@ -278,14 +289,16 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        List<Ast.Annotation> callableAnnotations = withGpuPlacement(annotations, mods.gpu);
+        Ast.TypeRef returnType = parseReturnType(callableAnnotations);
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
+            if (mods.gpu) throw error(previous(), "abstract methods cannot be gpu callables");
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
-                receiverType, generics, params, returnType, annotations, body);
+                receiverType, generics, params, returnType, callableAnnotations, body);
     }
 
     private String parseMethodName() {
@@ -331,6 +344,7 @@ public final class Parser {
         boolean async = false;
         boolean isStatic = false;
         boolean isAbstract = false;
+        boolean gpu = false;
         boolean progress;
         do {
             progress = true;
@@ -339,9 +353,20 @@ public final class Parser {
             else if (match(ASYNC)) async = true;
             else if (match(STATIC)) isStatic = true;
             else if (match(ABSTRACT)) isAbstract = true;
-            else progress = false;
+            else if (match(GPU)) {
+                if (gpu) throw error(previous(), "duplicate 'gpu' modifier");
+                gpu = true;
+            } else progress = false;
         } while (progress);
-        return new Modifiers(visibility, async, isStatic, isAbstract);
+        if (gpu && async) throw error(previous(), "'gpu' and 'async' cannot be combined; GPU dispatch is an explicit execution target");
+        return new Modifiers(visibility, async, isStatic, isAbstract, gpu);
+    }
+
+    private List<Ast.Annotation> withGpuPlacement(List<Ast.Annotation> annotations, boolean gpu) {
+        if (!gpu) return annotations;
+        ArrayList<Ast.Annotation> result = new ArrayList<>(annotations);
+        result.add(new Ast.Annotation(Ast.GPU_ANNOTATION, List.of()));
+        return List.copyOf(result);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -855,6 +880,14 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(GPU)) {
+            Ast.GpuMode mode = Ast.GpuMode.SINGLE;
+            if (check(IDENT) && peek().lexeme().equals("parallel")) {
+                advance(); // contextual keyword: do not globally reserve 'parallel'
+                mode = Ast.GpuMode.PARALLEL;
+            }
+            return new Ast.GpuExpr(mode, parseUnary());
+        }
         return parsePostfix();
     }
 
@@ -1069,5 +1102,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract, boolean gpu) { }
 }
