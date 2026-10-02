@@ -151,6 +151,33 @@ final class RuntimeGarbageCollectorTest {
         }
     }
 
+
+    @Test
+    void actorExitDeterministicallyRetiresItsCleanupDomain() throws Exception {
+        AtomicInteger cleanups = new AtomicInteger();
+        AtomicReference<Object> leakedOwner = new AtomicReference<>();
+        CountDownLatch registered = new CountDownLatch(1);
+
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             ActorRuntime runtime = new ActorRuntime()) {
+            runtime.setActorExitHook(gc::retireActorDomain);
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                Object owner = new Object();
+                leakedOwner.set(owner); // deliberately keep a stale host reference alive
+                gc.track(owner, cleanups::incrementAndGet);
+                registered.countDown();
+                context.self().stop();
+            });
+
+            ref.send("stop");
+            assertTrue(registered.await(2, TimeUnit.SECONDS));
+            assertTrue(ref.awaitStopped(2, TimeUnit.SECONDS));
+            assertNotNull(leakedOwner.get());
+            assertEquals(1, cleanups.get(),
+                    "actor termination must retire actor-local runtime resources even with a stale owner reference");
+        }
+    }
+
     @Test
     void actorCollectionOutsideActorIsRejected() {
         try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1))) {
