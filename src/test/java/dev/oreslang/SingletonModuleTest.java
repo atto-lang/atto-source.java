@@ -406,6 +406,34 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonInitializersMayReferenceEarlierFieldsButNotLaterFields() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define singleton module ordered_initializer_ok as
+                  let Array<int> first = arr[1];
+                  let Array<int> second = first;
+
+                  pub fnc read() => int {
+                    return second[0];
+                  }
+                end
+                """)));
+
+        IllegalArgumentException forward = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module ordered_initializer_bad as
+                          let Array<int> first = second;
+                          let Array<int> second = arr[1];
+
+                          pub fnc read() => int {
+                            return first[0];
+                          }
+                        end
+                        """)));
+        assertTrue(forward.getMessage().contains("unknown name 'second'"), forward.getMessage());
+    }
+
+    @Test
     void singletonInitializersAreContextFreeAndStateTypesAreStable() {
         IllegalArgumentException capabilityInitializer = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
