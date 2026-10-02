@@ -1525,11 +1525,14 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 IdentityHashMap<Object, Boolean> graph,
                 IdentityHashMap<Object, Boolean> seen) {
+            if (value instanceof OptionValue option) {
+                if (seen.put(value, Boolean.TRUE) != null) return;
+                if (option.present()) collectMutableGraph(option.value(), graph, seen);
+                return;
+            }
             if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
             graph.put(value, Boolean.TRUE);
-            if (value instanceof OptionValue option) {
-                if (option.present()) collectMutableGraph(option.value(), graph, seen);
-            } else if (value instanceof OresObject object) {
+            if (value instanceof OresObject object) {
                 for (Object field : object.fields.values()) collectMutableGraph(field, graph, seen);
             } else if (value instanceof List<?> list) {
                 for (Object item : list) collectMutableGraph(item, graph, seen);
@@ -1549,14 +1552,17 @@ public final class OresEvalRootNode extends RootNode {
                 Object value,
                 IdentityHashMap<Object, Boolean> originalGraph,
                 IdentityHashMap<Object, Boolean> seen) {
+            if (value instanceof OptionValue option) {
+                if (seen.put(value, Boolean.TRUE) != null) return;
+                if (option.present()) rejectMutableAliases(option.value(), originalGraph, seen);
+                return;
+            }
             if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
             if (originalGraph.containsKey(value)) {
                 throw new IllegalArgumentException(
                         "copy() violated the Copy contract by retaining mutable storage from the source");
             }
-            if (value instanceof OptionValue option) {
-                if (option.present()) rejectMutableAliases(option.value(), originalGraph, seen);
-            } else if (value instanceof OresObject object) {
+            if (value instanceof OresObject object) {
                 for (Object field : object.fields.values()) rejectMutableAliases(field, originalGraph, seen);
             } else if (value instanceof List<?> list) {
                 for (Object item : list) rejectMutableAliases(item, originalGraph, seen);
@@ -1576,6 +1582,7 @@ public final class OresEvalRootNode extends RootNode {
             if (value == null || value instanceof String || value instanceof Number
                     || value instanceof Boolean || value instanceof Character
                     || value instanceof Complex
+                    || value instanceof OptionValue
                     || value instanceof ActorRuntime.ActorId
                     || value instanceof ActorRuntime.ActorRef<?>
                     || value instanceof ActorRuntime.Shared<?>) {
