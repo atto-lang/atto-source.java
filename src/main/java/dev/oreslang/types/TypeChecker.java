@@ -492,7 +492,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.MemberExpr builtin
                     && builtin.receiver() instanceof Ast.NameExpr namespace
-                    && builtinCollectionNamespaceAvailable(namespace.name())
+                    && builtinCollectionNamespaceAvailable(namespace.name(), env)
                     && namespace.name().equals("List")
                     && builtin.member().equals("of")) {
                 return new Tuple(call.arguments().stream()
@@ -501,7 +501,7 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr builtin
                     && builtin.receiver() instanceof Ast.NameExpr namespace
-                    && builtinCollectionNamespaceAvailable(namespace.name())
+                    && builtinCollectionNamespaceAvailable(namespace.name(), env)
                     && namespace.name().equals("Map")
                     && builtin.member().equals("of")) {
                 if ((call.arguments().size() & 1) != 0) {
@@ -762,8 +762,9 @@ public final class TypeChecker {
         throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
     }
 
-    private boolean builtinCollectionNamespaceAvailable(String name) {
-        return !modules.containsKey(name)
+    private boolean builtinCollectionNamespaceAvailable(String name, Env env) {
+        return env.lookup(name) == null
+                && !modules.containsKey(name)
                 && !classes.containsKey(name)
                 && !ambiguousClasses.contains(name)
                 && !importedValues.contains(name);
@@ -781,6 +782,9 @@ public final class TypeChecker {
     }
 
     private Type tupleIndexType(Tuple tuple, Ast.Expr index) {
+        if (tuple.elements().isEmpty()) {
+            throw new IllegalArgumentException("cannot index an empty finite tuple");
+        }
         Integer constant = constantTupleIndex(index);
         if (constant != null) {
             if (constant < 0 || constant >= tuple.elements().size()) {
