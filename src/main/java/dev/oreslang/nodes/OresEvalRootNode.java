@@ -6,6 +6,8 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -37,6 +39,7 @@ public final class OresEvalRootNode extends RootNode {
 
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
+        CapabilityChecker.check(program, context.isolatePolicy());
         return new Evaluator(program, context).execute(arguments);
     }
 
@@ -197,6 +200,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
+                    context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
                 };
                 if (name.name().equals("Some")) return (Invokable) args -> {
@@ -234,6 +238,16 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr methodCall) {
+                    Object receiver = eval(methodCall.receiver(), env);
+                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    if (receiver instanceof OresObject object) {
+                        return invokeMethod(object, methodCall.member(), args);
+                    }
+                    Object callee = member(receiver, methodCall.member());
+                    if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
+                    return invokable.call(args);
+                }
                 Object callee = eval(call.callee(), env);
                 List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
                 if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
@@ -321,17 +335,39 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                return (Invokable) args -> {
-                    Ast.MethodDecl method = findMethod(object.klass, name, args.size(), new LinkedHashSet<>());
-                    if (method == null) throw new IllegalArgumentException("no method " + object.klass.name() + "." + name + " with arity " + args.size());
-                    return callMethod(object, method, args);
-                };
+                return new BoundMethod(object, name);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
                 return map.get(name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
+            Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
+            if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
+            return callMethod(receiver, method, args);
+        }
+
+        /**
+         * Go-style method value: one shared method definition per class plus a
+         * tiny (receiver, method-name) pair only when a method is extracted as
+         * a first-class callback. Direct receiver.method(...) calls allocate no
+         * bound-method object.
+         */
+        private final class BoundMethod implements Invokable {
+            private final OresObject receiver;
+            private final String methodName;
+
+            private BoundMethod(OresObject receiver, String methodName) {
+                this.receiver = receiver;
+                this.methodName = methodName;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return invokeMethod(receiver, methodName, arguments);
+            }
         }
 
         private Object moduleMember(Ast.ModuleDecl module, String name) {
@@ -511,17 +547,17 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
     private record StdioFacade(OresContext context) {
-        private Object print(List<Object> args){requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
-        private Object println(List<Object> args){requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
+        private Object print(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.print");requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
+        private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.println");requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
     }
     private record StdoutFacade(OresContext context) {
-        private Object write(List<Object> args){requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
-        private Object println(List<Object> args){requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
+        private Object write(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.write");requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
+        private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.println");requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
     }
     private record ProcessFacade(OresContext context) {
-        private String contextId(){return context.contextId().toString();}
-        private Map<String,Object> descriptor(){return context.processDescriptor();}
-        private Object shareReadonly(List<Object> args){requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+        private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
+        private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
+        private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
     }
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
 }
