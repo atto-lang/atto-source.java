@@ -30,6 +30,13 @@ public final class GpuKernelCompiler {
     public enum KernelKind { FUNCTION, STATIC_FUNCTION, LAMBDA }
     public enum ExecutionShape { SINGLE_WORK_ITEM, DATA_PARALLEL_1D }
 
+    /**
+     * gpu parallel batches are heterogeneous independent work. Prefer separate concurrent
+     * kernel launches so the device scheduler can place them independently; a generated
+     * dispatcher is only a compact fallback for backends that cannot enqueue concurrently.
+     */
+    public enum BatchExecutionPolicy { CONCURRENT_KERNELS }
+
     public record GpuParameter(
             String name,
             String oresType,
@@ -71,6 +78,7 @@ public final class GpuKernelCompiler {
 
     public record GpuBatch(
             String id,
+            BatchExecutionPolicy preferredPolicy,
             String dispatcherSymbol,
             int workItems,
             List<String> kernelSymbols,
@@ -494,6 +502,7 @@ public final class GpuKernelCompiler {
 
             batches.add(new GpuBatch(
                     entry.getKey(),
+                    BatchExecutionPolicy.CONCURRENT_KERNELS,
                     dispatcher,
                     targets.size(),
                     targets.stream().map(target -> target.kernelSymbol).toList(),
@@ -1300,6 +1309,7 @@ public final class GpuKernelCompiler {
         }
         for (GpuBatch batch : batches) {
             out.append("batch=").append(batch.id()).append('|')
+                    .append(batch.preferredPolicy()).append('|')
                     .append(batch.dispatcherSymbol() == null ? "" : batch.dispatcherSymbol()).append('|')
                     .append(batch.workItems()).append('|')
                     .append(String.join(",", batch.kernelSymbols())).append('\n');
