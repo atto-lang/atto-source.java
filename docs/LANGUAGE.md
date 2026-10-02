@@ -361,6 +361,49 @@ fnc lookup(bool found) => Option<int> {
 }
 ```
 
+`Option<T>` is a closed two-state sum type. It is never implicitly assignable to
+`T`, and its payload cannot be accessed through fields, indexes, or an unchecked
+`unwrap()`. Code must prove the `Some` state with an exhaustive match before the
+payload is available as `T`:
+
+```ores
+fnc value_or_zero(Option<int> maybe) => int {
+  match maybe {
+    Some(value) => {
+      return value;
+    }
+    None => {
+      return 0;
+    }
+  }
+}
+```
+
+An Option match has exactly one `Some(name)` arm and one `None` arm. Missing or
+duplicate arms are compile-time errors. The `Some` binding is scoped only to that
+arm and is statically refined to the non-null payload type `T`.
+
+Option matching participates in pointerless ownership:
+
+- `match maybe { ... }` reads/borrows a non-`Copy` option; the option remains
+  usable after the match and a non-`Copy` payload is a read borrow inside
+  `Some(...)`.
+- `match borrow(maybe) { ... }` makes that read borrow explicit.
+- `match take(maybe) { ... }` consumes a non-`Copy` option and gives the
+  `Some` arm ownership of a non-`Copy` payload.
+- `match copy(maybe) { ... }` is legal only when `Option<T>` is proven
+  `Copy`. `Option<T>` is `Copy` exactly when `T` is `Copy`.
+- `Some(value)` owns its payload. Constructing `Some(x)` therefore moves a
+  non-`Copy` `x`; use `Some(copy(x))` only when the payload type satisfies
+  the copy contract.
+- Storing a borrow inside `Some(...)` is currently rejected until container
+  borrow provenance is represented explicitly; this prevents a borrow from
+  escaping its checked lifetime through an option.
+
+`copy`, `take`, and `borrow` never erase the requirement to prove `Some`.
+`share` remains fail-closed for ordinary values, including options, until an
+explicit shared-capability type is provided.
+
 `Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
 
 ## Numbers
