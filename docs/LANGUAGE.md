@@ -1088,12 +1088,61 @@ Borrow rules:
 - reading the owner is forbidden while an exclusive mutable borrow is active;
 - mutable borrowing requires a mutable owner;
 - a borrow of a local value may not escape the owner's lifetime;
+- borrow provenance is propagated through borrow-returning functions and methods instead of being erased at call boundaries;
+- ordinary borrows cannot be hidden inside owning lists, tuples, objects, structs, classes, or `Option` values until those containers have an explicit lifetime relationship;
 - temporary call borrows end at the call boundary;
-- borrows stored in local bindings remain active until that binding's lexical scope ends.
+- persistent borrow aliases remain active until every registered alias leaves lexical scope;
+- detached snapshots created by `share(...)` are not ordinary borrows and may be stored, captured, or returned safely.
 
-The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
+The checker is deliberately conservative around uncertain lifetime/alias relationships. It rejects programs it cannot prove safe rather than silently accepting them. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
 Structural parameters remain read-only views and therefore do not consume the supplied value.
+
+### Pointer-free ownership intrinsics
+
+New ownership operations use ordinary call-shaped syntax:
+
+```ores
+borrow(value)
+copy(value)
+take(value)
+share(value)
+```
+
+These are **contextual compiler intrinsics**, not lexer keywords and not ambient global functions. Normal name resolution wins first: a local/imported value, module/class name, or user-defined callable named `copy`, `borrow`, `take`, or `share` shadows the intrinsic. This avoids permanently reserving four common identifiers.
+
+- `borrow(x)` creates an immutable borrow. A persistent binding keeps the owner borrowed until the alias leaves scope.
+- `copy(x)` creates independent ownership while preserving `x`. `copy(borrow(x))` copies the underlying value rather than returning another borrow.
+- `take(x)` explicitly transfers ownership. It rejects borrowed values; a move-only source is unusable afterward.
+- `share(x)` creates an independent, deeply read-only snapshot. It has no borrow dependency on the source, so the source may be mutated afterward and the snapshot may safely outlive the source's lexical scope.
+
+Copy behavior is type-directed:
+
+- **struct** — recursively Copy structs participate in the compiler's derived `Copy` semantics; explicit `copy(...)` can also recursively duplicate copyable stored state, including trait-composed fields.
+- **class** — never gets implicit class-object copying. A class that participates in `copy(...)` must define a concrete, synchronous, non-generic, public instance `copy() => Self` with an immutable receiver.
+- **trait** — has no independent runtime value identity; composed trait state follows its host struct/class copy rule.
+- **interface** — is a storage-free contract, so an interface type alone cannot prove concrete copy semantics.
+
+Class copying is checked twice. Static ownership analysis prevents mutation through `self`, including nested calls that require a mutable receiver. Runtime verification then requires the same concrete class, verifies that `copy()` did not mutate the source graph, and rejects any mutable object/list/set/map/array alias retained from the source. Immutable wrappers such as `Option` are traversed so they cannot hide mutable aliases.
+
+The runtime verifier is fail-closed at host/FFI boundaries: an unknown foreign reference is not assumed safe merely because Oreslang cannot inspect it. Explicitly recognized immutable capabilities such as actor identities/references are allowed; additional FFI copy adapters can widen that set without weakening the guarantee.
+
+```ores
+define class Buffer as
+  pub let int value = 0;
+
+  pub copy() => Buffer {
+    return new Buffer(self.value);
+  }
+end
+
+let Buffer original = new Buffer(7);
+let Buffer duplicate = copy(original);
+```
+
+Returning `self`, mutating `self` during `copy()`, or constructing a fresh root while reusing mutable nested source storage violates the Copy contract. Nested storage must itself be copied when independence is required.
+
+The legacy `&T` / `&mut T` forms remain accepted for compatibility. `borrow(x)` is the preferred pointer-free immutable-borrow spelling while Oreslang evolves toward Java-like surface syntax without weakening ownership guarantees.
 
 ## Multi-threaded targets
 
