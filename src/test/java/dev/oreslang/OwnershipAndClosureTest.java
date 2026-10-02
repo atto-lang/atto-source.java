@@ -930,6 +930,90 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("moved value 'holder'"));
     }
 
+    @Test
+    void tupleContainingCopyStructIsStillMoveOnlyUntilTupleValueRuntimeExists() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Point {
+                          pub let int x = 1;
+                        }
+
+                        fnc bad() => void {
+                          let pair = (Point {}, 7);
+                          let moved = pair;
+                          stdio.println(pair[1]);
+                          stdio.println(moved[1]);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("moved value 'pair'"));
+    }
+
+    @Test
+    void escapedLocalStructNestedFieldKeepsOwnershipIdentity() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc make() => Outer {
+                          struct Inner {
+                            pub let int count = 1;
+
+                            pub bump(self &mut self)() => int {
+                              self.count = self.count + 1;
+                              return self.count;
+                            }
+                          }
+
+                          struct Outer {
+                            pub let Inner inner = Inner {};
+                          }
+
+                          return Outer {};
+                        }
+
+                        fnc bad() => void {
+                          val outer = make();
+                          outer.inner.bump();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("immutable parameter/binding 'outer'"));
+    }
+
+    @Test
+    void escapedLocalNestedCopyStructsRemainIndependent() throws Exception {
+        String output = run("""
+                fnc make() => Outer {
+                  struct Inner {
+                    pub let int count = 1;
+
+                    pub bump(self &mut self)() => int {
+                      self.count = self.count + 1;
+                      return self.count;
+                    }
+                  }
+
+                  struct Outer {
+                    pub let Inner inner = Inner {};
+                  }
+
+                  return Outer {};
+                }
+
+                pub fnc main() => void {
+                  let first = make();
+                  let second = first;
+                  second.inner.bump();
+                  stdio.stdout.write(first.inner.count);
+                  stdio.stdout.write(second.inner.count);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
