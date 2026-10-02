@@ -263,10 +263,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private record MessageEnvelope(Object value, MemoryReservation reservation) implements AutoCloseable {
+    private record MessageEnvelope(Object value, Runnable release) implements AutoCloseable {
         @Override
         public void close() {
-            if (reservation != null) reservation.close();
+            if (release != null) release.run();
         }
     }
 
@@ -686,11 +686,20 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
 
+        long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
         if (cell.kind == ActorKind.SHARED) {
             requireOwnedSharedHandles(message, new IdentityHashMap<>(), 0);
+            long actorRemaining = Math.max(0L, cell.policy.maxHeapBytes() - cell.sharedMailboxBytes.get());
+            long allowed = Math.min(actorRemaining, runtimeRemaining);
+            try {
+                estimateSharedTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
+            } catch (IllegalStateException tooLarge) {
+                throw new IllegalStateException(
+                        "shared actor mailbox memory limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
+                        tooLarge);
+            }
         } else {
             long actorRemaining = cell.memorySlice.remainingBytes();
-            long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
             long allowed = Math.min(actorRemaining, runtimeRemaining);
             try {
                 estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
@@ -700,9 +709,11 @@ public final class ActorRuntime implements AutoCloseable {
                         tooLarge);
             }
         }
+
         Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freeze(message);
-        MemoryReservation reservation = null;
-        if (cell.memorySlice != null) {
+        Runnable release;
+        if (cell.kind == ActorKind.PRIVATE) {
+            MemoryReservation reservation;
             try {
                 reservation = cell.memorySlice.reserveMailbox(prepared);
             } catch (IllegalStateException exceeded) {
@@ -710,9 +721,14 @@ public final class ActorRuntime implements AutoCloseable {
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
                         exceeded);
             }
+            release = reservation::close;
+        } else {
+            long bytes = estimateSharedMailboxBytes(prepared, new IdentityHashMap<>(), 0);
+            cell.reserveSharedMailbox(bytes);
+            release = () -> cell.releaseSharedMailbox(bytes);
         }
 
-        MessageEnvelope envelope = new MessageEnvelope(prepared, reservation);
+        MessageEnvelope envelope = new MessageEnvelope(prepared, release);
         synchronized (cell.lifecycleLock) {
             if (closed.get() || cell.stopped.get()) {
                 envelope.close();
@@ -982,6 +998,118 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static long estimateSharedTransportBytes(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth,
+            long limit) {
+        requireGraphDepth(depth);
+        if (limit < 0) throw new IllegalStateException("message exceeds remaining actor memory");
+
+        long scalar = scalarLogicalBytes(value);
+        if (scalar >= 0) return requireWithinLimit(scalar, limit);
+        if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
+
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                long total = requireWithinLimit(containerBase(24L, 8L, list.size()), limit);
+                for (Object item : list) {
+                    total = addWithinLimit(total,
+                            estimateSharedTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value instanceof Set<?> set) {
+                long total = requireWithinLimit(containerBase(24L, 16L, set.size()), limit);
+                for (Object item : set) {
+                    total = addWithinLimit(total,
+                            estimateSharedTransportBytes(item, visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value instanceof Map<?, ?> map) {
+                long total = requireWithinLimit(containerBase(24L, 32L, map.size()), limit);
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    total = addWithinLimit(total,
+                            estimateSharedTransportBytes(entry.getKey(), visiting, depth + 1, limit - total),
+                            limit);
+                    total = addWithinLimit(total,
+                            estimateSharedTransportBytes(entry.getValue(), visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                long total = requireWithinLimit(containerBase(24L, 8L, length), limit);
+                for (int i = 0; i < length; i++) {
+                    total = addWithinLimit(total,
+                            estimateSharedTransportBytes(
+                                    Array.get(value, i), visiting, depth + 1, limit - total),
+                            limit);
+                }
+                return total;
+            }
+            if (value instanceof Sendable sendable) {
+                Object frozen = sendable.freezeForSend();
+                if (frozen == value) {
+                    throw new IllegalArgumentException(
+                            "Sendable.freezeForSend() must not return the mutable source object");
+                }
+                return estimateSharedTransportBytes(frozen, visiting, depth + 1, limit);
+            }
+            throw new IllegalArgumentException("value of type " + value.getClass().getName()
+                    + " is not Sendable; mutable host objects cannot cross actor boundaries");
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
+    private static long estimateSharedMailboxBytes(
+            Object value,
+            IdentityHashMap<Object, Boolean> seen,
+            int depth) {
+        requireGraphDepth(depth);
+        long scalar = scalarLogicalBytes(value);
+        if (scalar >= 0) return scalar;
+        if (value instanceof Shared<?>) return 48L;
+        if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
+        if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
+        if (seen.put(value, Boolean.TRUE) != null) return 0L;
+
+        long bytes = 24L;
+        if (value instanceof List<?> list) {
+            bytes = Math.addExact(bytes, 8L * list.size());
+            for (Object item : list) {
+                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
+            }
+            return bytes;
+        }
+        if (value instanceof Set<?> set) {
+            bytes = Math.addExact(bytes, 16L * set.size());
+            for (Object item : set) {
+                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(item, seen, depth + 1));
+            }
+            return bytes;
+        }
+        if (value instanceof Map<?, ?> map) {
+            bytes = Math.addExact(bytes, 32L * map.size());
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.getKey(), seen, depth + 1));
+                bytes = Math.addExact(bytes, estimateSharedMailboxBytes(entry.getValue(), seen, depth + 1));
+            }
+            return bytes;
+        }
+        return 64L;
+    }
+
     /**
      * Validates and estimates a private-actor message before allocating its
      * isolation copy. The walk short-circuits as soon as the destination or
@@ -1220,6 +1348,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private Behavior<M> behavior;
 
@@ -1236,6 +1365,36 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        private void reserveSharedMailbox(long bytes) {
+            if (bytes < 0) throw new IllegalArgumentException("shared mailbox reservation cannot be negative");
+            synchronized (lifecycleLock) {
+                if (stopped.get() || closed.get()) throw terminated(ref);
+                long current = sharedMailboxBytes.get();
+                long next;
+                try {
+                    next = Math.addExact(current, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new IllegalStateException("shared actor mailbox memory accounting overflow");
+                }
+                if (next > policy.maxHeapBytes()) {
+                    throw new IllegalStateException("shared actor mailbox memory limit exceeded for " + ref.id()
+                            + ": requested=" + bytes + " used=" + current + " limit=" + policy.maxHeapBytes());
+                }
+                reserveSharedRuntimeBytes(bytes, "shared actor mailbox");
+                sharedMailboxBytes.set(next);
+            }
+        }
+
+        private void releaseSharedMailbox(long bytes) {
+            if (bytes == 0) return;
+            synchronized (lifecycleLock) {
+                long current = sharedMailboxBytes.get();
+                long next = Math.max(0L, current - bytes);
+                sharedMailboxBytes.set(next);
+                releaseSharedRuntimeBytes(bytes);
+            }
         }
 
         private void schedule() {
