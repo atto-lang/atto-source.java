@@ -581,7 +581,11 @@ public final class TypeChecker {
             return new Record(members);
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
-            boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
+            boolean inheritedNonLexical = env.descendantsNonLexical();
+            if (lambda.explicitLexical() && inheritedNonLexical) {
+                throw new IllegalArgumentException("'lex'/'lexical' lambda cannot override an enclosing nlex capture barrier");
+            }
+            boolean nonLexical = lambda.nonLexical() || inheritedNonLexical;
             Env lambdaEnv = new Env(nonLexical ? null : env, nonLexical);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
@@ -613,7 +617,11 @@ public final class TypeChecker {
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
-        boolean nonLexical = lambda.nonLexical() || parent.descendantsNonLexical();
+        boolean inheritedNonLexical = parent.descendantsNonLexical();
+        if (lambda.explicitLexical() && inheritedNonLexical) {
+            throw new IllegalArgumentException("'lex'/'lexical' lambda cannot override an enclosing nlex capture barrier");
+        }
+        boolean nonLexical = lambda.nonLexical() || inheritedNonLexical;
         Env lambdaEnv = new Env(nonLexical ? null : parent, nonLexical);
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
