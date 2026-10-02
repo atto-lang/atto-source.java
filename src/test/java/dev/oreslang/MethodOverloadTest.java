@@ -82,6 +82,30 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void explicitSelfReceiverDoesNotCountTowardOverloadArity() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class C
+                    pub read(self C)() => int { return 1; }
+                    pub read(self C)(int value) => int { return value; }
+                  end
+                end
+                """)));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub read() => int { return 1; }
+                            pub read(self C)() => int { return 2; }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("already has arity 0"));
+    }
+
+    @Test
     void staticClassFunctionsUseTheSameArityOnlyRule() throws Exception {
         String output = run("""
                 define module m
