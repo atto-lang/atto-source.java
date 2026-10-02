@@ -41,6 +41,72 @@ final class LexicalPrivacyTest {
     }
 
     @Test
+    void namedLexicalModifierIsPreservedForTooling() {
+        Ast.Program program = Parser.parse("""
+                lex fnc helper() => int {
+                  return 1;
+                }
+
+                lexical routine task() => void {
+                  return;
+                }
+                """);
+
+        Ast.FunctionDecl helper = null;
+        Ast.FunctionDecl task = null;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl function) {
+                    if (function.name().equals("helper")) helper = function;
+                    if (function.name().equals("task")) task = function;
+                }
+            }
+        }
+
+        assertNotNull(helper);
+        assertNotNull(task);
+        assertTrue(helper.explicitLexical());
+        assertTrue(task.explicitLexical());
+        assertFalse(helper.nonLexical());
+        assertFalse(task.nonLexical());
+    }
+
+    @Test
+    void immediateLexicalLambdaCallUsesNormalLexicalSemantics() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val int base = 40;
+                  stdio.stdout.write((lex |int x| -> {
+                    return base + x;
+                  })(2));
+                  return;
+                }
+                """);
+
+        assertEquals("42", output);
+    }
+
+    @Test
+    void captureKeywordsRemainUsableAsMemberNames() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val settings = obj {
+                    "lex": 1,
+                    "lexical": 2,
+                    "nlex": 3
+                  };
+
+                  stdio.stdout.write(settings.lex);
+                  stdio.stdout.write(settings.lexical);
+                  stdio.stdout.write(settings.nlex);
+                  return;
+                }
+                """);
+
+        assertEquals("123", output);
+    }
+
+    @Test
     void lexCannotPunchThroughInheritedNlexBarrier() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
