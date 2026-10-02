@@ -37,6 +37,7 @@ public final class Ast {
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
+    public enum AggregateKind { CLASS, STRUCT }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -94,6 +95,7 @@ public final class Ast {
 
     public record ClassDecl(
             String name,
+            AggregateKind kind,
             boolean isAbstract,
             List<String> genericParameters,
             List<TypeRef> parents,
@@ -106,11 +108,23 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (kind == AggregateKind.STRUCT && isAbstract) {
+                throw new IllegalArgumentException("structs cannot be abstract");
+            }
+            if (kind == AggregateKind.STRUCT && !parents.isEmpty()) {
+                throw new IllegalArgumentException("structs cannot extend classes");
+            }
+        }
+        public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, List<MethodDecl> methods) {
+            this(name, AggregateKind.CLASS, isAbstract, genericParameters, parents, interfaces, fields, methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, genericParameters, List.of(), List.of(), fields, methods);
+            this(name, AggregateKind.CLASS, isAbstract, genericParameters, List.of(), List.of(), fields, methods);
         }
+        public boolean isStruct() { return kind == AggregateKind.STRUCT; }
     }
 
     public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
@@ -220,7 +234,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, StructInitExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -239,6 +253,11 @@ public final class Ast {
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
         public NewExpr { arguments = List.copyOf(arguments); }
+    }
+
+    public record StructInitExpr(TypeRef type, List<ObjectField> fields) implements Expr {
+        public StructInitExpr { fields = List.copyOf(fields); }
+        public boolean anonymous() { return type == null; }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
