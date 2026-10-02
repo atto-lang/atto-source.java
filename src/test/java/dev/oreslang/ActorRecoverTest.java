@@ -916,6 +916,54 @@ final class ActorRecoverTest {
     }
 
     @Test
+    void actorFailureTraceCarriesLogicalFramesAndActorId() throws Exception {
+        String output = run("""
+                fnc explode() => void {
+                  panic "boom";
+                }
+
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    explode();
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failure_trace);
+                }
+                """);
+
+        assertTrue(output.contains("Oreslang stack trace:"));
+        assertTrue(output.contains("explode"));
+        assertTrue(output.contains("[actor="));
+        assertTrue(output.contains("actor-send"));
+    }
+
+    @Test
+    void noStackTraceSuppressesOnlyAnnotatedLogicalFrame() throws Exception {
+        String output = run("""
+                @NoStackTrace
+                fnc hidden_hot_path() => void {
+                  panic "boom";
+                }
+
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    hidden_hot_path();
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failure_trace);
+                }
+                """);
+
+        assertTrue(output.contains("Oreslang stack trace:"));
+        assertFalse(output.contains("hidden_hot_path"));
+        assertTrue(output.contains("[actor="));
+    }
+
+    @Test
     void capabilityCheckerDescendsIntoPanicPayloads() {
         IsolatePolicy denyAll = denyAllPolicy();
 
