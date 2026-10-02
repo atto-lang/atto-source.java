@@ -32,7 +32,7 @@ visibility      = [ "pub" | "private" ] ;
 callable_modifier = "abstract" | "async" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
-                  "(" [ param_list ] ")" return_spec block ;
+                  "(" [ param_list ] ")" return_spec { contract_clause } block ;
 callable_kind   = "fnc" | "routine" ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
@@ -47,14 +47,14 @@ class_member    = field_decl
 field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
 
 method_decl     = { annotation } visibility { callable_modifier } method_name [ generic_params ]
-                  method_head return_spec ( block | stmt_terminator ) ;
+                  method_head return_spec { contract_clause } ( block | stmt_terminator ) ;
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
 explicit_receiver = "self" type_ref ;
 
 static_function_decl
                 = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
-                  "(" [ param_list ] ")" return_spec block ;
+                  "(" [ param_list ] ")" return_spec { contract_clause } block ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -74,6 +74,7 @@ type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
+contract_clause = ( "requires" | "ensures" | "decreases" ) expression stmt_terminator ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
@@ -93,11 +94,13 @@ statement       = binding_decl
                 | if_stmt
                 | try_stmt
                 | defer_stmt
+                | proof_stmt
                 | for_stmt
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
+proof_stmt      = ( "assert" | "assume" | "invariant" ) expression stmt_terminator ;
 
 if_stmt         = "if" condition [ ";" ] "do" { statement }
                   { "elseif" condition [ ";" ] "do" { statement } }
@@ -115,7 +118,9 @@ for_init        = binding_kind [ type_ref ] IDENT "=" expression
                 | expression ;
 
 expression      = assignment ;
-assignment      = conditional [ "=" assignment ] ;
+assignment      = pipe [ "=" assignment ] ;
+pipe            = conditional { "|>" pipe_target } ;
+pipe_target     = conditional | "match" match_body ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
 logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "==" | "!=" ) comparison } ;
@@ -139,6 +144,8 @@ primary         = literal
                 | array_literal
                 | legacy_array_literal
                 | object_literal
+                | match_expr
+                | old_expr
                 | "(" expression ")" ;
 
 lambda          = pipe_lambda | typed_legacy_lambda ;
@@ -152,6 +159,20 @@ array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
+
+match_expr      = "match" expression match_body ;
+match_body      = "{" match_arm { ( "," | ";" ) match_arm } [ "," | ";" ] "}" ;
+match_arm       = pattern [ "if" expression ] "=>" expression ;
+pattern         = pattern_primary { "|" pattern_primary } ;
+pattern_primary = "_"
+                | literal
+                | IDENT
+                | IDENT "(" [ pattern { "," pattern } ] ")"
+                | "(" pattern [ "," pattern { "," pattern } ] ")"
+                | "[" [ pattern { "," pattern } ] "]"
+                | "obj" "{" [ object_pattern_field { "," object_pattern_field } ] "}" ;
+object_pattern_field = IDENT [ ":" pattern ] ;
+old_expr        = "old" "(" expression ")" ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
