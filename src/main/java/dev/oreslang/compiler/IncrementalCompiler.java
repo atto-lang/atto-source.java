@@ -255,6 +255,7 @@ public final class IncrementalCompiler {
             for (Ast.TypeRef trait : struct.traits()) collectLocalTypeRefs(trait, locals.keySet(), dependencies);
 
             for (Ast.FieldDecl field : struct.fields()) {
+                if (field.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append("  local-field ").append(field.bindingKind()).append(' ')
                         .append(typeRef(field.type())).append(' ').append(field.name()).append('\n');
                 collectLocalTypeRefs(field.type(), locals.keySet(), dependencies);
