@@ -197,6 +197,33 @@ public final class TypeChecker {
     }
 
     private void checkTrait(Ast.TraitDecl trait) {
+        Set<String> generics = uniqueGenerics(trait.genericParameters(), "trait " + trait.name());
+
+        for (Ast.FieldDecl field : trait.fields()) {
+            if (field.initializer() == null) {
+                throw new IllegalArgumentException("trait state field '" + trait.name() + "." + field.name()
+                        + "' requires an initializer");
+            }
+            resolve(field.type(), generics, null);
+        }
+
+        Set<String> methodKeys = new HashSet<>();
+        for (Ast.MethodDecl method : trait.methods()) {
+            String key = methodKey(method.name(), method.arity());
+            if (!methodKeys.add(key)) {
+                throw new IllegalArgumentException("duplicate trait method '" + trait.name() + "."
+                        + method.name() + "' with arity " + method.arity());
+            }
+            Set<String> all = new HashSet<>(generics);
+            for (String generic : method.genericParameters()) {
+                if (!all.add(generic)) {
+                    throw new IllegalArgumentException("duplicate/shadowed generic '" + generic
+                            + "' in trait " + trait.name() + "." + method.name());
+                }
+            }
+            functionType(method.parameters(), method.returnType(), all, null);
+        }
+
         Record actual = traitCapabilityShape(trait, new LinkedHashSet<>());
         Set<String> contracts = new HashSet<>();
         for (Ast.TypeRef contractRef : trait.interfaces()) {
