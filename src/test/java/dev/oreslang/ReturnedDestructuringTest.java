@@ -160,6 +160,23 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
+    void equivalentUnionAndRecordOrderingsHaveCanonicalSignatures() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                @Ret<string | int>
+                fnc scalar() => int | string {
+                  return 3;
+                }
+
+                @Ret<{bar: string, foo: int}>
+                fnc object() => {foo: int, bar: string} {
+                  return obj{foo: 5, bar: "x"};
+                }
+
+                pub fnc main() => void { return; }
+                """)));
+    }
+
+    @Test
     void prefixedPatternSyntaxDoesNotStealFiniteTupleOrRecordTypedBindings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc fixed() => [int, bool, string] {
