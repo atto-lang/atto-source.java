@@ -112,6 +112,7 @@ public final class TypeChecker {
         // the language's arity-only overload rule is diagnosed.
         for (Ast.ClassDecl klass : classOwners.keySet()) validateLocalClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) validateInheritedClassOverloads(klass);
+        for (Ast.ClassDecl klass : classOwners.keySet()) validateAbstractMethodSlots(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, nominalInterfaceType(iface), new LinkedHashSet<>());
 
@@ -338,6 +339,59 @@ public final class TypeChecker {
         String owner = qualifiedClassName(origin.owner());
         if (origin.ownerType().arguments().isEmpty()) return owner;
         return owner + origin.ownerType().arguments();
+    }
+
+    private void validateAbstractMethodSlots(Ast.ClassDecl klass) {
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isAbstract()) continue;
+            if (method.isStatic()) {
+                throw new IllegalArgumentException(
+                        "static class functions cannot be abstract: " + klass.name() + "." + method.name());
+            }
+            if (method.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "abstract method '" + klass.name() + "." + method.name()
+                                + "' with arity " + method.arity()
+                                + " must be public so subclasses can satisfy the slot");
+            }
+        }
+
+        if (klass.isAbstract()) return;
+
+        Map<Ast.MethodArity, Ast.MethodDecl> effective =
+                effectiveInstanceMethods(klass, new LinkedHashSet<>());
+        for (Map.Entry<Ast.MethodArity, Ast.MethodDecl> entry : effective.entrySet()) {
+            if (!entry.getValue().isAbstract()) continue;
+            throw new IllegalArgumentException(
+                    "concrete class '" + klass.name() + "' has unresolved abstract method '"
+                            + entry.getKey().name() + "' with arity " + entry.getKey().arity()
+                            + "; implement that exact name + arity slot or declare the class abstract");
+        }
+    }
+
+    private Map<Ast.MethodArity, Ast.MethodDecl> effectiveInstanceMethods(
+            Ast.ClassDecl klass,
+            Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) {
+            throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
+        }
+        try {
+            Map<Ast.MethodArity, Ast.MethodDecl> result = new LinkedHashMap<>();
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                for (Map.Entry<Ast.MethodArity, Ast.MethodDecl> inherited :
+                        effectiveInstanceMethods(parent, stack).entrySet()) {
+                    result.putIfAbsent(inherited.getKey(), inherited.getValue());
+                }
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic()) result.put(method.overloadIdentity(), method);
+            }
+            return result;
+        } finally {
+            stack.remove(klass);
+        }
     }
 
     private void validateStaticSignatureDoesNotCaptureClassGenerics(
@@ -799,6 +853,9 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            if (klass.isAbstract()) {
+                throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'");
+            }
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
             Type nominal = nominalClassType(klass);
