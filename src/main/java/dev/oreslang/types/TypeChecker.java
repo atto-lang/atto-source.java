@@ -355,35 +355,10 @@ public final class TypeChecker {
     }
 
     private void checkDefer(Ast.DeferStmt defer, Env env, Set<String> generics, Type self) {
-        if (defer.kind() == Ast.DeferKind.EXPLICIT_LAMBDA_CALL) {
-            if (!(defer.expression() instanceof Ast.LambdaExpr lambda)) {
-                throw new IllegalArgumentException("internal defer invariant: explicit deferred calls require a lambda");
-            }
-            Type callable = typeOf(lambda, env, generics, self);
-            if (!(callable instanceof Function fn)) {
-                throw new IllegalArgumentException("deferred lambda is not callable");
-            }
-            if (fn.parameters().size() != defer.arguments().size()) {
-                throw new IllegalArgumentException("deferred lambda arity " + fn.parameters().size()
-                        + " does not match " + defer.arguments().size() + " captured argument(s)");
-            }
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Type expected = fn.parameters().get(i);
-                Ast.Expr argument = defer.arguments().get(i);
-                validateLambdaArgument(argument, expected, env, generics, self);
-                requireAssignable(typeOf(argument, env, generics, self), expected,
-                        "deferred argument " + (i + 1));
-            }
-            return;
-        }
-
         Type produced = typeOf(defer.expression(), env, generics, self);
         if (!(produced instanceof Function fn) || !fn.parameters().isEmpty()) {
             throw new IllegalArgumentException(
-                    "defer expression must produce an arity-0 function; got " + produced);
-        }
-        if (!defer.arguments().isEmpty()) {
-            throw new IllegalArgumentException("internal defer invariant: callable-value defer cannot carry arguments");
+                    "defer evaluates its operand immediately; the result must be an arity-0 function, got " + produced);
         }
     }
 
@@ -629,10 +604,71 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
-            return new Function(parameters, Unknown.INSTANCE);
+            Type result = checkLambdaBlockAndInferResult(lambda.blockBody(), lambdaEnv, generics, self);
+            return new Function(parameters, result);
         }
         return Unknown.INSTANCE;
+    }
+
+    private Type checkLambdaBlockAndInferResult(
+            List<Ast.Stmt> body,
+            Env parent,
+            Set<String> generics,
+            Type self) {
+        Env env = new Env(parent);
+        Type inferred = null;
+
+        for (Ast.Stmt stmt : body) {
+            Type candidate = inferredReturnFromStatement(stmt, env, generics, self);
+            if (candidate != null) inferred = inferred == null ? candidate : commonType(inferred, candidate);
+            checkStatement(stmt, env, generics, Unknown.INSTANCE, self);
+        }
+        return inferred == null ? Primitive.VOID : inferred;
+    }
+
+    private Type inferredReturnFromStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type self) {
+        if (stmt instanceof Ast.ReturnStmt ret) {
+            return ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
+        }
+        if (stmt instanceof Ast.IfStmt conditional) {
+            Type result = null;
+            for (Ast.IfBranch branch : conditional.branches()) {
+                Type branchResult = checkLambdaBlockAndInferResult(branch.body(), env, generics, self);
+                if (branchResult != Primitive.VOID) {
+                    result = result == null ? branchResult : commonType(result, branchResult);
+                }
+            }
+            Type elseResult = checkLambdaBlockAndInferResult(conditional.elseBody(), env, generics, self);
+            if (elseResult != Primitive.VOID) result = result == null ? elseResult : commonType(result, elseResult);
+            return result;
+        }
+        if (stmt instanceof Ast.TryStmt attempted) {
+            Type result = null;
+            Type bodyResult = checkLambdaBlockAndInferResult(attempted.body(), env, generics, self);
+            if (bodyResult != Primitive.VOID) result = bodyResult;
+
+            Env caught = new Env(env);
+            caught.define(attempted.errorName(), Unknown.INSTANCE, Ast.BindingKind.VAL);
+            Type catchResult = checkLambdaBlockAndInferResult(attempted.catchBody(), caught, generics, self);
+            if (catchResult != Primitive.VOID) result = result == null ? catchResult : commonType(result, catchResult);
+
+            Type finallyResult = checkLambdaBlockAndInferResult(attempted.finallyBody(), env, generics, self);
+            if (finallyResult != Primitive.VOID) result = result == null ? finallyResult : commonType(result, finallyResult);
+            return result;
+        }
+        if (stmt instanceof Ast.ForOfStmt loop) {
+            Env loopEnv = new Env(env);
+            loopEnv.define(loop.bindingName(), iterableElementType(typeOf(loop.iterable(), env, generics, self)), loop.bindingKind());
+            Type result = checkLambdaBlockAndInferResult(loop.body(), loopEnv, generics, self);
+            return result == Primitive.VOID ? null : result;
+        }
+        if (stmt instanceof Ast.ForStmt loop) {
+            Env loopEnv = new Env(env);
+            if (loop.initializer() != null) checkStatement(loop.initializer(), loopEnv, generics, Unknown.INSTANCE, self);
+            Type result = checkLambdaBlockAndInferResult(loop.body(), loopEnv, generics, self);
+            return result == Primitive.VOID ? null : result;
+        }
+        return null;
     }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
@@ -1168,10 +1204,7 @@ public final class TypeChecker {
         else if (stmt instanceof Ast.DestructureStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
-        else if (stmt instanceof Ast.DeferStmt s) {
-            collectCalls(s.expression(), module, out);
-            for (Ast.Expr argument : s.arguments()) collectCalls(argument, module, out);
-        }
+        else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch b : s.branches()) {
                 collectCalls(b.condition(), module, out);
