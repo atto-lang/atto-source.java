@@ -1118,7 +1118,7 @@ public final class TypeChecker {
             if (receiver instanceof SingletonProxy proxy) {
                 Ast.ClassDecl klass = findClass(proxy.target().name());
                 if (klass == null) throw new IllegalArgumentException("unknown singleton proxy class '" + proxy.target().name() + "'");
-                if (findFieldType(klass, member.member(), new LinkedHashSet<>()) != null) {
+                if (findFieldType(klass, member.member(), proxy.target(), new LinkedHashSet<>()) != null) {
                     throw new IllegalArgumentException("singleton object fields are actor-private; invoke a public method on "
                             + proxy.moduleName() + "." + proxy.fieldName());
                 }
@@ -1149,7 +1149,7 @@ public final class TypeChecker {
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
-                    Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
+                    Type field = findFieldType(klass, member.member(), named, new LinkedHashSet<>());
                     if (field != null) return field;
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
@@ -1581,9 +1581,18 @@ public final class TypeChecker {
         return List.copyOf(fields.values());
     }
 
-    private Type findFieldType(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+    private Type findFieldType(
+            Ast.ClassDecl klass,
+            String name,
+            Type receiverType,
+            Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
-        Type self = nominalClassType(klass);
+        Type self = receiverType == null ? nominalClassType(klass) : receiverType;
+        Map<String, Type> substitutions = self instanceof Named named
+                && named.arguments().size() == klass.genericParameters().size()
+                ? classGenericSubstitutions(klass, named)
+                : Map.of();
+
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.name().equals(name)) {
                 if (activeTraitOwner != null) {
@@ -1600,13 +1609,18 @@ public final class TypeChecker {
                             "field '" + klass.name() + "." + name + "' is private to " + klass.name());
                 }
                 seen.remove(klass);
-                return resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
+                Type unresolved = resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
+                return substitutions.isEmpty() ? unresolved : substituteGenerics(unresolved, substitutions);
             }
         }
+
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
-            Type result = findFieldType(parent, name, seen);
+
+            Type parentType = resolve(parentRef, Set.copyOf(klass.genericParameters()), self);
+            if (!substitutions.isEmpty()) parentType = substituteGenerics(parentType, substitutions);
+            Type result = findFieldType(parent, name, parentType, seen);
             if (result != null) {
                 seen.remove(klass);
                 return result;
