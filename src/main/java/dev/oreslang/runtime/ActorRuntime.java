@@ -2757,7 +2757,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private CompletableFuture<M> claimPendingReceive() {
+        private ReceiveFuture claimPendingReceive() {
             synchronized (lifecycleLock) {
                 ReceiveFuture receiver = pendingReceive;
                 if (receiver == null) return null;
@@ -2766,7 +2766,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private CompletableFuture<M> detachPendingReceiveLocked() {
+        private ReceiveFuture detachPendingReceiveLocked() {
             ReceiveFuture receiver = pendingReceive;
             pendingReceive = null;
             return receiver;
@@ -2789,7 +2789,7 @@ public final class ActorRuntime implements AutoCloseable {
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
-            if (receiver != null && !receiver.isDone()) receiver.completeExceptionally(terminated(ref));
+            if (receiver != null && !receiver.isDone()) receiver.failFromRuntime(terminated(ref));
         }
 
         private void stop() {
@@ -2800,7 +2800,7 @@ public final class ActorRuntime implements AutoCloseable {
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
-            if (receiver != null && !receiver.isDone()) receiver.completeExceptionally(terminated(ref));
+            if (receiver != null && !receiver.isDone()) receiver.failFromRuntime(terminated(ref));
         }
     }
 }
