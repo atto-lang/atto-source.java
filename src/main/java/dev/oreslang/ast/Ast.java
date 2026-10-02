@@ -272,10 +272,23 @@ public final class Ast {
         public ObjectExpr { fields = List.copyOf(fields); }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) implements Expr {
+    public record LambdaExpr(
+            List<Param> parameters,
+            Expr expressionBody,
+            List<Stmt> blockBody,
+            TypeRef returnType) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
+            returnType = returnType == null ? TypeRef.inferred() : returnType;
+        }
+
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
+            this(parameters, expressionBody, blockBody, TypeRef.inferred());
+        }
+
+        public boolean hasExplicitReturnType() {
+            return !returnType.name().equals("$infer$");
         }
     }
 
