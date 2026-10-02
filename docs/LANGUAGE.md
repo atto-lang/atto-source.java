@@ -122,14 +122,12 @@ Interfaces can describe the structural public shape required of a module. A modu
 define module contracts as
   define interface MathApi
     fnc add(int a, int b) => int;
-    String name;
   end
 end
 
 @AdheresTo(contracts.MathApi)
 define module math as
   pub fnc add(int a, int b) => int { return a + b; }
-  pub val String name = "math";
 end
 ```
 
@@ -152,6 +150,61 @@ fnc answer() {
 
 `@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
 
+
+## Callable-local type declarations
+
+A callable may declare a `struct` or `interface` inside its body. These declarations live in a **lexical type namespace**, separate from value bindings. They are type-hoisted across that callable's outer body, which allows the callable signature to refer to a type declared textually inside the body without publishing that name into the module/file namespace.
+
+```ores
+pub fnc getat() => T {
+  struct T {
+    foo: string
+  }
+
+  return obj{
+    foo: 'hello'
+  };
+}
+
+pub fnc use_it() => void {
+  val value = getat();
+  stdio.println(value.foo);
+  return;
+}
+```
+
+The name `T` above is not visible to `use_it`. The compiler carries the escaped struct's field shape in the return type, so callers can infer and use the returned value while the helper type name remains private to `getat`.
+
+Local type declarations are lexically scoped: a declaration in a nested block does not enter its containing block, sibling blocks, module, or file. Two different callables may each declare a local type named `T` without colliding.
+
+Both declaration surfaces are accepted:
+
+```ores
+struct Point {
+  x: int
+  y: int
+}
+
+define struct Point as
+  x: int
+  y: int
+end
+```
+
+Likewise, interfaces have compact and long forms, but remain storage-free method contracts:
+
+```ores
+interface Readable {
+  fnc read() => string;
+}
+
+define interface Readable as
+  fnc read() => string;
+end
+```
+
+A callable-local struct is still a named value type, not an ambient structural alias. An `obj{...}` literal may be contextually converted to the expected struct at an explicit typed boundary such as a return or typed binding when the field set matches exactly and every field type is assignable. Arbitrary previously-typed records do not become that struct merely because they happen to have the same fields.
+
 ## Bindings
 
 Every local binding is declared as exactly one of:
@@ -173,7 +226,18 @@ Destructuring carries mutability per element:
 [const code, let body] = (200, "ok");
 ```
 
-## Classes, receivers, multiple inheritance, and interfaces
+## Interface, trait, struct, and class
+
+Oreslang intentionally keeps four concepts separate:
+
+- `interface`: storage-free method contract only; never owns fields or implementation state.
+- `trait`: non-instantiable compile-time composition of reusable instance state and behavior.
+- `struct`: concrete value-semantic aggregate. Named structs preserve nominal identity; compact `name: Type` fields make data shapes concise.
+- `class`: concrete reference/identity type with instance state and behavior.
+
+`is` is the canonical contract-conformance spelling and `with` composes traits. Legacy `implements` / `impl` spellings remain accepted during migration.
+
+## Classes and receivers
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
 
@@ -198,10 +262,10 @@ find(self Box)(int key) => self {
 
 The receiver variable name is always `self`.
 
-A class may list multiple parent classes and multiple interfaces:
+A class may list multiple parent classes, satisfy multiple interfaces, and compose traits:
 
 ```ores
-define class Combined extends Cacheable, Serializable implements HasId, Named as
+define class Combined extends Cacheable, Serializable is HasId, Named with Timestamped, Audited as
 end
 ```
 
@@ -246,19 +310,23 @@ val pair = (1, "one");
 
 ## Structural typing and interfaces
 
-Interfaces are structural contracts. Explicit `implements` asks the compiler to prove conformance and documents intent; structural compatibility does not require nominal ancestry in every context.
+Interfaces are storage-free method contracts. Explicit `is` (or legacy `implements` / `impl`) asks the compiler to prove conformance and documents intent. Fields belong to structs, traits, or classes, not interfaces.
 
 ```ores
-define interface Named
-  String name;
+define interface Named as
+  fnc name() => string;
 end
 
-define class User implements Named as
-  pub val String name;
+define class User is Named as
+  pub val string value = "Ada";
+
+  pub name() => string {
+    return self.value;
+  }
 end
 ```
 
-Class interface satisfaction uses public members, including inherited public members.
+Class interface satisfaction uses public methods, including inherited public methods. Structural compatibility remains opt-in at explicitly structural boundaries.
 
 ## Option and null
 
@@ -428,7 +496,7 @@ fnc consume(@Structural Brand value) => String {
 
 A value does not need to nominally implement `Brand` for that parameter, but its public/static shape must satisfy the interface. Without `@Structural`, the normal nominal implementation/inheritance rules apply.
 
-Interfaces may inherit from other interfaces and support literal-string marker fields:
+Interfaces may inherit from other interfaces; their members remain method signatures only:
 
 ```ores
 pub interface Bar {
