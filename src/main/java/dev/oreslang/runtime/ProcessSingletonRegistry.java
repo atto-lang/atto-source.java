@@ -144,7 +144,7 @@ public final class ProcessSingletonRegistry {
         Long deadline = CURRENT_DEADLINE_NANOS.get();
         if (deadline == null) return;
         if (System.nanoTime() - deadline >= 0) {
-            throw new CancellationException("singleton call wall-time budget exceeded for "
+            throw new ExecutionTerminated("singleton call wall-time budget exceeded for "
                     + diagnosticId(CURRENT_CELL.get()));
         }
     }
