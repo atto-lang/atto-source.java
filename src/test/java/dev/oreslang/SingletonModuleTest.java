@@ -83,11 +83,39 @@ final class SingletonModuleTest {
                 end
                 """;
 
-        String first = eval(program, "singleton-1.ores");
-        String second = eval(program, "singleton-2.ores");
+        String first = eval(program, "singleton-shared-unit.ores");
+        String second = eval(program, "singleton-shared-unit.ores");
 
         assertTrue(first.contains("1"), first);
         assertTrue(second.contains("2"), second);
+    }
+
+    @Test
+    void unrelatedCodeUnitsWithSameModuleNameDoNotAlias() throws Exception {
+        String program = """
+                define singleton module same_name_cache
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int n = await same_name_cache.next();
+                    stdio.println(n);
+                    return;
+                  }
+                end
+                """;
+
+        String tenantA = eval(program, "tenant-a/cache.ores");
+        String tenantB = eval(program, "tenant-b/cache.ores");
+
+        assertTrue(tenantA.contains("1"), tenantA);
+        assertTrue(tenantB.contains("1"), tenantB);
     }
 
     @Test
