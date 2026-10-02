@@ -685,6 +685,13 @@ public final class TypeChecker {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
         }
+        if (expression instanceof Ast.ListExpr list && expected instanceof ListType expectedList) {
+            for (Ast.Expr item : list.elements()) {
+                Type actual = typeOfWithExpected(item, expectedList.element(), env, generics, self);
+                requireAssignable(actual, expectedList.element(), "list element");
+            }
+            return expected;
+        }
         return typeOf(expression, env, generics, self);
     }
 
@@ -1048,7 +1055,7 @@ public final class TypeChecker {
             case "decimal" -> Primitive.DECIMAL;
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> Primitive.BOOL;
-            case "string", "String" -> Primitive.STRING;
+            case "str", "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
