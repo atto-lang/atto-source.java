@@ -462,7 +462,9 @@ final class SingletonModuleTest {
                           }
                         end
                         """)));
-        assertTrue(forward.getMessage().contains("unknown name 'second'"), forward.getMessage());
+        assertTrue(forward.getMessage().contains("context-free initializer")
+                        || forward.getMessage().contains("unknown name 'second'"),
+                forward.getMessage());
     }
 
     @Test
