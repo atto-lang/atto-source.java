@@ -318,6 +318,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object index = eval(indexed.index(), env);
                 if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
                 int i = Math.toIntExact(number.longValue());
+                if (receiver instanceof OresTuple tuple) return tuple.get(i);
                 if (receiver instanceof List<?> list) return list.get(i);
                 if (receiver instanceof Object[] array) return array[i];
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
@@ -556,6 +557,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private List<?> iterableValues(Object value) {
+            if (value instanceof OresTuple tuple) return tuple.elements();
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
@@ -617,7 +619,7 @@ public final class OresEvalRootNode extends RootNode {
         private boolean valueEquals(Object left, Object right) {
             if (left instanceof OresTuple || right instanceof OresTuple) {
                 if (!(left instanceof OresTuple leftTuple) || !(right instanceof OresTuple rightTuple)) return false;
-                return sequenceEquals(leftTuple, rightTuple);
+                return sequenceEquals(leftTuple.elements(), rightTuple.elements());
             }
             if (left instanceof List<?> leftList && right instanceof List<?> rightList) {
                 return sequenceEquals(leftList, rightList);
@@ -658,7 +660,7 @@ public final class OresEvalRootNode extends RootNode {
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
                 elements = tuplePattern.elements();
                 if (!(value instanceof OresTuple tupleValue)) return false;
-                values = tupleValue;
+                values = tupleValue.elements();
             } else if (pattern instanceof Ast.ListPattern listPattern) {
                 elements = listPattern.elements();
                 if (value instanceof OresTuple) return false;
@@ -694,7 +696,7 @@ public final class OresEvalRootNode extends RootNode {
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
+        private List<?> asSequence(Object value) { if (value instanceof OresTuple tuple) return tuple.elements(); if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
 
