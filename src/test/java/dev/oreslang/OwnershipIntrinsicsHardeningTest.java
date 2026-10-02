@@ -383,7 +383,9 @@ final class OwnershipIntrinsicsHardeningTest {
     void localBindingCanShadowContextualIntrinsicName() throws Exception {
         assertEquals("42", run("""
                 pub routine main() => void {
-                  val Fnc<int,int> copy = (int value) -> value + 1;
+                  val copy = (int value) -> {
+                    return value + 1;
+                  };
                   stdio.stdout.write(copy(41));
                   return;
                 }
