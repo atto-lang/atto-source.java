@@ -271,6 +271,12 @@ public final class TraitComposer {
                 validateExprTypes(moduleName, e.receiver(), generics);
                 validateExprTypes(moduleName, e.index(), generics);
             } else if (expr instanceof Ast.NewExpr e) {
+                if (!generics.contains(e.type().name()) && isTraitReference(moduleName, e.type().name())) {
+                    throw new IllegalArgumentException(
+                            "trait '" + e.type().name()
+                                    + "' has no runtime/value type identity and cannot be instantiated; "
+                                    + "compose it into a class with 'with'");
+                }
                 rejectTraitType(moduleName, e.type(), generics, "new expression");
                 for (Ast.Expr argument : e.arguments()) validateExprTypes(moduleName, argument, generics);
             } else if (expr instanceof Ast.StructInitExpr e) {
@@ -313,8 +319,8 @@ public final class TraitComposer {
             if (type == null) return;
             if (!generics.contains(type.name()) && isTraitReference(moduleName, type.name())) {
                 throw new IllegalArgumentException(
-                        "trait '" + type.name() + "' has no runtime/value type identity and cannot be used as " + where
-                                + "; compose it with 'with' and expose behavior through an interface");
+                        "trait '" + type.name() + "' has no runtime/value type identity and cannot be used as a runtime type ("
+                                + where + "); compose it with 'with' and expose behavior through an interface");
             }
             for (Ast.TypeRef argument : type.arguments()) {
                 rejectTraitType(moduleName, argument, generics, where + " type argument");
@@ -358,7 +364,7 @@ public final class TraitComposer {
                 String previous = names.putIfAbsent(name, kind);
                 if (previous != null) {
                     throw new IllegalArgumentException(
-                            "callable-local type name '" + name + "' is declared as both "
+                            "duplicate callable-local type '" + name + "': declared as both "
                                     + previous + " and " + kind + " in the same lexical block");
                 }
 
@@ -751,8 +757,9 @@ public final class TraitComposer {
                     if (!(declaration instanceof Ast.TraitDecl trait)) continue;
                     if (occupiedTypeNames.contains(trait.name())) {
                         throw new IllegalArgumentException(
-                                "trait '" + module.name() + "." + trait.name()
-                                        + "' collides with an existing class/interface/type alias in the same type namespace");
+                                "type name '" + module.name() + "." + trait.name()
+                                        + "' collides with an existing class/interface/type alias; "
+                                        + "class/struct/interface/trait/type names share one namespace");
                     }
 
                     String qualified = module.name() + "." + trait.name();
@@ -1206,7 +1213,7 @@ public final class TraitComposer {
                 validateTraitSelfAccess(binding.declaration().name(), raw.body(), lexicalFields, lexicalMethods);
                 Ast.MethodDecl method = withCompositionOwner(
                         substitute(raw, substitutions),
-                        binding.declaration().name());
+                        binding.identity());
                 String key = methodKey(method);
                 Ast.MethodDecl previous = ownMethods.putIfAbsent(key, method);
                 if (previous != null) {
