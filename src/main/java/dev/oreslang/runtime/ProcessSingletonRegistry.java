@@ -356,11 +356,15 @@ public final class ProcessSingletonRegistry {
         try {
             delta = duration.toNanos();
         } catch (ArithmeticException overflow) {
-            return Long.MAX_VALUE;
+            delta = Long.MAX_VALUE / 4;
         }
-        long now = System.nanoTime();
-        if (delta >= Long.MAX_VALUE - now) return Long.MAX_VALUE;
-        return now + delta;
+        /*
+         * nanoTime() is an arbitrary signed origin and may wrap. Deadline
+         * comparisons use subtraction, which is safe as long as the interval
+         * stays below 2^63 ns; clamp pathological host policies accordingly.
+         */
+        delta = Math.max(1L, Math.min(delta, Long.MAX_VALUE / 4));
+        return System.nanoTime() + delta;
     }
 
     private static boolean expired(long deadline) {
