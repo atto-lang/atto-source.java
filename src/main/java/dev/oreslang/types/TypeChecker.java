@@ -1294,7 +1294,12 @@ public final class TypeChecker {
     }
 
     private void validateSingletonTransportCallChildren(Ast.CallExpr call, String currentModule) {
-        validateSingletonTransportExpr(call.callee(), currentModule);
+        // A recognized external singleton call is allowed only because the
+        // surrounding validator proved it is immediately awaited. Do not
+        // reinterpret its callee member as a first-class function extraction.
+        if (!isExternalSingletonCall(call, currentModule)) {
+            validateSingletonTransportExpr(call.callee(), currentModule);
+        }
         for (Ast.Expr argument : call.arguments()) validateSingletonTransportExpr(argument, currentModule);
     }
 
