@@ -35,12 +35,19 @@ final class BuiltinCollectionsTest {
                     val linked = new LinkedList<int>(3, 4);
                     val array = new Array<int>(5, 6);
                     val arrays = new Arrays<int>(7, 8);
+                    let literal = arr[9, 10];
+                    val explicitObject = new Object() {
+                      "field": "value"
+                    };
 
                     map.put("field3", "qux");
+                    map["field4"] = "zap";
                     val found = map.find("field1");
                     val two = hashed["two"];
                     linked.push(5);
+                    literal.push(11);
                     val item = list[0];
+                    stdio.println(explicitObject.field);
                     stdio.println(found);
                     stdio.println(two);
                     stdio.println(item);
@@ -130,6 +137,8 @@ final class BuiltinCollectionsTest {
 
                     val linked = new LinkedList<int>(10, 20);
                     linked.push(30);
+                    val literal = arr[40, 50];
+                    literal.push(60);
 
                     val finder = new Finder() {
                       @override
@@ -140,6 +149,7 @@ final class BuiltinCollectionsTest {
                     stdio.println(map.find("field1"));
                     stdio.println(map.size());
                     stdio.println(linked[2]);
+                    stdio.println(literal[2]);
                     stdio.println(finder.find("anything"));
                     return;
                   }
@@ -163,6 +173,7 @@ final class BuiltinCollectionsTest {
         assertTrue(text.contains("Some(custom)"));
         assertTrue(text.contains("3"));
         assertTrue(text.contains("30"));
+        assertTrue(text.contains("60"));
         assertTrue(text.contains("anon"));
     }
 
