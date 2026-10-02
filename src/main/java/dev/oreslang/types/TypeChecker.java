@@ -568,7 +568,7 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl findClass(String name) {
-        if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class name '" + name + "'; qualify it with its.module");
+        if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class name '" + name + "'; qualify it with its module");
         return classes.get(name);
     }
 
