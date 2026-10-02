@@ -312,4 +312,10 @@ struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_
      into the closure environment; borrowed values cannot be captured.
    - Class fields declared val/const are immutable; field mutation requires let
      plus mutable owner access.
+   - borrow(...), copy(...), take(...), and share(...) are contextual fallback
+     intrinsics recognized from ordinary call expressions. They are not lexer
+     keywords. A normal local/import/function/module/class binding with the same
+     unqualified name shadows the intrinsic.
+   - copy(...) is compiler-derived for structs and explicit for classes;
+     class copy() implementations must return an independent same-class graph.
 *)
