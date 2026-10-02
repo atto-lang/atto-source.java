@@ -163,7 +163,7 @@ define class Combined extends Cacheable, Serializable implements HasId, Named
 end
 ```
 
-Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible types.
+Parent order is never used to break a same-method-slot tie. If distinct parents contribute the same method name and caller-visible arity, the child must explicitly declare that slot; argument types, return types, and parent ordering never choose a winner. A true diamond that reaches the same original declaration through the same generic view is not ambiguous. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible contracts.
 
 `Object` and `List` are extensible base classes:
 
@@ -419,9 +419,15 @@ define class Lookup
 end
 ```
 
-Overload identity is exactly **name + arity**, where arity counts only caller-supplied arguments; the implicit or explicit `self` receiver is not counted. Two instance methods with the same name and same arity are a compile-time error even when their parameter types, parameter names, generic parameters, or return types differ. Types are checked only after arity has selected the callable; they never participate in overload resolution.
+Overload identity is exactly **name + arity**, where arity counts only caller-supplied arguments; the implicit or explicit `self` receiver is not counted. Two instance methods with the same name and same arity are a compile-time error even when their parameter types, parameter names, generic parameters, async modifier, or return types differ. Types are checked only after arity has selected the callable; they never participate in overload resolution.
 
-Static class functions follow the same arity-only rule in their separate class-level namespace. A same-name/same-arity member inherited from a parent is an override slot, not a new overload, and normal inheritance compatibility checks still apply. Top-level/module `fnc` and `routine` declarations never overload.
+Static class functions follow the same arity-only rule in their separate class-level namespace. A static function in a generic class does not implicitly capture the class's generic parameters because a class-level call has no instance generic binding; it must declare any static-function generics itself.
+
+A same-name/same-arity member inherited from one parent is an override slot, not a type-based overload. If distinct parents contribute that same slot, the child must explicitly resolve it. Generic parent/interface arguments are substituted only after the arity slot is selected, and incompatible generic views are rejected rather than used as overload discriminators.
+
+Abstract methods use the same slot identity. Every caller-visible arity of an abstract method is a separate required slot, and a concrete subclass must provide a concrete compatible implementation for each inherited abstract slot. Abstract classes cannot be instantiated.
+
+Top-level/module `fnc` and `routine` declarations never overload.
 
 ## Ternary expressions
 
