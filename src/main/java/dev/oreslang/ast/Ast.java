@@ -38,7 +38,7 @@ public final class Ast {
         }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, InitDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
@@ -73,6 +73,12 @@ public final class Ast {
     public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
         public Param(TypeRef type, String name) { this(type, name, false, false); }
         public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
+    }
+
+    /** Lifecycle routine. Scope is derived from its containing module:
+     * root/ordinary module => actor-local; singleton module => process-local. */
+    public record InitDecl(List<Stmt> body) implements Decl {
+        public InitDecl { body = List.copyOf(body); }
     }
 
     public record FunctionDecl(
