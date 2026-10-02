@@ -262,4 +262,53 @@ final class AwaitReceiveHardeningTest {
         assertEquals(42, stage.toCompletableFuture().get(2, TimeUnit.SECONDS));
     }
 
+
+    @Test
+    void actorMailboxReceiveCannotBeForgedByHostCompletion() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch armed = new CountDownLatch(1);
+            AtomicReference<java.util.concurrent.CompletionStage<String>> receive = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                if ("arm".equals(message)) {
+                    receive.set(context.receive());
+                    armed.countDown();
+                }
+            });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+
+            CompletableFuture<String> future = receive.get().toCompletableFuture();
+            assertThrows(UnsupportedOperationException.class, () -> future.complete("forged"));
+            assertThrows(UnsupportedOperationException.class,
+                    () -> future.completeExceptionally(new IllegalStateException("forged")));
+            assertFalse(future.isDone());
+
+            ref.send("real");
+            assertEquals("real", future.get(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void stoppingActorFailsSealedPendingReceiveThroughRuntimePath() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch armed = new CountDownLatch(1);
+            AtomicReference<java.util.concurrent.CompletionStage<String>> receive = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                receive.set(context.receive());
+                armed.countDown();
+            });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+            ref.stop();
+
+            var failure = assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> receive.get().toCompletableFuture().get(2, TimeUnit.SECONDS));
+            assertInstanceOf(ActorRuntime.ActorTerminatedException.class, failure.getCause());
+        }
+    }
+
 }
