@@ -332,13 +332,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void run() {
-            final Behavior<M> behavior = behaviorFactory.get();
-            final ActorContext<M> context = new ActorContext<>() {
-                @Override public ActorRef<M> self() { return ref; }
-                @Override public ActorRuntime runtime() { return ActorRuntime.this; }
-                @Override public IsolatePolicy policy() { return policy; }
-            };
             try {
+                final Behavior<M> behavior = java.util.Objects.requireNonNull(
+                        behaviorFactory.get(), "actor behavior factory returned null");
+                final ActorContext<M> context = new ActorContext<>() {
+                    @Override public ActorRef<M> self() { return ref; }
+                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                    @Override public IsolatePolicy policy() { return policy; }
+                };
                 while (true) {
                     Object message = mailbox.take();
                     if (message == STOP) return;
@@ -346,9 +347,12 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
             } catch (Throwable failure) {
-                // v0 fail-stop supervision policy. A later supervisor layer will
-                // expose restart/escalation strategies as typed Oreslang APIs.
+                // v0 fail-stop supervision policy. The cell is removed below
+                // so subsequent sends fail immediately instead of targeting a
+                // dead actor left behind in the runtime registry.
             } finally {
                 actors.remove(ref.id(), this);
             }
