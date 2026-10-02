@@ -341,6 +341,48 @@ final class OwnershipIntrinsicsHardeningTest {
     }
 
     @Test
+    void borrowReturningFunctionCannotLaunderLocalBorrow() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+                        end
+
+                        fnc identity(&Buffer value) => &Buffer {
+                          return value;
+                        }
+
+                        fnc bad() => &Buffer {
+                          let Buffer local = new Buffer(7);
+                          return identity(borrow(local));
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("outlive its owner"));
+    }
+
+    @Test
+    void borrowReturningMethodCannotLaunderTemporaryReceiver() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+
+                          pub view() => &Buffer {
+                            return self;
+                          }
+                        end
+
+                        fnc bad() => &Buffer {
+                          return new Buffer(7).view();
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("temporary")
+                || error.getMessage().contains("unrooted receiver"));
+    }
+
+    @Test
     void ordinaryBorrowCannotBeHiddenInsideOwningContainer() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
