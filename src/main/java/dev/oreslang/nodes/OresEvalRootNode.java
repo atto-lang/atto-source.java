@@ -1206,7 +1206,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
+            boolean integral = isIntegral(a) && isIntegral(b);
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
                 try {
@@ -1214,7 +1214,18 @@ public final class OresEvalRootNode extends RootNode {
                         case '+' -> Math.addExact(x, y);
                         case '-' -> Math.subtractExact(x, y);
                         case '*' -> Math.multiplyExact(x, y);
-                        case '%' -> x % y;
+                        case '/' -> {
+                            if (y == 0L) throw new ArithmeticException("Oreslang integer division by zero");
+                            if (x == Long.MIN_VALUE && y == -1L) {
+                                throw new ArithmeticException(
+                                        "Oreslang integer overflow for " + x + " / " + y);
+                            }
+                            yield x / y;
+                        }
+                        case '%' -> {
+                            if (y == 0L) throw new ArithmeticException("Oreslang integer remainder by zero");
+                            yield x % y;
+                        }
                         default -> throw new IllegalArgumentException("bad numeric operator");
                     };
                 } catch (ArithmeticException overflow) {
