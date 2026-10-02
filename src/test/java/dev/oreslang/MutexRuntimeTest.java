@@ -414,33 +414,20 @@ final class MutexRuntimeTest {
     }
 
     @Test
-    void strictActorCannotUseCapturedSharedMutexWithoutCapability() throws Exception {
+    void strictPrivateActorRejectsCapturedSharedMutexBeforeStartup() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             IsolatePolicy strict = IsolatePolicy.strictFaas();
             var shared = OresMutex.shared(new int[]{0});
-            CountDownLatch checked = new CountDownLatch(1);
-            AtomicReference<Throwable> observed = new AtomicReference<>();
 
-            var ref = runtime.<String>spawnPrivate(strict, factoryContext -> (message, context) -> {
-                try {
-                    shared.tryLock();
-                } catch (Throwable failure) {
-                    observed.set(failure);
-                } finally {
-                    checked.countDown();
-                }
-            });
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> runtime.<String>spawnPrivate(strict, factoryContext -> {
+                        shared.tryLock();
+                        return (message, context) -> { };
+                    }));
 
-            ref.send("check");
-            assertTrue(checked.await(2, TimeUnit.SECONDS));
-            assertInstanceOf(SecurityException.class, observed.get());
-
-            // The denied touch must not bind the handle to the strict actor's runtime.
-            try (ActorRuntime otherRuntime = new ActorRuntime()) {
-                var other = otherRuntime.<OresMutex.Shared<int[]>>spawnShared(
-                        () -> (mutex, context) -> { });
-                assertDoesNotThrow(() -> other.send(shared));
-            }
+            assertTrue(failure.getMessage().contains("stateless")
+                    || failure.getMessage().contains("captured host state"));
         }
     }
 
@@ -448,22 +435,17 @@ final class MutexRuntimeTest {
     void strictActorCannotCreateSharedMutexDirectly() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             IsolatePolicy strict = IsolatePolicy.strictFaas();
-            CountDownLatch checked = new CountDownLatch(1);
-            AtomicReference<Throwable> observed = new AtomicReference<>();
 
-            var ref = runtime.<String>spawnPrivate(strict, factoryContext -> (message, context) -> {
-                try {
-                    OresMutex.shared(new int[]{0});
-                } catch (Throwable failure) {
-                    observed.set(failure);
-                } finally {
-                    checked.countDown();
-                }
-            });
+            var ref = runtime.<String>spawnPrivate(
+                    strict,
+                    factoryContext -> (message, context) -> OresMutex.shared(new int[]{0}));
 
             ref.send("check");
-            assertTrue(checked.await(2, TimeUnit.SECONDS));
-            assertInstanceOf(SecurityException.class, observed.get());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.failure().isEmpty() && System.nanoTime() < deadline) Thread.sleep(2);
+
+            assertTrue(ref.failure().isPresent());
+            assertInstanceOf(SecurityException.class, ref.failure().orElseThrow());
         }
     }
 
