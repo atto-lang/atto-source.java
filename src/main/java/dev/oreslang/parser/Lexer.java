@@ -52,7 +52,8 @@ public final class Lexer {
             case '(' -> add(LPAREN); case ')' -> add(RPAREN); case '{' -> add(LBRACE); case '}' -> add(RBRACE);
             case '[' -> add(LBRACKET); case ']' -> add(RBRACKET); case ',' -> add(COMMA); case '.' -> add(DOT);
             case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '+' -> add(PLUS);
-            case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
+            case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE);
+            case '&' -> throw error("Oreslang has no pointer/reference borrow syntax; use borrow(value), borrow_mut(value), Borrow<T>, or BorrowMut<T>");
             case '-' -> add(match('>') ? ARROW : MINUS);
             case '!' -> add(match('=') ? BANG_EQUAL : BANG);
             case '=' -> add(match('>') ? FAT_ARROW : match('=') ? EQUAL_EQUAL : EQUAL);
