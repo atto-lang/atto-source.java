@@ -250,12 +250,17 @@ public final class TypeChecker {
         Env env = new Env(null, module.name());
         for (Ast.Decl decl : module.declarations()) {
             if (!(decl instanceof Ast.FieldDecl field)) continue;
+            Type declared;
             if (field.initializer() == null) {
-                throw new IllegalArgumentException("module binding '" + module.name() + "." + field.name() + "' requires an initializer");
+                if (field.type() == null) {
+                    throw new IllegalArgumentException("uninitialized module member '" + module.name() + "." + field.name() + "' requires an explicit type");
+                }
+                declared = resolve(field.type(), Set.of(), null);
+            } else {
+                Type actual = typeOf(field.initializer(), env, Set.of(), null);
+                declared = field.type() == null ? actual : resolve(field.type(), Set.of(), null);
+                requireAssignable(actual, declared, "initializer for " + module.name() + "." + field.name());
             }
-            Type actual = typeOf(field.initializer(), env, Set.of(), null);
-            Type declared = field.type() == null ? actual : resolve(field.type(), Set.of(), null);
-            requireAssignable(actual, declared, "initializer for " + module.name() + "." + field.name());
             env.define(field.name(), declared, field.bindingKind());
         }
         return env;
@@ -692,14 +697,33 @@ public final class TypeChecker {
                 ? new Env(null, module)
                 : lexicalOwner.singleton() ? singletonModuleEnv(lexicalOwner) : moduleBindingEnv(lexicalOwner);
 
+        Set<String> localFieldNames = new HashSet<>();
         for (Ast.FieldDecl field : klass.fields()) {
-            Type fieldType = resolve(field.type(), classGenerics, self);
+            if (!localFieldNames.add(field.name())) {
+                throw new IllegalArgumentException("duplicate data member '" + klass.name() + "." + field.name() + "'");
+            }
+            Type fieldSelf = field.isStatic() ? null : self;
+            Type fieldType = resolve(field.type(), classGenerics, fieldSelf);
             if (field.initializer() != null) {
-                Type actual = typeOf(field.initializer(), new Env(classModuleEnv), classGenerics, self);
+                Type actual = typeOf(field.initializer(), new Env(classModuleEnv), classGenerics, fieldSelf);
                 requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
+            } else if (field.isStatic() && field.bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException("uninitialized static field '" + klass.name() + "." + field.name() + "' must be mutable");
             }
             if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
                 throw new IllegalArgumentException("const field '" + field.name() + "' needs a compile-time constant initializer");
+            }
+            if (field.isStatic() && lexicalOwner != null && lexicalOwner.singleton()) {
+                Type stateType = resolve(field.type(), classGenerics, null);
+                if (!isProcessStableStateType(stateType)) {
+                    throw new IllegalArgumentException("static field '" + klass.name() + "." + field.name()
+                            + "' inside singleton module '" + lexicalOwner.name() + "' must use process-stable state");
+                }
+                if (field.initializer() == null || !isPureSingletonInitializer(field.initializer(), Set.of())) {
+                    throw new IllegalArgumentException("static field '" + klass.name() + "." + field.name()
+                            + "' inside singleton module '" + lexicalOwner.name()
+                            + "' requires a context-free initializer");
+                }
             }
         }
 
@@ -745,7 +769,14 @@ public final class TypeChecker {
     }
 
     private void checkModuleBinding(Ast.FieldDecl field) {
-        if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
+        if (field.initializer() == null) {
+            if (field.type() == null) throw new IllegalArgumentException("uninitialized module member '" + field.name() + "' requires an explicit type");
+            if (field.bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException("uninitialized module member '" + field.name() + "' must be mutable");
+            }
+            resolve(field.type(), Set.of(), null);
+            return;
+        }
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
         if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
@@ -1074,6 +1105,10 @@ public final class TypeChecker {
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
                 if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
+                Ast.FieldDecl staticField = findStaticField(klass, member.member(), new LinkedHashSet<>());
+                if (staticField != null) {
+                    return resolve(staticField.type(), Set.copyOf(klass.genericParameters()), null);
+                }
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
@@ -1120,9 +1155,26 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("class '" + klass.name()
                         + "' is actor-private inside singleton module '" + owner.name() + "'");
             }
+            Type nominal = nominalClassType(klass);
+            boolean hasExplicitConstructors = klass.methods().stream().anyMatch(this::isConstructor);
+            if (hasExplicitConstructors) {
+                Ast.MethodDecl constructor = findConstructor(klass, created.arguments().size());
+                if (constructor == null) {
+                    throw new IllegalArgumentException("no constructor for " + klass.name() + " with arity " + created.arguments().size());
+                }
+                Set<String> constructorGenerics = Set.copyOf(klass.genericParameters());
+                for (int i = 0; i < created.arguments().size(); i++) {
+                    Type expected = resolveParam(constructor.parameters().get(i), constructorGenerics, nominal);
+                    requireAssignable(typeOf(created.arguments().get(i), env, generics, self), expected,
+                            "constructor argument " + (i + 1));
+                }
+                return nominal;
+            }
+
+            // Compatibility path for pre-constructor Oreslang: positional args
+            // still initialize instance fields when no explicit constructor exists.
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
-            Type nominal = nominalClassType(klass);
             for (int i = 0; i < fields.size(); i++) {
                 Ast.FieldDecl field = fields.get(i);
                 if (i < created.arguments().size()) {
@@ -1330,11 +1382,27 @@ public final class TypeChecker {
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
         }
+        if (receiver instanceof ClassNamespace classNamespace) {
+            Ast.ClassDecl klass = findClass(classNamespace.className());
+            Ast.FieldDecl field = klass == null ? null : findStaticField(klass, member.member(), new LinkedHashSet<>());
+            if (field == null) throw new IllegalArgumentException("unknown static field '" + member.member() + "'");
+            if (field.bindingKind() != Ast.BindingKind.LET) {
+                throw new IllegalArgumentException("cannot reassign " + field.bindingKind().name().toLowerCase()
+                        + " static field '" + klass.name() + "." + field.name() + "'");
+            }
+            return resolve(field.type(), Set.copyOf(klass.genericParameters()), null);
+        }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
-                if (field != null) return field;
+                Ast.FieldDecl field = findInstanceField(klass, member.member(), new LinkedHashSet<>());
+                if (field != null) {
+                    if (field.bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException("cannot reassign " + field.bindingKind().name().toLowerCase()
+                                + " field '" + klass.name() + "." + field.name() + "'");
+                    }
+                    return resolve(field.type(), Set.copyOf(klass.genericParameters()), named);
+                }
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
@@ -1394,9 +1462,11 @@ public final class TypeChecker {
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
-        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (!field.isStatic()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+        }
         for (Ast.MethodDecl method : klass.methods()) {
-            if (method.isStatic()) continue;
+            if (method.isStatic() || isConstructor(method)) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
                     functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
         }
@@ -1420,10 +1490,12 @@ public final class TypeChecker {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+            if (!field.isStatic() && field.visibility() == Ast.Visibility.PUBLIC) {
+                mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+            }
         }
         for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
+            if (!method.isStatic() && !isConstructor(method) && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members, methodKey(method.name(), method.arity()),
                         functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
             }
@@ -1463,24 +1535,29 @@ public final class TypeChecker {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) for (Ast.FieldDecl field : effectiveFields(parent, stack)) fields.putIfAbsent(field.name(), field);
         }
-        for (Ast.FieldDecl field : klass.fields()) fields.put(field.name(), field);
+        for (Ast.FieldDecl field : klass.fields()) if (!field.isStatic()) fields.put(field.name(), field);
         stack.remove(klass);
         return List.copyOf(fields.values());
     }
 
     private Type findFieldType(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        Ast.FieldDecl field = findInstanceField(klass, name, seen);
+        if (field == null) return null;
+        return resolve(field.type(), Set.copyOf(klass.genericParameters()), nominalClassType(klass));
+    }
+
+    private Ast.FieldDecl findInstanceField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
-        Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.name().equals(name)) {
+            if (!field.isStatic() && field.name().equals(name)) {
                 seen.remove(klass);
-                return resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
+                return field;
             }
         }
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
-            Type result = findFieldType(parent, name, seen);
+            Ast.FieldDecl result = findInstanceField(parent, name, seen);
             if (result != null) {
                 seen.remove(klass);
                 return result;
@@ -1490,10 +1567,42 @@ public final class TypeChecker {
         return null;
     }
 
+    private Ast.FieldDecl findStaticField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic() && field.name().equals(name)) {
+                seen.remove(klass);
+                return field;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.FieldDecl result = findStaticField(parent, name, seen);
+            if (result != null) {
+                seen.remove(klass);
+                return result;
+            }
+        }
+        seen.remove(klass);
+        return null;
+    }
+
+    private boolean isConstructor(Ast.MethodDecl method) {
+        return !method.isStatic() && method.name().equals("constructor");
+    }
+
+    private Ast.MethodDecl findConstructor(Ast.ClassDecl klass, int arity) {
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (isConstructor(method) && method.arity() == arity) return method;
+        }
+        return null;
+    }
+
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+            if (!method.isStatic() && !isConstructor(method) && method.name().equals(name) && method.arity() == arity) {
                 seen.remove(klass);
                 return method;
             }
@@ -1514,7 +1623,7 @@ public final class TypeChecker {
     private List<Ast.MethodDecl> findMethodsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return List.of();
         LinkedHashMap<Integer, Ast.MethodDecl> methods = new LinkedHashMap<>();
-        for (Ast.MethodDecl method : klass.methods()) if (!method.isStatic() && method.name().equals(name)) methods.put(method.arity(), method);
+        for (Ast.MethodDecl method : klass.methods()) if (!method.isStatic() && !isConstructor(method) && method.name().equals(name)) methods.put(method.arity(), method);
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
