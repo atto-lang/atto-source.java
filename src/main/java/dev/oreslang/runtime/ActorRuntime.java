@@ -85,6 +85,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorState state,
             int mailboxMessages,
             long mailboxBytes,
+            long activeMessageBytes,
             long ownedStateBytes,
             long manualGcRequests,
             ActorFailure failure) {
@@ -94,8 +95,11 @@ public final class ActorRuntime implements AutoCloseable {
             result.put("state", state.name().toLowerCase(java.util.Locale.ROOT));
             result.put("mailbox_messages", mailboxMessages);
             result.put("mailbox_bytes", mailboxBytes);
+            result.put("active_message_bytes", activeMessageBytes);
             result.put("owned_state_bytes", ownedStateBytes);
-            result.put("estimated_actor_heap_bytes", safeAdd(mailboxBytes, ownedStateBytes));
+            result.put(
+                    "estimated_actor_heap_bytes",
+                    safeAdd(safeAdd(mailboxBytes, activeMessageBytes), ownedStateBytes));
             result.put("heap_backend", "logical_jvm");
             result.put("physical_heap_isolation", false);
             result.put("manual_gc_requests", manualGcRequests);
@@ -434,7 +438,15 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = actors.get(ref.id());
         if (cell != null) return cell.snapshot();
         ActorFailure failure = failures.get(ref.id());
-        return new ActorSnapshot(ref.id(), failure == null ? ActorState.STOPPED : ActorState.FAILED, 0, 0L, 0L, 0L, failure);
+        return new ActorSnapshot(
+                ref.id(),
+                failure == null ? ActorState.STOPPED : ActorState.FAILED,
+                0,
+                0L,
+                0L,
+                0L,
+                0L,
+                failure);
     }
 
     /** Called by process.gc() so actor-local pressure/telemetry can be tracked. */
@@ -669,6 +681,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
         private final AtomicLong mailboxBytes = new AtomicLong();
+        private final AtomicLong activeMessageBytes = new AtomicLong();
         private final AtomicLong ownedStateBytes = new AtomicLong();
         private final AtomicLong manualGcRequests = new AtomicLong();
         private final long maxMailboxBytes;
@@ -700,7 +713,8 @@ public final class ActorRuntime implements AutoCloseable {
                 long current = mailboxBytes.get();
                 if (envelope.bytes() > maxMailboxBytes - current) return false;
                 next = current + envelope.bytes();
-                if (ownedStateBytes.get() > policy.maxHeapBytes() - next) return false;
+                long liveBytes = safeAdd(ownedStateBytes.get(), activeMessageBytes.get());
+                if (liveBytes > policy.maxHeapBytes() - next) return false;
                 if (mailboxBytes.compareAndSet(current, next)) break;
             } while (true);
 
@@ -719,6 +733,7 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable failure) {
                 recordFailure(failure);
                 currentActor.remove();
+                activeMessageBytes.set(0L);
                 ownedStateBytes.set(0L);
                 removeSingletonMapping();
                 removeWatchesOwnedBy(ref.id());
@@ -736,8 +751,8 @@ public final class ActorRuntime implements AutoCloseable {
                 @Override public long ownedStateBytes() { return ownedStateBytes.get(); }
                 @Override public void replaceOwnedStateBytes(long estimatedBytes) {
                     requireOwnedStateBytes(policy, estimatedBytes);
-                    long queued = mailboxBytes.get();
-                    if (estimatedBytes > policy.maxHeapBytes() - queued) {
+                    long transientBytes = safeAdd(mailboxBytes.get(), activeMessageBytes.get());
+                    if (estimatedBytes > policy.maxHeapBytes() - transientBytes) {
                         throw new IllegalStateException("actor heap limit exceeded by persistent state");
                     }
                     ownedStateBytes.set(estimatedBytes);
@@ -753,7 +768,12 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     Envelope envelope = (Envelope) queued;
                     mailboxBytes.addAndGet(-envelope.bytes());
-                    behavior.onMessage((M) envelope.value(), context);
+                    activeMessageBytes.set(envelope.bytes());
+                    try {
+                        behavior.onMessage((M) envelope.value(), context);
+                    } finally {
+                        activeMessageBytes.set(0L);
+                    }
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -762,6 +782,7 @@ public final class ActorRuntime implements AutoCloseable {
                 recordFailure(failure);
             } finally {
                 currentActor.remove();
+                activeMessageBytes.set(0L);
                 ownedStateBytes.set(0L);
                 removeSingletonMapping();
                 removeWatchesOwnedBy(ref.id());
@@ -817,6 +838,7 @@ public final class ActorRuntime implements AutoCloseable {
                     state,
                     mailbox.size(),
                     mailboxBytes.get(),
+                    activeMessageBytes.get(),
                     ownedStateBytes.get(),
                     manualGcRequests.get(),
                     failureRecord);
