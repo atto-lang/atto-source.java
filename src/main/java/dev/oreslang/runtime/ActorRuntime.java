@@ -1811,7 +1811,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void stop() {
-            CompletableFuture<M> waiter;
+            MailboxReceiveFuture<M> waiter;
             synchronized (lifecycleLock) {
                 if (!stopped.compareAndSet(false, true)) return;
                 waiter = pendingReceive;
@@ -1820,7 +1820,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (memorySlice != null) memorySlice.close();
                 unregisterActor(this);
             }
-            if (waiter != null) waiter.completeExceptionally(terminated(ref));
+            if (waiter != null) waiter.failFromRuntime(terminated(ref));
         }
     }
 }
