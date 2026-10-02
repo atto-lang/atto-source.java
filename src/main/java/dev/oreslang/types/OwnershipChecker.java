@@ -34,6 +34,7 @@ public final class OwnershipChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private int mutexCriticalSectionDepth;
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -133,7 +134,10 @@ public final class OwnershipChecker {
                         throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
                     }
                 }
-                checkExpr(ret.value(), scope, true);
+                ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (containsMutexGuardType(returned.type)) {
+                    throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
+                }
             }
             return;
         }
@@ -302,7 +306,7 @@ public final class OwnershipChecker {
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
-            if (scope.hasLiveMutexGuard()) {
+            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
             }
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
@@ -313,19 +317,26 @@ public final class OwnershipChecker {
             return awaitedValue;
         }
         if (expr instanceof Ast.ListExpr list) {
-            for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
+            for (Ast.Expr item : list.elements()) {
+                ValueInfo info = checkExpr(item, scope, true);
+                if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an array/list");
+            }
             return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
             boolean copy = true;
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in a tuple");
                 copy &= info.kind == ValueKind.COPY;
             }
             return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
+            for (Ast.ObjectField field : object.fields()) {
+                ValueInfo info = checkExpr(field.value(), scope, true);
+                if (containsMutexGuardType(info.type)) throw error("MutexGuard cannot be stored in an object/map");
+            }
             return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
@@ -370,6 +381,27 @@ public final class OwnershipChecker {
                         if (member.member().equals("lock_async") && call.arguments().isEmpty()) {
                             Ast.TypeRef guard = new Ast.TypeRef("MutexGuard", List.of(element), false);
                             return new ValueInfo(new Ast.TypeRef("Future", List.of(guard), false), ValueKind.MOVE_ONLY, null);
+                        }
+                        if ((member.member().equals("with_lock") || member.member().equals("recover"))
+                                && call.arguments().size() == 1
+                                && call.arguments().getFirst() instanceof Ast.LambdaExpr lambda) {
+                            if (member.member().equals("recover") && !receiverType.name().equals("SharedMutex")) {
+                                throw error("recover is only available on SharedMutex<T>");
+                            }
+                            if (lambda.parameters().size() != 1) {
+                                throw error(member.member() + " callback must accept exactly one protected-value parameter");
+                            }
+                            Ast.Param original = lambda.parameters().getFirst();
+                            Ast.Param protectedParam = new Ast.Param(element, original.name(), original.structural(), true);
+                            Ast.LambdaExpr protectedLambda = new Ast.LambdaExpr(
+                                    List.of(protectedParam), lambda.expressionBody(), lambda.blockBody());
+                            mutexCriticalSectionDepth++;
+                            try {
+                                checkLambda(protectedLambda, scope, null);
+                            } finally {
+                                mutexCriticalSectionDepth--;
+                            }
+                            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
                         }
                     }
                     if (isMutexGuardType(receiverType) && member.member().equals("release") && call.arguments().isEmpty()) {
@@ -519,8 +551,8 @@ public final class OwnershipChecker {
             if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW || source.type.isBorrow()) {
                 throw error("closure cannot capture borrowed value '" + capture.name + "'; capture its owner by value or pass the borrow as a lambda parameter");
             }
-            if (isMutexGuardType(source.type)) {
-                throw error("closure cannot capture MutexGuard '" + capture.name + "'; guards are lexical and must be released before a closure escapes");
+            if (containsMutexGuardType(source.type)) {
+                throw error("closure cannot capture guard-bearing value '" + capture.name + "'; MutexGuard values are lexical");
             }
 
             if (capture.write) {
@@ -777,6 +809,25 @@ public final class OwnershipChecker {
         return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
     }
 
+    private static boolean containsMutexGuardType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()) return false;
+        if (isMutexGuardType(type)) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsMutexGuardType(argument)) return true;
+        }
+        return false;
+    }
+
+    private static boolean containsAcquiredMutexGuardType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()) return false;
+        if (isMutexGuardType(type)) return true;
+        if (type.name().equals("Future")) return false;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsAcquiredMutexGuardType(argument)) return true;
+        }
+        return false;
+    }
+
     private Ast.TypeRef inferLiteralType(Object value) {
         if (value instanceof Boolean) return Ast.TypeRef.simple("bool");
         if (value instanceof Long) return Ast.TypeRef.simple("int");
@@ -849,7 +900,7 @@ public final class OwnershipChecker {
 
         private boolean hasLiveMutexGuard() {
             for (VarState state : visibleStates()) {
-                if (!state.moved && isMutexGuardType(state.type)) return true;
+                if (!state.moved && containsAcquiredMutexGuardType(state.type)) return true;
             }
             return false;
         }
