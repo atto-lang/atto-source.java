@@ -130,6 +130,15 @@ public final class ActorRuntime implements AutoCloseable {
         return Thread.currentThread();
     }
 
+    /**
+     * Returns the current actor's stable semantic domain, or {@code null} when
+     * execution is not inside an actor mailbox turn. This deliberately does
+     * not expose ActorCell or carrier-thread identity.
+     */
+    public static Object currentActorExecutionDomain() {
+        return CURRENT_ACTOR_DOMAIN.get();
+    }
+
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
