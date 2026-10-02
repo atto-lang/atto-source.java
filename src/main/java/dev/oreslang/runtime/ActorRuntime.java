@@ -25,26 +25,21 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
-import java.util.Optional;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Host-side actor substrate used by the first interpreter.
  *
- * The execution model follows the important Akka dispatcher invariant: actors
- * are multiplexed over executor threads, but a given actor drains exactly one
- * mailbox serially. A carrier thread is not actor identity and may change from
- * one mailbox turn to the next.
+ * Oreslang follows the core Akka-style execution invariant: actors are
+ * multiplexed over dispatcher threads, but one actor processes its mailbox
+ * serially. Carrier-thread identity is never actor identity.
  *
- * PRIVATE actors and SHARED actors are deliberately bulkheaded onto separate
- * dispatchers. Private messages are isolation-copied so private actors never
- * receive shared-memory cells. Shared actors may additionally exchange
- * explicitly shareable values: deeply immutable Shared values and SyncCell
- * values whose updates are serialized by the cell itself.
+ * PRIVATE and SHARED actors are deliberately bulkheaded onto different
+ * dispatchers. Private actors also receive a confined logical memory slice;
+ * shared actors may coordinate through explicitly synchronized shared cells.
  */
 public final class ActorRuntime implements AutoCloseable {
     public enum ActorKind { PRIVATE, SHARED }
@@ -62,14 +57,22 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    public record ActorId(UUID value) {
+        public ActorId { Objects.requireNonNull(value); }
+        public static ActorId create() { return new ActorId(UUID.randomUUID()); }
+    }
+
+    /** Deeply immutable value that shared actors may reference without copying. */
+    public record Shared<T>(T value) { }
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
-    private final AtomicLong privateMemoryBytes = new AtomicLong();
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults());
@@ -90,86 +93,51 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
-
-    public record ActorId(UUID value) {
-        public static ActorId create() { return new ActorId(UUID.randomUUID()); }
-    }
-
-    /** Deeply immutable value that shared actors may reference without copying. */
-    public record Shared<T>(T value) { }
+    public long privateMemoryBytes() { return privateMemoryBytes.get(); }
 
     /**
-     * Actor-local memory accounting boundary. The Java reference heap is still
-     * the current storage backend, but all lowered actor-local allocations can
-     * be charged to this slice. PRIVATE slices additionally enforce that public
-     * reservations are made only while their owning actor is executing.
+     * Logical actor-confined memory slice for one private actor.
      *
-     * This abstraction is intentionally backend-neutral: a future Native Image
-     * or polyglot-isolate backend can map the same slice contract to a true
-     * isolate heap without changing Oreslang actor semantics.
+     * This is independent of carrier threads. Mailbox payloads and persistent
+     * actor-state allocations share one budget. The current JVM backend uses
+     * accounting plus alias isolation; a native/polyglot-isolate backend can map
+     * this same contract to a physically separate heap/arena.
      */
-    public interface MemorySlice {
-        UUID id();
-        ActorKind kind();
-        long limitBytes();
-        long usedBytes();
-        boolean closed();
-        MemoryReservation reserve(long bytes);
-        default MemoryReservation reserveHeap(long bytes) { return reserve(bytes); }
-    }
-
-    public static final class MemoryLimitExceededException extends IllegalStateException {
-        public MemoryLimitExceededException(String message) { super(message); }
-    }
-
-    public static final class MemoryReservation implements AutoCloseable {
-        private final AtomicBoolean released = new AtomicBoolean();
-        private final Runnable releaser;
-        private final long bytes;
-
-        private MemoryReservation(long bytes, Runnable releaser) {
-            this.bytes = bytes;
-            this.releaser = releaser;
-        }
-
-        public long bytes() { return bytes; }
-
-        @Override
-        public void close() {
-            if (released.compareAndSet(false, true)) releaser.run();
-        }
-    }
-
-    private abstract class AbstractMemorySlice implements MemorySlice, AutoCloseable {
-        private final UUID id = UUID.randomUUID();
-        private final ActorKind kind;
+    public final class ActorMemorySlice implements AutoCloseable {
+        private final ActorId owner;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
 
-        private AbstractMemorySlice(ActorKind kind, long limitBytes) {
-            this.kind = kind;
+        private ActorMemorySlice(ActorId owner, long limitBytes) {
+            this.owner = Objects.requireNonNull(owner);
             this.limitBytes = limitBytes;
         }
 
-        @Override public UUID id() { return id; }
-        @Override public ActorKind kind() { return kind; }
-        @Override public long limitBytes() { return limitBytes; }
-        @Override public long usedBytes() { return usedBytes.get(); }
-        @Override public boolean closed() { return sliceClosed.get(); }
+        public ActorId owner() { return owner; }
+        public long limitBytes() { return limitBytes; }
+        public long usedBytes() { return usedBytes.get(); }
+        public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
+        public boolean closed() { return sliceClosed.get(); }
 
-        protected abstract void requireAccess();
-
-        @Override
-        public MemoryReservation reserve(long bytes) {
-            requireAccess();
-            return reserveInternal(bytes);
+        /**
+         * Reserve persistent private-actor heap. Compiler/interpreter lowering
+         * should retain the reservation for as long as the state allocation is
+         * live and close it when that allocation dies.
+         */
+        public MemoryReservation reserveHeap(long bytes) {
+            requireCurrentOwner();
+            return reserve(bytes, "private actor heap");
         }
 
-        private MemoryReservation reserveInternal(long bytes) {
+        private MemoryReservation reserveMailbox(Object isolatedMessage) {
+            return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
+        }
+
+        private MemoryReservation reserve(long bytes, String purpose) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
-            if (sliceClosed.get()) throw new IllegalStateException("actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(0, () -> { });
+            if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
+            if (bytes == 0) return new MemoryReservation(this, 0);
 
             while (true) {
                 long current = usedBytes.get();
@@ -177,78 +145,92 @@ public final class ActorRuntime implements AutoCloseable {
                 try {
                     next = Math.addExact(current, bytes);
                 } catch (ArithmeticException overflow) {
-                    throw new MemoryLimitExceededException("actor memory reservation overflow");
+                    throw new IllegalStateException(purpose + " accounting overflow");
                 }
                 if (next > limitBytes) {
-                    throw new MemoryLimitExceededException(
-                            "actor memory slice exceeded: requested=" + bytes
-                                    + " used=" + current + " limit=" + limitBytes);
+                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                            + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
                 }
-                if (usedBytes.compareAndSet(current, next)) {
-                    return new MemoryReservation(bytes, () -> {
-                        if (sliceClosed.get()) return;
-                        long remaining = usedBytes.addAndGet(-bytes);
-                        if (remaining < 0) {
-                            usedBytes.set(0);
-                            throw new IllegalStateException("actor memory accounting underflow");
-                        }
-                    });
-                }
+                if (usedBytes.compareAndSet(current, next)) break;
+            }
+
+            try {
+                reservePrivateRuntimeBytes(bytes, owner, purpose);
+            } catch (RuntimeException failure) {
+                usedBytes.addAndGet(-bytes);
+                throw failure;
+            }
+            return new MemoryReservation(this, bytes);
+        }
+
+        private void requireCurrentOwner() {
+            ActorCell<?> cell = currentActor.get();
+            if (cell == null || cell.kind != ActorKind.PRIVATE || !cell.ref.id().equals(owner)) {
+                throw new IllegalStateException(
+                        "private actor memory slice may only be reserved by its owning actor");
             }
         }
 
-        private MemoryReservation reserveTransport(long bytes) {
-            return reserveInternal(bytes);
+        private void release(long bytes) {
+            if (bytes == 0 || sliceClosed.get()) return;
+            long remaining = usedBytes.addAndGet(-bytes);
+            if (remaining < 0) {
+                usedBytes.addAndGet(bytes);
+                throw new IllegalStateException("private actor memory accounting underflow for " + owner);
+            }
+            long aggregate = privateMemoryBytes.addAndGet(-bytes);
+            if (aggregate < 0) {
+                privateMemoryBytes.addAndGet(bytes);
+                usedBytes.addAndGet(bytes);
+                throw new IllegalStateException("private actor aggregate memory accounting underflow");
+            }
         }
 
         @Override
         public void close() {
-            if (sliceClosed.compareAndSet(false, true)) usedBytes.set(0);
-        }
-    }
-
-    public final class PrivateMemorySlice extends AbstractMemorySlice {
-        private final ActorId owner;
-
-        private PrivateMemorySlice(ActorId owner, long limitBytes) {
-            super(ActorKind.PRIVATE, limitBytes);
-            this.owner = owner;
-        }
-
-        public ActorId owner() { return owner; }
-
-        @Override
-        protected void requireAccess() {
-            ActorCell<?> cell = currentActor.get();
-            if (cell == null || !cell.ref.id().equals(owner)) {
-                throw new IllegalStateException("private actor memory slice may only be accessed by its owning actor");
+            if (!sliceClosed.compareAndSet(false, true)) return;
+            long bytes = usedBytes.getAndSet(0);
+            if (bytes != 0) {
+                long aggregate = privateMemoryBytes.addAndGet(-bytes);
+                if (aggregate < 0) privateMemoryBytes.set(0);
             }
         }
     }
 
-    public final class SharedMemorySlice extends AbstractMemorySlice {
-        private SharedMemorySlice(long limitBytes) {
-            super(ActorKind.SHARED, limitBytes);
+    public final class MemoryReservation implements AutoCloseable {
+        private final ActorMemorySlice slice;
+        private final long bytes;
+        private final AtomicBoolean released = new AtomicBoolean();
+
+        private MemoryReservation(ActorMemorySlice slice, long bytes) {
+            this.slice = Objects.requireNonNull(slice);
+            this.bytes = bytes;
         }
 
+        public ActorId owner() { return slice.owner(); }
+        public long bytes() { return bytes; }
+
         @Override
-        protected void requireAccess() {
-            ActorCell<?> cell = currentActor.get();
-            if (cell == null || cell.kind != ActorKind.SHARED) {
-                throw new IllegalStateException("shared actor memory slice may only be reserved during shared-actor execution");
-            }
+        public void close() {
+            if (released.compareAndSet(false, true)) slice.release(bytes);
+        }
+    }
+
+    private record MessageEnvelope(Object value, MemoryReservation reservation) implements AutoCloseable {
+        @Override
+        public void close() {
+            if (reservation != null) reservation.close();
         }
     }
 
     /**
      * Explicit synchronized shared-memory cell.
      *
-     * The stored state is always frozen. Readers only observe frozen snapshots,
-     * and updates run under one lock and must produce a replacement value. This
-     * keeps arbitrary mutable aliases from escaping while still allowing shared
-     * actors to coordinate through memory when message passing is not suitable.
+     * Actor fields do not use this: a mailbox turn already provides exclusive
+     * mutation of actor-owned state. SyncCell is for state intentionally shared
+     * by multiple SHARED actors.
      */
-    public static final class SyncCell<T> {
+    public final class SyncCell<T> {
         private final ReentrantLock lock = new ReentrantLock();
         private T value;
 
@@ -281,6 +263,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         public T update(UnaryOperator<T> updater) {
             Objects.requireNonNull(updater);
+            requireSharedActorTurn();
             lock.lock();
             try {
                 value = (T) freeze(updater.apply(value));
@@ -288,116 +271,6 @@ public final class ActorRuntime implements AutoCloseable {
             } finally {
                 lock.unlock();
             }
-        }
-    }
-
-    /**
-     * Logical, actor-confined heap budget for one private actor.
-     *
-     * This is deliberately independent of carrier threads. Every allocation is
-     * charged both to this slice and to the parent ActorRuntime aggregate
-     * budget. A production backend may map the same abstraction to a Graal
-     * isolate/arena for physical heap separation.
-     */
-    public final class ActorMemorySlice implements AutoCloseable {
-        private final ActorId owner;
-        private final long limitBytes;
-        private final AtomicLong usedBytes = new AtomicLong();
-        private final AtomicBoolean sliceClosed = new AtomicBoolean();
-
-        private ActorMemorySlice(ActorId owner, long limitBytes) {
-            this.owner = Objects.requireNonNull(owner);
-            this.limitBytes = limitBytes;
-        }
-
-        public ActorId owner() { return owner; }
-        public long limitBytes() { return limitBytes; }
-        public long usedBytes() { return usedBytes.get(); }
-        public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
-        public boolean closed() { return sliceClosed.get(); }
-
-        /**
-         * Reserve persistent actor-state memory. Generated Oreslang actor
-         * storage should retain this allocation for as long as the state lives.
-         */
-        public MemoryReservation reserveHeap(long bytes) {
-            return reserve(bytes, "private actor heap");
-        }
-
-        private MemoryReservation reserveMailbox(Object frozenMessage) {
-            return reserve(estimateFrozenBytes(frozenMessage), "private actor mailbox");
-        }
-
-        private MemoryReservation reserve(long bytes, String purpose) {
-            if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
-            if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
-
-            while (true) {
-                long current = usedBytes.get();
-                long next;
-                try {
-                    next = Math.addExact(current, bytes);
-                } catch (ArithmeticException overflow) {
-                    throw new IllegalStateException(purpose + " accounting overflow");
-                }
-                if (next > limitBytes) {
-                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                            + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
-                }
-                if (usedBytes.compareAndSet(current, next)) break;
-            }
-
-            try {
-                reservePrivateRuntimeBytes(bytes, owner, purpose);
-            } catch (RuntimeException failure) {
-                usedBytes.addAndGet(-bytes);
-                throw failure;
-            }
-            return new MemoryReservation(this, bytes);
-        }
-
-        private void release(long bytes) {
-            if (bytes == 0 || sliceClosed.get()) return;
-            long remaining = usedBytes.addAndGet(-bytes);
-            if (remaining < 0) {
-                usedBytes.addAndGet(bytes);
-                throw new IllegalStateException("private actor memory accounting underflow for " + owner);
-            }
-            privateMemoryBytes.addAndGet(-bytes);
-        }
-
-        @Override
-        public void close() {
-            if (!sliceClosed.compareAndSet(false, true)) return;
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) privateMemoryBytes.addAndGet(-bytes);
-        }
-    }
-
-    public final class MemoryReservation implements AutoCloseable {
-        private final ActorMemorySlice slice;
-        private final long bytes;
-        private final AtomicBoolean released = new AtomicBoolean();
-
-        private MemoryReservation(ActorMemorySlice slice, long bytes) {
-            this.slice = slice;
-            this.bytes = bytes;
-        }
-
-        public ActorId owner() { return slice.owner(); }
-        public long bytes() { return bytes; }
-
-        @Override
-        public void close() {
-            if (released.compareAndSet(false, true)) slice.release(bytes);
-        }
-    }
-
-    private record MessageEnvelope(Object value, MemoryReservation reservation) implements AutoCloseable {
-        @Override
-        public void close() {
-            if (reservation != null) reservation.close();
         }
     }
 
@@ -436,14 +309,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    /**
-     * Backward-compatible default: an unqualified actor is private.
-     */
+    /** Backward-compatible default: an unqualified runtime actor is private. */
     public <M> ActorRef<M> spawn(Supplier<? extends Behavior<M>> behaviorFactory) {
         return spawnPrivate(policyCeiling, behaviorFactory);
     }
 
-    public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
+    public <M> ActorRef<M> spawn(
+            IsolatePolicy policy,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
         return spawnPrivate(policy, behaviorFactory);
     }
 
@@ -468,7 +341,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Creates actor-local behavior on its dispatcher the first time that actor
+     * Creates actor-local behavior on its dispatcher the first time the actor
      * is scheduled. The Supplier should be generated by Oreslang lowering, not
      * supplied from untrusted guest code.
      */
@@ -478,6 +351,7 @@ public final class ActorRuntime implements AutoCloseable {
             Supplier<? extends Behavior<M>> behaviorFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(kind);
+        Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
 
@@ -488,17 +362,16 @@ public final class ActorRuntime implements AutoCloseable {
         return ref;
     }
 
-    public long privateMemoryBytes() {
-        long total = 0L;
-        for (ActorCell<?> cell : actors.values()) {
-            if (cell.memory instanceof PrivateMemorySlice) total += cell.memory.usedBytes();
-        }
-        return total;
-    }
-
     public <T> SyncCell<T> syncCell(T initialValue) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         return new SyncCell<>(initialValue);
+    }
+
+    private void requireSharedActorTurn() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.kind != ActorKind.SHARED) {
+            throw new IllegalStateException("shared state mutation requires a shared actor mailbox turn");
+        }
     }
 
     private void reservePrivateRuntimeBytes(long bytes, ActorId owner, String purpose) {
@@ -519,12 +392,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    public long privateMemoryBytes() {
-        return privateMemoryBytes.get();
-    }
-
     private void requireWithinCeiling(IsolatePolicy child) {
-        Objects.requireNonNull(child);
         if (!policyCeiling.capabilities().containsAll(child.capabilities())) {
             java.util.Set<IsolatePolicy.Capability> excess = java.util.EnumSet.copyOf(child.capabilities());
             excess.removeAll(policyCeiling.capabilities());
@@ -547,11 +415,24 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        Objects.requireNonNull(ref);
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) throw new IllegalStateException("unknown or stopped actor " + ref.id());
+        if (cell == null || cell.stopped.get()) {
+            throw new IllegalStateException("unknown or stopped actor " + ref.id());
+        }
 
         Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freeze(message);
-        MemoryReservation reservation = cell.memorySlice == null ? null : cell.memorySlice.reserveMailbox(prepared);
+        MemoryReservation reservation = null;
+        if (cell.memorySlice != null) {
+            try {
+                reservation = cell.memorySlice.reserveMailbox(prepared);
+            } catch (IllegalStateException exceeded) {
+                throw new IllegalStateException(
+                        "private actor mailbox limit exceeded for " + ref.id() + ": " + exceeded.getMessage(),
+                        exceeded);
+            }
+        }
+
         MessageEnvelope envelope = new MessageEnvelope(prepared, reservation);
         if (!cell.mailbox.offer(envelope)) {
             envelope.close();
@@ -562,15 +443,17 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Cooperative scheduler hook used by compiler-injected loop safepoints.
-     * It checks both whole-runtime cancellation and the currently executing
-     * actor's cancellation token. It never exposes a carrier Thread to guest
-     * code because a carrier is shared by many actor identities.
+     * Carrier threads remain an implementation detail.
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
-        if (cell != null && cell.stopped.get()) throw new CancellationException("actor execution stopped");
-        if (Thread.currentThread().isInterrupted()) throw new CancellationException("actor execution interrupted");
+        if (cell != null && cell.stopped.get()) {
+            throw new CancellationException("actor execution stopped");
+        }
+        if (Thread.currentThread().isInterrupted()) {
+            throw new CancellationException("actor execution interrupted");
+        }
         Thread.yield();
     }
 
@@ -584,100 +467,129 @@ public final class ActorRuntime implements AutoCloseable {
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
+        return freeze(value, new IdentityHashMap<>());
+    }
+
+    private static Object freeze(Object value, IdentityHashMap<Object, Boolean> visiting) {
         if (isScalar(value)) return value;
         if (value instanceof Shared<?> shared) return shared;
-        if (value instanceof SyncCell<?> cell) return cell;
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof List<?> list) {
-            List<Object> frozen = new ArrayList<>(list.size());
-            for (Object item : list) frozen.add(freeze(item));
-            return List.copyOf(frozen);
+        if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
+
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
-        if (value instanceof Set<?> set) {
-            LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-            for (Object item : set) frozen.add(freeze(item));
-            return Collections.unmodifiableSet(frozen);
-        }
-        if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> frozen = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) frozen.put(freeze(entry.getKey()), freeze(entry.getValue()));
-            return Collections.unmodifiableMap(frozen);
-        }
-        if (value != null && value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            List<Object> frozen = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i)));
-            return List.copyOf(frozen);
-        }
-        if (value instanceof Sendable sendable) {
-            Object frozen = sendable.freezeForSend();
-            if (frozen == value) {
-                throw new IllegalArgumentException("Sendable.freezeForSend() must not return the mutable source object");
+        try {
+            if (value instanceof List<?> list) {
+                List<Object> frozen = new ArrayList<>(list.size());
+                for (Object item : list) frozen.add(freeze(item, visiting));
+                return List.copyOf(frozen);
             }
-            return freeze(frozen);
+            if (value instanceof Set<?> set) {
+                LinkedHashSet<Object> frozen = new LinkedHashSet<>();
+                for (Object item : set) frozen.add(freeze(item, visiting));
+                return Collections.unmodifiableSet(frozen);
+            }
+            if (value instanceof Map<?, ?> map) {
+                Map<Object, Object> frozen = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    frozen.put(freeze(entry.getKey(), visiting), freeze(entry.getValue(), visiting));
+                }
+                return Collections.unmodifiableMap(frozen);
+            }
+            if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                List<Object> frozen = new ArrayList<>(length);
+                for (int i = 0; i < length; i++) {
+                    frozen.add(freeze(Array.get(value, i), visiting));
+                }
+                return List.copyOf(frozen);
+            }
+            if (value instanceof Sendable sendable) {
+                Object frozen = sendable.freezeForSend();
+                if (frozen == value) {
+                    throw new IllegalArgumentException(
+                            "Sendable.freezeForSend() must not return the mutable source object");
+                }
+                return freeze(frozen, visiting);
+            }
+            throw new IllegalArgumentException("value of type " + value.getClass().getName()
+                    + " is not Sendable; mutable host objects cannot cross actor boundaries");
+        } finally {
+            visiting.remove(value);
         }
-        throw new IllegalArgumentException("value of type " + value.getClass().getName()
-                + " is not Sendable; mutable host objects cannot cross actor boundaries");
     }
 
     /**
-     * Isolation-copy transport for private actors. Explicit shared-memory cells
-     * are rejected; deeply immutable shared values are copied into the private
-     * actor's message graph rather than retaining the Shared wrapper.
+     * Private transport never retains a shared mutable reference. Immutable
+     * shared wrappers are unwrapped and copied into the private message graph.
      */
     private static Object isolateCopy(Object value) {
+        return isolateCopy(value, new IdentityHashMap<>());
+    }
+
+    private static Object isolateCopy(Object value, IdentityHashMap<Object, Boolean> visiting) {
         if (isScalar(value)) return value;
-        if (value instanceof SyncCell<?>) {
+        if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
         }
-        if (value instanceof Shared<?> shared) return isolateCopy(shared.value());
+        if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
-        if (value instanceof List<?> list) {
-            List<Object> copy = new ArrayList<>(list.size());
-            for (Object item : list) copy.add(isolateCopy(item));
-            return Collections.unmodifiableList(copy);
+
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
         }
-        if (value instanceof Set<?> set) {
-            LinkedHashSet<Object> copy = new LinkedHashSet<>();
-            for (Object item : set) copy.add(isolateCopy(item));
-            return Collections.unmodifiableSet(copy);
-        }
-        if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> copy = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                copy.put(isolateCopy(entry.getKey()), isolateCopy(entry.getValue()));
+        try {
+            if (value instanceof List<?> list) {
+                List<Object> copy = new ArrayList<>(list.size());
+                for (Object item : list) copy.add(isolateCopy(item, visiting));
+                return Collections.unmodifiableList(copy);
             }
-            return Collections.unmodifiableMap(copy);
-        }
-        if (value != null && value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            List<Object> copy = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) copy.add(isolateCopy(Array.get(value, i)));
-            return Collections.unmodifiableList(copy);
-        }
-        if (value instanceof Sendable sendable) {
-            Object frozen = sendable.freezeForSend();
-            if (frozen == value) {
-                throw new IllegalArgumentException("Sendable.freezeForSend() must not return the mutable source object");
+            if (value instanceof Set<?> set) {
+                LinkedHashSet<Object> copy = new LinkedHashSet<>();
+                for (Object item : set) copy.add(isolateCopy(item, visiting));
+                return Collections.unmodifiableSet(copy);
             }
-            return isolateCopy(frozen);
+            if (value instanceof Map<?, ?> map) {
+                Map<Object, Object> copy = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    copy.put(isolateCopy(entry.getKey(), visiting), isolateCopy(entry.getValue(), visiting));
+                }
+                return Collections.unmodifiableMap(copy);
+            }
+            if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                List<Object> copy = new ArrayList<>(length);
+                for (int i = 0; i < length; i++) {
+                    copy.add(isolateCopy(Array.get(value, i), visiting));
+                }
+                return Collections.unmodifiableList(copy);
+            }
+            if (value instanceof Sendable sendable) {
+                Object frozen = sendable.freezeForSend();
+                if (frozen == value) {
+                    throw new IllegalArgumentException(
+                            "Sendable.freezeForSend() must not return the mutable source object");
+                }
+                return isolateCopy(frozen, visiting);
+            }
+            throw new IllegalArgumentException("value of type " + value.getClass().getName()
+                    + " is not Sendable; mutable host objects cannot cross actor boundaries");
+        } finally {
+            visiting.remove(value);
         }
-        if (value == null) return null;
-        throw new IllegalArgumentException("value of type " + value.getClass().getName()
-                + " is not Sendable; mutable host objects cannot cross actor boundaries");
     }
 
     /**
-     * Conservative logical-size estimate for already frozen Oreslang values.
-     * This is a language heap accounting metric, not a claim about HotSpot/Graal
-     * object layout. Physical isolation requires a separate VM/polyglot isolate.
+     * Conservative language-level footprint estimate. This is a quota metric,
+     * not a promise about HotSpot/Graal object layout.
      */
     private static long estimateFrozenBytes(Object value) {
         return estimateFrozenBytes(value, new IdentityHashMap<>());
     }
 
     private static long estimateFrozenBytes(Object value, IdentityHashMap<Object, Boolean> seen) {
-        if (value == null) return 0L;
+        if (value == null) return 8L;
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
         if (value instanceof Long || value instanceof Double) return 24L;
@@ -687,28 +599,24 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
+        if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof Shared<?> shared) return estimateFrozenBytes(shared.value(), seen);
-        if (value instanceof SyncCell<?>) return 64L;
 
-        if (seen.put(value, Boolean.TRUE) != null) {
-            // Frozen graphs should be trees/DAGs. Count a repeated immutable
-            // reference once rather than recursively double-counting it.
-            return 0L;
-        }
+        if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
         if (value instanceof List<?> list) {
-            bytes += 8L * list.size();
+            bytes = Math.addExact(bytes, 8L * list.size());
             for (Object item : list) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen));
             return bytes;
         }
         if (value instanceof Set<?> set) {
-            bytes += 16L * set.size();
+            bytes = Math.addExact(bytes, 16L * set.size());
             for (Object item : set) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen));
             return bytes;
         }
         if (value instanceof Map<?, ?> map) {
-            bytes += 32L * map.size();
+            bytes = Math.addExact(bytes, 32L * map.size());
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getKey(), seen));
                 bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getValue(), seen));
@@ -717,7 +625,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value.getClass().isArray()) {
             int length = Array.getLength(value);
-            bytes += 8L * length;
+            bytes = Math.addExact(bytes, 8L * length);
             for (int i = 0; i < length; i++) {
                 bytes = Math.addExact(bytes, estimateFrozenBytes(Array.get(value, i), seen));
             }
@@ -732,48 +640,6 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
     }
-
-    private static long estimateFootprint(Object value) {
-        return estimateFootprint(value, new java.util.IdentityHashMap<>());
-    }
-
-    private static long estimateFootprint(Object value, java.util.IdentityHashMap<Object, Boolean> seen) {
-        if (value == null) return 8;
-        if (value instanceof Byte || value instanceof Boolean) return 16;
-        if (value instanceof Short || value instanceof Character) return 16;
-        if (value instanceof Integer || value instanceof Float) return 16;
-        if (value instanceof Long || value instanceof Double) return 24;
-        if (value instanceof BigInteger big) return 32L + Math.max(8, big.bitLength() / 8L);
-        if (value instanceof BigDecimal decimal) return 40L + estimateFootprint(decimal.unscaledValue(), seen);
-        if (value instanceof String text) return 24L + (long) text.length() * 2L;
-        if (value instanceof UUID || value instanceof ActorId || value instanceof ActorRuntime.ActorRef<?>) return 32;
-        if (value instanceof Enum<?>) return 16;
-        if (value instanceof SyncCell<?>) return 32;
-
-        if (seen.put(value, Boolean.TRUE) != null) return 8;
-        if (value instanceof Shared<?> shared) return 24L + estimateFootprint(shared.value(), seen);
-        if (value instanceof List<?> list) {
-            long bytes = 24L + 8L * list.size();
-            for (Object item : list) bytes += estimateFootprint(item, seen);
-            return bytes;
-        }
-        if (value instanceof Set<?> set) {
-            long bytes = 32L + 16L * set.size();
-            for (Object item : set) bytes += estimateFootprint(item, seen);
-            return bytes;
-        }
-        if (value instanceof Map<?, ?> map) {
-            long bytes = 48L + 32L * map.size();
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                bytes += estimateFootprint(entry.getKey(), seen);
-                bytes += estimateFootprint(entry.getValue(), seen);
-            }
-            return bytes;
-        }
-        return 64;
-    }
-
-    private record Envelope(Object message, MemoryReservation reservation) { }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
     public interface Sendable {
@@ -823,10 +689,9 @@ public final class ActorRuntime implements AutoCloseable {
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
-            this.memory = kind == ActorKind.PRIVATE
-                    ? new PrivateMemorySlice(ref.id(), policy.maxHeapBytes())
-                    : new SharedMemorySlice(policy.maxHeapBytes());
-            this.memorySlice = kind == ActorKind.PRIVATE ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes()) : null;
+            this.memorySlice = kind == ActorKind.PRIVATE
+                    ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
+                    : null;
         }
 
         private void schedule() {
@@ -836,6 +701,7 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherFor(kind).execute(this::runBatch);
             } catch (RejectedExecutionException rejected) {
                 scheduled.set(false);
+                stop();
                 if (!closed.get()) throw rejected;
             }
         }
@@ -846,7 +712,8 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 if (stopped.get()) return;
                 if (behavior == null) {
-                    behavior = Objects.requireNonNull(behaviorFactory.get(), "actor behaviorFactory returned null");
+                    behavior = Objects.requireNonNull(
+                            behaviorFactory.get(), "actor behaviorFactory returned null");
                 }
 
                 ActorContext<M> context = new ActorContext<>() {
@@ -854,8 +721,9 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public ActorRuntime runtime() { return ActorRuntime.this; }
                     @Override public IsolatePolicy policy() { return policy; }
                     @Override public ActorKind kind() { return kind; }
-                    @Override public MemorySlice memory() { return memory; }
-                    @Override public Optional<ActorMemorySlice> privateMemory() { return Optional.ofNullable(memorySlice); }
+                    @Override public Optional<ActorMemorySlice> privateMemory() {
+                        return Optional.ofNullable(memorySlice);
+                    }
                 };
 
                 int processed = 0;
@@ -868,8 +736,8 @@ public final class ActorRuntime implements AutoCloseable {
                     processed++;
                 }
             } catch (Throwable failure) {
-                // v0 fail-stop supervision policy. Never allow a failing actor
-                // to poison a shared dispatcher worker or execute concurrently.
+                // v0 fail-stop supervision. A later supervisor layer can expose
+                // restart/escalation strategies without weakening serialization.
                 stopped.set(true);
                 drainMailboxReservations();
                 if (memorySlice != null) memorySlice.close();
@@ -881,8 +749,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get() || closed.get()) {
                     actors.remove(ref.id(), this);
                 } else if (!mailbox.isEmpty()) {
-                    // Akka-style throughput/fairness handoff: after a bounded
-                    // batch, resubmit this actor so another mailbox can run.
+                    // Bounded batch/throughput handoff for dispatcher fairness.
                     schedule();
                 }
             }
@@ -891,11 +758,6 @@ public final class ActorRuntime implements AutoCloseable {
         private void drainMailboxReservations() {
             MessageEnvelope envelope;
             while ((envelope = mailbox.poll()) != null) envelope.close();
-        }
-
-        private void drainMailboxReservations() {
-            Envelope envelope;
-            while ((envelope = mailbox.poll()) != null) envelope.reservation().close();
         }
 
         private void stop() {
