@@ -225,7 +225,14 @@ public final class ActorRuntime implements AutoCloseable {
             for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i)));
             return List.copyOf(frozen);
         }
-        if (value instanceof Sendable sendable) return sendable.freezeForSend();
+        if (value instanceof Sendable sendable) {
+            Object candidate = sendable.freezeForSend();
+            if (candidate == value) {
+                throw new IllegalArgumentException(
+                        "Sendable.freezeForSend() must return a distinct frozen representation; self-returning mutable aliases are forbidden");
+            }
+            return freeze(candidate);
+        }
         throw new IllegalArgumentException("value of type " + value.getClass().getName()
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
     }
