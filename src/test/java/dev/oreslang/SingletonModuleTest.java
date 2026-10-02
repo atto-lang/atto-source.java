@@ -258,6 +258,25 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonProxyStorageCannotHideSchemaBehindTypeAliases() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        type Count = int;
+
+                        define class AliasBackedBox as
+                          let Count value = 1;
+                          pub read() => int { return self.value; }
+                        end
+
+                        define singleton module alias_backed_proxy as
+                          pub val AliasBackedBox box = new AliasBackedBox();
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot use type aliases"));
+    }
+
+    @Test
     void singletonPublicApiMustBeStaticallySendable() {
         IllegalArgumentException classBoundary = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
