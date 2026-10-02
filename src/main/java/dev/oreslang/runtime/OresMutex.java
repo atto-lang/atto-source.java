@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 
@@ -195,10 +196,20 @@ public final class OresMutex {
         private final Semaphore permit = new Semaphore(1, true);
         private final AtomicBoolean poisoned = new AtomicBoolean();
         private final AtomicInteger asyncWaiters = new AtomicInteger();
+        private final AtomicReference<ActorRuntime> owningRuntime = new AtomicReference<>();
         private final Set<Object> activeDomains = ConcurrentHashMap.newKeySet();
 
         private Shared(T value) {
             this.value = value;
+        }
+
+        boolean bindToRuntime(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            ActorRuntime existing = owningRuntime.get();
+            if (existing == runtime) return true;
+            if (existing != null) return false;
+            if (owningRuntime.compareAndSet(null, runtime)) return true;
+            return owningRuntime.get() == runtime;
         }
 
         private void rejectBlockingActorAcquisition() {
