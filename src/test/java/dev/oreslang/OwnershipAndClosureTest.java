@@ -649,6 +649,73 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("moved value 'holder'"));
     }
 
+    @Test
+    void inferredGenericStructSpecializationDerivesCopy() throws Exception {
+        String output = run("""
+                struct Box<T> {
+                  pub let T value;
+                }
+
+                pub fnc main() => void {
+                  let first = Box<> { value = 1 };
+                  let second = first;
+                  second.value = 2;
+                  stdio.stdout.write(first.value);
+                  stdio.stdout.write(second.value);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void contextualObjectToStructBindingUsesStructCopySemantics() throws Exception {
+        String output = run("""
+                struct Point {
+                  pub let int x;
+                }
+
+                pub fnc main() => void {
+                  let Point first = obj{x: 1};
+                  let Point second = first;
+                  second.x = 2;
+                  stdio.stdout.write(first.x);
+                  stdio.stdout.write(second.x);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void inferredGenericStructWithClassPayloadRemainsMoveOnly() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class BoxedValue as
+                          pub let int value = 1;
+                        end
+
+                        struct Box<T> {
+                          pub let T value;
+                        }
+
+                        fnc consume(Box<BoxedValue> value) => void {
+                          return;
+                        }
+
+                        fnc bad() => void {
+                          let holder = Box<> { value = new BoxedValue() };
+                          consume(holder);
+                          stdio.println(holder.value.value);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("moved value 'holder'"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
