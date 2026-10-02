@@ -172,6 +172,16 @@ public final class OresEvalRootNode extends RootNode {
                     iteration.define(loop.bindingName(), item, loop.bindingKind());
                     executeBlock(loop.body(), iteration);
                 }
+                return;
+            }
+            if (stmt instanceof Ast.ForStmt loop) {
+                Env loopEnv = new Env(env);
+                if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<>());
+                while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
+                    context.schedulerSafepoint();
+                    executeBlock(loop.body(), loopEnv);
+                    if (loop.update() != null) eval(loop.update(), loopEnv);
+                }
             }
         }
 
