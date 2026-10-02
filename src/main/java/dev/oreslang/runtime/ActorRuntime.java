@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinWorkerThread;
@@ -207,6 +209,11 @@ public final class ActorRuntime implements AutoCloseable {
         void onMessage(M message, ActorContext<M> context) throws Exception;
     }
 
+    @FunctionalInterface
+    public interface Invocation<M, R> {
+        R run(M message, ActorContext<M> context) throws Exception;
+    }
+
     public interface ActorContext<M> {
         ActorRef<M> self();
         ActorRuntime runtime();
@@ -268,6 +275,59 @@ public final class ActorRuntime implements AutoCloseable {
         actors.put(id, cell);
         cell.start();
         return ref;
+    }
+
+    /**
+     * Runs exactly one message on a freshly-created actor and returns its result.
+     *
+     * This is the lowering target for the source-level actor/isoactor callable
+     * modifiers. The message and result both cross the same Sendable freeze
+     * boundary as ordinary actor traffic. The actor is fail-stop and is
+     * terminated after the invocation completes.
+     */
+    public <M, R> R invoke(
+            M message,
+            MemoryPolicy memoryPolicy,
+            Invocation<M, R> invocation) {
+        java.util.Objects.requireNonNull(memoryPolicy, "memoryPolicy");
+        java.util.Objects.requireNonNull(invocation, "invocation");
+
+        CompletableFuture<R> completion = new CompletableFuture<>();
+        ActorRef<M> ref = spawn(memoryPolicy, () -> (delivered, actorContext) -> {
+            try {
+                @SuppressWarnings("unchecked")
+                R frozenResult = (R) freeze(invocation.run(delivered, actorContext));
+                completion.complete(frozenResult);
+            } catch (Throwable failure) {
+                completion.completeExceptionally(failure);
+            } finally {
+                stop(actorContext.self());
+            }
+        });
+
+        try {
+            send(ref, message);
+            return completion.join();
+        } catch (CompletionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new RuntimeException(cause);
+        } finally {
+            stop(ref);
+        }
+    }
+
+    /**
+     * Requests fail-stop termination of an actor. Returns false when the actor
+     * has already terminated or is unknown to this runtime.
+     */
+    public boolean stop(ActorRef<?> ref) {
+        java.util.Objects.requireNonNull(ref, "ref");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return false;
+        cell.stop();
+        return true;
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
