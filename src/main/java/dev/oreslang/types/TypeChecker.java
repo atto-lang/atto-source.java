@@ -45,6 +45,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean awaitAllowed;
+    private int actorContextDepth;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -188,10 +189,13 @@ public final class TypeChecker {
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
         boolean previousAwaitAllowed = awaitAllowed;
-        awaitAllowed = fn.async() || fn.actorKind() != Ast.ActorKind.NONE;
+        boolean actorContext = fn.actorKind() != Ast.ActorKind.NONE;
+        awaitAllowed = fn.async() || actorContext;
+        if (actorContext) actorContextDepth++;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            if (actorContext) actorContextDepth--;
             awaitAllowed = previousAwaitAllowed;
         }
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -274,10 +278,13 @@ public final class TypeChecker {
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
             boolean previousAwaitAllowed = awaitAllowed;
+            boolean actorMethod = klass.actorKind() != Ast.ActorKind.NONE && !method.isStatic();
             awaitAllowed = method.async() || klass.actorKind() != Ast.ActorKind.NONE;
+            if (actorMethod) actorContextDepth++;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
+                if (actorMethod) actorContextDepth--;
                 awaitAllowed = previousAwaitAllowed;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
@@ -435,7 +442,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -604,6 +611,19 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
+                if (member.member().equals("gc")) {
+                    if (actorContextDepth <= 0) {
+                        throw new IllegalArgumentException("actor.gc() is only valid inside an actor mailbox context");
+                    }
+                    return new Function(List.of(), Unknown.INSTANCE);
+                }
+                throw new IllegalArgumentException("unknown actor runtime member '" + member.member() + "'");
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")
+                    && member.member().equals("gc")) {
+                return new Function(List.of(), Unknown.INSTANCE);
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type mutexMember = builtinMutexMember(receiver, member.member());
