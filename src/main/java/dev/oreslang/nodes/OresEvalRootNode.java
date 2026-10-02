@@ -695,11 +695,49 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Env snapshot() { Env cp=new Env(parent==null?null:parent.snapshot()); cp.slots.putAll(slots); return cp; }
         private void releaseMutexGuards(boolean failed) {
-            for (Slot slot : slots.values()) {
-                if (slot.value instanceof OresMutex.Guard<?> guard && !guard.released()) {
+            Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
+        }
+
+        private static void releaseMutexGuardsInValue(Object value, boolean failed, Set<Object> seen) {
+            if (value == null) return;
+            if (value instanceof OresMutex.Guard<?> guard) {
+                if (!guard.released()) {
                     if (failed) guard.fail();
                     else guard.release();
                 }
+                return;
+            }
+            if (!seen.add(value)) return;
+
+            if (value instanceof OptionValue option) {
+                if (option.present()) releaseMutexGuardsInValue(option.value(), failed, seen);
+                return;
+            }
+            if (value instanceof CompletionStage<?> stage) {
+                var future = stage.toCompletableFuture();
+                if (!future.isDone()) {
+                    future.cancel(true);
+                    return;
+                }
+                if (!future.isCancelled() && !future.isCompletedExceptionally()) {
+                    releaseMutexGuardsInValue(future.getNow(null), failed, seen);
+                }
+                return;
+            }
+            if (value instanceof List<?> list) {
+                for (Object item : list) releaseMutexGuardsInValue(item, failed, seen);
+                return;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    releaseMutexGuardsInValue(entry.getKey(), failed, seen);
+                    releaseMutexGuardsInValue(entry.getValue(), failed, seen);
+                }
+                return;
+            }
+            if (value instanceof Object[] array) {
+                for (Object item : array) releaseMutexGuardsInValue(item, failed, seen);
             }
         }
     }
