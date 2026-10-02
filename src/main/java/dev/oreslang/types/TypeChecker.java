@@ -282,10 +282,9 @@ public final class TypeChecker {
             if (recursiveLambda && declaredAhead instanceof Function) {
                 env.define(binding.name(), declaredAhead, binding.kind());
             }
-            if (binding.initializer() instanceof Ast.LambdaExpr lambda && declaredAhead instanceof Function expectedFunction) {
-                validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
-            }
-            Type actual = typeOf(binding.initializer(), env, generics, self);
+            Type actual = declaredAhead == null
+                    ? typeOf(binding.initializer(), env, generics, self)
+                    : typeOfWithExpected(binding.initializer(), declaredAhead, env, generics, self);
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
@@ -309,10 +308,9 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
-            if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
-                validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
-            }
-            Type actual = ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
+            Type actual = ret.value() == null
+                    ? Primitive.VOID
+                    : typeOfWithExpected(ret.value(), expectedReturn, env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
@@ -456,8 +454,7 @@ public final class TypeChecker {
                     fnGenerics.addAll(fn.genericParameters());
                     for (int i = 0; i < call.arguments().size(); i++) {
                         Type expected = resolveParam(fn.parameters().get(i), fnGenerics, null);
-                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                        requireAssignable(typeOfWithExpected(call.arguments().get(i), expected, env, generics, self), expected, "argument " + (i + 1));
                     }
                     return resolve(fn.returnType(), fnGenerics, null);
                 }
@@ -470,8 +467,7 @@ public final class TypeChecker {
                         methodGenerics.addAll(method.genericParameters());
                         for (int i = 0; i < call.arguments().size(); i++) {
                             Type expected = resolveParam(method.parameters().get(i), methodGenerics, named);
-                            validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                            requireAssignable(typeOfWithExpected(call.arguments().get(i), expected, env, generics, self), expected, "argument " + (i + 1));
                         }
                         return resolve(method.returnType(), methodGenerics, named);
                     }
@@ -481,8 +477,8 @@ public final class TypeChecker {
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
             for (int i = 0; i < fn.parameters().size(); i++) {
-                validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                requireAssignable(typeOf(call.arguments().get(i), env, generics, self), fn.parameters().get(i), "argument " + (i + 1));
+                requireAssignable(typeOfWithExpected(call.arguments().get(i), fn.parameters().get(i), env, generics, self),
+                        fn.parameters().get(i), "argument " + (i + 1));
             }
             return fn.result();
         }
@@ -599,10 +595,12 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
-    private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
-        if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
-            validateLambdaAgainstExpected(lambda, fn, env, generics, self);
+    private Type typeOfWithExpected(Ast.Expr expression, Type expected, Env env, Set<String> generics, Type self) {
+        if (expression instanceof Ast.LambdaExpr lambda && expected instanceof Function function) {
+            validateLambdaAgainstExpected(lambda, function, env, generics, self);
+            return function;
         }
+        return typeOf(expression, env, generics, self);
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
