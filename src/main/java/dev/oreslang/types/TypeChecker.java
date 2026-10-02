@@ -44,6 +44,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> importedNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<Ast.ClassDecl> processEffectCheckedClasses =
             java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -65,11 +66,13 @@ public final class TypeChecker {
             if (imported.wildcard()) {
                 if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
                 if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
+                importedNames.add(imported.namespace());
                 importedValues.add(imported.namespace());
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                    importedNames.add(name);
                     if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
                 }
             }
@@ -582,8 +585,8 @@ public final class TypeChecker {
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("print")) {
                 throw processEffectError(where, "ambient capability '" + name.name() + "'");
             }
-            if (importedValues.contains(name.name())) {
-                throw processEffectError(where, "imported value '" + name.name() + "'");
+            if (importedNames.contains(name.name())) {
+                throw processEffectError(where, "imported dependency '" + name.name() + "'");
             }
             Ast.ModuleDecl referencedModule = modules.get(name.name());
             if (referencedModule != null && !referencedModule.singleton()) {
@@ -629,7 +632,10 @@ public final class TypeChecker {
 
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl target = findClass(created.type().name());
-            if (target != null && target != processClass) {
+            if (target == null) {
+                throw processEffectError(where, "unresolved or imported class construction '" + created.type().name() + "'");
+            }
+            if (target != processClass) {
                 String ownerName = classOwners.get(target);
                 Ast.ModuleDecl classOwner = ownerName == null ? null : modules.get(ownerName);
                 if (classOwner == null || !classOwner.singleton()
