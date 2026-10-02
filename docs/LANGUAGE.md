@@ -366,7 +366,7 @@ The primitive send operation is one-way: `ref.send(message)`. There is no ambien
 
 Reactive and pull-style consumption share one serialized mailbox. The runtime provides `tryReceive()` for immediate non-blocking pulls and `receiveAsync()` to claim exactly one future mailbox item without blocking a carrier. Only one async pull may be outstanding. Repeated `tryReceive()` calls are charged against the same per-turn throughput budget as reactive delivery, so polling cannot monopolize a dispatcher worker.
 
-The source-level blocking-looking `mailbox.receive()` is defined as compiler suspension over the async receive primitive, never as `BlockingQueue.take()`. The explicit async spelling is `await mailbox.receiveAsync()`. The mailbox facade is an actor-scoped API rather than a new globally reserved keyword.
+The planned source-level blocking-looking `mailbox.receive()` is defined as compiler suspension over the async receive primitive, never as `BlockingQueue.take()`. The runtime-level non-blocking primitive is `receiveAsync()`; once actor continuation lowering is wired into the compiler, `await mailbox.receiveAsync()` is the explicit async source spelling. Until then, a pending `await` inside an actor deliberately fails closed rather than parking a dispatcher carrier. The mailbox facade is an actor-scoped source API rather than a new globally reserved keyword.
 
 Arbitrary Erlang-style selective receive that repeatedly scans old unmatched messages is intentionally not the default. Prefer typed message unions plus ordinary pattern matching after dequeue, separate actors/mailboxes for independent traffic classes, or actor groups.
 
