@@ -22,6 +22,13 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        String namespace = null;
+        if (match(NAMESPACE)) {
+            namespace = consume(IDENT, "expected flat namespace name").lexeme();
+            if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
+            consume(SEMICOLON, "namespace declaration must end with ';'");
+        }
+
         List<Ast.ImportDecl> imports = new ArrayList<>();
         while (match(IMPORT)) imports.add(parseImport());
 
@@ -61,7 +68,7 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(imports, modules);
+        return new Ast.Program(namespace, imports, modules);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -102,7 +109,8 @@ public final class Parser {
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
-        String name = parseQualifiedName();
+        String name = consume(IDENT, "expected flat module name").lexeme();
+        if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
