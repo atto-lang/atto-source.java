@@ -118,7 +118,7 @@ public final class OwnershipChecker {
     private void checkClass(Ast.ModuleDecl module, Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
             Scope moduleScope = new Scope(null);
-            if (module.singleton()) seedModuleState(module, moduleScope);
+            seedModuleState(module, moduleScope);
             Scope scope = new Scope(moduleScope);
             if (!method.isStatic()) {
                 // Receiver is immutable unless a future explicit "mut self"
