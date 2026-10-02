@@ -221,6 +221,24 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void genericInferenceRejectsUnknownArgumentShapes() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc identity<T>(T value) => T {
+                            return value;
+                          }
+
+                          fnc bad() => void {
+                            val value = identity(arr[]);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("cannot infer"));
+    }
+
+    @Test
     void genericObjectDestructuringPreservesConcreteFieldTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
