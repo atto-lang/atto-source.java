@@ -69,6 +69,14 @@ public final class ActorRuntime implements AutoCloseable {
         void execute(Runnable turn);
 
         /**
+         * Rich execution hook used by the actor runtime. Existing embedders that
+         * only need a generic turn executor can keep implementing execute(Runnable).
+         */
+        default void execute(ActorKind kind, IsolatePolicy policy, Runnable turn) {
+            execute(turn);
+        }
+
+        /**
          * True only when this executor enters a host/runtime boundary that can
          * actually contain hostile guest code (for example a Graal UNTRUSTED
          * sandbox/native isolate with a hard CPU limit). A plain JVM carrier
@@ -2803,7 +2811,7 @@ public final class ActorRuntime implements AutoCloseable {
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
             try {
-                turnExecutor.execute(this::runBatchEntered);
+                turnExecutor.execute(kind, policy, this::runBatchEntered);
             } catch (Throwable failure) {
                 fail(failure);
                 scheduled.set(false);
