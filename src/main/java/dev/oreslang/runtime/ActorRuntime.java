@@ -187,9 +187,8 @@ public final class ActorRuntime implements AutoCloseable {
         Thread.yield();
     }
 
-    @SuppressWarnings("unchecked")
-    public <T> Shared<T> shareReadonly(T value) {
-        return new Shared<>((T) freeze(value));
+    public Shared<Object> shareReadonly(Object value) {
+        return new Shared<>(freeze(value));
     }
 
     /**
