@@ -314,7 +314,9 @@ try {
 
 Actors own their mutable heaps **semantically**. Cross-actor communication occurs only through mailboxes. Ordinary messages are deep-frozen/copied at the boundary; cyclic mutable graphs and arbitrary host objects are rejected. Mailboxes are bounded by both message count and estimated bytes.
 
-The Java/Truffle reference runtime still uses the JVM heap as its physical backing store. That is an implementation detail, not permission to share mutable guest objects: actor-local allocation/lifetime ownership is enforced by the language contract, while the compiler uses affine ownership and lexical drop points to eliminate most garbage before tracing collection is needed.
+Each actor has an independently enforced logical heap budget. Persistent actor state, queued mailbox data, and the currently executing message are accounted separately but must fit under the same actor heap ceiling. `actor.status(ref)` exposes `owned_state_bytes`, `mailbox_bytes`, `active_message_bytes`, `estimated_actor_heap_bytes`, `heap_backend`, and whether physical heap isolation is active. Actor termination zeroes the actor-owned accounting as one lifecycle event.
+
+The Java/Truffle reference runtime still uses the JVM heap as its physical backing store, so the current backend reports `heap_backend = "logical_jvm"` and `physical_heap_isolation = false`. That is an implementation detail, not permission to share mutable guest objects: actor-local allocation/lifetime ownership is enforced by the language contract, while the compiler uses affine ownership and lexical drop points to eliminate most garbage before tracing collection is needed. A later arena/native actor-heap backend can replace `logical_jvm` without changing source-level actor APIs.
 
 Actor entrypoints are named functions or `nlex` lambdas. A lexical lambda that captures caller-local state cannot be spawned as an actor because that would create a mutable cross-actor alias.
 
