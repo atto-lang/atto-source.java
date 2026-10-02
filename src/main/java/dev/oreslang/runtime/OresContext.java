@@ -49,7 +49,9 @@ public final class OresContext implements AutoCloseable {
     public ExecutionProfile executionProfile() { return executionProfile; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
-        isolatePolicy.require(capability, api);
+        // The actor policy may be stricter than the enclosing isolate policy.
+        // Always enforce the effective execution policy at the runtime facade.
+        actors.effectivePolicy().require(capability, api);
     }
 
     /**
