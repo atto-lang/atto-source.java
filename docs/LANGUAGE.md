@@ -45,7 +45,9 @@ define module app
 end
 ```
 
-Arguments and results must be sendable; borrows and closure/function values cannot cross this boundary. Calls from one singleton function to another function in the same singleton are direct and keep the same actor-owned state, avoiding self-mailbox deadlocks.
+Singleton state fields require explicit types because they form a process-lifetime hot-reload schema. Arguments and results must be sendable; borrows and closure/function values cannot cross this boundary. Calls from one singleton function to another function in the same singleton are direct and keep the same actor-owned state, avoiding self-mailbox deadlocks.
+
+A hot-reloaded generation with the same singleton field schema reuses the existing actor state while executing the new function bodies. Incompatible singleton field-schema changes are rejected until an explicit migration mechanism is provided; the runtime never silently treats old process state as a new layout.
 
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
