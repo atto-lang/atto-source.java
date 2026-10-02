@@ -27,21 +27,42 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
     private final Ast.Program program;
     private final String codeUnitId;
+    private final String codeUnitDigest;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
-        this(language, program, "<anonymous>");
+        this(language, program, "<anonymous>", digestText(program.toString()));
     }
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
+        this(language, program, codeUnitId, digestText(program.toString()));
+    }
+
+    public OresEvalRootNode(
+            OresLanguage language,
+            Ast.Program program,
+            String codeUnitId,
+            String codeUnitDigest) {
         super(language);
         this.program = program;
         this.codeUnitId = codeUnitId == null || codeUnitId.isBlank() ? "<anonymous>" : codeUnitId;
+        this.codeUnitDigest = codeUnitDigest == null || codeUnitDigest.isBlank()
+                ? digestText(program.toString())
+                : codeUnitDigest;
+    }
+
+    private static String digestText(String text) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (Exception impossible) {
+            throw new IllegalStateException(impossible);
+        }
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -55,7 +76,7 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy());
-        return new Evaluator(program, context, codeUnitId).execute(arguments);
+        return new Evaluator(program, context, codeUnitId, codeUnitDigest).execute(arguments);
     }
 
     private static final class Evaluator {
@@ -70,17 +91,18 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> localClassOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
-        private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new ConcurrentHashMap<>();
-        private final Map<String, Env> actorModuleStates = new HashMap<>();
-        private final Set<String> actorModuleInitializing = new LinkedHashSet<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
-        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
+        private Evaluator(
+                Ast.Program program,
+                OresContext context,
+                String codeUnitId,
+                String codeUnitDigest) {
             this.program = program;
             this.context = context;
             this.codeUnitId = codeUnitId;
-            this.codeUnitDigest = digestText(program.toString());
+            this.codeUnitDigest = codeUnitDigest;
             indexDeclarations();
         }
 
@@ -154,28 +176,34 @@ public final class OresEvalRootNode extends RootNode {
 
         private Env actorModuleState(Ast.ModuleDecl module) {
             if (module.singleton()) throw new IllegalArgumentException("singleton modules use process-owned state");
-            Env existing = actorModuleStates.get(module.name());
-            if (existing != null) return existing;
-            if (!actorModuleInitializing.add(module.name())) {
-                throw new IllegalStateException("actor-local module initialization cycle involving " + module.name());
-            }
 
+            ActorModuleStateKey actorKey = new ActorModuleStateKey(
+                    codeUnitId,
+                    program.namespace() == null ? "<default>" : program.namespace(),
+                    module.name(),
+                    codeUnitDigest);
+            Env actorState = context.actors().currentActorLocal(
+                    actorKey,
+                    () -> initializeOrdinaryModuleState(module));
+            if (actorState != null) return actorState;
+
+            // Main/non-actor evaluation persists for the Graal context
+            // lifetime, even if the same call target is invoked repeatedly.
+            return context.contextLocal(actorKey, () -> initializeOrdinaryModuleState(module));
+        }
+
+        private Env initializeOrdinaryModuleState(Ast.ModuleDecl module) {
             Env state = new Env(null);
-            try {
-                for (Ast.Decl decl : module.declarations()) {
-                    if (!(decl instanceof Ast.FieldDecl field)) continue;
-                    if (field.initializer() == null) {
-                        throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + field.name());
-                    }
-                    state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field)) continue;
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + field.name());
                 }
-                Ast.InitDecl init = findInit(module);
-                if (init != null) executeInitializer(init, state);
-                actorModuleStates.put(module.name(), state);
-                return state;
-            } finally {
-                actorModuleInitializing.remove(module.name());
+                state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
             }
+            Ast.InitDecl init = findInit(module);
+            if (init != null) executeInitializer(init, state);
+            return state;
         }
 
         private Ast.InitDecl findInit(Ast.ModuleDecl module) {
@@ -237,14 +265,31 @@ public final class OresEvalRootNode extends RootNode {
                     args,
                     context.isolatePolicy().maxMailboxMessages(),
                     context.isolatePolicy().maxWallTime(),
-                    (state, frozenArgs) -> callSingletonFunction(state, fn, frozenArgs));
+                    (state, frozenArgs) -> transactionalSingletonCall(
+                            state,
+                            working -> callSingletonFunction(working, fn, frozenArgs)));
+        }
+
+        private Object transactionalSingletonCall(
+                SingletonState canonical,
+                SingletonWork work) {
+            SingletonState working = canonical.transactionalCopy();
+            Object result = work.apply(working);
+            // The commit itself is the linearization point. If the caller's
+            // deadline elapsed while executing, discard the working state.
+            ProcessSingletonRegistry.checkExecutionBudget();
+            working.validateStorageGraph();
+            canonical.commitFrom(working);
+            return result;
         }
 
         private ProcessSingletonRegistry.Handle<SingletonState> singletonHandle(Ast.ModuleDecl module) {
             ProcessSingletonRegistry.requireBackendFor(context.graalIsolated());
             String key = singletonKey(module);
-            return singletonHandles.computeIfAbsent(key,
-                    ignored -> ProcessSingletonRegistry.getOrCreate(key, () -> initializeSingleton(module)));
+            // Do not cache handles per evaluator. A retryable initialization
+            // failure replaces the registry cell; every access must resolve the
+            // current process cell rather than pinning a stale failed handle.
+            return ProcessSingletonRegistry.getOrCreate(key, () -> initializeSingleton(module));
         }
 
         private SingletonState initializeSingleton(Ast.ModuleDecl module) {
@@ -303,16 +348,6 @@ public final class OresEvalRootNode extends RootNode {
             return codeUnitDigest;
         }
 
-        private static String digestText(String text) {
-            try {
-                byte[] digest = MessageDigest.getInstance("SHA-256")
-                        .digest(text.getBytes(StandardCharsets.UTF_8));
-                return HexFormat.of().formatHex(digest);
-            } catch (Exception impossible) {
-                throw new IllegalStateException(impossible);
-            }
-        }
-
         private void authorizeSingletonCodeGeneration(SingletonState state, Ast.ModuleDecl module) {
             String digest = singletonCodeDigest(module);
             long generation = context.codeGeneration();
@@ -356,10 +391,15 @@ public final class OresEvalRootNode extends RootNode {
             return owner == null ? null : modules.get(owner);
         }
 
-        private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args, SingletonState singletonState) {
+        private Object callMethod(
+                OresObject receiver,
+                Ast.ClassDecl dispatchClass,
+                Ast.MethodDecl method,
+                List<?> args,
+                SingletonState singletonState) {
             if (singletonState != null) ProcessSingletonRegistry.checkExecutionBudget();
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
-            Env lexical = classLexicalModuleState(receiver.klass, singletonState);
+            Env lexical = classLexicalModuleState(dispatchClass, singletonState);
             Env env = new Env(lexical, singletonState);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
@@ -523,9 +563,22 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresObject object) {
-                        if (!object.fields.containsKey(target.member())) throw new IllegalArgumentException("unknown field " + target.member());
-                        if (env.singletonState != null) ActorRuntime.freeze(value);
+                        Ast.FieldDecl field = runtimeField(object.klass, target.member());
+                        if (field == null || !object.fields.containsKey(target.member())) {
+                            throw new IllegalArgumentException("unknown field " + target.member());
+                        }
+                        if (field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                                    + target.member() + "' is immutable");
+                        }
+                        Object previous = object.fields.get(target.member());
                         object.fields.put(target.member(), value);
+                        try {
+                            if (env.singletonState != null) env.singletonState.validateStorageGraph();
+                        } catch (RuntimeException | Error failure) {
+                            object.fields.put(target.member(), previous);
+                            throw failure;
+                        }
                         return value;
                     }
                     throw new IllegalArgumentException("member assignment requires a class instance");
@@ -537,7 +590,13 @@ public final class OresEvalRootNode extends RootNode {
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
-                        list.set(i, value);
+                        Object previous = list.set(i, value);
+                        try {
+                            if (env.singletonState != null) env.singletonState.validateStorageGraph();
+                        } catch (RuntimeException | Error failure) {
+                            list.set(i, previous);
+                            throw failure;
+                        }
                         return value;
                     }
                     throw new IllegalArgumentException("indexed assignment requires a mutable array/list");
@@ -574,6 +633,19 @@ public final class OresEvalRootNode extends RootNode {
                     }
                     if (receiver instanceof ClassFacade klass) {
                         return invokeStaticFunction(klass.klass(), methodCall.member(), args, klass.localState());
+                    }
+                    if (receiver instanceof ModuleFacade moduleFacade) {
+                        Ast.FunctionDecl function = publicModuleFunction(
+                                moduleFacade.module(), methodCall.member(), args.size());
+                        if (function != null) {
+                            if (moduleFacade.module().singleton()) {
+                                if (moduleFacade.localState() != null) {
+                                    return callSingletonFunction(moduleFacade.localState(), function, normalizeArgs(function, args));
+                                }
+                                return callSingleton(moduleFacade.module(), function, normalizeArgs(function, args));
+                            }
+                            return callFunctionDirect(function, normalizeArgs(function, args));
+                        }
                     }
                     Object callee = member(receiver, methodCall.member(), env.singletonState);
                     if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
@@ -800,9 +872,20 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args, SingletonState singletonState) {
-            Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
-            if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            return callMethod(receiver, method, args, singletonState);
+            Ast.ClassDecl dispatchClass = runtimeDispatchClass(receiver, singletonState);
+            Ast.MethodDecl method = findMethod(dispatchClass, name, args.size(), new LinkedHashSet<>());
+            if (method == null) throw new IllegalArgumentException("no method " + dispatchClass.name() + "." + name + " with arity " + args.size());
+            return callMethod(receiver, dispatchClass, method, args, singletonState);
+        }
+
+        private Ast.ClassDecl runtimeDispatchClass(OresObject receiver, SingletonState singletonState) {
+            if (singletonState == null) return receiver.klass;
+            Ast.ClassDecl current = findClass(receiver.klass.name());
+            if (current == null) {
+                throw new IllegalStateException("singleton-owned class '" + receiver.klass.name()
+                        + "' no longer exists in the active code generation");
+            }
+            return current;
         }
 
         private CompletionStage<Object> invokeSingletonProxy(
@@ -814,15 +897,15 @@ public final class OresEvalRootNode extends RootNode {
                     args,
                     context.isolatePolicy().maxMailboxMessages(),
                     context.isolatePolicy().maxWallTime(),
-                    (state, frozenArgs) -> {
+                    (state, frozenArgs) -> transactionalSingletonCall(state, working -> {
                         String currentSchema = singletonSchema(proxy.module());
-                        if (!state.schema.equals(currentSchema)) {
+                        if (!working.schema.equals(currentSchema)) {
                             throw new IllegalStateException("singleton module state schema changed for "
                                     + proxy.module().name()
                                     + "; process-lifetime state cannot be reinterpreted without an explicit migration");
                         }
-                        authorizeSingletonCodeGeneration(state, proxy.module());
-                        Object value = state.fields.lookup(proxy.fieldName());
+                        authorizeSingletonCodeGeneration(working, proxy.module());
+                        Object value = working.fields.lookup(proxy.fieldName());
                         if (!(value instanceof OresObject object)
                                 || !object.klass.name().equals(proxy.klass().name())) {
                             throw new IllegalStateException("singleton object proxy target changed for "
@@ -836,8 +919,8 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("no public singleton proxy method "
                                     + proxy.klass().name() + "." + methodName + " with arity " + frozenArgs.size());
                         }
-                        return callMethod(object, method, frozenArgs, state);
-                    });
+                        return callMethod(object, proxy.klass(), method, frozenArgs, working);
+                    }));
         }
 
         private Env classLexicalModuleState(Ast.ClassDecl klass, SingletonState singletonState) {
@@ -904,6 +987,25 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private Ast.FunctionDecl publicModuleFunction(Ast.ModuleDecl module, String name, int arity) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.name().equals(name)
+                        && fn.parameters().size() == arity) {
+                    return fn;
+                }
+            }
+            return null;
+        }
+
+        private Ast.FieldDecl runtimeField(Ast.ClassDecl klass, String name) {
+            for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>())) {
+                if (field.name().equals(name)) return field;
+            }
+            return null;
+        }
+
         private Object moduleMember(ModuleFacade facade, String name) {
             Ast.ModuleDecl module = facade.module();
             for (Ast.Decl decl : module.declarations()) {
@@ -920,7 +1022,8 @@ public final class OresEvalRootNode extends RootNode {
                             return (Invokable) args -> callSingletonFunction(
                                     facade.localState(), fn, normalizeArgs(fn, args));
                         }
-                        return (Invokable) args -> callSingleton(module, fn, normalizeArgs(fn, args));
+                        throw new IllegalArgumentException("singleton service function values cannot be extracted; call and await "
+                                + module.name() + "." + name + "(...) directly");
                     }
                     return (Invokable) args -> callFunctionDirect(fn, normalizeArgs(fn, args));
                 }
@@ -1025,9 +1128,10 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
-                Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                Ast.ClassDecl dispatchClass = runtimeDispatchClass(object, singletonState);
+                Ast.MethodDecl iterator = findMethod(dispatchClass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
-                Object produced = callMethod(object, iterator, List.of(), singletonState);
+                Object produced = callMethod(object, dispatchClass, iterator, List.of(), singletonState);
                 return iterableValues(produced, singletonState);
             }
             throw new IllegalArgumentException("value is not iterable");
@@ -1088,6 +1192,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
+    @FunctionalInterface private interface SingletonWork { Object apply(SingletonState state); }
 
     private static final class SingletonState {
         private final String key;
@@ -1103,6 +1208,182 @@ public final class OresEvalRootNode extends RootNode {
             this.activeGeneration = activeGeneration;
             this.fields = new Env(null, this, true);
         }
+
+        private SingletonState transactionalCopy() {
+            SingletonState copy = new SingletonState(
+                    key, schema, activeCodeDigest, activeGeneration);
+            IdentityHashMap<Object, Object> copied = new IdentityHashMap<>();
+            for (Map.Entry<String, Slot> entry : fields.slots.entrySet()) {
+                Slot slot = entry.getValue();
+                Object value = slot.value == Env.MISSING
+                        ? Env.MISSING
+                        : copySingletonValue(slot.value, copied);
+                copy.fields.slots.put(entry.getKey(), new Slot(value, slot.kind));
+            }
+            return copy;
+        }
+
+        private void commitFrom(SingletonState working) {
+            if (!key.equals(working.key) || !schema.equals(working.schema)) {
+                throw new IllegalStateException("cannot commit singleton transaction across identity/schema boundary");
+            }
+            working.validateStorageGraph();
+            fields.slots.clear();
+            fields.slots.putAll(working.fields.slots);
+            activeCodeDigest = working.activeCodeDigest;
+            activeGeneration = working.activeGeneration;
+        }
+
+        private void validateStorageGraph() {
+            LinkedHashMap<String, Object> graph = new LinkedHashMap<>();
+            IdentityHashMap<Object, Boolean> path = new IdentityHashMap<>();
+            for (Map.Entry<String, Slot> entry : fields.slots.entrySet()) {
+                if (entry.getValue().value == Env.MISSING) continue;
+                graph.put(entry.getKey(), singletonValidationValue(entry.getValue().value, path));
+            }
+            // One freeze budget applies to the whole process-owned state cell.
+            ActorRuntime.freeze(graph);
+        }
+    }
+
+    private static Object copySingletonValue(
+            Object value,
+            IdentityHashMap<Object, Object> copies) {
+        if (value == null
+                || value instanceof String
+                || value instanceof Number
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Complex) {
+            return value;
+        }
+        Object existing = copies.get(value);
+        if (existing != null) return existing;
+
+        if (value instanceof OresObject object) {
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            OresObject copy = new OresObject(object.klass, fields);
+            copies.put(value, copy);
+            for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                fields.put(entry.getKey(), copySingletonValue(entry.getValue(), copies));
+            }
+            return copy;
+        }
+        if (value instanceof OptionValue option) {
+            return option.present()
+                    ? new OptionValue(true, copySingletonValue(option.value(), copies))
+                    : option;
+        }
+        if (value instanceof List<?> list) {
+            ArrayList<Object> copy = new ArrayList<>(list.size());
+            copies.put(value, copy);
+            for (Object item : list) copy.add(copySingletonValue(item, copies));
+            return copy;
+        }
+        if (value instanceof Set<?> set) {
+            LinkedHashSet<Object> copy = new LinkedHashSet<>();
+            copies.put(value, copy);
+            for (Object item : set) copy.add(copySingletonValue(item, copies));
+            return copy;
+        }
+        if (value instanceof Map<?, ?> map) {
+            LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
+            copies.put(value, copy);
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                copy.put(
+                        copySingletonValue(entry.getKey(), copies),
+                        copySingletonValue(entry.getValue(), copies));
+            }
+            return copy;
+        }
+        if (value instanceof Object[] array) {
+            Object[] copy = new Object[array.length];
+            copies.put(value, copy);
+            for (int i = 0; i < array.length; i++) {
+                copy[i] = copySingletonValue(array[i], copies);
+            }
+            return copy;
+        }
+        // Validation will reject unsupported host values before commit.
+        return value;
+    }
+
+    private static Object singletonValidationValue(
+            Object value,
+            IdentityHashMap<Object, Boolean> path) {
+        if (value instanceof OresObject object) {
+            if (path.put(object, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("singleton state contains a cyclic class-instance graph");
+            }
+            try {
+                LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                fields.put("@class", object.klass.name());
+                for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                    fields.put(entry.getKey(), singletonValidationValue(entry.getValue(), path));
+                }
+                return fields;
+            } finally {
+                path.remove(object);
+            }
+        }
+        if (value instanceof OptionValue option && option.present()) {
+            return new OptionValue(true, singletonValidationValue(option.value(), path));
+        }
+        if (value instanceof List<?> list) {
+            if (path.put(list, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("singleton state contains a cyclic list graph");
+            }
+            try {
+                ArrayList<Object> copy = new ArrayList<>(list.size());
+                for (Object item : list) copy.add(singletonValidationValue(item, path));
+                return copy;
+            } finally {
+                path.remove(list);
+            }
+        }
+        if (value instanceof Set<?> set) {
+            if (path.put(set, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("singleton state contains a cyclic set graph");
+            }
+            try {
+                LinkedHashSet<Object> copy = new LinkedHashSet<>();
+                for (Object item : set) copy.add(singletonValidationValue(item, path));
+                return copy;
+            } finally {
+                path.remove(set);
+            }
+        }
+        if (value instanceof Map<?, ?> map) {
+            if (path.put(map, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("singleton state contains a cyclic map graph");
+            }
+            try {
+                LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    Object key = singletonValidationValue(entry.getKey(), path);
+                    Object mapped = singletonValidationValue(entry.getValue(), path);
+                    if (copy.putIfAbsent(key, mapped) != null) {
+                        throw new IllegalArgumentException("singleton state map keys collide after validation");
+                    }
+                }
+                return copy;
+            } finally {
+                path.remove(map);
+            }
+        }
+        if (value instanceof Object[] array) {
+            if (path.put(array, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("singleton state contains a cyclic array graph");
+            }
+            try {
+                ArrayList<Object> copy = new ArrayList<>(array.length);
+                for (Object item : array) copy.add(singletonValidationValue(item, path));
+                return copy;
+            } finally {
+                path.remove(array);
+            }
+        }
+        return value;
     }
 
     private static final class Env {
@@ -1130,6 +1411,14 @@ public final class OresEvalRootNode extends RootNode {
         private void define(String name, Object value, Ast.BindingKind kind) {
             validateSingletonStorageValue(value);
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (singletonStorage) {
+                try {
+                    singletonState.validateStorageGraph();
+                } catch (RuntimeException | Error failure) {
+                    slots.remove(name);
+                    throw failure;
+                }
+            }
         }
         private void reserve(String name, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
@@ -1138,7 +1427,16 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             validateSingletonStorageValue(value);
+            Object previous = slot.value;
             slot.value = value;
+            if (singletonStorage) {
+                try {
+                    singletonState.validateStorageGraph();
+                } catch (RuntimeException | Error failure) {
+                    slot.value = previous;
+                    throw failure;
+                }
+            }
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void defineType(String name, Ast.ClassDecl type) {
@@ -1154,7 +1452,16 @@ public final class OresEvalRootNode extends RootNode {
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
                 validateSingletonStorageValue(value);
+                Object previous = slot.value;
                 slot.value = value;
+                if (singletonStorage) {
+                    try {
+                        singletonState.validateStorageGraph();
+                    } catch (RuntimeException | Error failure) {
+                        slot.value = previous;
+                        throw failure;
+                    }
+                }
                 return;
             }
             if (parent != null) { parent.assign(name, value); return; }
@@ -1162,17 +1469,9 @@ public final class OresEvalRootNode extends RootNode {
         }
         private void validateSingletonStorageValue(Object value) {
             if (singletonStorage && value != MISSING) {
-                // Singleton-owned class instances stay inside the process
-                // service actor. Validate their field payloads, but never make
-                // the OresObject itself Sendable across actor boundaries.
-                if (value instanceof OresObject object) {
-                    for (Object fieldValue : object.fields.values()) ActorRuntime.freeze(fieldValue);
-                    return;
-                }
-                // Validation happens before mutation. We intentionally keep the
-                // actor-owned mutable value rather than replacing it with the
-                // frozen copy; the freeze pass supplies the graph/size guard.
-                ActorRuntime.freeze(value);
+                // Validate a detached representation; the actor keeps ownership
+                // of the mutable state itself.
+                ActorRuntime.freeze(singletonValidationValue(value, new IdentityHashMap<>()));
             }
         }
 
@@ -1209,6 +1508,11 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return klass.name()+fields;}
     }
 
+    private record ActorModuleStateKey(
+            String codeUnitId,
+            String namespace,
+            String moduleName,
+            String codeDigest) { }
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
     private record SingletonObjectProxy(Ast.ModuleDecl module, String fieldName, Ast.ClassDecl klass) { }
