@@ -135,6 +135,8 @@ final class ParserTest {
         assertEquals(Ast.ChannelOpKind.RECEIVE, select.cases().get(0).operation().kind());
         assertEquals(Ast.ChannelOpKind.SEND, select.cases().get(1).operation().kind());
         assertFalse(select.defaultBody().isEmpty());
+
+        assertDoesNotThrow(() -> TypeChecker.check(program));
     }
 
     @Test
