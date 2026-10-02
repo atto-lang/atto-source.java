@@ -857,16 +857,10 @@ public final class Parser {
     }
 
     private static boolean isMemberNameToken(Token.Type type) {
-        return switch (type) {
-            case IDENT,
-                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, IS, EXTENDS, IMPLEMENTS,
-                    TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, DONE, AWAIT, ASYNC, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
-                    INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER, BREAK, CONTINUE,
-                    ACTOR, ISOLATE, RECOVER, PANIC, THROW, RAISE, STOP,
-                    VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
-            default -> false;
-        };
+        // Reserved words remain illegal declaration identifiers. `stop` is the
+        // one contextual selector exception because Actor/ActorTask expose
+        // .stop() while `stop;` is also a control-flow keyword.
+        return type == IDENT || type == STOP;
     }
 
     private Ast.Expr parsePrimary() {
