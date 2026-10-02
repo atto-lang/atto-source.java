@@ -327,7 +327,7 @@ try {
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
 
-There are two actor execution domains:
+There are three actor execution domains:
 
 ```ores
 pub actor fnc worker(int value) => int {
@@ -342,11 +342,19 @@ shared actor Account {
     return;
   }
 }
+
+untrusted actor RequestSandbox {
+  pub fnc handle() => void {
+    // The host may bind this actor to one bounded HTTP exchange.
+    return;
+  }
+}
 ```
 
 - an unqualified `actor` is **private**;
 - `shared actor` is a **shared-memory-capable** actor;
-- private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
+- `untrusted actor` is a **memory-isolated adversarial sandbox** with a hard lifetime/fuel/capability budget;
+- private, shared, and untrusted actors are scheduled on **different dispatcher pools** for bulkheading;
 - compiler-generated/context-aware actor factories are capture-free for **both** actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
 - trusted host embedding has separately named supervisor-only construction escape hatches, and adversarial policies reject them;
 - both kinds still process their own mailbox serially;
@@ -355,7 +363,7 @@ shared actor Account {
 - actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
 - synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
 
-Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
+Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
 The slice has two simultaneous limits:
 
@@ -379,7 +387,9 @@ This preserves the central invariant:
 
 > Actor state is mutated through mailbox ownership. Shared mutable state outside an actor is exceptional and must use an explicit synchronization abstraction.
 
-Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private or shared actor invalidates dependent compiled units.
+Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private, shared, or untrusted actor invalidates dependent compiled units.
+
+An untrusted actor cannot obtain ambient network access. For HTTP request handling, the host may instead bind exactly one accepted request/response exchange to the actor. The runtime exposes bounded, owner-only request-body and response-body stream capabilities through the actor turn context, allowing the HTTP server to stream directly from/to its socket or event-loop buffers without copying bulk body data through actor mailboxes. The capability is deliberately higher-level than a raw fd so it remains safe for multiplexed HTTP/2 and HTTP/3 connections.
 
 Shared writable handles use transactional publication. A `SharedMutex<T>` is reserved to the destination runtime before mailbox visibility, committed only after queue admission, and unbound again when first publication fails. This prevents failed sends from accidentally claiming a writable capability for the wrong runtime.
 
@@ -542,9 +552,9 @@ define class Bag
 end
 ```
 
-The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
+The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. For untrusted actors, callable/recursive call boundaries are also metered. Each checkpoint rechecks the actor deadline and consumes execution fuel; exhausting fuel fails the actor. The runtime may yield a carrier as a scheduling optimization, but untrusted-system liveness does **not** depend on source code voluntarily calling `yield`.
 
-This means Oreslang does not require recursion as the only way to loop, while still giving actor/isolate schedulers a compulsory cooperation point inside generated loop execution.
+This means Oreslang does not require recursion as the only way to loop, and recursive code is not a loophole around sandbox scheduling. User code receives no ambient thread-control capability.
 
 ## Standard output
 
