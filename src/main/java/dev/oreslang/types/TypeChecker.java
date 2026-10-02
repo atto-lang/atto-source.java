@@ -540,7 +540,11 @@ public final class TypeChecker {
             String where) {
         Set<String> locals = new LinkedHashSet<>(inheritedLocals);
         for (Ast.Stmt stmt : statements) {
-            if (stmt instanceof Ast.BindingStmt binding) {
+            if (stmt instanceof Ast.TypeDeclStmt localType) {
+                if (localType.declaration() instanceof Ast.ClassDecl struct) {
+                    validateProcessOwnedClassEffects(processOwner, struct);
+                }
+            } else if (stmt instanceof Ast.BindingStmt binding) {
                 validateProcessOwnedExpr(processOwner, processClass, binding.initializer(), locals, where);
                 locals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -665,6 +669,13 @@ public final class TypeChecker {
             }
             for (Ast.Expr arg : created.arguments()) {
                 validateProcessOwnedExpr(processOwner, processClass, arg, locals, where);
+            }
+            return;
+        }
+
+        if (expr instanceof Ast.StructInitExpr created) {
+            for (Ast.ObjectField field : created.fields()) {
+                validateProcessOwnedExpr(processOwner, processClass, field.value(), locals, where);
             }
             return;
         }
@@ -1860,13 +1871,11 @@ public final class TypeChecker {
                 requireCopyable(named.arguments().getFirst(), stack);
                 return;
             }
-
             Ast.ClassDecl aggregate = findClass(named.name());
             if (aggregate == null) {
                 throw new IllegalArgumentException("type '" + named.name()
                         + "' has no provable copy semantics; interfaces/traits are not concrete copyable storage");
             }
-
             String identity = qualifiedClassName(aggregate);
             if (!stack.add(identity)) {
                 throw new IllegalArgumentException("recursive copy graph involving '" + aggregate.name()
@@ -1881,7 +1890,6 @@ public final class TypeChecker {
                     }
                     return;
                 }
-
                 Ast.MethodDecl copyMethod = findMethod(aggregate, "copy", 0, new LinkedHashSet<>());
                 if (copyMethod == null || copyMethod.isStatic() || copyMethod.visibility() != Ast.Visibility.PUBLIC
                         || copyMethod.isAbstract() || copyMethod.async() || !copyMethod.genericParameters().isEmpty()
@@ -1902,7 +1910,6 @@ public final class TypeChecker {
                 stack.remove(identity);
             }
         }
-
         throw new IllegalArgumentException("type " + type + " has no provable copy semantics");
     }
 
