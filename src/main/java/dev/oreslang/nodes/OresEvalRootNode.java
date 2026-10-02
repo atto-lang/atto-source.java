@@ -272,12 +272,20 @@ public final class OresEvalRootNode extends RootNode {
                 SingletonWork work) {
             SingletonState working = canonical.transactionalCopy();
             Object result = work.apply(working);
-            // The commit itself is the linearization point. If the caller's
-            // deadline elapsed while executing, discard the working state.
+
+            // Nothing becomes process-visible until every fallible boundary
+            // has succeeded. A non-Sendable/oversized result, invalid state
+            // graph, or expired deadline discards the working copy.
+            ProcessSingletonRegistry.checkExecutionBudget();
+            Object frozenResult = ActorRuntime.freeze(result);
             ProcessSingletonRegistry.checkExecutionBudget();
             working.validateStorageGraph();
+            ProcessSingletonRegistry.checkExecutionBudget();
+
+            // Linearization point: commit performs only in-memory state swaps
+            // after result/state/deadline validation has succeeded.
             canonical.commitFrom(working);
-            return result;
+            return frozenResult;
         }
 
         private ProcessSingletonRegistry.Handle<SingletonState> singletonHandle(Ast.ModuleDecl module) {
@@ -1186,7 +1194,6 @@ public final class OresEvalRootNode extends RootNode {
             if (!key.equals(working.key) || !schema.equals(working.schema)) {
                 throw new IllegalStateException("cannot commit singleton transaction across identity/schema boundary");
             }
-            working.validateStorageGraph();
             fields.slots.clear();
             fields.slots.putAll(working.fields.slots);
             activeCodeDigest = working.activeCodeDigest;
