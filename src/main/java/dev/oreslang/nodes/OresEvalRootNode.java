@@ -430,6 +430,52 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
+            if (receiver instanceof GpuArrayFacade gpuArray) {
+                return switch (name) {
+                    case "from_cpu" -> (Invokable) gpuArray::fromCpu;
+                    default -> throw new IllegalArgumentException("unknown GpuArray core function " + name);
+                };
+            }
+            if (receiver instanceof GpuStreamFacade gpuStream) {
+                return switch (name) {
+                    case "from_array" -> (Invokable) gpuStream::fromArray;
+                    default -> throw new IllegalArgumentException("unknown GpuStream core function " + name);
+                };
+            }
+            if (receiver instanceof GpuRuntime.ArrayHandle array) {
+                return switch (name) {
+                    case "stream" -> (Invokable) args -> {
+                        requireNone(args, "GpuArray.stream");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.stream");
+                        return context.gpu().stream(array);
+                    };
+                    case "copy_to_cpu" -> (Invokable) args -> {
+                        requireNone(args, "GpuArray.copy_to_cpu");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.copy_to_cpu");
+                        return thawGpuValue(context.gpu().downloadArray(array));
+                    };
+                    case "length" -> (Invokable) args -> {
+                        requireNone(args, "GpuArray.length");
+                        return array.length();
+                    };
+                    default -> throw new IllegalArgumentException("unknown GpuArray member " + name);
+                };
+            }
+            if (receiver instanceof GpuRuntime.StreamHandle stream) {
+                return switch (name) {
+                    case "collect" -> (Invokable) args -> {
+                        requireNone(args, "GpuStream.collect");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.collect");
+                        return context.gpu().collect(stream);
+                    };
+                    case "copy_to_cpu" -> (Invokable) args -> {
+                        requireNone(args, "GpuStream.copy_to_cpu");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.copy_to_cpu");
+                        return thawGpuValue(context.gpu().downloadStream(stream));
+                    };
+                    default -> throw new IllegalArgumentException("unknown GpuStream member " + name);
+                };
+            }
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
