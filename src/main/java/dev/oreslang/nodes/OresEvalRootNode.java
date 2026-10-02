@@ -307,8 +307,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw handledFailures.peek();
             }
             if (stmt instanceof Ast.StopStmt) {
-                context.actors().beginCurrentActorTreeStop();
-                throw new ActorRuntime.StopActorSignal();
+                throw context.actors().beginCurrentActorTreeStop();
             }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
