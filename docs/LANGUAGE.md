@@ -6,7 +6,7 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 A source file may contain multiple named modules. A normal module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
 
-A process-wide singleton module is declared with `define singleton module`. It has exactly one runtime instance per canonical module identity per OS process, implemented as a hidden actor with its own mutable state and mailbox. Every caller receives only a proxy/handle to that actor; importing or referencing the module never copies its mutable state. Canonical identity uses the explicit namespace when present, otherwise the source code-unit identity plus module name, preventing unrelated source files from colliding merely because they chose the same module name.
+A process-wide singleton module is declared with `define singleton module`. It has exactly one runtime instance per canonical module identity per OS process, implemented as a hidden actor with its own mutable state and mailbox. Every caller receives only a proxy/handle to that actor; importing or referencing the module never copies its mutable state. Canonical identity includes the defining source code-unit identity, namespace, and module name. This prevents unrelated source files or tenants from colliding even when they choose the same namespace/module spelling, while generations of the same code unit keep the same process singleton.
 
 ```ores
 define module math
