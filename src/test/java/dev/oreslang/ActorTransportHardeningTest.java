@@ -78,7 +78,7 @@ final class ActorTransportHardeningTest {
             assertTrue(
                     failure.getMessage().contains("unknown actor")
                             || failure.getMessage().contains("terminated before message admission"),
-                    () -> "unexpected failed-actor send diagnostic: " + failure.getMessage());
+                    "unexpected failed-actor send diagnostic: " + failure.getMessage());
         }
     }
 
