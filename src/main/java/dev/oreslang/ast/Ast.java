@@ -190,12 +190,25 @@ public final class Ast {
 
     public record ReturnStmt(Expr value) implements Stmt { }
     public record ExprStmt(Expr expression) implements Stmt { }
+    public enum DeferKind {
+        /** A zero-arity callable value is produced now and invoked when the enclosing callable exits. */
+        CALLABLE_VALUE,
+        /** An explicit lambda and its arguments are captured now; the lambda is invoked on exit. */
+        EXPLICIT_LAMBDA_CALL
+    }
+
     /**
-     * A deferred action is always an explicit lambda plus the argument expressions
-     * (if any) written at the defer site. Plain calls such as `defer f()` are
-     * intentionally not representable in the AST.
+     * Defer never disguises an ordinary call as a delayed call.
+     *
+     * CALLABLE_VALUE:
+     *   `defer || -> { ... };`
+     *   `defer f.close();` only when f.close() itself returns a zero-arity function.
+     *
+     * EXPLICIT_LAMBDA_CALL:
+     *   `defer |int x| -> { cleanup(x); }(value);`
+     *   The lambda and arguments are captured now, while its body runs on callable exit.
      */
-    public record DeferStmt(LambdaExpr callable, List<Expr> arguments) implements Stmt {
+    public record DeferStmt(DeferKind kind, Expr expression, List<Expr> arguments) implements Stmt {
         public DeferStmt { arguments = List.copyOf(arguments); }
     }
 
