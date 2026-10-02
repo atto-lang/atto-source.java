@@ -36,6 +36,8 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.FunctionDecl, Type> inferredFunctionReturns = new IdentityHashMap<>();
+    private final Set<Ast.FunctionDecl> inferringFunctionReturns = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -140,7 +142,7 @@ public final class TypeChecker {
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
-                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                Type signature = functionType(fn);
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()), signature, "module " + module.name());
             } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
@@ -180,7 +182,7 @@ public final class TypeChecker {
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = isInferredReturn(fn.returnType())
-                ? inferReturnType(fn.body(), env, generics, null)
+                ? inferFunctionReturn(fn, generics)
                 : resolve(fn.returnType(), generics, null);
         checkContracts(fn.contracts(), env, generics, returns, null, fn.name());
         checkBlock(fn.body(), env, generics, returns, null);
@@ -397,7 +399,7 @@ public final class TypeChecker {
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
-            if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+            if (fn != null) return functionType(fn);
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -932,6 +934,34 @@ public final class TypeChecker {
             throw new IllegalArgumentException("conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
         }
         members.put(name, type);
+    }
+
+    private Function functionType(Ast.FunctionDecl fn) {
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+        Type returns = isInferredReturn(fn.returnType())
+                ? inferFunctionReturn(fn, generics)
+                : resolve(fn.returnType(), generics, null);
+        return new Function(
+                fn.parameters().stream().map(p -> resolveParam(p, generics, null)).toList(),
+                returns);
+    }
+
+    private Type inferFunctionReturn(Ast.FunctionDecl fn, Set<String> generics) {
+        Type cached = inferredFunctionReturns.get(fn);
+        if (cached != null) return cached;
+        if (!inferringFunctionReturns.add(fn)) return Unknown.INSTANCE;
+        try {
+            Env env = new Env(null);
+            for (Ast.Param param : fn.parameters()) {
+                env.define(param.name(), resolveParam(param, generics, null),
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            Type inferred = inferReturnType(fn.body(), env, generics, null);
+            inferredFunctionReturns.put(fn, inferred);
+            return inferred;
+        } finally {
+            inferringFunctionReturns.remove(fn);
+        }
     }
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
