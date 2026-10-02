@@ -315,7 +315,15 @@ public final class OwnershipChecker {
         }
 
         if (expr instanceof Ast.MemberExpr member) {
-            use(member.receiver(), Use.READ, scope, statement);
+            if (isBoundMethodValue(member, scope)) {
+                Binding receiver = rootBinding(member.receiver(), scope);
+                if (receiver != null && (receiver.kind == ValueKind.SHARED_REF || receiver.kind == ValueKind.MUT_REF)) {
+                    throw new IllegalArgumentException("bound method values cannot capture borrowed receivers; capture/move an owned receiver instead");
+                }
+                use(member.receiver(), Use.MOVE, scope, statement);
+            } else {
+                use(member.receiver(), Use.READ, scope, statement);
+            }
             return;
         }
 
@@ -742,6 +750,32 @@ public final class OwnershipChecker {
             return namespace.name() + "." + member.member();
         }
         return null;
+    }
+
+    private boolean isBoundMethodValue(Ast.MemberExpr member, Scope scope) {
+        String className = classNameOf(member.receiver(), scope);
+        if (className == null) return false;
+        Ast.ClassDecl klass = findClass(className);
+        return klass != null && hasInstanceMethod(klass, member.member(), new LinkedHashSet<>());
+    }
+
+    private boolean hasInstanceMethod(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return false;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = findClass(parentRef.name());
+            if (parent != null && hasInstanceMethod(parent, name, seen)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        seen.remove(klass);
+        return false;
     }
 
     private Ast.FunctionDecl findFunction(String name) {
