@@ -59,6 +59,16 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void childActorCannotEscalatePastRuntimePolicyCeiling() {
+        IsolatePolicy ceiling = IsolatePolicy.strictFaas();
+        try (ActorRuntime runtime = new ActorRuntime(ceiling)) {
+            IsolatePolicy escalated = ceiling.withCapabilities(IsolatePolicy.Capability.PROCESS_INFO);
+            assertThrows(SecurityException.class, () ->
+                    runtime.<String>spawn(escalated, () -> (message, context) -> { }));
+        }
+    }
+
+    @Test
     void readonlySharingDeepFreezesContainers() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var shared = runtime.shareReadonly(Map.of("items", List.of(1, 2, 3)));
