@@ -9,8 +9,34 @@
 5. Graal host access, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
 6. Actors cannot exceed their configured mailbox capacity.
 7. Hot reload never requires loading executable native libraries.
-8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
-9. `self` cannot be rebound.
+8. Production multi-tenant hosts use one isolated Graal `Engine` per tenant; hot-loaded contexts for that tenant share that Engine/isolate.
+9. Actors choose `SHARED_HEAP` or `PRIVATE_ARENA` independently at spawn time; neither mode may cross the tenant policy ceiling.
+10. `PRIVATE_ARENA` is a bounded `Arena.ofConfined()` native block owned by the actor Thread, not a second Graal isolate or Java GC heap.
+11. Raw `MemorySegment` handles are not sendable across actor boundaries.
+12. `self` cannot be rebound.
+
+
+## Tenant and actor memory topology
+
+The deployment unit is deliberately two-level:
+
+1. **Tenant/customer:** one `TenantRuntime` owns one Graal polyglot-isolated `Engine`. That Engine supplies the physical Java heap, GC, and JIT fault domain for the tenant.
+2. **Actor:** actors inside the tenant choose between semantic isolation on the tenant heap and a private native arena.
+
+```text
+host JVM / OS process
+└─ tenant Graal isolate
+   ├─ shared actor ---- managed objects on tenant isolate heap
+   ├─ shared actor ---- managed objects on tenant isolate heap
+   └─ arena actor ----- Arena.ofConfined()
+                        └─ bounded MemorySegment + Oreslang allocator
+```
+
+A confined arena is created **inside the actor's own virtual Thread**. Java's FFM access checks therefore reject dereference from another Thread, even if a host bug leaks a `MemorySegment` reference. Oreslang additionally rejects raw segments at mailbox/send boundaries.
+
+The arena path requires Oreslang value representations to opt into the actor allocator. Merely selecting `PRIVATE_ARENA` does not magically relocate arbitrary Java objects; runtime/compiler lowering must use `ActorContext.memory().allocate(...)` for arena-backed values.
+
+GraalVM Native Image 25 supports the FFM foreign-memory APIs, so the same scheme can live inside the tenant polyglot isolate image.
 
 ## Deployment matrix
 
