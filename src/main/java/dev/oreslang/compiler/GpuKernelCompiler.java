@@ -528,6 +528,7 @@ public final class GpuKernelCompiler {
     }
 
     private void emitHelper(StringBuilder out, Target target, Ast.TypeRef resultType) {
+        validateExactDeviceTypes(target.module, target.body, parameterEnv(target.parameters, target.module), resultType);
         out.append("static inline ").append(cScalar(resultType)).append(' ')
                 .append(target.helperSymbol).append('(')
                 .append(helperParameterList(target.parameters, target.module)).append(") {\n");
@@ -840,8 +841,8 @@ public final class GpuKernelCompiler {
             Ast.TypeRef resultType = inferExprType(module, binary, env);
             Ast.TypeRef leftType = inferExprType(module, binary.left(), env);
             Ast.TypeRef rightType = inferExprType(module, binary.right(), env);
-            String left = renderExpr(module, binary.left(), env);
-            String right = renderExpr(module, binary.right(), env);
+            String left = renderExprForType(module, binary.left(), leftType, resultType, env);
+            String right = renderExprForType(module, binary.right(), rightType, resultType, env);
             String op = binary.operator().equals("|") ? "||" : binary.operator().equals(",") ? "&&" : binary.operator();
 
             if ((op.equals("/") || op.equals("%")) && isIntegerScalar(resultType)) {
@@ -1050,10 +1051,14 @@ public final class GpuKernelCompiler {
             return inferExprType(module, unary.operand(), env);
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            if (Set.of(",", "|", "==", "!=", "<", "<=", ">", ">=").contains(binary.operator())) {
+            if (Set.of(",", "|").contains(binary.operator())) return Ast.TypeRef.simple("bool");
+            Ast.TypeRef left = inferExprType(module, binary.left(), env);
+            Ast.TypeRef right = inferExprType(module, binary.right(), env);
+            if (Set.of("==", "!=", "<", "<=", ">", ">=").contains(binary.operator())) {
+                requireCompatibleGpuOperands(module, binary.left(), left, binary.right(), right, binary.operator());
                 return Ast.TypeRef.simple("bool");
             }
-            return joinTypes(module, inferExprType(module, binary.left(), env), inferExprType(module, binary.right(), env));
+            return arithmeticResultType(module, binary.left(), left, binary.right(), right, binary.operator());
         }
         if (expr instanceof Ast.AssignExpr assignment) return inferExprType(module, assignment.value(), env);
         if (expr instanceof Ast.ConditionalExpr conditional) {
@@ -1067,9 +1072,172 @@ public final class GpuKernelCompiler {
         if (expr instanceof Ast.CallExpr call) {
             Target target = resolveCallTarget(module, call);
             if (target == null) throw new IllegalArgumentException("GPU lowering cannot resolve call result type");
+            if (call.arguments().size() != target.parameters.size()) {
+                throw new IllegalArgumentException("GPU call arity changed after type checking");
+            }
+            for (int i = 0; i < call.arguments().size(); i++) {
+                Ast.Expr argument = call.arguments().get(i);
+                Ast.TypeRef actual = inferExprType(module, argument, env);
+                Ast.TypeRef expected = resolveAlias(target.parameters.get(i).type(), target.module);
+                requireExactAssignable(module, argument, actual, expected,
+                        "GPU call argument " + (i + 1) + " to " + target.sourceName);
+            }
             return resolvedResult(target);
         }
         throw new IllegalArgumentException("GPU lowering cannot infer expression type for " + expr.getClass().getSimpleName());
+    }
+
+    private void validateExactDeviceTypes(
+            String module,
+            List<Ast.Stmt> statements,
+            LoweringEnv parent,
+            Ast.TypeRef expectedReturn) {
+        LoweringEnv env = new LoweringEnv(parent);
+        for (Ast.Stmt stmt : statements) {
+            if (stmt instanceof Ast.BindingStmt binding) {
+                Ast.TypeRef actual = inferExprType(module, binding.initializer(), env);
+                Ast.TypeRef type = binding.declaredType() == null
+                        ? actual
+                        : resolveAlias(binding.declaredType(), module);
+                if (binding.declaredType() != null) {
+                    requireExactAssignable(module, binding.initializer(), actual, type,
+                            "GPU binding '" + binding.name() + "'");
+                }
+                env.define(binding.name(), type);
+            } else if (stmt instanceof Ast.ReturnStmt returned) {
+                Ast.TypeRef actual = returned.value() == null
+                        ? Ast.TypeRef.simple("void")
+                        : inferExprType(module, returned.value(), env);
+                requireExactAssignable(module, returned.value(), actual, expectedReturn, "GPU return");
+            } else if (stmt instanceof Ast.ExprStmt expression) {
+                inferExprType(module, expression.expression(), env);
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    Ast.TypeRef condition = inferExprType(module, branch.condition(), env);
+                    if (!resolveAlias(condition, module).name().equals("bool")
+                            && !resolveAlias(condition, module).name().equals("Bool")) {
+                        throw new IllegalArgumentException("GPU if condition must be bool");
+                    }
+                    validateExactDeviceTypes(module, branch.body(), env, expectedReturn);
+                }
+                validateExactDeviceTypes(module, conditional.elseBody(), env, expectedReturn);
+            } else if (stmt instanceof Ast.ForStmt loop) {
+                LoweringEnv loopEnv = new LoweringEnv(env);
+                if (loop.initializer() instanceof Ast.BindingStmt binding) {
+                    Ast.TypeRef actual = inferExprType(module, binding.initializer(), loopEnv);
+                    Ast.TypeRef type = binding.declaredType() == null
+                            ? actual
+                            : resolveAlias(binding.declaredType(), module);
+                    if (binding.declaredType() != null) {
+                        requireExactAssignable(module, binding.initializer(), actual, type,
+                                "GPU for binding '" + binding.name() + "'");
+                    }
+                    loopEnv.define(binding.name(), type);
+                } else if (loop.initializer() instanceof Ast.ExprStmt expression) {
+                    inferExprType(module, expression.expression(), loopEnv);
+                }
+                if (loop.condition() != null) inferExprType(module, loop.condition(), loopEnv);
+                if (loop.update() != null) inferExprType(module, loop.update(), loopEnv);
+                validateExactDeviceTypes(module, loop.body(), loopEnv, expectedReturn);
+            }
+        }
+    }
+
+    private Ast.TypeRef arithmeticResultType(
+            String module,
+            Ast.Expr leftExpr,
+            Ast.TypeRef left,
+            Ast.Expr rightExpr,
+            Ast.TypeRef right,
+            String operator) {
+        left = resolveAlias(left, module);
+        right = resolveAlias(right, module);
+        if (sameType(module, left, right)) return left;
+
+        if (isNumericLiteral(leftExpr) && literalFits(leftExpr, right)) return right;
+        if (isNumericLiteral(rightExpr) && literalFits(rightExpr, left)) return left;
+
+        throw new IllegalArgumentException(
+                "GPU mixed-width/sign arithmetic '" + oresType(left) + " " + operator + " " + oresType(right)
+                        + "' is rejected; use operands with one exact device scalar type");
+    }
+
+    private void requireCompatibleGpuOperands(
+            String module,
+            Ast.Expr leftExpr,
+            Ast.TypeRef left,
+            Ast.Expr rightExpr,
+            Ast.TypeRef right,
+            String operator) {
+        left = resolveAlias(left, module);
+        right = resolveAlias(right, module);
+        if (sameType(module, left, right)) return;
+        if (isNumericLiteral(leftExpr) && literalFits(leftExpr, right)) return;
+        if (isNumericLiteral(rightExpr) && literalFits(rightExpr, left)) return;
+        throw new IllegalArgumentException(
+                "GPU comparison '" + oresType(left) + " " + operator + " " + oresType(right)
+                        + "' mixes device scalar widths/signs");
+    }
+
+    private void requireExactAssignable(
+            String module,
+            Ast.Expr expression,
+            Ast.TypeRef actual,
+            Ast.TypeRef expected,
+            String where) {
+        actual = resolveAlias(actual, module);
+        expected = resolveAlias(expected, module);
+        if (sameType(module, actual, expected)) return;
+        if (expression != null && isNumericLiteral(expression) && literalFits(expression, expected)) return;
+        throw new IllegalArgumentException(
+                where + " would require an implicit GPU numeric conversion from "
+                        + oresType(actual) + " to " + oresType(expected));
+    }
+
+    private boolean isNumericLiteral(Ast.Expr expression) {
+        return expression instanceof Ast.LiteralExpr literal
+                && (literal.value() instanceof Long || literal.value() instanceof Double);
+    }
+
+    private boolean literalFits(Ast.Expr expression, Ast.TypeRef target) {
+        if (!(expression instanceof Ast.LiteralExpr literal)) return false;
+        target = resolveAlias(target, null);
+        if (literal.value() instanceof Long n) {
+            return switch (target.name()) {
+                case "i8" -> n >= Byte.MIN_VALUE && n <= Byte.MAX_VALUE;
+                case "u8" -> n >= 0 && n <= 0xffL;
+                case "i16" -> n >= Short.MIN_VALUE && n <= Short.MAX_VALUE;
+                case "u16" -> n >= 0 && n <= 0xffffL;
+                case "i32" -> n >= Integer.MIN_VALUE && n <= Integer.MAX_VALUE;
+                case "u32" -> n >= 0 && n <= 0xffff_ffffL;
+                case "i64", "int" -> true;
+                case "u64", "uint" -> n >= 0;
+                case "f32" -> Math.abs((double) n) <= Float.MAX_VALUE;
+                case "f64", "float" -> true;
+                default -> false;
+            };
+        }
+        if (literal.value() instanceof Double d) {
+            if (!Double.isFinite(d)) return false;
+            return switch (target.name()) {
+                case "f32" -> Float.isFinite((float) d) && (double) ((float) d) == d;
+                case "f64", "float" -> true;
+                default -> false;
+            };
+        }
+        return false;
+    }
+
+    private String renderExprForType(
+            String module,
+            Ast.Expr expression,
+            Ast.TypeRef actual,
+            Ast.TypeRef target,
+            LoweringEnv env) {
+        if (isNumericLiteral(expression) && !sameType(module, actual, target) && literalFits(expression, target)) {
+            return "((" + cScalar(target) + ")" + renderLiteral(((Ast.LiteralExpr) expression).value()) + ")";
+        }
+        return renderExpr(module, expression, env);
     }
 
     private Ast.TypeRef joinTypes(String module, Ast.TypeRef a, Ast.TypeRef b) {
