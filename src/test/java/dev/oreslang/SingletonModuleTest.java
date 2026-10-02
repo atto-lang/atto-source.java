@@ -1171,6 +1171,23 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonRequestSizeLimitAppliesAcrossAllArgumentsTogether() {
+        String key = "aggregate-message-limit:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<Object> handle =
+                ProcessSingletonRegistry.getOrCreate(key, Object::new);
+
+        String nineMiB = "x".repeat(9 * 1024 * 1024);
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> handle.call(
+                        List.of(nineMiB, nineMiB),
+                        8,
+                        Duration.ofSeconds(1),
+                        (state, args) -> args.size()));
+
+        assertTrue(error.getMessage().contains("maximum frozen size"), error.getMessage());
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
