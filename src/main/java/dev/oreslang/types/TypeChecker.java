@@ -179,7 +179,10 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        Type returns = resolve(fn.returnType(), generics, null);
+        Type returns = isInferredReturn(fn.returnType())
+                ? inferReturnType(fn.body(), env, generics, null)
+                : resolve(fn.returnType(), generics, null);
+        checkContracts(fn.contracts(), env, generics, returns, null, fn.name());
         checkBlock(fn.body(), env, generics, returns, null);
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
@@ -240,7 +243,10 @@ public final class TypeChecker {
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            Type returns = resolve(method.returnType(), generics, callableSelf);
+            Type returns = isInferredReturn(method.returnType())
+                    ? inferReturnType(method.body(), env, generics, callableSelf)
+                    : resolve(method.returnType(), generics, callableSelf);
+            checkContracts(method.contracts(), env, generics, returns, callableSelf, klass.name() + "." + method.name());
             checkBlock(method.body(), env, generics, returns, callableSelf);
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -312,12 +318,29 @@ public final class TypeChecker {
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
+            if (ret.value() instanceof Ast.MatchExpr match && expectedReturn != Unknown.INSTANCE) {
+                validateMatchAgainstExpected(match, expectedReturn, env, generics, self);
+            }
             Type actual = ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
         if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.AssertStmt asserted) {
+            requireAssignable(typeOf(asserted.condition(), env, generics, self), Primitive.BOOL, "assert condition");
+            rejectStaticallyFalse(asserted.condition(), "assert");
+            return;
+        }
+        if (stmt instanceof Ast.AssumeStmt assumed) {
+            requireAssignable(typeOf(assumed.condition(), env, generics, self), Primitive.BOOL, "assume condition");
+            return;
+        }
+        if (stmt instanceof Ast.InvariantStmt invariant) {
+            requireAssignable(typeOf(invariant.condition(), env, generics, self), Primitive.BOOL, "invariant condition");
+            rejectStaticallyFalse(invariant.condition(), "invariant");
+            return;
+        }
         if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 requireAssignable(typeOf(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
@@ -408,6 +431,20 @@ public final class TypeChecker {
             Type right = typeOf(conditional.whenFalse(), env, generics, self);
             return commonType(left, right);
         }
+        if (expr instanceof Ast.MatchExpr matched) {
+            Type subjectType = typeOf(matched.subject(), env, generics, self);
+            validateMatchCoverage(matched, subjectType, env, generics, self);
+            Type result = null;
+            for (Ast.MatchArm arm : matched.arms()) {
+                Env armEnv = new Env(env);
+                bindPattern(arm.pattern(), subjectType, armEnv);
+                if (arm.guard() != null) requireAssignable(typeOf(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
+                Type armType = typeOf(arm.value(), armEnv, generics, self);
+                result = result == null ? armType : commonType(result, armType);
+            }
+            return result == null ? Unknown.INSTANCE : result;
+        }
+        if (expr instanceof Ast.OldExpr old) return typeOf(old.expression(), env, generics, self);
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
             if (unary.operator().equals("&")) return new Borrow(operand, false);
@@ -674,6 +711,20 @@ public final class TypeChecker {
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
+        if (a instanceof Named left && b instanceof Named right
+                && left.name().equals(right.name()) && left.arguments().size() == right.arguments().size()) {
+            List<Type> joined = new ArrayList<>();
+            for (int i = 0; i < left.arguments().size(); i++) joined.add(commonType(left.arguments().get(i), right.arguments().get(i)));
+            return new Named(left.name(), joined);
+        }
+        if (a instanceof Record left && b instanceof Record right) {
+            Map<String, Type> joined = new LinkedHashMap<>();
+            for (Map.Entry<String, Type> field : left.members().entrySet()) {
+                Type other = right.members().get(field.getKey());
+                if (other != null) joined.put(field.getKey(), commonType(field.getValue(), other));
+            }
+            if (!joined.isEmpty()) return new Record(joined);
+        }
         return Unknown.INSTANCE;
     }
 
@@ -938,6 +989,7 @@ public final class TypeChecker {
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
+            case "any" -> Unknown.INSTANCE;
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
