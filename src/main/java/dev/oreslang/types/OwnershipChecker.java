@@ -265,6 +265,9 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            if (consuming && mutexCriticalSectionDepth > 0 && state.kind == ValueKind.MUT_BORROW) {
+                throw error("protected with_lock/recover state cannot be moved by value; use it through its &mut critical-section borrow");
+            }
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
             return new ValueInfo(state.type, state.kind, state.borrowSource);
@@ -311,6 +314,30 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr receiverName) {
+                VarState receiverState = scope.lookup(receiverName.name());
+                if (receiverState != null && isScopedMutexReceiver(receiverState)) {
+                    requireUsable(receiverState, receiverName.name(), false);
+                    Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
+                    if (klass != null) {
+                        Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
+                        if (field != null) {
+                            if (!isCopyType(field.type())) {
+                                throw error("cannot extract move-only field '" + klass.name() + "." + member.member()
+                                        + "' from protected mutex state; operate on it inside with_lock or replace the field as a whole");
+                            }
+                            return new ValueInfo(field.type(), ValueKind.COPY, null);
+                        }
+                        List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
+                        if (!methods.isEmpty()) {
+                            throw error("cannot extract a bound method from protected mutex state; invoke it directly while the guard is live");
+                        }
+                    }
+                    if (isMutexGuardType(receiverState.type)) {
+                        throw error("unknown or non-extractable MutexGuard member '" + member.member() + "'");
+                    }
+                }
+            }
             checkExpr(member.receiver(), scope, false);
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
@@ -433,13 +460,26 @@ public final class OwnershipChecker {
                         move(receiverState, receiverName.name());
                         return new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                     }
+                    if (isMutexGuardType(receiverType) && member.member().equals("is_released") && call.arguments().isEmpty()) {
+                        return new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    }
                 }
             }
             checkExpr(member.receiver(), scope, false);
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (method != null) {
+                boolean protectedReceiver = false;
+                if (member.receiver() instanceof Ast.NameExpr receiverName) {
+                    VarState receiverState = scope.lookup(receiverName.name());
+                    protectedReceiver = receiverState != null && isScopedMutexReceiver(receiverState);
+                }
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
+                if (protectedReceiver && !isCopyType(method.returnType())
+                        && !method.returnType().name().equals("void")) {
+                    throw error("method '" + klass.name() + "." + method.name()
+                            + "' cannot return move-only state through a mutex guard/critical-section borrow");
+                }
                 return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
             }
         }
@@ -460,7 +500,12 @@ public final class OwnershipChecker {
             Ast.Expr arg = arguments.get(i);
             Ast.Param param = params.get(i);
             if (param.structural() && !param.type().isBorrow()) {
-                checkExpr(arg, scope, false);
+                ValueInfo argument = checkExpr(arg, scope, false);
+                if (containsMutexGuardType(argument.type)
+                        || (mutexCriticalSectionDepth > 0 && argument.type.isBorrow())) {
+                    throw error(callable + " argument " + (i + 1)
+                            + " cannot consume protected mutex state through a structural by-value parameter");
+                }
                 continue;
             }
             if (param.type().isBorrow()) {
@@ -836,6 +881,11 @@ public final class OwnershipChecker {
                     "bool","Bool","string","String","void","SharedMutex" -> true;
             default -> false;
         };
+    }
+
+    private boolean isScopedMutexReceiver(VarState state) {
+        return isMutexGuardType(state.type)
+                || (mutexCriticalSectionDepth > 0 && state.type.isBorrow() && state.type.mutableBorrow());
     }
 
     private static boolean isMutexGuardType(Ast.TypeRef type) {
