@@ -575,6 +575,7 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        validateCallableAnnotations(fn.annotations(), fn.kind().name().toLowerCase() + " " + fn.name());
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -635,6 +636,7 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            validateCallableAnnotations(method.annotations(), "method " + klass.name() + "." + method.name());
             Set<String> generics = new HashSet<>(classGenerics);
             for (String generic : method.genericParameters()) {
                 if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
@@ -670,6 +672,20 @@ public final class TypeChecker {
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+            }
+        }
+    }
+
+    private void validateCallableAnnotations(List<Ast.Annotation> annotations, String owner) {
+        boolean noStackTraceSeen = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("NoStackTrace")) continue;
+            if (noStackTraceSeen) {
+                throw new IllegalArgumentException("duplicate @NoStackTrace on " + owner);
+            }
+            noStackTraceSeen = true;
+            if (!annotation.arguments().isEmpty()) {
+                throw new IllegalArgumentException("@NoStackTrace takes no arguments; use ORES_STACK_TRACE to override runtime policy");
             }
         }
     }
