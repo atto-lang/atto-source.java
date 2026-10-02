@@ -188,6 +188,14 @@ final class GenericsAndOperatorsHardeningTest {
                   }
                 end
                 """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad(float a, int b) => int {
+                    return a & b;
+                  }
+                end
+                """)));
     }
 
     @Test
@@ -203,6 +211,8 @@ final class GenericsAndOperatorsHardeningTest {
                   pub fnc main() => void {
                     stdio.println((5 & 3) | (8 >> 2));
                     stdio.println(true ^^ false);
+                    stdio.println(false && [true][99]);
+                    stdio.println(true || [false][99]);
                     stdio.println(~0);
                     return;
                   }
