@@ -1166,7 +1166,8 @@ public final class OresEvalRootNode extends RootNode {
                         return new OresObject(object.klass, fields);
                     }
 
-                    Ast.MethodDecl copyMethod = findMethod(object.klass, "copy", 0, new LinkedHashSet<>());
+                    Ast.ClassDecl dispatchClass = runtimeDispatchClass(object, singletonState);
+                    Ast.MethodDecl copyMethod = findMethod(dispatchClass, "copy", 0, new LinkedHashSet<>());
                     if (copyMethod == null || copyMethod.isStatic()
                             || copyMethod.visibility() != Ast.Visibility.PUBLIC
                             || copyMethod.isAbstract() || copyMethod.async()
@@ -1178,7 +1179,7 @@ public final class OresEvalRootNode extends RootNode {
                                 + "' is not copyable: copy() must be concrete, synchronous, non-generic, "
                                 + "public, instance-bound, and use an immutable receiver");
                     }
-                    Object copied = callMethod(object, copyMethod, List.of(), singletonState);
+                    Object copied = callMethod(object, dispatchClass, copyMethod, List.of(), singletonState);
                     if (!(copied instanceof OresObject result) || result.klass != object.klass) {
                         throw new IllegalArgumentException("class '" + object.klass.name()
                                 + "' copy() must return a fresh instance of the same concrete class");
