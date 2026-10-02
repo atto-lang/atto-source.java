@@ -13,13 +13,13 @@ final class ParserTest {
     @Test
     void supportsMultipleModulesAndComplexNumbers() {
         String source = """
-                define module math
+                define module math as
                   fnc z() => complex {
                     return 3 + 4i;
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     const answer = 40 + 2;
                     [const first, let second] = [1, 2];
@@ -37,7 +37,7 @@ final class ParserTest {
     @Test
     void parsesIfDoFiWithCommaAndPipeConditions() {
         String source = """
-                define module app
+                define module app as
                   fnc choose(bool a, bool b) => int {
                     if a, b | false; do
                       return 1;
@@ -53,8 +53,8 @@ final class ParserTest {
     @Test
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
-                define module model
-                  define class x
+                define module model as
+                  define class x as
                     @Ret<self>
                     find() {
                       return self;
