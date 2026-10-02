@@ -178,6 +178,9 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.actorKind() != Ast.ActorKind.NONE) {
+            validateActorBoundaryTypes("actor fnc '" + fn.name() + "'", fn.parameters(), fn.returnType());
+        }
         if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
                     "program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
@@ -232,6 +235,10 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && field.type() != null && containsBorrowType(field.type())) {
+                throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
+                        + "' cannot store a borrow; actor state must own its data for the full actor lifetime");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -247,6 +254,14 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic()
+                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                validateActorBoundaryTypes(
+                        "actor mailbox method '" + klass.name() + "." + method.name() + "'",
+                        method.parameters(),
+                        method.returnType());
+            }
             Set<String> generics = new HashSet<>(classGenerics);
             for (String generic : method.genericParameters()) {
                 if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
@@ -284,6 +299,31 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
+    }
+
+    private void validateActorBoundaryTypes(
+            String callable,
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType) {
+        for (Ast.Param parameter : parameters) {
+            if (containsBorrowType(parameter.type())) {
+                throw new IllegalArgumentException(callable + " cannot accept borrowed parameter '"
+                        + parameter.name() + "'; mailbox boundaries transfer owned/sendable values");
+            }
+        }
+        if (containsBorrowType(returnType)) {
+            throw new IllegalArgumentException(callable
+                    + " cannot return a borrow; actor-turn lifetimes never escape the mailbox boundary");
+        }
+    }
+
+    private static boolean containsBorrowType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsBorrowType(argument)) return true;
+        }
+        return false;
     }
 
     private void checkModuleBinding(Ast.FieldDecl field) {
@@ -416,7 +456,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -585,6 +625,14 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")
+                    && member.member().equals("gc")) {
+                return new Function(List.of(), Primitive.VOID);
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
+                if (member.member().equals("gc")) return new Function(List.of(), Primitive.VOID);
+                throw new IllegalArgumentException("unknown actor runtime member '" + member.member() + "'");
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type mutexMember = builtinMutexMember(receiver, member.member());
