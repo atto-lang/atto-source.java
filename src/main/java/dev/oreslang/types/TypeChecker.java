@@ -287,6 +287,11 @@ public final class TypeChecker {
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
+        if (isActorCallable(fn) && fn.async()) {
+            throw new IllegalArgumentException(
+                    "actor " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name()
+                            + "' cannot also be async; actor already defines the execution boundary");
+        }
         if (isActorCallable(fn) && returns != Primitive.VOID) {
             throw new IllegalArgumentException(
                     "actor " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name()
