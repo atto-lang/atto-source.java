@@ -348,6 +348,32 @@ final class PrivateActorIsolationTest {
     }
 
 
+
+    @Test
+    void privateBehaviorCannotPersistPrimitiveStateOnJvmHeap() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnPrivate(factoryContext -> mutablePrimitiveBehavior());
+
+            ref.send("increment");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isPresent());
+            assertInstanceOf(SecurityException.class, ref.failure().orElseThrow());
+            assertTrue(ref.failure().orElseThrow().getMessage().contains("context.privateMemory"));
+            assertEquals(0L, runtime.privateMemoryBytes());
+        }
+    }
+
+    private static ActorRuntime.Behavior<String> mutablePrimitiveBehavior() {
+        return new ActorRuntime.Behavior<>() {
+            private int counter;
+
+            @Override
+            public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
+                counter++;
+            }
+        };
+    }
+
     @Test
     void privateBehaviorCannotRetainNewJvmMutableStateAcrossTurns() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
