@@ -425,6 +425,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
+        private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
@@ -682,6 +683,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
         if (cell.mailbox.remainingCapacity() == 0) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -776,12 +778,61 @@ public final class ActorRuntime implements AutoCloseable {
         return shared;
     }
 
+    private void requireOwnedActorRefs(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value)) return;
+        if (value instanceof ActorRuntime.ActorRef<?> ref) {
+            if (!ref.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "ActorRef belongs to a different ActorRuntime; cross-runtime actor channels require an explicit bridge");
+            }
+            return;
+        }
+        if (value instanceof Shared<?> shared) {
+            requireOwnedActorRefs(shared.value(), visiting, depth + 1);
+            return;
+        }
+        if (value instanceof SyncCell<?>) return;
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) requireOwnedActorRefs(item, visiting, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) requireOwnedActorRefs(item, visiting, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    requireOwnedActorRefs(entry.getKey(), visiting, depth + 1);
+                    requireOwnedActorRefs(entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    requireOwnedActorRefs(Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
     private void requireOwnedSharedHandles(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
-        if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value == null || isScalar(value)) return;
+        if (value instanceof ActorRuntime.ActorRef<?> ref) {
+            if (!ref.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "ActorRef belongs to a different ActorRuntime; cross-runtime actor channels require an explicit bridge");
+            }
+            return;
+        }
         if (value instanceof Shared<?> shared) {
             if (!shared.ownedBy(this)) {
                 throw new IllegalArgumentException(
@@ -853,9 +904,9 @@ public final class ActorRuntime implements AutoCloseable {
                 for (int i = 0; i < length; i++) {
                     rejectSharedMutableHandles(Array.get(value, i), visiting, depth + 1);
                 }
-            } else if (!(value instanceof Sendable)) {
+            } else {
                 throw new IllegalArgumentException("value of type " + value.getClass().getName()
-                        + " is not Sendable; mutable host objects cannot be shared read-only");
+                        + " is not a runtime-owned immutable actor value");
             }
         } finally {
             visiting.remove(value);
@@ -919,14 +970,6 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return List.copyOf(frozen);
             }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return freeze(frozen, visiting, depth + 1);
-            }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
         } finally {
@@ -982,14 +1025,6 @@ public final class ActorRuntime implements AutoCloseable {
                     copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1));
                 }
                 return Collections.unmodifiableList(copy);
-            }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return isolateCopy(frozen, visiting, depth + 1);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -1056,14 +1091,6 @@ public final class ActorRuntime implements AutoCloseable {
                             limit);
                 }
                 return total;
-            }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return estimateSharedTransportBytes(frozen, visiting, depth + 1, limit);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -1179,14 +1206,6 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return total;
             }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return estimatePrivateTransportBytes(frozen, visiting, depth + 1, limit);
-            }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
         } finally {
@@ -1296,11 +1315,6 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
-    }
-
-    /** Implemented by generated immutable Oreslang aggregate values. */
-    public interface Sendable {
-        Object freezeForSend();
     }
 
     @Override
