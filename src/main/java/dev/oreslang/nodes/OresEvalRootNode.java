@@ -200,6 +200,16 @@ public final class OresEvalRootNode extends RootNode {
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
                 return literal.value();
             }
+            if (expr instanceof Ast.TemplateExpr template) {
+                StringBuilder result = new StringBuilder();
+                for (Ast.TemplatePart part : template.parts()) {
+                    if (part instanceof Ast.TemplateText text) result.append(text.value());
+                    else if (part instanceof Ast.TemplateInterpolation interpolation) {
+                        result.append(display(eval(interpolation.expression(), env)));
+                    }
+                }
+                return result.toString();
+            }
             if (expr instanceof Ast.NameExpr name) {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
