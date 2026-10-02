@@ -88,10 +88,23 @@ Actor transport is independently hardened from mutex synchronization. Ordinary m
 
 ## GPU placement boundary
 
-`gpu` source is admitted as a distinct execution target. It is not a performance annotation on ordinary Truffle execution.
+`gpu` source is a distinct execution target, not a performance annotation on ordinary Truffle execution.
 
-The front end first type-checks the program and then runs GPU admission. GPU admission is intentionally conservative: it proves that kernel bodies stay inside the current device-safe subset and that statically resolved calls from GPU code target other GPU callables. Dynamic host calls, object graphs, host references, unsupported ABI types, inferred kernel parameter ABI, and host/global captures are rejected.
+The trusted compiler pipeline is:
 
-The reference evaluator does not emulate GPU work on a CPU. If a GPU-targeted named function, static function, lambda, or `gpu parallel` batch is invoked without a configured GPU lowering/backend, execution fails closed. This avoids tests or development runs accidentally validating CPU behavior that would not be legal device behavior.
+1. parse and type/ownership check;
+2. run GPU admission against the conservative device subset;
+3. lower every admitted GPU callable/lambda to deterministic OpenCL C 1.2;
+4. retain kernel/ABI/batch metadata and a device-source digest in the compilation result and incremental code unit.
 
-`gpu parallel` is scheduling intent for independent kernels/work-items. Backends remain responsible for launch geometry, lane/warp/wavefront/work-group assignment, occupancy, fusion, batching, and device selection. Oreslang does not expose stable "GPU core N" affinity because that is not a portable hardware abstraction. Physical device affinity can be added separately once the runtime has a real multi-device scheduler.
+Named GPU callables lower to a reusable device helper and a kernel entrypoint. Scalar results use an explicit `__global` result pointer. Flat array/list parameters lower to `__global` pointers, with `const` and `restrict` qualifiers derived from source mutability/ownership.
+
+A canonical top-level elementwise loop can lower from serial source semantics to a 1-D SPMD kernel using `get_global_id(0)`, but only after the compiler proves the loop induction shape and verifies that accesses to mutable buffers are per-work-item. If that proof fails, the generated kernel retains single-work-item execution rather than risking a data race.
+
+A zero-argument/void `gpu parallel` batch gets individual kernel entrypoints plus a fused dispatcher kernel. The dispatcher launches one logical work-item per function and switches on `get_global_id(0)`. This is a logical GPU work-item mapping, not physical core affinity.
+
+The GPU artifact declares device requirements explicitly. In particular, `cl_khr_fp64` is requested only when the emitted code uses `double`, avoiding an unnecessary compatibility requirement for integer/f32-only programs.
+
+The current Truffle evaluator does not emulate or CPU-fallback GPU execution. If a GPU-targeted named function, static function, lambda, or batch reaches the evaluator without a configured physical GPU launcher, execution fails closed. A future launcher should consume the already-generated `GpuProgram` artifact, compile/cache the OpenCL source for the selected device, bind buffers/scalars according to the manifest, and launch according to `SINGLE_WORK_ITEM`, `DATA_PARALLEL_1D`, or batch-dispatch metadata.
+
+Oreslang does not expose stable "GPU core N" affinity because that is not a portable hardware abstraction. Backends remain responsible for lanes/warps/wavefronts/work-groups, occupancy, queueing, and physical device selection. Multi-GPU affinity can be added separately once the runtime has a real device scheduler.
