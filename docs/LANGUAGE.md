@@ -255,7 +255,7 @@ creator. `finally` executes before a pending `break` or `continue` resumes. Call
 
 ## Exceptions and defer
 
-Both structured exceptions and lexical `defer` are supported:
+Both structured exceptions and callable-scoped `defer` are supported:
 
 ```ores
 try {
