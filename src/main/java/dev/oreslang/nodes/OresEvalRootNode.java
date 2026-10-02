@@ -168,19 +168,26 @@ public final class OresEvalRootNode extends RootNode {
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+            ArrayDeque<DeferredAction> deferred = new ArrayDeque<>();
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
             } finally {
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    while (!deferred.isEmpty()) {
+                        DeferredAction action = deferred.pop();
+                        try {
+                            eval(action.expression(), action.environment());
+                        } finally {
+                            action.environment().release();
+                        }
+                    }
                 } finally {
                     env.release();
                 }
             }
         }
 
-        private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
+        private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<DeferredAction> deferred) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
@@ -206,7 +213,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
-            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                deferred.push(new DeferredAction(defer.expression(), env.snapshot()));
+                return;
+            }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
                     if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env); return; }
@@ -248,7 +258,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.ForStmt loop) {
                 Env loopEnv = new Env(env);
                 try {
-                    if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<>());
+                    if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<DeferredAction>());
                     while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                         context.schedulerSafepoint();
                         executeBlock(loop.body(), loopEnv);
@@ -1264,6 +1274,8 @@ public final class OresEvalRootNode extends RootNode {
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
+
+    private record DeferredAction(Ast.Expr expression, Env environment) { }
 
     @FunctionalInterface
     private interface Invokable {
