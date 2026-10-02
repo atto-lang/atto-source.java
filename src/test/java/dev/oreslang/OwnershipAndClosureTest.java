@@ -119,6 +119,25 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void mixedTuplePatternsPreserveCopyOwnershipPerPosition() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc decode() => int {
+                  val result = ("ok", arr[1, 2], 7);
+                  match result {
+                    ("ok", values, count) => {
+                      stdio.println(count);
+                      stdio.println(count);
+                      return values[0] + count;
+                    }
+                    _ => {
+                      return 0;
+                    }
+                  }
+                }
+                """)));
+    }
+
+    @Test
     void useAfterMoveIsRejected() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
