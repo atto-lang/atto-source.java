@@ -536,27 +536,9 @@ public final class Parser {
             return new Ast.ReturnStmt(value);
         }
         if (match(DEFER)) {
-            Token deferToken = previous();
             Ast.Expr expression = parseExpression();
             consumeStatementTerminator("defer statement should end with ';'");
-
-            if (expression instanceof Ast.LambdaExpr lambda) {
-                if (!lambda.parameters().isEmpty()) {
-                    throw error(deferToken,
-                            "a bare deferred lambda must have arity 0; invoke parameterized lambdas explicitly");
-                }
-                return new Ast.DeferStmt(Ast.DeferKind.CALLABLE_VALUE, lambda, List.of());
-            }
-            if (expression instanceof Ast.CallExpr call && call.callee() instanceof Ast.LambdaExpr lambda) {
-                return new Ast.DeferStmt(Ast.DeferKind.EXPLICIT_LAMBDA_CALL, lambda, call.arguments());
-            }
-            if (expression instanceof Ast.CallExpr) {
-                return new Ast.DeferStmt(Ast.DeferKind.CALLABLE_VALUE, expression, List.of());
-            }
-
-            throw error(deferToken,
-                    "defer accepts an arity-0 lambda, an explicitly-invoked lambda, "
-                            + "or a call whose result is an arity-0 function");
+            return new Ast.DeferStmt(expression);
         }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
