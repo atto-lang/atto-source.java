@@ -142,6 +142,27 @@ final class ActorDispatcherHardeningTest {
     }
 
     @Test
+    void actorOriginatedSynchronousGroupFanoutCannotExceedOneSchedulingQuantum() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 1, 1, 64);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var a = runtime.<String>spawnPrivate(factory -> (message, context) -> { });
+            var b = runtime.<String>spawnPrivate(factory -> (message, context) -> { });
+            var group = runtime.<String>group("wide").add(a).add(b);
+
+            var broadcaster = runtime.<String>spawnPrivateTrusted(factory -> (message, context) ->
+                    group.broadcast(message));
+
+            broadcaster.send("fanout");
+            assertTrue(broadcaster.awaitTermination(2, TimeUnit.SECONDS));
+            Throwable failure = broadcaster.failure().orElseThrow();
+            assertTrue(failure.getMessage().contains("synchronous broadcast exceeds per-turn fanout budget"));
+
+            a.stop();
+            b.stop();
+        }
+    }
+
+    @Test
     void actorGroupsPruneFinalizedMembersWithoutRequiringBroadcast() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var ref = runtime.<String>spawnPrivate(factory -> (message, context) -> { });
