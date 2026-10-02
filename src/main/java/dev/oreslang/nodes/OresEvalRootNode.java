@@ -457,14 +457,40 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
-                try { executeBlock(tried.body(), env); }
-                catch (ReturnSignal signal) { throw signal; }
-                catch (ExecutionTerminated signal) { throw signal; }
-                catch (RuntimeException failure) {
+                Throwable pending = null;
+                try {
+                    executeBlock(tried.body(), env);
+                } catch (ReturnSignal signal) {
+                    pending = signal;
+                } catch (ExecutionTerminated signal) {
+                    pending = signal;
+                } catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv);
-                } finally { executeBlock(tried.finallyBody(), env); }
+                    try {
+                        executeBlock(tried.catchBody(), catchEnv);
+                    } catch (Throwable catchFailure) {
+                        pending = catchFailure;
+                    }
+                } catch (Error fatal) {
+                    pending = fatal;
+                }
+
+                if (pending instanceof ExecutionTerminated || pending instanceof VirtualMachineError) {
+                    try {
+                        executeBlock(tried.finallyBody(), env);
+                    } catch (Throwable cleanupFailure) {
+                        pending.addSuppressed(cleanupFailure);
+                    }
+                    throwUnchecked(pending);
+                }
+
+                try {
+                    executeBlock(tried.finallyBody(), env);
+                } catch (Throwable finallyFailure) {
+                    throwUnchecked(finallyFailure);
+                }
+                if (pending != null) throwUnchecked(pending);
                 return;
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
@@ -486,6 +512,12 @@ public final class OresEvalRootNode extends RootNode {
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
             }
+        }
+
+        private static void throwUnchecked(Throwable failure) {
+            if (failure instanceof RuntimeException runtime) throw runtime;
+            if (failure instanceof Error error) throw error;
+            throw new IllegalStateException("unexpected checked guest failure", failure);
         }
 
         private Object eval(Ast.Expr expr, Env env) {
