@@ -851,3 +851,45 @@ The same compiled program can target a secondary multi-threaded runtime because:
 - actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
 
 When explicit thread/task spawning is added, cross-thread transfer will require move semantics and a `Send`-equivalent capability; shared cross-thread references will additionally require a `Sync`-equivalent guarantee. Those marker traits are intentionally a future surface feature—the current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
+
+
+## GPU execution placement
+
+`gpu` is a reserved execution-placement keyword. It is deliberately stronger than an optimization hint: code marked `gpu` must execute through a GPU lowering/backend and must never silently fall back to the ordinary CPU/Truffle evaluator.
+
+A named function can target its entire body:
+
+```ores
+gpu fnc saxpy(f32 a, Array<f32> x, Array<f32> y) => Array<f32> {
+  // the whole body is a GPU kernel candidate
+  return y;
+}
+```
+
+Static class functions may use the same placement. GPU instance methods are rejected for now because Oreslang does not yet define a stable device-side class/object layout.
+
+For one anonymous kernel:
+
+```ores
+const work = gpu |f32 x| -> {
+  return x * x;
+};
+```
+
+For a statically known batch, `parallel` is contextual rather than globally reserved:
+
+```ores
+const funcs = gpu parallel List.of(
+  || -> { return; },
+  || -> { return; },
+  || -> { return; }
+);
+```
+
+The same batch form accepts a list or tuple literal. The outer `gpu parallel` applies GPU placement to every direct lambda in the collection, so repeating `gpu` on each element is unnecessary. The collection must be statically enumerable and contain only direct lambda literals; a dynamically assembled list of arbitrary closures is rejected because the compiler could not prove what must be lowered.
+
+`parallel` means independent GPU work that the backend may co-dispatch. It does **not** mean "bind lambda 0 to GPU core 0". GPU execution units are scheduled as lanes/warps/wavefronts/work-groups and do not have stable CPU-thread-like core affinity. If Oreslang later exposes physical multi-GPU placement, that should be a separate device-affinity surface (for example a future `gpu device(...)` policy), not a core-number API.
+
+The current reference compiler uses a deliberately conservative GPU ABI while device lowering is being built. GPU callables must use explicit, GPU-transferable scalar/array/tuple types; generics and structural parameters are rejected. Host borrows/references, strings, bigint/decimal, classes/objects, records, `Option`, nested host-list layouts, `await`, `defer`, `try/catch`, object allocation, host/global captures, dynamic closure calls, and calls to non-`gpu` functions are rejected. This keeps the CPU/GPU boundary explicit and prevents accidental host execution from being smuggled into a kernel.
+
+The interpreter currently has no GPU code generator. Reaching a checked `gpu` callable therefore fails closed with a backend-unavailable error instead of executing the body on the CPU. A future backend should consume the checked AST/IR and preserve these placement guarantees.
