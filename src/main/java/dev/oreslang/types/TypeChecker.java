@@ -217,8 +217,8 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
-            Type fieldType = resolve(field.type(), classGenerics, self);
-            if (field.initializer() != null) {
+            Type fieldType = classFieldType(klass, field);
+            if (field.initializer() != null && field.type() != null) {
                 Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
                 requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
             }
@@ -568,7 +568,7 @@ public final class TypeChecker {
                 Ast.FieldDecl field = fields.get(i);
                 if (i < created.arguments().size()) {
                     requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
-                            resolve(field.type(), Set.copyOf(klass.genericParameters()), nominal), "constructor field " + field.name());
+                            classFieldType(klass, field), "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
                 }
@@ -718,7 +718,7 @@ public final class TypeChecker {
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
-        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
@@ -744,7 +744,7 @@ public final class TypeChecker {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+            if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
@@ -780,6 +780,17 @@ public final class TypeChecker {
         return new Record(members);
     }
 
+    private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
+        Set<String> generics = Set.copyOf(klass.genericParameters());
+        Type self = nominalClassType(klass);
+        if (field.type() != null) return resolve(field.type(), generics, self);
+        if (field.initializer() == null) {
+            throw new IllegalArgumentException("inferred field '" + klass.name() + "." + field.name()
+                    + "' requires an initializer");
+        }
+        return typeOf(field.initializer(), new Env(null), generics, self);
+    }
+
     private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         LinkedHashMap<String, Ast.FieldDecl> fields = new LinkedHashMap<>();
@@ -798,7 +809,7 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.name().equals(name)) {
                 seen.remove(klass);
-                return resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
+                return classFieldType(klass, field);
             }
         }
         for (Ast.TypeRef parentRef : klass.parents()) {
