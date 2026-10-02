@@ -280,6 +280,18 @@ The scheduler and Java execution mechanism are intentionally separate from the s
 
 The program entrypoint `main` is deliberately synchronous. It launches async work explicitly; it is not itself an implicit top-level future. This keeps launcher/lifecycle semantics deterministic and prevents an unobserved `Future<void>` entrypoint.
 
+## Symbols and protocol tags
+
+Oreslang has a dedicated immutable `Symbol` value for finite protocol tags:
+
+```ores
+val Symbol action = :put;
+```
+
+A symbol is **not** a string alias and it is not an Erlang-style globally interned atom. The JVM runtime represents it as an ordinary bounded, identifier-shaped, garbage-collected value. Equal symbols compare by value; source/runtime correctness never depends on object identity or on a process-global intern table. This removes the atom-table exhaustion failure mode while keeping concise pattern tags.
+
+Strings remain real strings, arrays/lists remain collections, and numeric code-point lists are never printed or reinterpreted as strings merely because their contents happen to look textual. Variable capitalization has no semantic connection to symbols.
+
 ## Actors
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
@@ -316,7 +328,10 @@ shared actor Account {
 - private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
 - both kinds still process their own mailbox serially;
 - actor communication is compiler-visible syntax rather than library calls: `receive`, `try_receive`, `send`, `try_send`, `select`, `channel`, `case`, `default`, and `loop` are reserved;
-- `receive loop (msg) { ... }` is the suspending mailbox service loop; `try_receive loop (msg) { ... }` drains only immediately available messages;
+- `receive loop (Message msg) { ... }` is the simple typed suspending mailbox service loop; `try_receive loop (Message msg) { ... }` drains only immediately available messages;
+- pattern-dispatch loops use `receive loop { case pattern => { ... } default => { ... } }` and the analogous `try_receive loop` form;
+- receive patterns support `:symbol` tags, literals, nested tuple/list shapes, `_`, captures, and typed captures such as `amount: int` or `let state: State`;
+- a patterned receive dequeues exactly one FIFO message and then tests its cases locally. It never skips an unmatched head message to scan later queue entries; while actor `Protocol<M>` is still open, the checker requires `default` or another irrefutable case;
 - actor/channel suspension points hoist live locals into the actor continuation frame instead of requiring Erlang-style recursive `loop(NewState)` state threading;
 - actor fairness uses a separate operation quantum in addition to mailbox-message throughput; compiler checkpoints and receive/select backedges consume that budget and lowering must hand the continuation back to the dispatcher when it is exhausted;
 - receive never scans past unmatched older messages; typed/indexed protocol channels are the future mechanism for selective routing rather than Erlang-style linear mailbox scanning;
