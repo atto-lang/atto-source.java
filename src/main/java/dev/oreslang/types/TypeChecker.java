@@ -177,10 +177,34 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
-        Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+        Set<String> generics = uniqueGenerics(
+                fn.genericParameters(),
+                (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) {
+            Type parameterType = resolveParam(param, generics, null);
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                validateActorBoundaryType(
+                        parameterType,
+                        fn.actorKind(),
+                        false,
+                        "parameter '" + param.name() + "' of " + fn.actorKind().name().toLowerCase()
+                                + " callable '" + module + "." + fn.name() + "'");
+            }
+            env.define(
+                    param.name(),
+                    parameterType,
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        }
         Type returns = resolve(fn.returnType(), generics, null);
+        if (fn.actorKind() != Ast.ActorKind.NONE) {
+            validateActorBoundaryType(
+                    returns,
+                    fn.actorKind(),
+                    true,
+                    "return type of " + fn.actorKind().name().toLowerCase()
+                            + " callable '" + module + "." + fn.name() + "'");
+        }
         checkBlock(fn.body(), env, generics, returns, null);
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
@@ -742,6 +766,81 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
+    }
+
+    private void validateActorBoundaryType(
+            Type type,
+            Ast.ActorKind actorKind,
+            boolean allowVoid,
+            String where) {
+        if (type == Unknown.INSTANCE
+                || type instanceof Borrow
+                || type instanceof Function
+                || type instanceof ClassNamespace) {
+            throw new IllegalArgumentException(
+                    where + " is not actor-transferable: " + type);
+        }
+
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID && !allowVoid) {
+                throw new IllegalArgumentException(where + " cannot be void");
+            }
+            return;
+        }
+        if (type instanceof StringLiteral) return;
+
+        if (type instanceof Generic generic) {
+            throw new IllegalArgumentException(
+                    where + " uses unresolved generic '" + generic.name()
+                            + "'; actor boundaries must be statically transferable");
+        }
+
+        if (type instanceof ListType list) {
+            validateActorBoundaryType(list.element(), actorKind, false, where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                validateActorBoundaryType(element, actorKind, false, where + " tuple element");
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                validateActorBoundaryType(option, actorKind, false, where + " union member");
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> entry : record.members().entrySet()) {
+                validateActorBoundaryType(
+                        entry.getValue(),
+                        actorKind,
+                        false,
+                        where + " field '" + entry.getKey() + "'");
+            }
+            return;
+        }
+        if (!(type instanceof Named named)) {
+            throw new IllegalArgumentException(
+                    where + " is not actor-transferable: " + type);
+        }
+
+        if (named.name().equals("Mutex")
+                || named.name().equals("MutexGuard")
+                || named.name().equals("Future")) {
+            throw new IllegalArgumentException(
+                    where + " cannot cross an actor boundary as " + named.name());
+        }
+        if (actorKind == Ast.ActorKind.ISOLATED
+                && named.name().equals("SharedMutex")) {
+            throw new IllegalArgumentException(
+                    where + " cannot use SharedMutex across an isoactor boundary");
+        }
+
+        for (Type argument : named.arguments()) {
+            validateActorBoundaryType(argument, actorKind, false, where + " type argument");
+        }
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
