@@ -6,6 +6,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresSymbol;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.AwaitSupport;
@@ -185,6 +186,13 @@ public final class OresEvalRootNode extends RootNode {
                 } finally { executeBlock(tried.finallyBody(), env); }
                 return;
             }
+            if (stmt instanceof Ast.ReceiveLoopStmt
+                    || stmt instanceof Ast.ReceivePatternLoopStmt
+                    || stmt instanceof Ast.SelectStmt) {
+                throw new IllegalStateException(
+                        "actor receive/select requires continuation lowering; "
+                                + "the reference interpreter refuses to block or fake actor scheduling");
+            }
             if (stmt instanceof Ast.ForOfStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
                 for (Object item : iterableValues(iterable)) {
@@ -210,6 +218,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Symbol symbol) return OresSymbol.of(symbol.name());
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
