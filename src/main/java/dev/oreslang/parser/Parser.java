@@ -49,10 +49,12 @@ public final class Parser {
                     continue;
                 }
                 if (match(CLASS)) {
+                    if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not classes");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
+                    if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not interfaces");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -123,8 +125,14 @@ public final class Parser {
 
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
-            if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
-            if (match(INTERFACE)) return parseInterface(modifiers.visibility);
+            if (match(CLASS)) {
+                if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not classes");
+                return parseClass(modifiers.isAbstract || afterDefineAbstract);
+            }
+            if (match(INTERFACE)) {
+                if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not interfaces");
+                return parseInterface(modifiers.visibility);
+            }
             throw error(previous(), "expected class or interface after 'define'");
         }
 
@@ -345,8 +353,10 @@ public final class Parser {
             else if (match(ASYNC)) async = true;
             else if (match(STATIC)) isStatic = true;
             else if (match(ABSTRACT)) isAbstract = true;
-            else if (match(GPU)) gpu = true;
-            else progress = false;
+            else if (match(GPU)) {
+                if (gpu) throw error(previous(), "duplicate 'gpu' modifier");
+                gpu = true;
+            } else progress = false;
         } while (progress);
         if (gpu && async) throw error(previous(), "'gpu' and 'async' cannot be combined; GPU dispatch is an explicit execution target");
         return new Modifiers(visibility, async, isStatic, isAbstract, gpu);
