@@ -14,14 +14,16 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -44,19 +46,42 @@ import java.util.function.UnaryOperator;
  */
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
+    private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    @FunctionalInterface
+    public interface TurnExecutor {
+        void execute(Runnable turn);
+
+        static TurnExecutor direct() {
+            return Runnable::run;
+        }
+    }
+
+    public static boolean isActorCarrierThread() {
+        return Boolean.TRUE.equals(ACTOR_CARRIER.get());
+    }
 
     public enum ActorKind { PRIVATE, SHARED }
 
-    public record DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
+    public record DispatcherConfig(
+            int privateParallelism,
+            int sharedParallelism,
+            int throughput,
+            int maxActors) {
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
             if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
+            if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
+        }
+
+        public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
+            this(privateParallelism, sharedParallelism, throughput, 16_384);
         }
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, 64);
+            return new DispatcherConfig(cpus, cpus, 64, 16_384);
         }
     }
 
@@ -113,6 +138,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -121,30 +147,44 @@ public final class ActorRuntime implements AutoCloseable {
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
+    private final TurnExecutor turnExecutor;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
     public ActorRuntime() {
-        this(IsolatePolicy.developer(), DispatcherConfig.defaults());
+        this(IsolatePolicy.developer(), DispatcherConfig.defaults(), TurnExecutor.direct());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling) {
-        this(policyCeiling, DispatcherConfig.defaults());
+        this(policyCeiling, DispatcherConfig.defaults(), TurnExecutor.direct());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling, DispatcherConfig dispatcherConfig) {
+        this(policyCeiling, dispatcherConfig, TurnExecutor.direct());
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
-        this.privateDispatcher = Executors.newFixedThreadPool(
-                dispatcherConfig.privateParallelism(), namedFactory("ores-private-actor-dispatcher-"));
-        this.sharedDispatcher = Executors.newFixedThreadPool(
-                dispatcherConfig.sharedParallelism(), namedFactory("ores-shared-actor-dispatcher-"));
+        this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        this.privateDispatcher = newDispatcher(
+                dispatcherConfig.privateParallelism(),
+                dispatcherConfig.maxActors(),
+                "ores-private-actor-dispatcher-");
+        this.sharedDispatcher = newDispatcher(
+                dispatcherConfig.sharedParallelism(),
+                dispatcherConfig.maxActors(),
+                "ores-shared-actor-dispatcher-");
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
+    public int actorCount() { return actorCount.get(); }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
@@ -425,6 +465,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
+        private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
@@ -535,19 +576,46 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
         if (kind == ActorKind.SHARED) {
-            policy.require(IsolatePolicy.Capability.ACTOR_SHARED_MEMORY, "shared actor spawn");
+            policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
         }
+        reserveActorSlot();
 
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id, kind);
-        ActorCell<M> cell = new ActorCell<>(ref, kind, policy, behaviorFactory);
-        actors.put(id, cell);
-        return ref;
+        try {
+            ActorCell<M> cell = new ActorCell<>(ref, kind, policy, behaviorFactory);
+            actors.put(id, cell);
+            return ref;
+        } catch (RuntimeException | Error failure) {
+            actorCount.decrementAndGet();
+            throw failure;
+        }
+    }
+
+    private void reserveActorSlot() {
+        while (true) {
+            int current = actorCount.get();
+            if (current >= dispatcherConfig.maxActors()) {
+                throw new IllegalStateException(
+                        "actor runtime actor limit exceeded: " + dispatcherConfig.maxActors());
+            }
+            if (actorCount.compareAndSet(current, current + 1)) return;
+        }
+    }
+
+    private void unregisterActor(ActorCell<?> cell) {
+        if (actors.remove(cell.ref.id(), cell)) {
+            int remaining = actorCount.decrementAndGet();
+            if (remaining < 0) {
+                actorCount.incrementAndGet();
+                throw new IllegalStateException("actor count accounting underflow");
+            }
+        }
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARED_MEMORY, "SyncCell");
+        policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
         rejectPrivateActorSharedMemoryAccess("SyncCell creation");
         SyncCell<T> cell = new SyncCell<>(initialValue);
         syncCells.add(cell);
@@ -682,6 +750,7 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(ref);
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+        requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
         if (cell.mailbox.remainingCapacity() == 0) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -776,12 +845,61 @@ public final class ActorRuntime implements AutoCloseable {
         return shared;
     }
 
+    private void requireOwnedActorRefs(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value)) return;
+        if (value instanceof ActorRuntime.ActorRef<?> ref) {
+            if (!ref.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "ActorRef belongs to a different ActorRuntime; cross-runtime actor channels require an explicit bridge");
+            }
+            return;
+        }
+        if (value instanceof Shared<?> shared) {
+            requireOwnedActorRefs(shared.value(), visiting, depth + 1);
+            return;
+        }
+        if (value instanceof SyncCell<?>) return;
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) requireOwnedActorRefs(item, visiting, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) requireOwnedActorRefs(item, visiting, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    requireOwnedActorRefs(entry.getKey(), visiting, depth + 1);
+                    requireOwnedActorRefs(entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    requireOwnedActorRefs(Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
     private void requireOwnedSharedHandles(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
-        if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value == null || isScalar(value)) return;
+        if (value instanceof ActorRuntime.ActorRef<?> ref) {
+            if (!ref.ownedBy(this)) {
+                throw new IllegalArgumentException(
+                        "ActorRef belongs to a different ActorRuntime; cross-runtime actor channels require an explicit bridge");
+            }
+            return;
+        }
         if (value instanceof Shared<?> shared) {
             if (!shared.ownedBy(this)) {
                 throw new IllegalArgumentException(
@@ -853,9 +971,9 @@ public final class ActorRuntime implements AutoCloseable {
                 for (int i = 0; i < length; i++) {
                     rejectSharedMutableHandles(Array.get(value, i), visiting, depth + 1);
                 }
-            } else if (!(value instanceof Sendable)) {
+            } else {
                 throw new IllegalArgumentException("value of type " + value.getClass().getName()
-                        + " is not Sendable; mutable host objects cannot be shared read-only");
+                        + " is not a runtime-owned immutable actor value");
             }
         } finally {
             visiting.remove(value);
@@ -919,14 +1037,6 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return List.copyOf(frozen);
             }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return freeze(frozen, visiting, depth + 1);
-            }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
         } finally {
@@ -982,14 +1092,6 @@ public final class ActorRuntime implements AutoCloseable {
                     copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1));
                 }
                 return Collections.unmodifiableList(copy);
-            }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return isolateCopy(frozen, visiting, depth + 1);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -1056,14 +1158,6 @@ public final class ActorRuntime implements AutoCloseable {
                             limit);
                 }
                 return total;
-            }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return estimateSharedTransportBytes(frozen, visiting, depth + 1, limit);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -1179,14 +1273,6 @@ public final class ActorRuntime implements AutoCloseable {
                 }
                 return total;
             }
-            if (value instanceof Sendable sendable) {
-                Object frozen = sendable.freezeForSend();
-                if (frozen == value) {
-                    throw new IllegalArgumentException(
-                            "Sendable.freezeForSend() must not return the mutable source object");
-                }
-                return estimatePrivateTransportBytes(frozen, visiting, depth + 1, limit);
-            }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
         } finally {
@@ -1298,17 +1384,13 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
     }
 
-    /** Implemented by generated immutable Oreslang aggregate values. */
-    public interface Sendable {
-        Object freezeForSend();
-    }
-
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
 
-        for (ActorCell<?> cell : actors.values()) cell.stop();
+        for (ActorCell<?> cell : List.copyOf(actors.values())) cell.stop();
         actors.clear();
+        actorCount.set(0);
 
         // Interrupt carrier workers before touching shared-cell lifecycle. A
         // user callback may currently hold a SyncCell lock; runtime teardown
@@ -1328,6 +1410,22 @@ public final class ActorRuntime implements AutoCloseable {
 
     private ExecutorService dispatcherFor(ActorKind kind) {
         return kind == ActorKind.PRIVATE ? privateDispatcher : sharedDispatcher;
+    }
+
+    private static ExecutorService newDispatcher(
+            int parallelism,
+            int readyQueueCapacity,
+            String threadPrefix) {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                parallelism,
+                parallelism,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(readyQueueCapacity),
+                namedFactory(threadPrefix),
+                new ThreadPoolExecutor.AbortPolicy());
+        // Core workers are created lazily on first scheduled actor turn.
+        return executor;
     }
 
     private static ThreadFactory namedFactory(String prefix) {
@@ -1409,8 +1507,23 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        @SuppressWarnings("unchecked")
         private void runBatch() {
+            ACTOR_CARRIER.set(Boolean.TRUE);
+            try {
+                turnExecutor.execute(this::runBatchEntered);
+            } catch (Throwable failure) {
+                fail(failure);
+                scheduled.set(false);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                ACTOR_CARRIER.remove();
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private void runBatchEntered() {
             currentActor.set(this);
             try {
                 if (stopped.get()) return;
@@ -1452,7 +1565,7 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduled.set(false);
 
                 if (stopped.get() || closed.get()) {
-                    actors.remove(ref.id(), this);
+                    unregisterActor(this);
                 } else if (!mailbox.isEmpty()) {
                     // Bounded batch/throughput handoff for dispatcher fairness.
                     schedule();
@@ -1471,7 +1584,7 @@ public final class ActorRuntime implements AutoCloseable {
                 stopped.set(true);
                 drainMailboxReservations();
                 if (memorySlice != null) memorySlice.close();
-                actors.remove(ref.id(), this);
+                unregisterActor(this);
             }
         }
 
@@ -1480,7 +1593,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!stopped.compareAndSet(false, true)) return;
                 drainMailboxReservations();
                 if (memorySlice != null) memorySlice.close();
-                actors.remove(ref.id(), this);
+                unregisterActor(this);
             }
         }
     }

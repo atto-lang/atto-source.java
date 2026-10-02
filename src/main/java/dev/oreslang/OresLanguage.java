@@ -7,6 +7,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresContext;
 import org.graalvm.polyglot.SandboxPolicy;
 
@@ -29,16 +30,22 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     }
 
     /**
-     * Guest AST execution is still single-context-thread-at-a-time.
+     * Host-owned actor dispatcher workers may enter the context. Guest source
+     * still has no raw thread-creation authority; that remains controlled by
+     * IsolatePolicy and the Polyglot Context builder.
      *
-     * ActorRuntime dispatchers are a host scheduling substrate; source-level
-     * actor lowering must not execute Truffle guest ASTs concurrently until the
-     * language opts into and initializes Truffle multi-threading explicitly.
-     * Sequential migration between carrier threads remains allowed.
+     * Strict/adversarial contexts serialize actor guest turns in OresContext.
+     * Non-adversarial contexts may execute independent actor turns concurrently.
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
-        return singleThreaded;
+        return singleThreaded || ActorRuntime.isActorCarrierThread();
+    }
+
+    @Override
+    protected void initializeMultiThreading(OresContext context) {
+        // All mutable language state used by actor turns is context-owned,
+        // actor-owned, immutable, or explicitly synchronized.
     }
 
     @Override

@@ -707,4 +707,68 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void actorRefsCannotBecomeImplicitCrossRuntimeChannels() {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var foreign = left.<String>spawnPrivate(() -> (message, context) -> { });
+            var localPrivate = right.<Object>spawnPrivate(() -> (message, context) -> { });
+            var localShared = right.<Object>spawnShared(() -> (message, context) -> { });
+
+            IllegalArgumentException privateFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> localPrivate.send(foreign));
+            assertTrue(privateFailure.getMessage().contains("different ActorRuntime"));
+
+            IllegalArgumentException sharedFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> localShared.send(Map.of("ref", foreign)));
+            assertTrue(sharedFailure.getMessage().contains("different ActorRuntime"));
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> right.shareReadonly(List.of(foreign)));
+        }
+    }
+
+    @Test
+    void actorRefsRemainSendableInsideOneRuntime() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            var target = runtime.<String>spawnPrivate(() -> (message, context) -> { });
+            var receiver = runtime.<Object>spawnPrivate(() -> (message, context) -> {
+                assertSame(target, message);
+                received.countDown();
+            });
+
+            receiver.send(target);
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+        }
+    }
+
+
+    @Test
+    void actorPopulationIsBoundedAndSlotsReturnOnStop() {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 2);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var first = runtime.<String>spawnPrivate(() -> (message, context) -> { });
+            var second = runtime.<String>spawnShared(() -> (message, context) -> { });
+
+            assertEquals(2, runtime.actorCount());
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.<String>spawnPrivate(() -> (message, context) -> { }));
+            assertTrue(failure.getMessage().contains("actor limit exceeded"));
+
+            first.stop();
+            assertEquals(1, runtime.actorCount());
+
+            assertDoesNotThrow(() ->
+                    runtime.<String>spawnPrivate(() -> (message, context) -> { }));
+            assertEquals(2, runtime.actorCount());
+
+            second.stop();
+        }
+    }
+
+
 }
