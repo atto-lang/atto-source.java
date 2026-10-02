@@ -75,6 +75,47 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void inlineNlexActorLambdaGetsAStaticActorContract() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val worker_ref = actor.spawn(nlex |String message| -> {
+                    stdio.stdout.write(message);
+                    return;
+                  });
+                  actor.send(worker_ref, "inline");
+                  actor.stop(worker_ref);
+                  actor.join(worker_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("inline", output);
+    }
+
+    @Test
+    void inlineActorLambdaMustBeNlexAndTypeItsMessage() {
+        Exception lexical = assertThrows(Exception.class, () -> run("""
+                pub routine main() => void {
+                  actor.spawn(|String message| -> {
+                    return;
+                  });
+                  return;
+                }
+                """));
+        assertTrue(lexical.getMessage().contains("nlex"));
+
+        Exception inferredMessage = assertThrows(Exception.class, () -> run("""
+                pub routine main() => void {
+                  actor.spawn(nlex |message| -> {
+                    return;
+                  });
+                  return;
+                }
+                """));
+        assertTrue(inferredMessage.getMessage().contains("explicit type"));
+    }
+
+    @Test
     void statefulActorKeepsPrivateStateAcrossMessages() throws Exception {
         String output = run("""
                 fnc counter(str message, int state) => int {
