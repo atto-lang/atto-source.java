@@ -103,10 +103,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            try {
-                executeBlock(fn.body(), env);
-                return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            return executeCallableBody(fn.body(), env);
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -117,23 +114,50 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Param param = method.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            try {
-                executeBlock(method.body(), env);
-                return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            return executeCallableBody(method.body(), env);
         }
 
-        private void executeBlock(List<Ast.Stmt> statements, Env parent) {
-            Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+        private Object executeCallableBody(List<Ast.Stmt> body, Env env) {
+            CallFrame frame = new CallFrame();
+            Object result = null;
+            RuntimeException bodyFailure = null;
+
             try {
-                for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
-            } finally {
-                while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                executeBlock(body, env, frame);
+            } catch (ReturnSignal signal) {
+                result = signal.value;
+            } catch (RuntimeException failure) {
+                bodyFailure = failure;
             }
+
+            RuntimeException deferFailure = drainDeferred(frame);
+            if (bodyFailure != null) {
+                if (deferFailure != null) bodyFailure.addSuppressed(deferFailure);
+                throw bodyFailure;
+            }
+            if (deferFailure != null) throw deferFailure;
+            return result;
         }
 
-        private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
+        private RuntimeException drainDeferred(CallFrame frame) {
+            RuntimeException firstFailure = null;
+            while (!frame.deferred.isEmpty()) {
+                try {
+                    frame.deferred.pop().call(List.of());
+                } catch (RuntimeException failure) {
+                    if (firstFailure == null) firstFailure = failure;
+                    else firstFailure.addSuppressed(failure);
+                }
+            }
+            return firstFailure;
+        }
+
+        private void executeBlock(List<Ast.Stmt> statements, Env parent, CallFrame frame) {
+            Env env = new Env(parent);
+            for (Ast.Stmt stmt : statements) executeStatement(stmt, env, frame);
+        }
+
+        private void executeStatement(Ast.Stmt stmt, Env env, CallFrame frame) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
@@ -155,22 +179,30 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
-            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                Object produced = eval(defer.expression(), env);
+                if (!(produced instanceof Invokable action)) {
+                    throw new IllegalArgumentException(
+                            "defer operand must evaluate immediately to an arity-0 callable; got " + produced);
+                }
+                frame.deferred.push(action);
+                return;
+            }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
-                    if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env); return; }
+                    if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env, frame); return; }
                 }
-                executeBlock(ifStmt.elseBody(), env);
+                executeBlock(ifStmt.elseBody(), env, frame);
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
-                try { executeBlock(tried.body(), env); }
+                try { executeBlock(tried.body(), env, frame); }
                 catch (ReturnSignal signal) { throw signal; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv);
-                } finally { executeBlock(tried.finallyBody(), env); }
+                    executeBlock(tried.catchBody(), catchEnv, frame);
+                } finally { executeBlock(tried.finallyBody(), env, frame); }
                 return;
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
@@ -179,16 +211,16 @@ public final class OresEvalRootNode extends RootNode {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
                     iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    executeBlock(loop.body(), iteration);
+                    executeBlock(loop.body(), iteration, frame);
                 }
                 return;
             }
             if (stmt instanceof Ast.ForStmt loop) {
                 Env loopEnv = new Env(env);
-                if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<>());
+                if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, frame);
                 while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                     context.schedulerSafepoint();
-                    executeBlock(loop.body(), loopEnv);
+                    executeBlock(loop.body(), loopEnv, frame);
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
             }
@@ -343,8 +375,7 @@ public final class OresEvalRootNode extends RootNode {
                         local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
                     }
                     if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    try { executeBlock(lambda.blockBody(), local); return null; }
-                    catch (ReturnSignal signal) { return signal.value; }
+                    return executeCallableBody(lambda.blockBody(), local);
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
@@ -415,10 +446,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            try {
-                executeBlock(fn.body(), env);
-                return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            return executeCallableBody(fn.body(), env);
         }
 
         /**
@@ -598,6 +626,10 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
+
+    private static final class CallFrame {
+        private final ArrayDeque<Invokable> deferred = new ArrayDeque<>();
+    }
 
     private static final class Env {
         private static final Object MISSING = new Object();
