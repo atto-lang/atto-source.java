@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 
@@ -41,6 +40,11 @@ public final class OresMutex {
                     "SharedMutex.new");
         }
         return new Shared<>(value);
+    }
+
+    /** Runtime marker for futures whose successful value is a lexical MutexGuard. */
+    public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+        private GuardFuture() { }
     }
 
     public sealed interface Lock<T> permits Local, Shared {
@@ -140,11 +144,13 @@ public final class OresMutex {
 
         @Override
         public CompletableFuture<Guard<T>> lockAsync() {
+            GuardFuture<T> future = new GuardFuture<>();
             try {
-                return CompletableFuture.completedFuture(lock());
+                future.complete(lock());
             } catch (Throwable failure) {
-                return CompletableFuture.failedFuture(failure);
+                future.completeExceptionally(failure);
             }
+            return future;
         }
 
         @Override
@@ -200,25 +206,69 @@ public final class OresMutex {
      */
     public static final class Shared<T> implements Lock<T> {
         private static final int MAX_ASYNC_WAITERS = 8_192;
+        private static final int MAX_GLOBAL_ASYNC_WAITERS = 32_768;
+        private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
 
         private final T value;
         private final Semaphore permit = new Semaphore(1, true);
         private final AtomicBoolean poisoned = new AtomicBoolean();
         private final AtomicInteger asyncWaiters = new AtomicInteger();
-        private final AtomicReference<ActorRuntime> owningRuntime = new AtomicReference<>();
+        /*
+         * Runtime ownership is publication-aware. A send may need to reserve
+         * ownership before mailbox admission so a receiver can never observe an
+         * unbound SharedMutex, but a failed admission must not permanently bind
+         * the handle. pendingPublications + publishedToRuntime provide that
+         * two-phase contract.
+         */
+        private ActorRuntime owningRuntime;
+        private int pendingPublications;
+        private boolean publishedToRuntime;
         private final Set<Object> activeDomains = ConcurrentHashMap.newKeySet();
 
         private Shared(T value) {
             this.value = value;
         }
 
-        boolean bindToRuntime(ActorRuntime runtime) {
+        synchronized boolean bindToRuntime(ActorRuntime runtime) {
             Objects.requireNonNull(runtime, "runtime");
-            ActorRuntime existing = owningRuntime.get();
-            if (existing == runtime) return true;
-            if (existing != null) return false;
-            if (owningRuntime.compareAndSet(null, runtime)) return true;
-            return owningRuntime.get() == runtime;
+            if (owningRuntime == null) {
+                owningRuntime = runtime;
+            } else if (owningRuntime != runtime) {
+                return false;
+            }
+            publishedToRuntime = true;
+            return true;
+        }
+
+        synchronized boolean reserveRuntimePublication(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            if (owningRuntime == null) {
+                owningRuntime = runtime;
+            } else if (owningRuntime != runtime) {
+                return false;
+            }
+            pendingPublications++;
+            return true;
+        }
+
+        synchronized void commitRuntimePublication(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            if (owningRuntime != runtime || pendingPublications <= 0) {
+                throw new IllegalStateException("SharedMutex publication commit without matching reservation");
+            }
+            pendingPublications--;
+            publishedToRuntime = true;
+        }
+
+        synchronized void abortRuntimePublication(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            if (owningRuntime != runtime || pendingPublications <= 0) {
+                throw new IllegalStateException("SharedMutex publication abort without matching reservation");
+            }
+            pendingPublications--;
+            if (pendingPublications == 0 && !publishedToRuntime) {
+                owningRuntime = null;
+            }
         }
 
         private void requireActorAccess() {
@@ -271,20 +321,32 @@ public final class OresMutex {
                     : Math.min(MAX_ASYNC_WAITERS, policy.maxMailboxMessages());
         }
 
-        private boolean reserveAsyncWaiter(int limit) {
+        private static boolean reserveWaiter(AtomicInteger counter, int limit) {
             while (true) {
-                int current = asyncWaiters.get();
+                int current = counter.get();
                 if (current >= limit) return false;
-                if (asyncWaiters.compareAndSet(current, current + 1)) return true;
+                if (counter.compareAndSet(current, current + 1)) return true;
+            }
+        }
+
+        private boolean reserveAsyncWaiter(int limit) {
+            return reserveWaiter(asyncWaiters, limit);
+        }
+
+        private static void releaseWaiter(AtomicInteger counter, String scope) {
+            int remaining = counter.decrementAndGet();
+            if (remaining < 0) {
+                counter.incrementAndGet();
+                throw new IllegalStateException("SharedMutex " + scope + " async waiter accounting underflow");
             }
         }
 
         private void releaseAsyncWaiter() {
-            int remaining = asyncWaiters.decrementAndGet();
-            if (remaining < 0) {
-                asyncWaiters.incrementAndGet();
-                throw new IllegalStateException("SharedMutex async waiter accounting underflow");
-            }
+            releaseWaiter(asyncWaiters, "per-mutex");
+        }
+
+        private static void releaseGlobalAsyncWaiter() {
+            releaseWaiter(GLOBAL_ASYNC_WAITERS, "global");
         }
 
         private Guard<T> checkedGuardAfterAcquire(Object ownerDomain, boolean enforceOwnerDomain) {
@@ -350,9 +412,15 @@ public final class OresMutex {
                 return CompletableFuture.failedFuture(new IllegalStateException(
                         "SharedMutex async waiter limit exceeded: " + waiterLimit));
             }
+            if (!reserveWaiter(GLOBAL_ASYNC_WAITERS, MAX_GLOBAL_ASYNC_WAITERS)) {
+                releaseAsyncWaiter();
+                releaseDomain(ownerDomain);
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
+            }
 
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
-            CompletableFuture<Guard<T>> future = new CompletableFuture<>();
+            GuardFuture<T> future = new GuardFuture<>();
             final Thread waiter;
             try {
                 waiter = Thread.ofVirtual().name("ores-shared-mutex-waiter").unstarted(() -> {
@@ -380,11 +448,13 @@ public final class OresMutex {
             } catch (Throwable startupFailure) {
                 releaseDomain(ownerDomain);
                 releaseAsyncWaiter();
+                releaseGlobalAsyncWaiter();
                 return CompletableFuture.failedFuture(startupFailure);
             }
 
             future.whenComplete((ignored, failure) -> {
                 releaseAsyncWaiter();
+                releaseGlobalAsyncWaiter();
                 if (future.isCancelled()) waiter.interrupt();
             });
 
@@ -460,8 +530,10 @@ public final class OresMutex {
             return poisoned.get();
         }
 
-        /** Runtime transport binds a SharedMutex to exactly one ActorRuntime. */
-        Object transportValue() { return value; }
+        /** Runtime transport inspects the protected payload only for capability/reference validation. */
+        Object transportValue() {
+            return value;
+        }
 
         private final class SharedGuard implements Guard<T> {
             private final Object ownerDomain;
