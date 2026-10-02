@@ -518,6 +518,11 @@ public final class TraitComposer {
             if (expression instanceof Ast.NewExpr created) {
                 validateTypeRef(moduleName, created.type(), generics, "constructor type");
                 for (Ast.Expr argument : created.arguments()) validateNoTraitRuntimeTypes(moduleName, argument, generics);
+            } else if (expression instanceof Ast.StructInitExpr created) {
+                validateTypeRef(moduleName, created.type(), generics, "struct initializer type");
+                for (Ast.ObjectField field : created.fields()) {
+                    validateNoTraitRuntimeTypes(moduleName, field.value(), generics);
+                }
             } else if (expression instanceof Ast.MemberExpr member) {
                 validateNoTraitRuntimeTypes(moduleName, member.receiver(), generics);
             } else if (expression instanceof Ast.CallExpr call) {
@@ -668,6 +673,15 @@ public final class TraitComposer {
                                     + "' cannot be instantiated; compose it into a class with 'with'");
                 }
                 for (Ast.Expr argument : created.arguments()) validateNoTraitInstantiation(moduleName, argument);
+            } else if (expression instanceof Ast.StructInitExpr created) {
+                if (created.type() != null && isTraitName(moduleName, created.type().name())) {
+                    throw new IllegalArgumentException(
+                            "trait '" + created.type().name()
+                                    + "' cannot be initialized as a value; compose it into a struct/class with 'with'");
+                }
+                for (Ast.ObjectField field : created.fields()) {
+                    validateNoTraitInstantiation(moduleName, field.value());
+                }
             } else if (expression instanceof Ast.MemberExpr member) {
                 validateNoTraitInstantiation(moduleName, member.receiver());
             } else if (expression instanceof Ast.CallExpr call) {
