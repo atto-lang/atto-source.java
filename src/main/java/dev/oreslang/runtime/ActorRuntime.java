@@ -1496,7 +1496,14 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof OresMutex.Shared<?> nested) {
-            requireSharedMutexPayloadSafe(nested.transportValue(), visiting, depth + 1);
+            if (visiting.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("cyclic SharedMutex payload is not runtime-shared-safe");
+            }
+            try {
+                requireSharedMutexPayloadSafe(nested.transportValue(), visiting, depth + 1);
+            } finally {
+                visiting.remove(value);
+            }
             return;
         }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -1691,7 +1698,17 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof SyncCell<?>) return;
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            out.add(sharedMutex);
+            if (!out.add(sharedMutex)) return;
+            if (visiting.put(value, Boolean.TRUE) != null) return;
+            try {
+                collectSharedMutexes(
+                        sharedMutex.transportValue(),
+                        out,
+                        visiting,
+                        depth + 1);
+            } finally {
+                visiting.remove(value);
+            }
             return;
         }
         if (value instanceof Shared<?> shared) {
