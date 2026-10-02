@@ -29,6 +29,10 @@ public final class CapabilityChecker {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt s) checkExpr(s.initializer(), policy);
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
+            else if (stmt instanceof Ast.MatchStmt s) {
+                checkExpr(s.value(), policy);
+                for (Ast.MatchArm arm : s.arms()) checkStatements(arm.body(), policy);
+            }
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
