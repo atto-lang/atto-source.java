@@ -52,6 +52,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final ArrayDeque<RuntimeException> handledFailures = new ArrayDeque<>();
 
         private Evaluator(Ast.Program program, OresContext context) {
             this.program = program;
@@ -172,7 +173,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (failure != null) {
-                if (isNonRecoverable(failure)) throw failure;
+                if (isNonRecoverable(failure) || failure instanceof ThrowSignal) throw failure;
                 RecoveryResult recovered = recoverFailure(frame, failure);
                 if (recovered.recovered()) return recovered.value();
                 throw recovered.failure();
@@ -184,12 +185,15 @@ public final class OresEvalRootNode extends RootNode {
             RuntimeException current = failure;
             while (!frame.recoverers.isEmpty()) {
                 Invokable recoverer = frame.recoverers.pop();
+                handledFailures.push(current);
                 try {
                     return RecoveryResult.recovered(recoverer.call(List.of(failureValue(current))));
                 } catch (RuntimeException next) {
                     if (next != current) next.addSuppressed(current);
-                    if (isNonRecoverable(next)) return RecoveryResult.unrecovered(next);
+                    if (isNonRecoverable(next) || next instanceof ThrowSignal) return RecoveryResult.unrecovered(next);
                     current = next;
+                } finally {
+                    handledFailures.pop();
                 }
             }
             return RecoveryResult.unrecovered(current);
@@ -202,7 +206,9 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object failureValue(RuntimeException failure) {
-            return failure instanceof PanicSignal panic ? panic.value : failure;
+            if (failure instanceof PanicSignal panic) return panic.value;
+            if (failure instanceof ThrowSignal thrown) return thrown.value;
+            return failure;
         }
 
         private RuntimeException drainDeferred(CallFrame frame) {
@@ -275,6 +281,15 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.PanicStmt panic) {
                 throw new PanicSignal(eval(panic.value(), env));
             }
+            if (stmt instanceof Ast.ThrowStmt thrown) {
+                throw new ThrowSignal(eval(thrown.value(), env));
+            }
+            if (stmt instanceof Ast.RaiseStmt) {
+                if (handledFailures.isEmpty()) {
+                    throw new IllegalStateException("'raise' requires an active catch or recover handler");
+                }
+                throw handledFailures.peek();
+            }
             if (stmt instanceof Ast.StopStmt) {
                 throw new ActorRuntime.StopActorSignal();
             }
@@ -296,10 +311,15 @@ public final class OresEvalRootNode extends RootNode {
                     } catch (BreakSignal | ContinueSignal signal) {
                         throw signal;
                     } catch (RuntimeException failure) {
-                        if (isNonRecoverable(failure)) throw failure;
+                        if (isNonRecoverable(failure) || failure instanceof PanicSignal) throw failure;
                         Env catchEnv = new Env(env);
                         catchEnv.define(tried.errorName(), failureValue(failure), Ast.BindingKind.VAL);
-                        executeBlock(tried.catchBody(), catchEnv, frame);
+                        handledFailures.push(failure);
+                        try {
+                            executeBlock(tried.catchBody(), catchEnv, frame);
+                        } finally {
+                            handledFailures.pop();
+                        }
                     }
                 } catch (RuntimeException escaping) {
                     pending = escaping;
@@ -893,6 +913,14 @@ public final class OresEvalRootNode extends RootNode {
         private final Object value;
         private PanicSignal(Object value) {
             super("panic: " + String.valueOf(value), null, true, false);
+            this.value = value;
+        }
+    }
+
+    private static final class ThrowSignal extends RuntimeException {
+        private final Object value;
+        private ThrowSignal(Object value) {
+            super("throw: " + String.valueOf(value), null, true, false);
             this.value = value;
         }
     }
