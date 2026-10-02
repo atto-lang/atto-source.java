@@ -84,7 +84,7 @@ final class ParserTest {
     void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
         String source = """
                 shared actor Account {
-                  let int balance = 100;
+                  let balance = 100;
 
                   pub fnc withdraw(int amount) => void {
                     self.balance = self.balance - amount;
