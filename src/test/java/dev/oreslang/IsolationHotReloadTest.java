@@ -103,6 +103,40 @@ final class IsolationHotReloadTest {
                   return;
                 }
                 """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val p = process;
+                  p.gc();
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val a = actor;
+                  a.gc();
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val io = stdio;
+                  io.println("no");
+                  return;
+                }
+                """)));
+
+        var extractedProcessGc = TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val collect = process.gc;
+                  collect();
+                  return;
+                }
+                """));
+        assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(extractedProcessGc, IsolatePolicy.strictFaas()));
     }
 
     @Test
