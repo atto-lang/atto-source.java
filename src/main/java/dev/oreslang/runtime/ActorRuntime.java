@@ -765,6 +765,71 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private void validatePrivateBehaviorState(ActorId owner, Behavior<?> behavior) {
+        Class<?> type = behavior.getClass();
+        for (java.lang.reflect.Field field : type.getDeclaredFields()) {
+            if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+            if (!field.trySetAccessible()) {
+                throw new SecurityException(
+                        "private actor behavior contains inaccessible captured state: " + field.getName());
+            }
+            final Object value;
+            try {
+                value = field.get(behavior);
+            } catch (IllegalAccessException impossible) {
+                throw new SecurityException(
+                        "cannot inspect private actor behavior capture: " + field.getName(),
+                        impossible);
+            }
+            validatePrivateBehaviorCapture(owner, field.getName(), value);
+        }
+    }
+
+    private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
+        if (value == null || isScalar(value) || value instanceof Class<?>) return;
+
+        if (value instanceof PrivateMemoryBlock block) {
+            if (!block.owner().equals(owner)) {
+                throw new SecurityException(
+                        "private actor behavior captured another actor's memory block in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof ActorMemorySlice slice) {
+            if (!slice.owner().equals(owner)) {
+                throw new SecurityException(
+                        "private actor behavior captured another actor's memory slice in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof MemoryReservation reservation) {
+            if (!reservation.owner().equals(owner)) {
+                throw new SecurityException(
+                        "private actor behavior captured another actor's memory reservation in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof ActorRef<?> ref) {
+            if (!ref.ownedBy(this)) {
+                throw new SecurityException(
+                        "private actor behavior captured an ActorRef from another runtime in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof ActorContext<?> actorContext) {
+            if (!actorContext.self().id().equals(owner) || actorContext.runtime() != this) {
+                throw new SecurityException(
+                        "private actor behavior captured a foreign actor context in " + fieldName);
+            }
+            return;
+        }
+
+        throw new SecurityException(
+                "private actor behavior captured mutable/non-private JVM state in "
+                        + fieldName + " (" + value.getClass().getName()
+                        + "); allocate persistent state through context.privateMemory()");
+    }
+
     private void requireTrustedSupplierPolicy(IsolatePolicy policy) {
         Objects.requireNonNull(policy);
         if (policy.adversarial()) {
@@ -814,7 +879,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
             try {
-                ActorCell<M> cell = new ActorCell<>(ref, kind, effectivePolicy, behaviorFactory);
+                ActorCell<M> cell = new ActorCell<>(
+                    ref, kind, effectivePolicy, behaviorFactory, trustedPrivateFactory);
                 actors.put(id, cell);
                 return ref;
             } catch (RuntimeException | Error failure) {
@@ -2059,6 +2125,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
+        private final boolean trustedPrivateFactory;
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
@@ -2075,11 +2142,13 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorRef<M> ref,
                 ActorKind kind,
                 IsolatePolicy policy,
-                BehaviorFactory<M> behaviorFactory) {
+                BehaviorFactory<M> behaviorFactory,
+                boolean trustedPrivateFactory) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
+            this.trustedPrivateFactory = trustedPrivateFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -2226,9 +2295,13 @@ public final class ActorRuntime implements AutoCloseable {
                 };
 
                 if (behavior == null) {
-                    behavior = Objects.requireNonNull(
+                    Behavior<M> created = Objects.requireNonNull(
                             behaviorFactory.create(context),
                             "actor behaviorFactory returned null");
+                    if (kind == ActorKind.PRIVATE && !trustedPrivateFactory) {
+                        validatePrivateBehaviorState(ref.id(), created);
+                    }
+                    behavior = created;
                 }
 
                 int processed = 0;
