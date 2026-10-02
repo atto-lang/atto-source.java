@@ -340,7 +340,11 @@ public final class OresEvalRootNode extends RootNode {
                     schema.append(field.name())
                             .append(':').append(field.bindingKind())
                             .append(':').append(field.type());
-                    appendPersistedTypeSchema(field.type(), schema, new LinkedHashSet<>());
+                    appendPersistedTypeSchema(
+                            field.type(),
+                            module.name(),
+                            schema,
+                            new LinkedHashSet<>());
                     schema.append(';');
                 }
                 return schema.toString();
@@ -349,14 +353,15 @@ public final class OresEvalRootNode extends RootNode {
 
         private void appendPersistedTypeSchema(
                 Ast.TypeRef type,
+                String lexicalModuleName,
                 StringBuilder schema,
                 Set<String> visitingClasses) {
             if (type == null) return;
 
-            Ast.ClassDecl stateClass = findClass(type.name());
+            Ast.ClassDecl stateClass = findClassForSchema(type.name(), lexicalModuleName);
             if (stateClass == null) {
                 for (Ast.TypeRef argument : type.arguments()) {
-                    appendPersistedTypeSchema(argument, schema, visitingClasses);
+                    appendPersistedTypeSchema(argument, lexicalModuleName, schema, visitingClasses);
                 }
                 return;
             }
@@ -374,11 +379,28 @@ public final class OresEvalRootNode extends RootNode {
                 schema.append(classField.name())
                         .append(':').append(classField.bindingKind())
                         .append(':').append(classField.type());
-                appendPersistedTypeSchema(classField.type(), schema, visitingClasses);
+                appendPersistedTypeSchema(
+                        classField.type(),
+                        classOwners.get(stateClass),
+                        schema,
+                        visitingClasses);
                 schema.append(';');
             }
             schema.append('}');
             visitingClasses.remove(classId);
+        }
+
+        private Ast.ClassDecl findClassForSchema(String name, String lexicalModuleName) {
+            if (name == null || name.isBlank()) return null;
+            if (name.contains(".")) return classes.get(name);
+
+            if (lexicalModuleName != null) {
+                Ast.ClassDecl lexical = classes.get(lexicalModuleName + "." + name);
+                if (lexical != null) return lexical;
+            }
+
+            if (ambiguousClasses.contains(name)) return null;
+            return classes.get(name);
         }
 
         private String singletonCodeDigest(Ast.ModuleDecl module) {
