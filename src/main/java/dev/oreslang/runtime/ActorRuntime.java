@@ -197,24 +197,20 @@ public final class ActorRuntime implements AutoCloseable {
         requireWithinCeiling(policy);
         requireOwnedStateBytes(policy, initialOwnedStateBytes);
         reserveActorSlot();
-        boolean published = false;
+        ActorId id = ActorId.create();
+        ActorRef<M> ref = new ActorRef<>(id);
+        ActorCell<M> cell = new ActorCell<>(ref, policy, initialOwnedStateBytes, behaviorFactory);
+        boolean inserted = false;
         try {
-            ActorId id = ActorId.create();
-            ActorRef<M> ref = new ActorRef<>(id);
-            ActorCell<M> cell = new ActorCell<>(ref, policy, initialOwnedStateBytes, behaviorFactory);
             ActorCell<?> previous = actors.putIfAbsent(id, cell);
             if (previous != null) throw new IllegalStateException("actor id collision");
-            published = true;
-            try {
-                cell.start();
-            } catch (Throwable failure) {
-                removeActorCell(id, cell);
-                published = false;
-                throw failure;
-            }
+            inserted = true;
+            cell.start();
             return ref;
-        } finally {
-            if (!published) releaseActorSlot();
+        } catch (Throwable failure) {
+            if (inserted) removeActorCell(id, cell);
+            else releaseActorSlot();
+            throw failure;
         }
     }
 
