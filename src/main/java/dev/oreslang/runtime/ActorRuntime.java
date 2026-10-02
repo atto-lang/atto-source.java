@@ -47,6 +47,14 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+
+    private record ActorExecutionContext(
+            ActorRuntime runtime,
+            ActorId actorId,
+            ActorKind kind,
+            IsolatePolicy policy,
+            Object executionDomain) { }
 
     @FunctionalInterface
     public interface TurnExecutor {
@@ -59,6 +67,25 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static boolean isActorCarrierThread() {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
+    }
+
+    public static boolean inActorExecution() {
+        return CURRENT_ACTOR_EXECUTION.get() != null;
+    }
+
+    public static IsolatePolicy currentActorPolicy() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.policy();
+    }
+
+    public static ActorRuntime currentActorRuntime() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.runtime();
+    }
+
+    public static Object currentExecutionDomain() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? Thread.currentThread() : current.executionDomain();
     }
 
     public enum ActorKind { PRIVATE, SHARED }
@@ -1448,6 +1475,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
+        private final Object executionDomain = new Object();
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -1525,6 +1553,8 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
             currentActor.set(this);
+            CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
             try {
                 if (stopped.get()) return;
 
@@ -1561,6 +1591,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
                 scheduled.set(false);
 
