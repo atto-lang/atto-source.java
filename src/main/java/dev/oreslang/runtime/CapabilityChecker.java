@@ -16,13 +16,23 @@ public final class CapabilityChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
                     if (fn.gpu()) require(policy, IsolatePolicy.Capability.GPU, "gpu callable " + module.name() + "." + fn.name());
+                    for (Ast.Param param : fn.parameters()) if (usesGpuType(param.type())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource parameter " + fn.name() + "." + param.name());
+                    if (usesGpuType(fn.returnType())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource return type " + fn.name());
                     checkStatements(fn.body(), policy);
                 }
                 else if (declaration instanceof Ast.ClassDecl klass) {
-                    for (Ast.FieldDecl field : klass.fields()) if (field.initializer() != null) checkExpr(field.initializer(), policy);
-                    for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
-                } else if (declaration instanceof Ast.FieldDecl field && field.initializer() != null) {
-                    checkExpr(field.initializer(), policy);
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        if (usesGpuType(field.type())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource field " + klass.name() + "." + field.name());
+                        if (field.initializer() != null) checkExpr(field.initializer(), policy);
+                    }
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        for (Ast.Param param : method.parameters()) if (usesGpuType(param.type())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource parameter " + klass.name() + "." + method.name());
+                        if (usesGpuType(method.returnType())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource return type " + klass.name() + "." + method.name());
+                        checkStatements(method.body(), policy);
+                    }
+                } else if (declaration instanceof Ast.FieldDecl field) {
+                    if (usesGpuType(field.type())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource binding " + field.name());
+                    if (field.initializer() != null) checkExpr(field.initializer(), policy);
                 }
             }
         }
@@ -30,7 +40,10 @@ public final class CapabilityChecker {
 
     private static void checkStatements(List<Ast.Stmt> statements, IsolatePolicy policy) {
         for (Ast.Stmt stmt : statements) {
-            if (stmt instanceof Ast.BindingStmt s) checkExpr(s.initializer(), policy);
+            if (stmt instanceof Ast.BindingStmt s) {
+                if (s.declaredType() != null && usesGpuType(s.declaredType())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource binding " + s.name());
+                checkExpr(s.initializer(), policy);
+            }
             else if (stmt instanceof Ast.DestructureStmt s) checkExpr(s.initializer(), policy);
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
@@ -96,6 +109,14 @@ public final class CapabilityChecker {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
         }
+    }
+
+    private static boolean usesGpuType(Ast.TypeRef ref) {
+        if (ref == null) return false;
+        if (ref.name().equals("GpuArray") || ref.name().equals("GpuStream")) return true;
+        if (ref.isBorrow()) return usesGpuType(ref.borrowedTarget());
+        for (Ast.TypeRef arg : ref.arguments()) if (usesGpuType(arg)) return true;
+        return false;
     }
 
     private static String memberPath(Ast.Expr expr) {
