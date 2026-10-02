@@ -132,4 +132,31 @@ final class ParserTest {
                 """));
     }
 
+    @Test
+    void actorEntrypointsCannotBeCalledOrConstructedAsOrdinaryValues() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub actor fnc worker(int value) => int {
+                  return value;
+                }
+
+                pub fnc bad() => int {
+                  return worker(1);
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                shared actor Account {
+                  let int balance = 100;
+
+                  pub fnc read() => int {
+                    return self.balance;
+                  }
+                }
+
+                pub fnc bad() => Account {
+                  return new Account();
+                }
+                """)));
+    }
+
 }
