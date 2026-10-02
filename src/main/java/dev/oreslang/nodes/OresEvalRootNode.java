@@ -11,9 +11,12 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.ProcessSingletonRegistry;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -145,6 +148,7 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalStateException("singleton module state schema changed for " + owner.name()
                         + "; process-lifetime state cannot be reinterpreted without an explicit migration");
             }
+            authorizeSingletonCodeGeneration(state, owner);
             Env env = new Env(state.fields, state);
             return executeFunctionBody(fn, args, env);
         }
@@ -182,7 +186,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private SingletonState initializeSingleton(Ast.ModuleDecl module) {
-            SingletonState state = new SingletonState(singletonKey(module), singletonSchema(module));
+            SingletonState state = new SingletonState(
+                    singletonKey(module),
+                    singletonSchema(module),
+                    singletonCodeDigest(module),
+                    context.codeGeneration());
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)) continue;
                 if (field.initializer() == null) {
@@ -210,6 +218,48 @@ public final class OresEvalRootNode extends RootNode {
                         .append(';');
             }
             return schema.toString();
+        }
+
+        private String singletonCodeDigest(Ast.ModuleDecl module) {
+            try {
+                byte[] digest = MessageDigest.getInstance("SHA-256")
+                        .digest(module.toString().getBytes(StandardCharsets.UTF_8));
+                return HexFormat.of().formatHex(digest);
+            } catch (Exception impossible) {
+                throw new IllegalStateException(impossible);
+            }
+        }
+
+        private void authorizeSingletonCodeGeneration(SingletonState state, Ast.ModuleDecl module) {
+            String digest = singletonCodeDigest(module);
+            long generation = context.codeGeneration();
+
+            if (state.activeCodeDigest.equals(digest)) {
+                if (generation > state.activeGeneration) state.activeGeneration = generation;
+                return;
+            }
+
+            context.requireCapability(IsolatePolicy.Capability.HOT_CODE_LOAD,
+                    "singleton hot reload for " + module.name());
+
+            if (state.activeGeneration > 0) {
+                if (generation == 0) {
+                    throw new SecurityException("unversioned context cannot replace managed singleton code for "
+                            + module.name());
+                }
+                if (generation < state.activeGeneration) {
+                    throw new SecurityException("stale singleton generation " + generation
+                            + " cannot replace active generation " + state.activeGeneration
+                            + " for " + module.name());
+                }
+                if (generation == state.activeGeneration) {
+                    throw new SecurityException("conflicting singleton code digest at generation " + generation
+                            + " for " + module.name());
+                }
+            }
+
+            state.activeCodeDigest = digest;
+            if (generation > 0) state.activeGeneration = generation;
         }
 
         private Ast.ModuleDecl ownerModule(Ast.FunctionDecl fn) {
@@ -768,10 +818,14 @@ public final class OresEvalRootNode extends RootNode {
         private final String key;
         private final String schema;
         private final Env fields;
+        private String activeCodeDigest;
+        private long activeGeneration;
 
-        private SingletonState(String key, String schema) {
+        private SingletonState(String key, String schema, String activeCodeDigest, long activeGeneration) {
             this.key = key;
             this.schema = schema;
+            this.activeCodeDigest = activeCodeDigest;
+            this.activeGeneration = activeGeneration;
             this.fields = new Env(null, this);
         }
     }
