@@ -186,6 +186,14 @@ qualified_name  = IDENT { "." IDENT } ;
 stmt_terminator   = ";" | SAFE_STRUCTURAL_BOUNDARY ;
 member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 
+(* defer semantics:
+   - "defer" accepts ordinary expression syntax.
+   - The expression is evaluated immediately at the defer site.
+   - Its result must have function arity 0.
+   - The resulting callable is registered on the enclosing callable invocation,
+     not on the lexical block, and runs LIFO when that invocation exits.
+*)
+
 (* Semantic restrictions:
    - Each source file is a separately versioned compilation/code unit and is the
      default package identity when no explicit namespace is declared.
