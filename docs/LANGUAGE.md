@@ -276,6 +276,8 @@ GPU device access is capability-gated. An isolate must be created with the expli
 
 The CPU/GPU boundary is an ownership boundary. Arguments are recursively copied/frozen into GPU-transfer values before a backend receives them; raw actor references, class instances, and unknown mutable host objects are rejected. Backend results are validated through the same transfer contract and then re-materialized as guest-owned values. A backend therefore cannot mutate an actor-owned list or smuggle an arbitrary host object back into Oreslang.
 
+Known GPU signatures are checked statically as well. Numeric/decimal/complex/bool/string scalars, arrays/lists, tuples, and `Option<T>` composed from transferable values are accepted. Borrows, class/structural objects, class namespaces, and callable values are rejected at compile time. Generic and inferred signature positions remain legal so GPU callables still participate in Oreslang inference; their concrete runtime values must pass the same transfer validator before dispatch.
+
 Class instance methods and `static fnc` members are not GPU entrypoints in v0.7; `gpu` is currently restricted to top-level/module `fnc` and `routine` declarations.
 
 ## Actors
