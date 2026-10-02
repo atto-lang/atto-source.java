@@ -549,6 +549,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "defer evaluates its operand immediately; the result must be an arity-0 function, got " + produced);
         }
+        if (fn.result() != Primitive.VOID) {
+            throw new IllegalArgumentException(
+                    "defer callback must return void; got " + fn.result());
+        }
     }
 
     private void checkRecover(
@@ -865,10 +869,19 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            LambdaReturnSummary returns = checkLambdaBlockAndInferReturns(lambda.blockBody(), lambdaEnv, generics, self);
-            Type result = returns.hasReturn() ? returns.type() : Primitive.VOID;
+
+            Type result;
+            if (lambda.hasExplicitReturnType()) {
+                result = resolve(lambda.returnType(), generics, self);
+                checkBlock(lambda.blockBody(), lambdaEnv, generics, result, self);
+            } else {
+                LambdaReturnSummary returns = checkLambdaBlockAndInferReturns(lambda.blockBody(), lambdaEnv, generics, self);
+                result = returns.hasReturn() ? returns.type() : Primitive.VOID;
+            }
+
             if (result != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
-                throw new IllegalArgumentException("inferred non-void lambda must explicitly return on every path");
+                String mode = lambda.hasExplicitReturnType() ? "declared" : "inferred";
+                throw new IllegalArgumentException(mode + " non-void lambda must explicitly return on every path");
             }
             return new Function(parameters, result);
         }
@@ -1007,8 +1020,13 @@ public final class TypeChecker {
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
-        checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
-        if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
+        Type lambdaResult = expected.result();
+        if (lambda.hasExplicitReturnType()) {
+            lambdaResult = resolve(lambda.returnType(), generics, self);
+            requireAssignable(lambdaResult, expected.result(), "lambda declared return type");
+        }
+        checkBlock(lambda.blockBody(), lambdaEnv, generics, lambdaResult, self);
+        if (lambdaResult != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
     }
