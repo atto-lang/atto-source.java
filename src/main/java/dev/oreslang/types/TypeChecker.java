@@ -2158,27 +2158,74 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        // Resolve semantic named categories before generic Named equality. This
+        // prevents spelling-only equality from weakening class/struct barriers
+        // or skipping interface/trait ancestry.
+        if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
+            Ast.ClassDecl actualAggregate = findClass(actualNamed.name());
+            Ast.ClassDecl expectedAggregate = findClass(expectedNamed.name());
+
+            if (expectedAggregate != null) {
+                if (actualAggregate == null) return false;
+                if (actualAggregate.isStruct() != expectedAggregate.isStruct()) return false;
+                if (actualAggregate == expectedAggregate) {
+                    return invariantTypeArguments(actualNamed.arguments(), expectedNamed.arguments());
+                }
+                if (expectedAggregate.isStruct()) return false;
+                return classExtends(actualAggregate, expectedAggregate, new LinkedHashSet<>());
+            }
+
+            Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
+            if (expectedInterface != null) {
+                if (actualAggregate != null) {
+                    return aggregateSatisfiesInterface(actualAggregate, expectedInterface, new LinkedHashSet<>());
+                }
+                Ast.InterfaceDecl actualInterface = findInterface(actualNamed.name());
+                if (actualInterface != null) {
+                    return interfaceExtends(actualInterface, expectedInterface, new LinkedHashSet<>());
+                }
+                Ast.TraitDecl actualTrait = findTrait(actualNamed.name());
+                return actualTrait != null
+                        && traitSatisfiesInterface(actualTrait, expectedInterface, new LinkedHashSet<>());
+            }
+
+            Ast.TraitDecl expectedTrait = findTrait(expectedNamed.name());
+            if (expectedTrait != null) {
+                if (actualAggregate != null) {
+                    return aggregateSatisfiesTrait(actualAggregate, expectedTrait, new LinkedHashSet<>());
+                }
+                Ast.TraitDecl actualTrait = findTrait(actualNamed.name());
+                return actualTrait != null
+                        && traitSatisfiesTrait(actualTrait, expectedTrait, new LinkedHashSet<>());
+            }
+        }
+
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
-            Ast.ClassDecl klass = findClass(actualNamed.name());
-            return klass != null && Types.isAssignable(publicClassShape(klass, new LinkedHashSet<>()), targetShape);
+            Ast.ClassDecl aggregate = findClass(actualNamed.name());
+            if (aggregate != null) {
+                return Types.isAssignable(publicClassShape(aggregate, new LinkedHashSet<>()), targetShape);
+            }
+            Record contract = contractShape(actualNamed);
+            return contract != null && Types.isAssignable(contract, targetShape);
         }
 
-        if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
-            Ast.ClassDecl actualClass = findClass(actualNamed.name());
-            if (actualClass != null) {
-                Ast.ClassDecl expectedClass = findClass(expectedNamed.name());
-                if (expectedClass != null && classExtends(actualClass, expectedClass, new LinkedHashSet<>())) return true;
-                Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
-                if (expectedInterface != null && classImplements(actualClass, expectedInterface, new LinkedHashSet<>())) return true;
-            }
-        }
         return false;
+    }
+
+    private boolean invariantTypeArguments(List<Type> actual, List<Type> expected) {
+        if (actual.size() != expected.size()) return false;
+        for (int i = 0; i < actual.size(); i++) {
+            if (!Types.isAssignable(actual.get(i), expected.get(i))
+                    || !Types.isAssignable(expected.get(i), actual.get(i))) return false;
+        }
+        return true;
     }
 
     private boolean classExtends(Ast.ClassDecl actual, Ast.ClassDecl expected, Set<Ast.ClassDecl> seen) {
         if (actual == expected) return true;
+        if (actual.isStruct() || expected.isStruct()) return false;
         if (!seen.add(actual)) return false;
         for (Ast.TypeRef parentRef : actual.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, actual);
@@ -2187,15 +2234,95 @@ public final class TypeChecker {
         return false;
     }
 
-    private boolean classImplements(Ast.ClassDecl klass, Ast.InterfaceDecl expected, Set<Ast.ClassDecl> seen) {
-        if (!seen.add(klass)) return false;
-        for (Ast.TypeRef ifaceRef : klass.interfaces()) {
-            Ast.InterfaceDecl iface = findInterface(ifaceRef.name());
-            if (iface != null && (iface == expected || interfaceExtends(iface, expected, new LinkedHashSet<>()))) return true;
+    private boolean aggregateSatisfiesInterface(
+            Ast.ClassDecl aggregate,
+            Ast.InterfaceDecl expected,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(aggregate)) return false;
+
+        for (Ast.TypeRef contractRef : aggregate.interfaces()) {
+            Ast.InterfaceDecl iface = findInterface(contractRef.name());
+            if (iface != null && interfaceExtends(iface, expected, new LinkedHashSet<>())) return true;
+
+            Ast.TraitDecl trait = findTrait(contractRef.name());
+            if (trait != null && traitSatisfiesInterface(trait, expected, new LinkedHashSet<>())) return true;
         }
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent != null && classImplements(parent, expected, seen)) return true;
+
+        for (Ast.TypeRef traitRef : aggregate.traits()) {
+            Ast.TraitDecl trait = findTrait(traitRef.name());
+            if (trait != null && traitSatisfiesInterface(trait, expected, new LinkedHashSet<>())) return true;
+        }
+
+        if (!aggregate.isStruct()) {
+            for (Ast.TypeRef parentRef : aggregate.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, aggregate);
+                if (parent != null && aggregateSatisfiesInterface(parent, expected, seen)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean aggregateSatisfiesTrait(
+            Ast.ClassDecl aggregate,
+            Ast.TraitDecl expected,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(aggregate)) return false;
+
+        for (Ast.TypeRef contractRef : aggregate.interfaces()) {
+            Ast.TraitDecl trait = findTrait(contractRef.name());
+            if (trait != null && traitSatisfiesTrait(trait, expected, new LinkedHashSet<>())) return true;
+        }
+
+        for (Ast.TypeRef traitRef : aggregate.traits()) {
+            Ast.TraitDecl trait = findTrait(traitRef.name());
+            if (trait != null && traitSatisfiesTrait(trait, expected, new LinkedHashSet<>())) return true;
+        }
+
+        if (!aggregate.isStruct()) {
+            for (Ast.TypeRef parentRef : aggregate.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, aggregate);
+                if (parent != null && aggregateSatisfiesTrait(parent, expected, seen)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean traitSatisfiesInterface(
+            Ast.TraitDecl actual,
+            Ast.InterfaceDecl expected,
+            Set<Ast.TraitDecl> seen) {
+        if (!seen.add(actual)) return false;
+
+        for (Ast.TypeRef contractRef : actual.interfaces()) {
+            Ast.InterfaceDecl iface = findInterface(contractRef.name());
+            if (iface != null && interfaceExtends(iface, expected, new LinkedHashSet<>())) return true;
+
+            Ast.TraitDecl trait = findTrait(contractRef.name());
+            if (trait != null && traitSatisfiesInterface(trait, expected, seen)) return true;
+        }
+
+        for (Ast.TypeRef nestedRef : actual.traits()) {
+            Ast.TraitDecl nested = findTrait(nestedRef.name());
+            if (nested != null && traitSatisfiesInterface(nested, expected, seen)) return true;
+        }
+        return false;
+    }
+
+    private boolean traitSatisfiesTrait(
+            Ast.TraitDecl actual,
+            Ast.TraitDecl expected,
+            Set<Ast.TraitDecl> seen) {
+        if (actual == expected) return true;
+        if (!seen.add(actual)) return false;
+
+        for (Ast.TypeRef contractRef : actual.interfaces()) {
+            Ast.TraitDecl contract = findTrait(contractRef.name());
+            if (contract != null && traitSatisfiesTrait(contract, expected, seen)) return true;
+        }
+
+        for (Ast.TypeRef nestedRef : actual.traits()) {
+            Ast.TraitDecl nested = findTrait(nestedRef.name());
+            if (nested != null && traitSatisfiesTrait(nested, expected, seen)) return true;
         }
         return false;
     }
