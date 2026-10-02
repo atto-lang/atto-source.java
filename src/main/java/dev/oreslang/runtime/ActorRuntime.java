@@ -357,7 +357,7 @@ public final class ActorRuntime implements AutoCloseable {
      *
      * Shared<T> deliberately remains shared/read-only.
      */
-    static Object ownedCopyOfFrozen(Object value) {
+    public static Object materializeOwned(Object value) {
         if (value == null
                 || value instanceof String
                 || value instanceof Boolean
@@ -378,7 +378,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof OresValues.OptionValue option) {
             return option.present()
-                    ? new OresValues.OptionValue(true, ownedCopyOfFrozen(option.value()))
+                    ? new OresValues.OptionValue(true, materializeOwned(option.value()))
                     : option;
         }
         if (value instanceof Shared<?>) return value;
@@ -388,13 +388,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof List<?> list) {
             ArrayList<Object> copy = new ArrayList<>(list.size());
-            for (Object item : list) copy.add(ownedCopyOfFrozen(item));
+            for (Object item : list) copy.add(materializeOwned(item));
             return copy;
         }
         if (value instanceof Set<?> set) {
             LinkedHashSet<Object> copy = new LinkedHashSet<>();
             for (Object item : set) {
-                Object owned = ownedCopyOfFrozen(item);
+                Object owned = materializeOwned(item);
                 if (!copy.add(owned)) {
                     throw new IllegalArgumentException(
                             "actor-owned set elements collide during transport materialization");
@@ -405,8 +405,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Map<?, ?> map) {
             LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
-                Object key = ownedCopyOfFrozen(entry.getKey());
-                Object item = ownedCopyOfFrozen(entry.getValue());
+                Object key = materializeOwned(entry.getKey());
+                Object item = materializeOwned(entry.getValue());
                 if (copy.containsKey(key)) {
                     throw new IllegalArgumentException(
                             "actor-owned map keys collide during transport materialization");
