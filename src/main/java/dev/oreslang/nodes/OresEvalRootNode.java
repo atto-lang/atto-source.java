@@ -5,13 +5,16 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.ProcessSingletonRegistry;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -49,6 +52,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
+        private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -62,8 +67,10 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.ModuleDecl module : program.modules()) {
                 modules.put(module.name(), module);
                 for (Ast.Decl decl : module.declarations()) {
-                    if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
-                    else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                    if (decl instanceof Ast.FunctionDecl fn) {
+                        index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                        functionOwners.put(fn, module.name());
+                    } else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 }
             }
         }
@@ -90,15 +97,44 @@ public final class OresEvalRootNode extends RootNode {
         private Object execute(Object[] arguments) {
             Ast.FunctionDecl main = findFunction("main");
             if (main == null) return null;
-            return callFunction(main, List.of(arguments));
+            Object result = callFunction(main, List.of(arguments));
+            if (result instanceof CompletionStage<?> stage) return stage.toCompletableFuture().join();
+            return result;
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
+            Ast.ModuleDecl owner = ownerModule(fn);
+            if (owner != null && owner.singleton()) return callSingleton(owner, fn, normalizeArgs(fn, args));
+            return callFunctionDirect(fn, normalizeArgs(fn, args));
+        }
+
+        private List<?> normalizeArgs(Ast.FunctionDecl fn, List<?> args) {
             if (args.size() != fn.parameters().size()) {
-                if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
-                else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
+                if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) {
+                    return List.of();
+                }
+                throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
             }
+            return args;
+        }
+
+        private Object callFunctionDirect(Ast.FunctionDecl fn, List<?> args) {
             Env env = new Env(null);
+            return executeFunctionBody(fn, args, env);
+        }
+
+        private Object callSingletonFunction(SingletonState state, Ast.FunctionDecl fn, List<?> args) {
+            if (!state.key.equals(singletonKey(ownerModule(fn)))) {
+                throw new IllegalStateException("singleton function dispatched to wrong actor state");
+            }
+            Env env = new Env(state.fields, state);
+            return executeFunctionBody(fn, args, env);
+        }
+
+        private Object executeFunctionBody(Ast.FunctionDecl fn, List<?> args, Env env) {
+            if (args.size() != fn.parameters().size()) {
+                throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
+            }
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -106,7 +142,43 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) {
+                return signal.value;
+            }
+        }
+
+        private CompletionStage<Object> callSingleton(Ast.ModuleDecl module, Ast.FunctionDecl fn, List<?> args) {
+            ProcessSingletonRegistry.Handle<SingletonState> handle = singletonHandle(module);
+            return handle.call(args, (state, frozenArgs) -> callSingletonFunction(state, fn, frozenArgs));
+        }
+
+        private ProcessSingletonRegistry.Handle<SingletonState> singletonHandle(Ast.ModuleDecl module) {
+            String key = singletonKey(module);
+            return singletonHandles.computeIfAbsent(key,
+                    ignored -> ProcessSingletonRegistry.getOrCreate(key, () -> initializeSingleton(module)));
+        }
+
+        private SingletonState initializeSingleton(Ast.ModuleDecl module) {
+            SingletonState state = new SingletonState(singletonKey(module));
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field)) continue;
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException("singleton field has no initializer: " + module.name() + "." + field.name());
+                }
+                Object value = eval(field.initializer(), state.fields);
+                state.fields.define(field.name(), value, field.bindingKind());
+            }
+            return state;
+        }
+
+        private String singletonKey(Ast.ModuleDecl module) {
+            String namespace = program.namespace();
+            return "ores:" + (namespace == null || namespace.isBlank() ? "" : namespace + ".") + module.name();
+        }
+
+        private Ast.ModuleDecl ownerModule(Ast.FunctionDecl fn) {
+            String owner = functionOwners.get(fn);
+            return owner == null ? null : modules.get(owner);
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -215,11 +287,26 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 if (name.name().equals("None")) return new OptionValue(false, null);
                 Ast.ModuleDecl module = modules.get(name.name());
-                if (module != null) return new ModuleFacade(module);
+                if (module != null) {
+                    SingletonState localState = env.singletonState != null
+                            && env.singletonState.key.equals(singletonKey(module))
+                            ? env.singletonState
+                            : null;
+                    return new ModuleFacade(module, localState);
+                }
                 Ast.ClassDecl klass = findClass(name.name());
                 if (klass != null) return new ClassFacade(klass);
                 Ast.FunctionDecl fn = findFunction(name.name());
-                if (fn != null) return (Invokable) args -> callFunction(fn, args);
+                if (fn != null) {
+                    Ast.ModuleDecl owner = ownerModule(fn);
+                    if (owner != null && owner.singleton()) {
+                        if (env.singletonState != null && env.singletonState.key.equals(singletonKey(owner))) {
+                            return (Invokable) args -> callSingletonFunction(env.singletonState, fn, normalizeArgs(fn, args));
+                        }
+                        return (Invokable) args -> callSingleton(owner, fn, normalizeArgs(fn, args));
+                    }
+                    return (Invokable) args -> callFunctionDirect(fn, normalizeArgs(fn, args));
+                }
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
@@ -374,7 +461,7 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
-            if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
+            if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace, name);
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
@@ -441,15 +528,28 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private Object moduleMember(Ast.ModuleDecl module, String name) {
+        private Object moduleMember(ModuleFacade facade, String name) {
+            Ast.ModuleDecl module = facade.module();
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
                     return new ClassFacade(klass);
                 }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    return (Invokable) args -> callFunction(fn, args);
+                    if (module.singleton()) {
+                        if (facade.localState() != null) {
+                            return (Invokable) args -> callSingletonFunction(
+                                    facade.localState(), fn, normalizeArgs(fn, args));
+                        }
+                        return (Invokable) args -> callSingleton(module, fn, normalizeArgs(fn, args));
+                    }
+                    return (Invokable) args -> callFunctionDirect(fn, normalizeArgs(fn, args));
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
+                    if (module.singleton()) {
+                        throw new IllegalArgumentException(
+                                "singleton module fields are actor-private; export an accessor function instead: "
+                                        + module.name() + "." + name);
+                    }
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
                     return eval(field.initializer(), new Env(null));
                 }
@@ -599,11 +699,30 @@ public final class OresEvalRootNode extends RootNode {
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
 
+    private static final class SingletonState {
+        private final String key;
+        private final Env fields;
+
+        private SingletonState(String key) {
+            this.key = key;
+            this.fields = new Env(null, this);
+        }
+    }
+
     private static final class Env {
         private static final Object MISSING = new Object();
         private final Env parent;
+        private final SingletonState singletonState;
         private final Map<String, Slot> slots = new HashMap<>();
-        private Env(Env parent) { this.parent = parent; }
+
+        private Env(Env parent) {
+            this(parent, parent == null ? null : parent.singletonState);
+        }
+
+        private Env(Env parent, SingletonState singletonState) {
+            this.parent = parent;
+            this.singletonState = singletonState;
+        }
         private void define(String name, Object value, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
@@ -626,7 +745,11 @@ public final class OresEvalRootNode extends RootNode {
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
-        private Env snapshot() { Env cp=new Env(parent==null?null:parent.snapshot()); cp.slots.putAll(slots); return cp; }
+        private Env snapshot() {
+            Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState);
+            cp.slots.putAll(slots);
+            return cp;
+        }
     }
 
     private static final class Slot {
@@ -640,7 +763,8 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) {
+    private record Complex(double real, double imaginary) implements ActorRuntime.Sendable {
+        @Override public Object freezeForSend() { return this; }
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
@@ -654,9 +778,12 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return klass.name()+fields;}
     }
 
-    private record ModuleFacade(Ast.ModuleDecl module) { }
+    private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass) { }
-    private record OptionValue(boolean present, Object value) {
+    private record OptionValue(boolean present, Object value) implements ActorRuntime.Sendable {
+        @Override public Object freezeForSend() {
+            return present ? new OptionValue(true, ActorRuntime.freeze(value)) : this;
+        }
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
     private record StdioFacade(OresContext context) {
