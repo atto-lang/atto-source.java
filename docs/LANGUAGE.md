@@ -358,7 +358,7 @@ val p = struct { x = 3, y = 4 };
 
 An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. That conversion requires the exact field set and assignable field types; arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
 
-Struct equality is value equality within the same named struct identity. Structs are move-only under the current ownership model until a dedicated `Copy` facility is introduced.
+Struct equality is value equality within the same named struct identity. Structs remain affine/move-only by default so large values are never duplicated accidentally, but `copy(value)` is built in for structs. The compiler derives the copy recipe recursively from the struct's fields (including trait-composed state). If a nested field is a class, that class must provide the explicit class copy contract described below.
 
 
 ## Inline values
@@ -1072,6 +1072,48 @@ Borrow rules:
 The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
 Structural parameters remain read-only views and therefore do not consume the supplied value.
+
+### Ownership intrinsics without pointer syntax
+
+Ownership operations use contextual compiler intrinsics with ordinary function-call spelling:
+
+```ores
+borrow(value)
+copy(value)
+take(value)
+share(value)
+```
+
+These are **not ordinary global functions and are not lexer keywords**. The parser keeps them as ordinary call-shaped syntax and semantic analysis recognizes them contextually, avoiding four more globally reserved lexical names.
+
+- `borrow(x)` creates an immutable borrow. It is the pointer-free spelling of the existing `&x` compatibility form.
+- `take(x)` explicitly transfers ownership and invalidates the old owned binding for move-only values.
+- `copy(x)` preserves `x` and creates a distinct owned value.
+- `share(x)` creates an independent deeply read-only snapshot and does not borrow the original owner.
+
+`copy` deliberately differs by type category:
+
+- **struct** — copy semantics are compiler-derived recursively from stored fields, including trait-composed state.
+- **class** — never implicitly copyable. A human must provide a concrete, synchronous, non-generic, public instance `copy() => Self` implementation with an immutable receiver.
+- **trait** — has no independent runtime/value identity and therefore cannot itself be copied.
+- **interface** — is a storage-free contract, so an interface-typed value is not considered provably copyable without a concrete type.
+
+For classes, the runtime verifies that `copy()` returns a fresh instance of the same concrete class and that the result does not retain mutable object/list/map/array storage from the source graph. Returning `self` or reusing a mutable nested container violates the Copy contract and is rejected.
+
+```ores
+define class Buffer as
+  pub let int size = 0;
+
+  pub copy() => Buffer {
+    return new Buffer(self.size);
+  }
+end
+
+let Buffer original = new Buffer(8);
+let Buffer duplicate = copy(original);
+```
+
+The legacy `&T` / `&mut T` spellings remain accepted during migration. New code can use `borrow(x)` immediately; broader Java-like default parameter borrowing can evolve separately without weakening the ownership invariants.
 
 ## Multi-threaded targets
 
