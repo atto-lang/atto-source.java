@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 
@@ -202,20 +201,62 @@ public final class OresMutex {
         private final Semaphore permit = new Semaphore(1, true);
         private final AtomicBoolean poisoned = new AtomicBoolean();
         private final AtomicInteger asyncWaiters = new AtomicInteger();
-        private final AtomicReference<ActorRuntime> owningRuntime = new AtomicReference<>();
+        /*
+         * Runtime ownership is publication-aware. A send may need to reserve
+         * ownership before mailbox admission so a receiver can never observe an
+         * unbound SharedMutex, but a failed admission must not permanently bind
+         * the handle. pendingPublications + publishedToRuntime provide that
+         * two-phase contract.
+         */
+        private ActorRuntime owningRuntime;
+        private int pendingPublications;
+        private boolean publishedToRuntime;
         private final Set<Object> activeDomains = ConcurrentHashMap.newKeySet();
 
         private Shared(T value) {
             this.value = value;
         }
 
-        boolean bindToRuntime(ActorRuntime runtime) {
+        synchronized boolean bindToRuntime(ActorRuntime runtime) {
             Objects.requireNonNull(runtime, "runtime");
-            ActorRuntime existing = owningRuntime.get();
-            if (existing == runtime) return true;
-            if (existing != null) return false;
-            if (owningRuntime.compareAndSet(null, runtime)) return true;
-            return owningRuntime.get() == runtime;
+            if (owningRuntime == null) {
+                owningRuntime = runtime;
+            } else if (owningRuntime != runtime) {
+                return false;
+            }
+            publishedToRuntime = true;
+            return true;
+        }
+
+        synchronized boolean reserveRuntimePublication(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            if (owningRuntime == null) {
+                owningRuntime = runtime;
+            } else if (owningRuntime != runtime) {
+                return false;
+            }
+            pendingPublications++;
+            return true;
+        }
+
+        synchronized void commitRuntimePublication(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            if (owningRuntime != runtime || pendingPublications <= 0) {
+                throw new IllegalStateException("SharedMutex publication commit without matching reservation");
+            }
+            pendingPublications--;
+            publishedToRuntime = true;
+        }
+
+        synchronized void abortRuntimePublication(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            if (owningRuntime != runtime || pendingPublications <= 0) {
+                throw new IllegalStateException("SharedMutex publication abort without matching reservation");
+            }
+            pendingPublications--;
+            if (pendingPublications == 0 && !publishedToRuntime) {
+                owningRuntime = null;
+            }
         }
 
         private void requireActorAccess() {
