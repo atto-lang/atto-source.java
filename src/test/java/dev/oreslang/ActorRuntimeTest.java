@@ -665,4 +665,46 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void sharedActorsRejectForeignRuntimeSharedHandles() {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var foreignShared = left.shareReadonly(List.of(1, 2, 3));
+            var foreignCell = left.syncCell(1);
+            var ref = right.<Object>spawnShared(() -> (message, context) -> { });
+
+            IllegalArgumentException sharedFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ref.send(foreignShared));
+            assertTrue(sharedFailure.getMessage().contains("different ActorRuntime"));
+
+            IllegalArgumentException cellFailure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> ref.send(foreignCell));
+            assertTrue(cellFailure.getMessage().contains("different ActorRuntime"));
+        }
+    }
+
+    @Test
+    void privateActorsCopyForeignReadonlyValuesInsteadOfRetainingRuntimeHandle() throws Exception {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var foreignShared = left.shareReadonly(List.of("a", "b"));
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<Object> observed = new AtomicReference<>();
+
+            var ref = right.<Object>spawnPrivate(() -> (message, context) -> {
+                observed.set(message);
+                received.countDown();
+            });
+
+            ref.send(foreignShared);
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of("a", "b"), observed.get());
+            assertFalse(observed.get() instanceof ActorRuntime.Shared<?>);
+        }
+    }
+
+
 }
