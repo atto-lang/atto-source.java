@@ -272,7 +272,7 @@ Actors may run inside an isolate. Actor semantics never weaken isolate policy.
 
 ## Built-in globals
 
-`process` is an Oreslang runtime descriptor/capability facade, not unrestricted OS process access. `stdio` is capability-scoped standard IO. `print(value)` is shorthand for the output facade.
+`process` is an Oreslang runtime descriptor/capability facade, not unrestricted OS process access. `stdio` is capability-scoped standard IO. `actor` exposes operations scoped to the current actor. These facades are namespace-like and cannot themselves be captured or passed as first-class values; authorized members may be captured individually. `print(value)` is shorthand for the output facade.
 
 Manual GC has intentionally different scopes:
 
