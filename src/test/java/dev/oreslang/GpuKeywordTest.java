@@ -71,6 +71,28 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void gpuSignaturesAcceptTransferValuesAndRejectClassObjects() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                gpu fnc transform(Array<complex> values, Option<int> maybe) => Array<complex> {
+                  return values;
+                }
+                """)));
+
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Box
+                          end
+
+                          gpu fnc bad(Box value) => int {
+                            return 1;
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("non-transferable named type 'Box'"));
+    }
+
+    @Test
     void gpuCallableCannotCallCpuCallable() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
