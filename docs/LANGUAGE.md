@@ -355,6 +355,8 @@ shared actor Account {
 - actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
 - synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
 
+Private actors derive a stricter execution policy from their parent runtime: both `SHARED_MEMORY` and `ACTOR_SHARE_READONLY` are removed. Capability checks during an actor turn use this actor-effective policy rather than the surrounding context policy, so a permissive developer context, local helper function, import boundary, or wrapper type cannot restore sharing authority. Static admission follows local helper calls and walks type aliases plus reachable wrapper state; runtime checks remain the final defense in depth.
+
 Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
 The slice has two simultaneous limits:
