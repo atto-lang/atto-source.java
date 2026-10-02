@@ -89,7 +89,7 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
+interface_member= [ "async" ] "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
