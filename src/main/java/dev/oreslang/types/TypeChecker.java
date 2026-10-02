@@ -414,7 +414,20 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("'select' is currently actor-only; async-task channel select lowering is not implemented yet");
             }
             for (Ast.SelectCase branch : select.cases()) {
-                Type operationType = typeOf(branch.operation(), env, generics, self);
+                Type operationType;
+                if (branch.operation().kind() == Ast.ChannelOpKind.RECEIVE
+                        && branch.operation().channel() == null) {
+                    if (branch.bindingName() != null && branch.bindingType() == null) {
+                        throw new IllegalArgumentException(
+                                "actor-mailbox select receive bindings require an explicit message type "
+                                        + "until Protocol<M> is wired into actor declarations");
+                    }
+                    operationType = branch.bindingType() == null
+                            ? Unknown.INSTANCE
+                            : resolve(branch.bindingType(), generics, self);
+                } else {
+                    operationType = typeOf(branch.operation(), env, generics, self);
+                }
                 Env caseEnv = new Env(env);
                 if (branch.bindingName() != null) {
                     if (branch.operation().kind() != Ast.ChannelOpKind.RECEIVE) {
@@ -718,9 +731,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(operation.kind().name().toLowerCase()
                             + "() without a channel refers to the actor mailbox and is only legal inside an actor");
                 }
-                return operation.kind() == Ast.ChannelOpKind.TRY_RECEIVE
-                        ? new Named("Option", List.of(Unknown.INSTANCE))
-                        : Unknown.INSTANCE;
+                throw new IllegalArgumentException(
+                        operation.kind().name().toLowerCase()
+                                + "() cannot infer the actor mailbox Protocol<M> on this branch; "
+                                + "use a typed receive/try_receive loop or a typed select receive binding");
             }
 
             Type channelType = typeOf(operation.channel(), env, generics, self);
