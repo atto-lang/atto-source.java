@@ -19,6 +19,10 @@ The language is intentionally opinionated:
 - flat optional file namespaces and flat modules (neither may nest);
 - class-level `static fnc` functions separated from receiver methods;
 - first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
+- lexical closures with ownership-oriented capture semantics;
+- immutable-by-default parameters with explicit `Type mut name` mutation authority;
+- Rust-style `&T` / `&mut T` borrowing, move checking, and use-after-move rejection;
+- non-escaping borrow lifetimes for actor-safe and multithread-safe compilation;
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
 - multiple named modules may appear in one source file;
