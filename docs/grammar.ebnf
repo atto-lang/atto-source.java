@@ -29,7 +29,7 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" ;
+callable_modifier = "abstract" | "async" | "actor" [ "isolate" ] ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -231,6 +231,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - named class/interface types are nominal by default.
    - @Structural, name structural Type, or @AllowStructural(name) opt a
      parameter into public-shape compatibility.
+   - "actor fnc" / "actor routine" declarations are one-shot actor factories.
+     Their declared body return type must be void; calling one returns ActorTask.
+   - ActorTask exposes stop/join/alive/failed/kind but no mailbox send operation.
+   - main is the root/process entrypoint and cannot itself be declared actor.
    - actor behavior lambdas accept exactly one mailbox message parameter and return void.
    - actor defaults to SHARED runtime mode; "actor isolate" requests the stronger
      isolate backend contract and cannot capture mutable, borrowed, or move-only outer state.
