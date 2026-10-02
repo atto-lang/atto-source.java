@@ -84,8 +84,7 @@ final class ActorRuntimeTest {
     }
     @Test
     void sharedActorProcessesOnlyOneMessageAtATime() throws Exception {
-        var config = new ActorRuntime.DispatcherConfig(2, 4, 8);
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+        try (ActorRuntime runtime = new ActorRuntime()) {
             AtomicInteger inFlight = new AtomicInteger();
             AtomicInteger maxInFlight = new AtomicInteger();
             CountDownLatch received = new CountDownLatch(64);
@@ -109,37 +108,46 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void privateAndSharedActorsUseDifferentDispatchers() throws Exception {
-        var config = new ActorRuntime.DispatcherConfig(1, 1, 16);
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
-            CountDownLatch received = new CountDownLatch(2);
-            AtomicReference<String> privateThread = new AtomicReference<>();
-            AtomicReference<String> sharedThread = new AtomicReference<>();
+    void eachActorIsExactlyOneStableWorker() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(3);
+            AtomicReference<Thread> privateFirst = new AtomicReference<>();
+            AtomicReference<Thread> privateSecond = new AtomicReference<>();
+            AtomicReference<Thread> sharedWorker = new AtomicReference<>();
+            AtomicInteger privateTurns = new AtomicInteger();
 
             var privateRef = runtime.<String>spawnPrivate(() -> (message, context) -> {
-                privateThread.set(Thread.currentThread().getName());
+                Thread worker = Thread.currentThread();
+                if (privateTurns.getAndIncrement() == 0) privateFirst.set(worker);
+                else privateSecond.set(worker);
                 assertEquals(ActorRuntime.ActorKind.PRIVATE, context.kind());
                 received.countDown();
             });
             var sharedRef = runtime.<String>spawnShared(() -> (message, context) -> {
-                sharedThread.set(Thread.currentThread().getName());
+                sharedWorker.set(Thread.currentThread());
                 assertEquals(ActorRuntime.ActorKind.SHARED, context.kind());
                 received.countDown();
             });
 
-            privateRef.send("private");
+            privateRef.send("first");
+            privateRef.send("second");
             sharedRef.send("shared");
 
             assertTrue(received.await(2, TimeUnit.SECONDS));
-            assertTrue(privateThread.get().startsWith("ores-private-actor-dispatcher-"));
-            assertTrue(sharedThread.get().startsWith("ores-shared-actor-dispatcher-"));
+            assertSame(privateFirst.get(), privateSecond.get(),
+                    "all turns for one actor must execute on that actor's one worker");
+            assertNotSame(privateFirst.get(), sharedWorker.get(),
+                    "different actors must have different workers");
+            assertTrue(privateFirst.get().isVirtual());
+            assertTrue(sharedWorker.get().isVirtual());
+            assertTrue(privateFirst.get().getName().startsWith("ores-private-actor-worker-"));
+            assertTrue(sharedWorker.get().getName().startsWith("ores-shared-actor-worker-"));
         }
     }
 
     @Test
     void sharedActorsCanCoordinateThroughExplicitSyncCell() throws Exception {
-        var config = new ActorRuntime.DispatcherConfig(1, 4, 32);
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+        try (ActorRuntime runtime = new ActorRuntime()) {
             ActorRuntime.SyncCell<Integer> cell = runtime.syncCell(0);
             CountDownLatch received = new CountDownLatch(200);
 
@@ -332,7 +340,7 @@ final class ActorRuntimeTest {
                 IsolatePolicy.developer().maxWallTime(),
                 false);
 
-        try (ActorRuntime runtime = new ActorRuntime(parent, new ActorRuntime.DispatcherConfig(2, 1, 8))) {
+        try (ActorRuntime runtime = new ActorRuntime(parent)) {
             CountDownLatch firstReserved = new CountDownLatch(1);
             CountDownLatch holdFirst = new CountDownLatch(1);
 
@@ -632,9 +640,7 @@ final class ActorRuntimeTest {
 
     @Test
     void runtimeCloseDoesNotBlockOnActorHeldSyncCellLock() throws Exception {
-        ActorRuntime runtime = new ActorRuntime(
-                IsolatePolicy.developer(),
-                new ActorRuntime.DispatcherConfig(1, 1, 8));
+        ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer());
         var cell = runtime.syncCell(1);
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
@@ -755,7 +761,7 @@ final class ActorRuntimeTest {
 
     @Test
     void actorPopulationIsBoundedAndSlotsReturnOnStop() {
-        var config = new ActorRuntime.DispatcherConfig(1, 1, 8, 2);
+        var config = new ActorRuntime.WorkerConfig(2);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             var first = runtime.<String>spawnPrivate(() -> (message, context) -> { });
             var second = runtime.<String>spawnShared(() -> (message, context) -> { });
