@@ -1,0 +1,36 @@
+name: pr34-diagnostic
+
+on:
+  push:
+    branches:
+      - feat/four-way-types-integration
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Capture Maven compile and focused test output
+        shell: bash
+        run: |
+          set +e
+          {
+            echo '=== mvn compile ==='
+            mvn -B -DskipTests compile
+            echo "compile_exit=$?"
+            echo
+            echo '=== focused tests ==='
+            mvn -B -Dtest=CallableLocalTypeTest test
+            echo "test_exit=$?"
+          } > pr34-diagnostic.log 2>&1
+          cat pr34-diagnostic.log
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr34-diagnostic
+          path: pr34-diagnostic.log
