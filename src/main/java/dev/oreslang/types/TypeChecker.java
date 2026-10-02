@@ -362,6 +362,14 @@ public final class TypeChecker {
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
+        if (expr instanceof Ast.TemplateExpr template) {
+            for (Ast.TemplatePart part : template.parts()) {
+                if (part instanceof Ast.TemplateInterpolation interpolation) {
+                    typeOf(interpolation.expression(), env, generics, self);
+                }
+            }
+            return Primitive.STRING;
+        }
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
@@ -1061,6 +1069,10 @@ public final class TypeChecker {
 
     private boolean constant(Ast.Expr expr) {
         if (expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.TemplateExpr template) {
+            return template.parts().stream().allMatch(part ->
+                    !(part instanceof Ast.TemplateInterpolation interpolation) || constant(interpolation.expression()));
+        }
         if (expr instanceof Ast.UnaryExpr unary) return constant(unary.operand());
         if (expr instanceof Ast.BinaryExpr binary) return constant(binary.left()) && constant(binary.right());
         if (expr instanceof Ast.ConditionalExpr conditional) return constant(conditional.condition()) && constant(conditional.whenTrue()) && constant(conditional.whenFalse());
@@ -1160,6 +1172,12 @@ public final class TypeChecker {
             if (callee != null) out.add(callee);
             collectCalls(call.callee(), module, out);
             for (Ast.Expr arg : call.arguments()) collectCalls(arg, module, out);
+        } else if (expr instanceof Ast.TemplateExpr e) {
+            for (Ast.TemplatePart part : e.parts()) {
+                if (part instanceof Ast.TemplateInterpolation interpolation) {
+                    collectCalls(interpolation.expression(), module, out);
+                }
+            }
         } else if (expr instanceof Ast.BinaryExpr e) {
             collectCalls(e.left(), module, out); collectCalls(e.right(), module, out);
         } else if (expr instanceof Ast.UnaryExpr e) collectCalls(e.operand(), module, out);
