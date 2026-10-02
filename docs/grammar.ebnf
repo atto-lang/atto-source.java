@@ -274,6 +274,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      multiplication only.
    - borrow(value), take(value), copy(value), and share(value) are compiler
      intrinsics expressed as ordinary call syntax rather than pointer operators.
+   - Those intrinsic names are unshadowable in the value/callable namespace even
+     though they are not lexer keywords.
+   - Borrowed values cannot be returned as owned values until an explicit
+     provenance contract (planned: T from owner) is implemented.
+   - Fnc does not yet encode ownership modes, so callables with mut/take
+     parameters or a mut self receiver are direct-call-only and cannot be
+     extracted as first-class function values.
    - Non-Copy values move only at explicit ownership-transfer sites such as
      take parameters/intrinsics, owning bindings/captures, and returns.
    - Structural parameters are read-only borrowed views and do not consume the
