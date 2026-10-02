@@ -221,6 +221,24 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void genericObjectDestructuringPreservesConcreteFieldTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Box<T>
+                    pub val T value;
+                  end
+
+                  fnc use(Box<int> box) => void {
+                    const {value} = box;
+                    stdio.println(value);
+                    stdio.println(value);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void genericInterfaceMethodsAreAlphaEquivalentButPreserveGenericArity() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
