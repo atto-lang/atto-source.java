@@ -128,6 +128,34 @@ final class GpuExecutionTest {
     }
 
     @Test
+    void gpuIsReservedAndDuplicatePlacementIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc main() => void {
+                  val int gpu = 1;
+                  return;
+                }
+                """));
+
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                gpu gpu fnc bad(i32 x) => i32 {
+                  return x;
+                }
+                """));
+        assertTrue(duplicate.getMessage().contains("duplicate 'gpu' modifier"));
+    }
+
+    @Test
+    void currentGpuAbiRejectsHostArrayReturns() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc bad(Array<f32> values) => Array<f32> {
+                          return values;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("must return a scalar or void"));
+    }
+
+    @Test
     void gpuExecutionNeverFallsBackToCpuInterpreter() throws Exception {
         String program = """
                 define module app
