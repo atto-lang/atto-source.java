@@ -13,13 +13,15 @@ final class ActorTransportHardeningTest {
     void readonlySharedWrapperFreezesBeforePublication() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             ArrayList<String> source = new ArrayList<>(List.of("a"));
-            ActorRuntime.Shared<ArrayList<String>> shared = runtime.shareReadonly(source);
+            ActorRuntime.Shared<Object> shared = runtime.shareReadonly(source);
 
             source.add("b");
 
-            assertEquals(List.of("a"), shared.value());
-            assertThrows(UnsupportedOperationException.class,
-                    () -> ((List<String>) (List<?>) shared.value()).add("c"));
+            assertInstanceOf(List.class, shared.value());
+            @SuppressWarnings("unchecked")
+            List<String> frozen = (List<String>) shared.value();
+            assertEquals(List.of("a"), frozen);
+            assertThrows(UnsupportedOperationException.class, () -> frozen.add("c"));
         }
     }
 
