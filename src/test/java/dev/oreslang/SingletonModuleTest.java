@@ -339,6 +339,30 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonHelperClassesCannotBypassTheActorProxy() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module private_helpers
+                          define class Helper
+                            pub static fnc value() => int { return 1; }
+                          end
+
+                          pub fnc read() => int {
+                            return Helper.value();
+                          }
+                        end
+
+                        define module app
+                          pub fnc main() => void {
+                            val int leaked = Helper.value();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("actor-private"));
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
