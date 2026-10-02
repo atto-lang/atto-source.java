@@ -88,7 +88,8 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            OresCompiler.CompilationResult compilation = OresCompiler.compile(normalized.get(id));
+            Ast.Program checked = compilation.program();
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -97,7 +98,8 @@ public final class IncrementalCompiler {
                     abiHashes.get(id),
                     dependencies.get(id),
                     normalized.get(id),
-                    checked);
+                    checked,
+                    compilation.gpuProgram());
             next.put(id, unit);
             rebuilt.add(id);
         }
@@ -287,9 +289,23 @@ public final class IncrementalCompiler {
             String abiDigest,
             Set<String> dependencies,
             String sourceText,
-            Ast.Program program) {
+            Ast.Program program,
+            GpuKernelCompiler.GpuProgram gpuProgram) {
         public CompiledUnit {
             dependencies = Set.copyOf(dependencies);
+        }
+
+        public CompiledUnit(
+                String unitId,
+                String packageId,
+                String namespace,
+                String sourceDigest,
+                String abiDigest,
+                Set<String> dependencies,
+                String sourceText,
+                Ast.Program program) {
+            this(unitId, packageId, namespace, sourceDigest, abiDigest, dependencies, sourceText, program,
+                    GpuKernelCompiler.GpuProgram.empty());
         }
     }
 
