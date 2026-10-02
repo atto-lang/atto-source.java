@@ -403,16 +403,18 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
-            checkExpr(member.receiver(), scope, false);
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (method != null) {
                 if (requiresMutableReceiver(method)) {
                     ensureMutableReceiver(member.receiver(), scope, "method '" + method.name() + "' receiver");
+                } else {
+                    checkExpr(member.receiver(), scope, false);
                 }
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
                 return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
             }
+            checkExpr(member.receiver(), scope, false);
         }
 
         checkExpr(call.callee(), scope, false);
@@ -505,12 +507,40 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (receiver instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
+            if (owner != null) {
+                Ast.FieldDecl field = findField(owner, member.member(), new LinkedHashSet<>());
+                if (field == null) throw error("unknown field '" + member.member() + "' on " + owner.name());
+                if (field.bindingKind() != Ast.BindingKind.LET) {
+                    throw error("field '" + owner.name() + "." + member.member()
+                            + "' is immutable; declare the field with let to permit mutation");
+                }
+            }
+            ensureMutableReceiver(member.receiver(), scope, what);
+            return;
+        }
+        if (receiver instanceof Ast.IndexExpr indexed) {
+            ensureMutableReceiver(indexed.receiver(), scope, what);
+            checkExpr(indexed.index(), scope, false);
+            return;
+        }
         if (receiver instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) {
             VarState owner = borrowOwner(unary.operand(), scope);
             validateBorrow(owner, true);
             return;
         }
-        throw error("mutation target must be rooted in a mutable local/parameter or &mut borrow");
+        if (receiver instanceof Ast.NewExpr
+                || receiver instanceof Ast.StructInitExpr
+                || receiver instanceof Ast.CallExpr) {
+            ValueInfo value = checkExpr(receiver, scope, true);
+            if (value.kind == ValueKind.IMM_BORROW
+                    || (value.type.isBorrow() && !value.type.mutableBorrow())) {
+                throw error("cannot mutate " + what + " through an immutable borrowed temporary");
+            }
+            return;
+        }
+        throw error("mutation target must be rooted in a mutable local/parameter, mutable projection, owned temporary, or &mut borrow");
     }
 
     private VarState borrowOwner(Ast.Expr operand, Scope scope) {
@@ -657,15 +687,46 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
-        Ast.TypeRef type = null;
-        if (receiver instanceof Ast.NameExpr name) {
-            VarState state = scope.lookup(name.name());
-            if (state != null) type = state.type;
-        } else if (receiver instanceof Ast.NewExpr created) type = created.type();
-        else if (receiver instanceof Ast.StructInitExpr created) type = created.type();
+        Ast.TypeRef type = receiverType(receiver, scope);
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         return findClass(type.name());
+    }
+
+    private Ast.TypeRef receiverType(Ast.Expr receiver, Scope scope) {
+        if (receiver instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? null : state.type;
+        }
+        if (receiver instanceof Ast.NewExpr created) return created.type();
+        if (receiver instanceof Ast.StructInitExpr created) return created.type();
+        if (receiver instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
+            if (owner == null) return null;
+            Ast.FieldDecl field = findField(owner, member.member(), new LinkedHashSet<>());
+            return field == null ? null : field.type();
+        }
+        if (receiver instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr name) {
+                Ast.FunctionDecl fn = findFunction(name.name());
+                return fn == null ? null : fn.returnType();
+            }
+            if (call.callee() instanceof Ast.MemberExpr member) {
+                Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
+                if (owner == null) return null;
+                Ast.MethodDecl method = findMethod(owner, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                return method == null ? null : method.returnType();
+            }
+        }
+        if (receiver instanceof Ast.AwaitExpr awaited) {
+            Ast.TypeRef awaitedType = receiverType(awaited.expression(), scope);
+            if (awaitedType != null
+                    && awaitedType.name().equals("Future")
+                    && awaitedType.arguments().size() == 1) {
+                return awaitedType.arguments().getFirst();
+            }
+        }
+        return null;
     }
 
     private Ast.FieldDecl findField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
