@@ -1776,11 +1776,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
             if (target.kind != ActorKind.SHARED) {
-                throw new SecurityException("private actors cannot receive SharedMutex<T>");
+                throw new SecurityException("memory-isolated actors cannot receive SharedMutex<T>");
             }
             ActorKind senderKind = currentActorKind();
-            if (senderKind == ActorKind.PRIVATE) {
-                throw new SecurityException("private actors cannot send SharedMutex<T>");
+            if (senderKind != null && senderKind != ActorKind.SHARED) {
+                throw new SecurityException("memory-isolated actors cannot send SharedMutex<T>");
             }
             IsolatePolicy senderPolicy = currentActorPolicy();
             if (senderPolicy != null) {
