@@ -22,7 +22,7 @@ A lightweight virtual-thread sweep runs periodically. Periodic sweeps never call
 
 `process.gc()` requires `GC_CONTROL`. It performs a best-effort process/context sweep and may request JVM collection. JVM requests are throttled per context so guest code cannot turn `process.gc()` into a high-frequency global pressure point. Strict FaaS does not grant `GC_CONTROL`.
 
-`actor.gc()` is actor-domain local and never requests JVM-wide collection. Calling it outside an actor mailbox turn is an error. Actor-domain identity comes from the actor runtime's stable semantic execution domain, not carrier-thread identity.
+`actor.gc()` is actor-domain local and never requests JVM-wide collection. Calling it outside an actor mailbox turn is an error. Actor-domain identity comes from the actor runtime's stable semantic execution domain, not carrier-thread identity. Actor cleanup entries are indexed by that domain, and one `actor.gc()` call inspects at most 256 entries so a guest cannot hide an unbounded O(context-registry) scan behind one actor operation.
 
 ## Shutdown
 
