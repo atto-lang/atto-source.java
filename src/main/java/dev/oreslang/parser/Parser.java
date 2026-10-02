@@ -54,6 +54,7 @@ public final class Parser {
                 }
                 if (match(STRUCT)) {
                     if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                    if (modifiers.async || modifiers.isStatic) throw error(previous(), "struct declarations do not accept async/static modifiers");
                     rootDeclarations.add(parseStruct(false));
                     continue;
                 }
@@ -131,6 +132,7 @@ public final class Parser {
             if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
             if (match(STRUCT)) {
                 if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                if (modifiers.async || modifiers.isStatic) throw error(previous(), "struct declarations do not accept async/static modifiers");
                 return parseStruct(false);
             }
             if (match(INTERFACE)) return parseInterface(modifiers.visibility, false);
@@ -139,7 +141,7 @@ public final class Parser {
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
+        throw error(peek(), "expected function, routine, class, struct, interface, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
@@ -148,6 +150,7 @@ public final class Parser {
         if (match(INTERFACE)) return parseInterface(modifiers.visibility, true);
         if (match(STRUCT)) {
             if (modifiers.isAbstract) throw error(previous(), "structs cannot be abstract");
+            if (modifiers.async || modifiers.isStatic) throw error(previous(), "struct declarations do not accept async/static modifiers");
             return parseStruct(true);
         }
         if (match(TYPE)) return parseTypeAlias();
@@ -215,7 +218,7 @@ public final class Parser {
             Modifiers mods = parseModifiers();
 
             if (isBindingKind(peek().type()) || looksLikeStructField()) {
-                if (mods.isStatic) throw error(peek(), "struct fields cannot be static");
+                if (mods.isStatic || mods.async || mods.isAbstract) throw error(peek(), "struct fields do not accept static/async/abstract modifiers");
                 fields.add(isBindingKind(peek().type())
                         ? parseField(mods.visibility)
                         : parseImplicitValStructField(mods.visibility));
