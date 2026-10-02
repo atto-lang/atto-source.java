@@ -983,6 +983,38 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void nestedSingletonCallsInheritTheParentsRemainingDeadline() {
+        String aKey = "deadline-a:" + UUID.randomUUID();
+        String bKey = "deadline-b:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> a =
+                ProcessSingletonRegistry.getOrCreate(aKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> b =
+                ProcessSingletonRegistry.getOrCreate(bKey, Object::new);
+
+        long started = System.nanoTime();
+        CompletableFuture<Object> outer = a.call(
+                List.of(), 8, Duration.ofMillis(120),
+                (aState, ignored) -> {
+                    Thread.sleep(70);
+                    return b.call(
+                            List.of(), 8, Duration.ofSeconds(5),
+                            (bState, nested) -> {
+                                while (true) ProcessSingletonRegistry.checkExecutionBudget();
+                            }).toCompletableFuture().join();
+                }).toCompletableFuture();
+
+        RuntimeException failure = assertThrows(RuntimeException.class, outer::join);
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+        assertTrue(causeChainContains(failure, "wall-time budget")
+                        || causeChainContains(failure, "expired"),
+                String.valueOf(failure));
+        assertTrue(elapsedMs < 1000,
+                "nested call incorrectly received a fresh multi-second budget: " + elapsedMs + "ms");
+    }
+
+    @Test
     void queuedSingletonTimeoutRemovesRequestWithoutExecutingItLater() throws Exception {
         String key = "queued-timeout:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<AtomicInteger> handle =
