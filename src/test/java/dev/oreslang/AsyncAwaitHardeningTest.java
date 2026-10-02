@@ -9,6 +9,43 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class AsyncAwaitHardeningTest {
     @Test
+    void asyncAndAwaitAreReservedAndDuplicateAsyncIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc main() => void {
+                  val int async = 1;
+                  return;
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc main() => void {
+                  val int await = 1;
+                  return;
+                }
+                """));
+
+        IllegalArgumentException duplicate = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub async async fnc bad() => int {
+                  return 1;
+                }
+                """));
+        assertTrue(duplicate.getMessage().contains("duplicate 'async' modifier"));
+    }
+
+    @Test
+    void programMainMustRemainSynchronous() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub async routine main() => void {
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("main"));
+        assertTrue(error.getMessage().contains("cannot be async"));
+    }
+
+    @Test
     void asyncCallableReturnsFutureOfDeclaredResultAndAwaitUnwrapsIt() {
         Ast.Program program = assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub async fnc fetch() => int {
