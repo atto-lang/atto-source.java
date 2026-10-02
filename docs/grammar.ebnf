@@ -1,4 +1,4 @@
-(* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
+(* Oreslang v0.7 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
 namespace_decl  = "namespace" IDENT ";" ;
@@ -29,7 +29,8 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" ;
+callable_modifier = "abstract" | "async" | "gpu" ;
+method_modifier   = "abstract" | "async" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -46,7 +47,7 @@ class_member    = field_decl
 
 field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
 
-method_decl     = { annotation } visibility { callable_modifier } method_name [ generic_params ]
+method_decl     = { annotation } visibility { method_modifier } method_name [ generic_params ]
                   method_head return_spec ( block | stmt_terminator ) ;
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
@@ -193,6 +194,11 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Modules are flat: module names are single identifiers and modules may not
      contain modules.
    - fnc declarations may recurse; routines may not participate in a call cycle.
+   - gpu may modify fnc/routine declarations and is a strict GPU execution-domain
+     effect, not an optimization hint; CPU fallback is forbidden.
+   - gpu callables may call only other statically-resolved gpu callables/intrinsics
+     and may not access host/actor APIs, await, closures, class allocation, defer,
+     try/catch/finally, or mutable object members.
    - fnc and routine declarations do not overload.
    - instance methods may overload only when arity differs.
    - class-level functions use "static fnc"; they have no self receiver and are
