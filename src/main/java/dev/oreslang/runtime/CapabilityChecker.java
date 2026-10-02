@@ -80,7 +80,11 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.AssignExpr e) checkExpr(e.value(), policy);
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
-        else if (expr instanceof Ast.NewExpr e) for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
+        else if (expr instanceof Ast.NewExpr e) {
+            for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
+            for (Ast.ObjectField entry : e.entries()) checkExpr(entry.value(), policy);
+            for (Ast.MethodDecl method : e.methods()) checkStatements(method.body(), policy);
+        }
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
