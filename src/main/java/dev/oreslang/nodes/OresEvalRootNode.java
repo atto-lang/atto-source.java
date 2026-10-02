@@ -410,6 +410,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -599,6 +600,51 @@ public final class OresEvalRootNode extends RootNode {
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof EnvFacade env) {
+                return switch (name) {
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "env.get");
+                        String key = requireEnvKey(args.getFirst(), "env.get");
+                        String value = env.context().environment(key);
+                        return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
+                    };
+                    case "require" -> (Invokable) args -> {
+                        requireOne(args, "env.require");
+                        String key = requireEnvKey(args.getFirst(), "env.require");
+                        String value = env.context().environment(key);
+                        if (value == null) throw new IllegalStateException("required environment variable is not set: " + key);
+                        return value;
+                    };
+                    case "has" -> (Invokable) args -> {
+                        requireOne(args, "env.has");
+                        return env.context().environment(requireEnvKey(args.getFirst(), "env.has")) != null;
+                    };
+                    case "bool" -> (Invokable) args -> {
+                        requireOne(args, "env.bool");
+                        String value = env.context().environment(requireEnvKey(args.getFirst(), "env.bool"));
+                        if (value == null) return new OptionValue(false, null);
+                        String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+                        if (normalized.equals("true") || normalized.equals("1") || normalized.equals("yes") || normalized.equals("on")) {
+                            return new OptionValue(true, true);
+                        }
+                        if (normalized.equals("false") || normalized.equals("0") || normalized.equals("no") || normalized.equals("off")) {
+                            return new OptionValue(true, false);
+                        }
+                        throw new IllegalArgumentException("environment value is not a boolean");
+                    };
+                    case "int" -> (Invokable) args -> {
+                        requireOne(args, "env.int");
+                        String value = env.context().environment(requireEnvKey(args.getFirst(), "env.int"));
+                        if (value == null) return new OptionValue(false, null);
+                        try {
+                            return new OptionValue(true, Long.parseLong(value.trim()));
+                        } catch (NumberFormatException malformed) {
+                            throw new IllegalArgumentException("environment value is not an integer", malformed);
+                        }
+                    };
+                    default -> throw new IllegalArgumentException("unknown env member " + name);
                 };
             }
             if (receiver instanceof ActorFacade actor) {
@@ -1019,6 +1065,13 @@ public final class OresEvalRootNode extends RootNode {
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
     }
     private record ActorFacade(OresContext context) { }
+    private record EnvFacade(OresContext context) { }
+    private static String requireEnvKey(Object value, String api) {
+        if (!(value instanceof String key) || key.isBlank()) {
+            throw new IllegalArgumentException(api + " expects a non-empty string variable name");
+        }
+        return key;
+    }
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
 }
