@@ -378,29 +378,37 @@ public final class TypeChecker {
             return;
         }
 
-        List<Ast.Pattern> elements;
-        if (pattern instanceof Ast.TuplePattern tuplePattern) elements = tuplePattern.elements();
-        else if (pattern instanceof Ast.ListPattern listPattern) elements = listPattern.elements();
-        else throw new IllegalArgumentException("unsupported match pattern " + pattern);
+        if (pattern instanceof Ast.TuplePattern tuplePattern) {
+            List<Ast.Pattern> elements = tuplePattern.elements();
+            if (source instanceof Tuple tuple) {
+                if (tuple.elements().size() != elements.size()) {
+                    throw new IllegalArgumentException("match pattern arity " + elements.size() + " cannot match tuple arity " + tuple.elements().size());
+                }
+                for (int i = 0; i < elements.size(); i++) {
+                    checkPattern(elements.get(i), tuple.elements().get(i), env, generics, self);
+                }
+                return;
+            }
+            if (source == Unknown.INSTANCE) {
+                for (Ast.Pattern element : elements) checkPattern(element, Unknown.INSTANCE, env, generics, self);
+                return;
+            }
+            throw new IllegalArgumentException("tuple match pattern cannot match value of type " + source);
+        }
 
-        if (source instanceof Tuple tuple) {
-            if (tuple.elements().size() != elements.size()) {
-                throw new IllegalArgumentException("match pattern arity " + elements.size() + " cannot match tuple arity " + tuple.elements().size());
+        if (pattern instanceof Ast.ListPattern listPattern) {
+            if (source instanceof ListType list) {
+                for (Ast.Pattern element : listPattern.elements()) checkPattern(element, list.element(), env, generics, self);
+                return;
             }
-            for (int i = 0; i < elements.size(); i++) {
-                checkPattern(elements.get(i), tuple.elements().get(i), env, generics, self);
+            if (source == Unknown.INSTANCE) {
+                for (Ast.Pattern element : listPattern.elements()) checkPattern(element, Unknown.INSTANCE, env, generics, self);
+                return;
             }
-            return;
+            throw new IllegalArgumentException("list match pattern cannot match value of type " + source);
         }
-        if (source instanceof ListType list) {
-            for (Ast.Pattern element : elements) checkPattern(element, list.element(), env, generics, self);
-            return;
-        }
-        if (source == Unknown.INSTANCE) {
-            for (Ast.Pattern element : elements) checkPattern(element, Unknown.INSTANCE, env, generics, self);
-            return;
-        }
-        throw new IllegalArgumentException("tuple/list match pattern cannot match value of type " + source);
+
+        throw new IllegalArgumentException("unsupported match pattern " + pattern);
     }
 
     private boolean patternLiteralCompatible(Type source, Type literal) {
