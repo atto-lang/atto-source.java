@@ -28,6 +28,8 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    private static final Set<String> CORE_GPU_NAMES = Set.of("GpuArray", "GpuStream");
+
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -64,11 +66,13 @@ public final class TypeChecker {
             if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
             if (imported.wildcard()) {
                 if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
+                rejectCoreGpuName(imported.namespace(), "import namespace");
                 if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
                 importedValues.add(imported.namespace());
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
+                    rejectCoreGpuName(name, "import");
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                     if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
                 }
@@ -78,8 +82,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            rejectCoreGpuName(module.name(), "module");
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                rejectCoreGpuDeclName(decl);
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
@@ -93,6 +99,20 @@ public final class TypeChecker {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private static void rejectCoreGpuDeclName(Ast.Decl decl) {
+        if (decl instanceof Ast.FunctionDecl fn) rejectCoreGpuName(fn.name(), "callable");
+        else if (decl instanceof Ast.ClassDecl klass) rejectCoreGpuName(klass.name(), "class");
+        else if (decl instanceof Ast.InterfaceDecl iface) rejectCoreGpuName(iface.name(), "interface");
+        else if (decl instanceof Ast.TypeAliasDecl alias) rejectCoreGpuName(alias.name(), "type alias");
+        else if (decl instanceof Ast.FieldDecl field) rejectCoreGpuName(field.name(), "module binding");
+    }
+
+    private static void rejectCoreGpuName(String name, String kind) {
+        if (CORE_GPU_NAMES.contains(name)) {
+            throw new IllegalArgumentException(kind + " name '" + name + "' is reserved by the Oreslang GPU core prelude");
         }
     }
 
