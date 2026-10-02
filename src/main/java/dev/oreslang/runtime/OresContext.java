@@ -8,6 +8,7 @@ import dev.oreslang.OresLanguage;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
@@ -24,6 +25,7 @@ public final class OresContext implements AutoCloseable {
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
+    private final String tenantId;
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -32,6 +34,7 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
+        this.tenantId = tenantIdFromApplicationArguments(env.getApplicationArguments());
         this.actors = new ActorRuntime(isolatePolicy);
     }
 
@@ -47,6 +50,7 @@ public final class OresContext implements AutoCloseable {
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+    public String tenantId() { return tenantId; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         isolatePolicy.require(capability, api);
@@ -65,13 +69,25 @@ public final class OresContext implements AutoCloseable {
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
     public Map<String, Object> processDescriptor() {
-        return Map.of(
-                "context_id", contextId.toString(),
-                "runtime", "graalvm-truffle",
-                "language", "oreslang",
-                "execution_mode", executionProfile.mode().name(),
-                "platform", executionProfile.platform().name(),
-                "scheduler_safepoints", schedulerSafepoints.get());
+        Map<String, Object> descriptor = new LinkedHashMap<>();
+        descriptor.put("context_id", contextId.toString());
+        if (tenantId != null) descriptor.put("tenant_id", tenantId);
+        descriptor.put("runtime", "graalvm-truffle");
+        descriptor.put("language", "oreslang");
+        descriptor.put("execution_mode", executionProfile.mode().name());
+        descriptor.put("platform", executionProfile.platform().name());
+        descriptor.put("scheduler_safepoints", schedulerSafepoints.get());
+        return Map.copyOf(descriptor);
+    }
+
+    private static String tenantIdFromApplicationArguments(String[] args) {
+        for (String arg : args) {
+            if (arg.startsWith("--ores-tenant-id=")) {
+                String value = arg.substring("--ores-tenant-id=".length());
+                return value.isBlank() ? null : value;
+            }
+        }
+        return null;
     }
 
     @Override
