@@ -112,7 +112,7 @@ public final class IncrementalCompiler {
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v1\n");
+        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
         for (Ast.ModuleDecl module : program.modules()) {
@@ -154,7 +154,8 @@ public final class IncrementalCompiler {
             for (Ast.MethodDecl method : klass.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append(method.isStatic() ? " static-fnc " : " method ")
-                        .append(method.name());
+                        .append(method.name())
+                        .append("#arity").append(method.arity());
                 appendGenerics(abi, method.genericParameters());
                 appendParams(abi, method.parameters());
                 abi.append("=>").append(typeRef(method.returnType())).append('\n');
@@ -169,7 +170,8 @@ public final class IncrementalCompiler {
             abi.append('\n');
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                    abi.append(" iface-fnc ").append(fn.name());
+                    abi.append(" iface-fnc ").append(fn.name())
+                            .append("#arity").append(fn.parameters().size());
                     appendGenerics(abi, fn.genericParameters());
                     appendParams(abi, fn.parameters());
                     abi.append("=>").append(typeRef(fn.returnType())).append('\n');
