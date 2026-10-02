@@ -808,6 +808,62 @@ final class OwnershipAndClosureTest {
                 """)));
     }
 
+    @Test
+    void sameStructSpecializationUsesValueEquality() throws Exception {
+        String output = run("""
+                struct Box<T> {
+                  pub let T value;
+                }
+
+                pub fnc main() => void {
+                  val Box<int> left = Box<int> { value = 7 };
+                  val Box<int> same = Box<int> { value = 7 };
+                  val Box<int> different = Box<int> { value = 8 };
+                  stdio.stdout.write(left == same);
+                  stdio.stdout.write(left == different);
+                  return;
+                }
+                """);
+
+        assertEquals("truefalse", output);
+    }
+
+    @Test
+    void differentGenericStructSpecializationsCannotBeComparedForEquality() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          pub let T value;
+                        }
+
+                        fnc bad(Box<int> left, Box<string> right) => bool {
+                          return left == right;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("same nominal struct specialization"));
+    }
+
+    @Test
+    void differentNamedStructsWithSameShapeCannotBeComparedForEquality() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Left {
+                          pub let int value;
+                        }
+
+                        struct Right {
+                          pub let int value;
+                        }
+
+                        fnc bad(Left left, Right right) => bool {
+                          return left == right;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("same nominal struct specialization"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
