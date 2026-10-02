@@ -1140,6 +1140,283 @@ public final class TypeChecker {
         return false;
     }
 
+    private boolean isInferredReturn(Ast.TypeRef ref) {
+        return ref != null && ref.name().equals("$infer$");
+    }
+
+    private Type inferReturnType(List<Ast.Stmt> body, Env env, Set<String> generics, Type self) {
+        boolean sawValue = false;
+        Type inferred = null;
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.AssertStmt || stmt instanceof Ast.AssumeStmt
+                    || stmt instanceof Ast.InvariantStmt || stmt instanceof Ast.DeferStmt) continue;
+            if (stmt instanceof Ast.ReturnStmt ret) {
+                Type current = ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
+                sawValue |= ret.value() != null;
+                inferred = inferred == null ? current : commonType(inferred, current);
+                continue;
+            }
+            // Flow-sensitive local/control-flow inference deliberately degrades to any
+            // instead of guessing. An explicit => T restores a proof obligation.
+            return Unknown.INSTANCE;
+        }
+        if (inferred == null || !sawValue) return Primitive.VOID;
+        return inferred;
+    }
+
+    private void checkContracts(List<Ast.ContractClause> contracts, Env env, Set<String> generics,
+                                Type returns, Type self, String callable) {
+        for (Ast.ContractClause clause : contracts) {
+            Env contractEnv = new Env(env);
+            if (clause.kind() == Ast.ContractKind.ENSURES) {
+                contractEnv.define("result", returns, Ast.BindingKind.VAL);
+            }
+            Type clauseType = typeOf(clause.expression(), contractEnv, generics, self);
+            if (clause.kind() == Ast.ContractKind.DECREASES) {
+                requireAssignable(clauseType, Primitive.INT, "decreases clause on " + callable);
+            } else {
+                requireAssignable(clauseType, Primitive.BOOL,
+                        clause.kind().name().toLowerCase() + " clause on " + callable);
+                if (clause.kind() == Ast.ContractKind.ENSURES) {
+                    rejectStaticallyFalse(clause.expression(), "ensures");
+                }
+            }
+        }
+    }
+
+    private void rejectStaticallyFalse(Ast.Expr expression, String construct) {
+        if (expression instanceof Ast.LiteralExpr literal && Boolean.FALSE.equals(literal.value())) {
+            throw new IllegalArgumentException(construct + " condition is statically false");
+        }
+    }
+
+    private void validateMatchAgainstExpected(Ast.MatchExpr matched, Type expected, Env env,
+                                              Set<String> generics, Type self) {
+        Type subjectType = typeOf(matched.subject(), env, generics, self);
+        validateMatchCoverage(matched, subjectType, env, generics, self);
+        for (Ast.MatchArm arm : matched.arms()) {
+            Env armEnv = new Env(env);
+            bindPattern(arm.pattern(), subjectType, armEnv);
+            if (arm.guard() != null) {
+                requireAssignable(typeOf(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
+            }
+            requireAssignable(typeOf(arm.value(), armEnv, generics, self), expected, "match arm");
+        }
+    }
+
+    private void validateMatchCoverage(Ast.MatchExpr matched, Type subjectType, Env env,
+                                       Set<String> generics, Type self) {
+        Set<String> covered = new LinkedHashSet<>();
+        boolean catchAll = false;
+        for (Ast.MatchArm arm : matched.arms()) {
+            Env armEnv = new Env(env);
+            bindPattern(arm.pattern(), subjectType, armEnv);
+            if (arm.guard() != null) {
+                requireAssignable(typeOf(arm.guard(), armEnv, generics, self), Primitive.BOOL, "match guard");
+                continue; // arbitrary guards never count toward exhaustiveness
+            }
+            if (catchAll) throw new IllegalArgumentException("unreachable match arm after catch-all pattern");
+            Set<String> keys = coverageKeys(arm.pattern());
+            if (!keys.isEmpty() && covered.containsAll(keys)) {
+                throw new IllegalArgumentException("unreachable/redundant match pattern " + keys);
+            }
+            covered.addAll(keys);
+            catchAll = patternCoversAll(arm.pattern(), subjectType);
+        }
+
+        if (catchAll) return;
+        Type subject = deref(subjectType);
+        if (subject == Primitive.BOOL) {
+            if (!(covered.contains("literal:true") && covered.contains("literal:false"))) {
+                throw new IllegalArgumentException("non-exhaustive match on bool; both true and false are required");
+            }
+            return;
+        }
+        if (subject instanceof Named named && named.name().equals("Option")) {
+            if (!(covered.contains("ctor:Some") && covered.contains("ctor:None"))) {
+                throw new IllegalArgumentException("non-exhaustive match on Option; both Some(_) and None are required");
+            }
+            return;
+        }
+        throw new IllegalArgumentException("non-exhaustive match on open type " + subjectType
+                + "; add an unguarded '_' or binding arm");
+    }
+
+    private Set<String> coverageKeys(Ast.Pattern pattern) {
+        Set<String> keys = new LinkedHashSet<>();
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            keys.add("literal:" + String.valueOf(literal.value()));
+        } else if (pattern instanceof Ast.ConstructorPattern constructor) {
+            keys.add("ctor:" + constructor.name());
+        } else if (pattern instanceof Ast.OrPattern or) {
+            for (Ast.Pattern alt : or.alternatives()) keys.addAll(coverageKeys(alt));
+        }
+        return keys;
+    }
+
+    private boolean patternCoversAll(Ast.Pattern pattern, Type subjectType) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
+        if (pattern instanceof Ast.OrPattern or) {
+            return or.alternatives().stream().anyMatch(p -> patternCoversAll(p, subjectType));
+        }
+        Type subject = deref(subjectType);
+        if (pattern instanceof Ast.TuplePattern tuplePattern && subject instanceof Tuple tuple
+                && tuplePattern.elements().size() == tuple.elements().size()) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                if (!patternCoversAll(tuplePattern.elements().get(i), tuple.elements().get(i))) return false;
+            }
+            return true;
+        }
+        if (pattern instanceof Ast.ObjectPattern objectPattern) {
+            Map<String, Type> members = structuralMembers(subject);
+            if (members == null) return false;
+            for (Ast.ObjectPatternField field : objectPattern.fields()) {
+                Type fieldType = members.get(field.name());
+                if (fieldType == null || !patternCoversAll(field.pattern(), fieldType)) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private void bindPattern(Ast.Pattern pattern, Type subjectType, Env env) {
+        Map<String, Type> bindings = patternBindings(pattern, deref(subjectType));
+        for (Map.Entry<String, Type> binding : bindings.entrySet()) {
+            env.define(binding.getKey(), binding.getValue(), Ast.BindingKind.VAL);
+        }
+    }
+
+    private Map<String, Type> patternBindings(Ast.Pattern pattern, Type subjectType) {
+        Map<String, Type> bindings = new LinkedHashMap<>();
+        collectPatternBindings(pattern, deref(subjectType), bindings);
+        return bindings;
+    }
+
+    private void collectPatternBindings(Ast.Pattern pattern, Type subjectType, Map<String, Type> bindings) {
+        if (pattern instanceof Ast.WildcardPattern) return;
+        if (pattern instanceof Ast.BindingPattern binding) {
+            if (bindings.putIfAbsent(binding.name(), subjectType) != null) {
+                throw new IllegalArgumentException("duplicate binding '" + binding.name() + "' in pattern");
+            }
+            return;
+        }
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            Type literalType = literalPatternType(literal.value());
+            if (!assignable(literalType, subjectType) && !assignable(subjectType, literalType)) {
+                throw new IllegalArgumentException("pattern literal has type " + literalType
+                        + " but subject has type " + subjectType);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.OrPattern or) {
+            Map<String, Type> merged = null;
+            for (Ast.Pattern alt : or.alternatives()) {
+                Map<String, Type> next = patternBindings(alt, subjectType);
+                if (merged == null) merged = new LinkedHashMap<>(next);
+                else {
+                    if (!merged.keySet().equals(next.keySet())) {
+                        throw new IllegalArgumentException("all alternatives in an or-pattern must bind the same names");
+                    }
+                    for (String name : merged.keySet()) {
+                        merged.put(name, commonType(merged.get(name), next.get(name)));
+                    }
+                }
+            }
+            if (merged != null) {
+                for (Map.Entry<String, Type> entry : merged.entrySet()) {
+                    if (bindings.putIfAbsent(entry.getKey(), entry.getValue()) != null) {
+                        throw new IllegalArgumentException("duplicate binding '" + entry.getKey() + "' in pattern");
+                    }
+                }
+            }
+            return;
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            if (subjectType instanceof Named named && named.name().equals("Option")) {
+                if (constructor.name().equals("Some")) {
+                    if (constructor.arguments().size() != 1) {
+                        throw new IllegalArgumentException("Some pattern expects one argument");
+                    }
+                    Type valueType = named.arguments().isEmpty() ? Unknown.INSTANCE : named.arguments().getFirst();
+                    collectPatternBindings(constructor.arguments().getFirst(), valueType, bindings);
+                    return;
+                }
+                if (constructor.name().equals("None")) {
+                    if (!constructor.arguments().isEmpty()) {
+                        throw new IllegalArgumentException("None pattern takes no arguments");
+                    }
+                    return;
+                }
+                throw new IllegalArgumentException("unknown Option constructor pattern '" + constructor.name() + "'");
+            }
+            Ast.ClassDecl klass = findClass(constructor.name());
+            if (klass == null) throw new IllegalArgumentException("unknown constructor pattern '" + constructor.name() + "'");
+            if (subjectType instanceof Named named && findClass(named.name()) != klass) {
+                throw new IllegalArgumentException("constructor pattern " + constructor.name() + " cannot match " + subjectType);
+            }
+            List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
+            if (constructor.arguments().size() != fields.size()) {
+                throw new IllegalArgumentException("constructor pattern " + constructor.name() + " expects "
+                        + fields.size() + " field pattern(s)");
+            }
+            Type nominal = nominalClassType(klass);
+            Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+            for (int i = 0; i < fields.size(); i++) {
+                collectPatternBindings(constructor.arguments().get(i),
+                        resolve(fields.get(i).type(), classGenerics, nominal), bindings);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuplePattern) {
+            if (!(subjectType instanceof Tuple tuple) || tuple.elements().size() != tuplePattern.elements().size()) {
+                throw new IllegalArgumentException("tuple pattern arity/type does not match " + subjectType);
+            }
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                collectPatternBindings(tuplePattern.elements().get(i), tuple.elements().get(i), bindings);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern listPattern) {
+            if (!(subjectType instanceof ListType list)) {
+                throw new IllegalArgumentException("list pattern requires an array/list subject");
+            }
+            for (Ast.Pattern element : listPattern.elements()) {
+                collectPatternBindings(element, list.element(), bindings);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.ObjectPattern objectPattern) {
+            Map<String, Type> members = structuralMembers(subjectType);
+            if (members == null) {
+                throw new IllegalArgumentException("object pattern requires a structural record or class subject");
+            }
+            for (Ast.ObjectPatternField field : objectPattern.fields()) {
+                Type fieldType = members.get(field.name());
+                if (fieldType == null) {
+                    throw new IllegalArgumentException("object pattern references unknown field '" + field.name() + "'");
+                }
+                collectPatternBindings(field.pattern(), fieldType, bindings);
+            }
+        }
+    }
+
+    private Map<String, Type> structuralMembers(Type type) {
+        if (type instanceof Record record) return record.members();
+        if (type instanceof Named named) {
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) return classShape(klass, new LinkedHashSet<>()).members();
+        }
+        return null;
+    }
+
+    private Type literalPatternType(Object value) {
+        if (value instanceof Long) return Primitive.INT;
+        if (value instanceof Double) return Primitive.FLOAT;
+        if (value instanceof Boolean) return Primitive.BOOL;
+        if (value instanceof String) return Primitive.STRING;
+        return Unknown.INSTANCE;
+    }
+
     private boolean hasInferredArgs(Ast.TypeRef ref) {
         return ref.inferArguments() || ref.arguments().stream().anyMatch(this::hasInferredArgs);
     }
