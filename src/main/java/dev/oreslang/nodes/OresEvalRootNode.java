@@ -26,10 +26,16 @@ import java.util.concurrent.CompletionStage;
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
     private final Ast.Program program;
+    private final String codeUnitId;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
+        this(language, program, "<anonymous>");
+    }
+
+    public OresEvalRootNode(OresLanguage language, Ast.Program program, String codeUnitId) {
         super(language);
         this.program = program;
+        this.codeUnitId = codeUnitId == null || codeUnitId.isBlank() ? "<anonymous>" : codeUnitId;
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -43,12 +49,13 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy());
-        return new Evaluator(program, context).execute(arguments);
+        return new Evaluator(program, context, codeUnitId).execute(arguments);
     }
 
     private static final class Evaluator {
         private final Ast.Program program;
         private final OresContext context;
+        private final String codeUnitId;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -57,9 +64,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
-        private Evaluator(Ast.Program program, OresContext context) {
+        private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
             this.program = program;
             this.context = context;
+            this.codeUnitId = codeUnitId;
             indexDeclarations();
         }
 
@@ -173,7 +181,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private String singletonKey(Ast.ModuleDecl module) {
             String namespace = program.namespace();
-            return "ores:" + (namespace == null || namespace.isBlank() ? "" : namespace + ".") + module.name();
+            String packageIdentity = namespace == null || namespace.isBlank()
+                    ? codeUnitId
+                    : namespace;
+            return "ores:" + packageIdentity + ":" + module.name();
         }
 
         private Ast.ModuleDecl ownerModule(Ast.FunctionDecl fn) {
