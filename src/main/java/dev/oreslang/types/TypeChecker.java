@@ -1316,6 +1316,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         where + " must use the underlying T; Shared<T> is a transport handle, not a delivered value");
             }
+            if (named.name().equals("Future")) {
+                throw new IllegalArgumentException(
+                        where + " cannot contain Future<T>; await the result before crossing an actor/shared boundary");
+            }
             for (Type argument : named.arguments()) {
                 requireActorTransportType(argument, where, seen);
             }
