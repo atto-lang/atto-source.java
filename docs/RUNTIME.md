@@ -47,7 +47,12 @@ its failure onto the spawning/main thread, and sibling actors continue running.
 
 `ActorRef.join()` waits for termination but completes normally even when the actor failed.
 Failure is observable through `failed()` / `failure()`; escalation is therefore explicit
-supervisor policy rather than an ambient exception leak.
+supervisor policy rather than an ambient exception leak. The current actor thread is recorded on
+its ref so `self.join()` is rejected immediately; an actor can never deadlock by waiting for its
+own termination.
+
+Each source actor turn receives an implicit `self` handle in addition to its one mailbox-message
+parameter.
 
 Explicit `stop()` is graceful and ordered:
 
