@@ -440,7 +440,7 @@ public final class OwnershipChecker {
         }
         VarState owner = requireState(scope, name.name());
         owner.debugName = name.name();
-        requireUsable(owner, name.name(), true);
+        requireUsable(owner, name.name(), false);
         return owner;
     }
 
