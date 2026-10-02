@@ -488,6 +488,9 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
+        if (kind == ActorKind.SHARED) {
+            policy.require(IsolatePolicy.Capability.ACTOR_SHARED_MEMORY, "shared actor spawn");
+        }
 
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id, kind);
@@ -498,6 +501,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     public <T> SyncCell<T> syncCell(T initialValue) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARED_MEMORY, "SyncCell");
         rejectPrivateActorSharedMemoryAccess("SyncCell creation");
         SyncCell<T> cell = new SyncCell<>(initialValue);
         syncCells.add(cell);
