@@ -107,6 +107,27 @@ final class ActorTransportHardeningTest {
     }
 
     @Test
+    void hostileContainerSizeCannotForceEagerAllocation() {
+        List<Object> hostile = new java.util.AbstractList<>() {
+            @Override
+            public Object get(int index) {
+                throw new AssertionError("oversized container must be rejected before iteration");
+            }
+
+            @Override
+            public int size() {
+                return Integer.MAX_VALUE;
+            }
+        };
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(hostile));
+
+        assertTrue(error.getMessage().contains("maximum graph size"));
+    }
+
+    @Test
     void oversizedMessageGraphsAreRejected() {
         List<Integer> tooManyNodes = java.util.Collections.nCopies(100_001, 1);
 
