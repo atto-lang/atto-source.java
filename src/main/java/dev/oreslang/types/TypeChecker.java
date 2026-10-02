@@ -1416,7 +1416,7 @@ public final class TypeChecker {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
-            Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type receiver = deref(typeOf(member.receiver(), env, generics, self));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
@@ -1563,6 +1563,7 @@ public final class TypeChecker {
     }
 
     private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        requireExtractableOwnership(lambda.parameters(), "lambda");
         if (lambda.expressionBody() != null) {
             throw new IllegalArgumentException("lambdas always require a block body and explicit return for non-void results");
         }
