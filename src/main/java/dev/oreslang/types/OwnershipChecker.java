@@ -22,8 +22,8 @@ import java.util.Set;
  * - primitive immutable values are Copy;
  * - class/list/object/function values are move-only by default;
  * - by-value call/binding/return moves move-only values;
- * - &T permits shared immutable borrows;
- * - &mut T is exclusive and requires a mutable owner;
+ * - Borrow<T> permits shared immutable borrows via borrow(value);
+ * - BorrowMut<T> is exclusive via borrow_mut(value) and requires a mutable owner;
  * - Bar mut b makes an owned parameter mutable inside the callee;
  * - escaping closures own non-Copy captures and mutable captures;
  * - closures may not capture a borrow (pass it as a lambda parameter instead);
@@ -87,7 +87,7 @@ public final class OwnershipChecker {
             if (!method.isStatic()) {
                 // Receiver is immutable unless a future explicit "mut self"
                 // syntax is introduced. Methods can still mutate through an
-                // explicit &mut parameter.
+                // explicit BorrowMut<T> parameter.
                 scope.define("self", new VarState(Ast.TypeRef.simple(klass.name()), false, ValueKind.IMM_BORROW, Origin.PARAM));
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
@@ -127,8 +127,11 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() != null) {
-                if (ret.value() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-                    VarState owner = borrowOwner(unary.operand(), scope);
+                if (ret.value() instanceof Ast.CallExpr call && isBorrowIntrinsicCall(call, scope)) {
+                    if (call.arguments().size() != 1) {
+                        throw error(((Ast.NameExpr) call.callee()).name() + " expects exactly one value");
+                    }
+                    VarState owner = borrowOwner(call.arguments().getFirst(), scope);
                     if (owner.origin == Origin.LOCAL) {
                         throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
                     }
@@ -517,7 +520,7 @@ public final class OwnershipChecker {
             requireUsable(state, name.name(), true);
             boolean mutableBorrow = state.kind == ValueKind.MUT_BORROW || (state.type.isBorrow() && state.type.mutableBorrow());
             if (!state.mutable && !mutableBorrow) {
-                throw error("cannot mutate " + what + " through immutable parameter/binding '" + name.name() + "'; declare the owned parameter as 'mut' or pass '&mut'");
+                throw error("cannot mutate " + what + " through immutable parameter/binding '" + name.name() + "'; declare the owned parameter as 'mut' or pass borrow_mut(" + name.name() + ")");
             }
             if (state.kind == ValueKind.IMM_BORROW || (state.type.isBorrow() && !state.type.mutableBorrow())) {
                 throw error("cannot mutate " + what + " through immutable borrow '" + name.name() + "'");
