@@ -1235,8 +1235,10 @@ public final class TypeChecker {
                 Set<String> methodGenerics = new HashSet<>(classGenerics);
                 methodGenerics.addAll(method.genericParameters());
                 Type raw = functionType(method.parameters(), method.returnType(), methodGenerics, canonical);
+                Type resolved = resolveSharedGeneric(raw, bindings);
                 mergeMember(members, methodKey(method.name(), method.arity()),
-                        resolveSharedGeneric(raw, bindings), "class " + klass.name());
+                        canonicalizeMethodGenerics(resolved, method.genericParameters()),
+                        "class " + klass.name());
             }
             return new Record(members);
         } finally {
@@ -1275,8 +1277,10 @@ public final class TypeChecker {
                 Set<String> methodGenerics = new HashSet<>(classGenerics);
                 methodGenerics.addAll(method.genericParameters());
                 Type raw = functionType(method.parameters(), method.returnType(), methodGenerics, canonical);
+                Type resolved = resolveSharedGeneric(raw, bindings);
                 mergeMember(members, methodKey(method.name(), method.arity()),
-                        resolveSharedGeneric(raw, bindings), "class " + klass.name());
+                        canonicalizeMethodGenerics(resolved, method.genericParameters()),
+                        "class " + klass.name());
             }
             return new Record(members);
         } finally {
@@ -1308,7 +1312,8 @@ public final class TypeChecker {
                     Type raw = functionType(fn.parameters(), fn.returnType(), all, null);
                     Type resolved = resolveSharedGeneric(raw, bindings);
                     mergeMember(members, methodKey(fn.name(), fn.parameters().size()),
-                            resolved, "interface " + iface.name());
+                            canonicalizeMethodGenerics(resolved, fn.genericParameters()),
+                            "interface " + iface.name());
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
                     Type raw = resolve(field.type(), generics, null);
                     mergeMember(members, field.name(), resolveSharedGeneric(raw, bindings), "interface " + iface.name());
@@ -1537,10 +1542,32 @@ public final class TypeChecker {
 
     private void mergeMember(Map<String, Type> members, String name, Type type, String owner) {
         Type existing = members.get(name);
-        if (existing != null && (!assignable(existing, type) || !assignable(type, existing))) {
-            throw new IllegalArgumentException("conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
+        if (existing != null) {
+            boolean methodSlot = isMethodSlotKey(name)
+                    && existing instanceof Function
+                    && type instanceof Function;
+            boolean compatible = methodSlot
+                    ? existing.equals(type)
+                    : assignable(existing, type) && assignable(type, existing);
+            if (!compatible) {
+                throw new IllegalArgumentException(
+                        "conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
+            }
         }
         members.put(name, type);
+    }
+
+    private boolean isMethodSlotKey(String name) {
+        return name != null && name.contains("$arity");
+    }
+
+    private Type canonicalizeMethodGenerics(Type type, List<String> methodGenerics) {
+        if (methodGenerics.isEmpty()) return type;
+        Map<String, Type> canonical = new HashMap<>();
+        for (int i = 0; i < methodGenerics.size(); i++) {
+            canonical.put(methodGenerics.get(i), new Generic("$method" + i));
+        }
+        return resolveSharedGeneric(type, canonical);
     }
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
