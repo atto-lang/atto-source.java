@@ -399,11 +399,8 @@ public final class OwnershipChecker {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
             }
             ValueInfo awaitedValue = checkExpr(awaited.expression(), scope, consuming);
-            if (awaitedValue.type.name().equals("Future") && awaitedValue.type.arguments().size() == 1) {
-                Ast.TypeRef result = awaitedValue.type.arguments().getFirst();
-                return new ValueInfo(result, kindOfType(result), null);
-            }
-            return awaitedValue;
+            Ast.TypeRef result = awaitResultType(awaitedValue.type);
+            return new ValueInfo(result, kindOfType(result), null);
         }
         if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
@@ -1009,6 +1006,190 @@ public final class OwnershipChecker {
             if (member != null) return member;
         }
         return Ast.TypeRef.inferred();
+    }
+
+    private static Ast.TypeRef awaitResultType(Ast.TypeRef type) {
+        if (type == null) return Ast.TypeRef.inferred();
+        if (type.isUnion()) {
+            return Ast.TypeRef.union(type.arguments().stream()
+                    .map(OwnershipChecker::awaitResultType)
+                    .toList());
+        }
+        String simple = simpleTypeName(type.name());
+        if (isValueAwaitCarrier(simple)) {
+            return type.arguments().size() == 1
+                    ? type.arguments().getFirst()
+                    : Ast.TypeRef.inferred();
+        }
+        if (simple.equals("Thread")) return Ast.TypeRef.simple("void");
+        return type;
+    }
+
+    private static boolean isAsyncCarrierType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()) return false;
+        String simple = simpleTypeName(type.name());
+        return isValueAwaitCarrier(simple) || simple.equals("Thread");
+    }
+
+    private static boolean isValueAwaitCarrier(String simple) {
+        return simple.equals("Future")
+                || simple.equals("CompletionStage")
+                || simple.equals("CompletableFuture")
+                || simple.equals("Awaitable");
+    }
+
+    private static String simpleTypeName(String name) {
+        int dot = name.lastIndexOf('.');
+        int dollar = name.lastIndexOf('
+        if (type == null) return ValueKind.MOVE_ONLY;
+        if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
+        return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
+    }
+
+    private boolean isCopyType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()) return false;
+        if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
+        return switch (type.name()) {
+            case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
+                    "f32","f64","float","decimal","complex64","complex128","complex",
+                    "bool","Bool","string","String","void","SharedMutex" -> true;
+            default -> false;
+        };
+    }
+
+    private boolean isScopedMutexReceiver(VarState state) {
+        return isMutexGuardType(state.type)
+                || (mutexCriticalSectionDepth > 0 && state.type.isBorrow() && state.type.mutableBorrow());
+    }
+
+    private static boolean isMutexGuardType(Ast.TypeRef type) {
+        return type != null && !type.isBorrow() && type.name().equals("MutexGuard") && type.arguments().size() == 1;
+    }
+
+    private static boolean containsMutexGuardType(Ast.TypeRef type) {
+        if (type == null) return false;
+        if (type.isBorrow()) return containsMutexGuardType(type.borrowedTarget());
+        if (isMutexGuardType(type)) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsMutexGuardType(argument)) return true;
+        }
+        return false;
+    }
+
+    private static boolean containsAcquiredMutexGuardType(Ast.TypeRef type) {
+        if (type == null || type.isBorrow()) return false;
+        if (isMutexGuardType(type)) return true;
+        if (isAsyncCarrierType(type)) return false;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (containsAcquiredMutexGuardType(argument)) return true;
+        }
+        return false;
+    }
+
+    private Ast.TypeRef inferLiteralType(Object value) {
+        if (value instanceof Boolean) return Ast.TypeRef.simple("bool");
+        if (value instanceof Long) return Ast.TypeRef.simple("int");
+        if (value instanceof Double) return Ast.TypeRef.simple("float");
+        if (value instanceof String) return Ast.TypeRef.simple("String");
+        if (value instanceof Ast.Imaginary) return Ast.TypeRef.simple("complex");
+        return Ast.TypeRef.inferred();
+    }
+
+    private IllegalArgumentException error(String message) {
+        return new IllegalArgumentException("Oreslang ownership error: " + message);
+    }
+
+    private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW }
+    private enum Origin { PARAM, LOCAL, CAPTURE }
+
+    private static final class ValueInfo {
+        private final Ast.TypeRef type;
+        private final ValueKind kind;
+        private final VarState borrowSource;
+        private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource) {
+            this.type = type;
+            this.kind = kind;
+            this.borrowSource = borrowSource;
+        }
+    }
+
+    private static final class VarState {
+        private Ast.TypeRef type;
+        private final boolean mutable;
+        private ValueKind kind;
+        private final Origin origin;
+        private boolean moved;
+        private int immutableBorrows;
+        private boolean mutableBorrowed;
+        private VarState borrowSource;
+        private String debugName = "<value>";
+
+        private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
+            this.type = type;
+            this.mutable = mutable;
+            this.kind = kind;
+            this.origin = origin;
+        }
+    }
+
+    private static final class Scope {
+        private final Scope parent;
+        private final Map<String,VarState> locals = new LinkedHashMap<>();
+        private boolean closed;
+
+        private Scope(Scope parent) { this.parent = parent; }
+
+        private void define(String name, VarState state) {
+            if (locals.putIfAbsent(name, state) != null) throw new IllegalArgumentException("Oreslang ownership error: duplicate binding '" + name + "'");
+            state.debugName = name;
+        }
+
+        private VarState lookup(String name) {
+            VarState local = locals.get(name);
+            return local != null ? local : parent == null ? null : parent.lookup(name);
+        }
+
+        private List<VarState> visibleStates() {
+            ArrayList<VarState> result = new ArrayList<>();
+            if (parent != null) result.addAll(parent.visibleStates());
+            result.addAll(locals.values());
+            return result;
+        }
+
+        private boolean hasLiveMutexGuard() {
+            for (VarState state : visibleStates()) {
+                if (!state.moved && containsAcquiredMutexGuardType(state.type)) return true;
+            }
+            return false;
+        }
+
+        private void close() {
+            if (closed) return;
+            closed = true;
+            for (VarState state : locals.values()) {
+                if (state.borrowSource != null) {
+                    if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
+                    else if (state.kind == ValueKind.IMM_BORROW) state.borrowSource.immutableBorrows--;
+                }
+            }
+        }
+    }
+
+    private record StateSnapshot(boolean moved, int immutableBorrows, boolean mutableBorrowed) { }
+
+    private record Capture(String name, VarState source, boolean write) { }
+
+    private static final class CaptureSet {
+        private final Map<String,Capture> values = new LinkedHashMap<>();
+        private void add(String name, VarState state, boolean write) {
+            Capture existing = values.get(name);
+            values.put(name, existing == null ? new Capture(name, state, write)
+                    : new Capture(name, state, existing.write() || write));
+        }
+    }
+}
+);
+        return name.substring(Math.max(dot, dollar) + 1);
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
