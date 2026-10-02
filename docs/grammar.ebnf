@@ -187,6 +187,7 @@ argument_list   = expression { "," expression } ;
 primary         = literal
                 | symbol_literal
                 | channel_expr
+                | channel_operation
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
@@ -210,6 +211,12 @@ object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 
 channel_expr    = "channel" "<" type_ref ">" "(" expression ")" ;
+
+channel_operation
+                = "receive" "(" [ expression ] ")"
+                | "try_receive" "(" [ expression ] ")"
+                | "send" "(" expression "," expression ")"
+                | "try_send" "(" expression "," expression ")" ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
@@ -270,6 +277,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      locally through case arms; it never scans ahead for a later match. Because
      the mailbox protocol is open until Protocol<M> lowering is wired, pattern
      receive requires default or an irrefutable case.
+   - Until actor Protocol<M> is carried through source declarations, simple
+     receive-loop bindings require an explicit message type even though the
+     grammar preserves the future inferred form.
    - :name is a Symbol literal. Symbols are immutable GC-able values and are
      never backed by an unbounded process-global atom/intern table.
    - blocking send/receive/select suspension hoists live actor locals into a
