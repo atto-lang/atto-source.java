@@ -1079,6 +1079,22 @@ public final class TypeChecker {
                         }
                         return signature.result();
                     }
+
+                    Function capabilityMethod = contractMethod(named, member.member(), call.arguments().size());
+                    if (capabilityMethod != null) {
+                        for (int i = 0; i < call.arguments().size(); i++) {
+                            Type expected = capabilityMethod.parameters().get(i);
+                            validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
+                                    "capability argument " + (i + 1));
+                        }
+                        return capabilityMethod.result();
+                    }
+
+                    if (contractShape(named) != null) {
+                        throw new IllegalArgumentException("no capability method '" + member.member()
+                                + "' with arity " + call.arguments().size() + " on " + named.name());
+                    }
                 }
             }
             Type callee = typeOf(call.callee(), env, generics, self);
@@ -1164,8 +1180,14 @@ public final class TypeChecker {
 
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
-                if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
-                return result;
+                if (result != null) return result;
+                List<Function> methods = recordMethodsByName(record, member.member());
+                if (methods.size() == 1) return methods.getFirst();
+                if (methods.size() > 1) {
+                    throw new IllegalArgumentException("overloaded structural method '" + member.member()
+                            + "' must be called so arity can select the overload");
+                }
+                throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
@@ -1178,6 +1200,18 @@ public final class TypeChecker {
                         return methodFunctionType(method, klass, named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
+                } else {
+                    Record contract = contractShape(named);
+                    if (contract != null) {
+                        Type field = contract.members().get(member.member());
+                        if (field != null) return field;
+                    }
+                    List<Function> methods = contractMethodsByName(named, member.member());
+                    if (methods.size() == 1) return methods.getFirst();
+                    if (methods.size() > 1) {
+                        throw new IllegalArgumentException("overloaded capability method '" + member.member()
+                                + "' must be called so arity can select the overload");
+                    }
                 }
             }
             return Unknown.INSTANCE;
