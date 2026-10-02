@@ -121,11 +121,14 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
+        if (startsClassOrModuleDeclaration()) {
+            throw error(peek(), "class and module declarations must be top-level; nested declarations are not allowed");
+        }
+
         if (match(DEFINE)) {
-            boolean afterDefineAbstract = match(ABSTRACT);
-            if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
+            match(ABSTRACT);
             if (match(INTERFACE)) return parseInterface(modifiers.visibility);
-            throw error(previous(), "expected class or interface after 'define'");
+            throw error(previous(), "expected interface after 'define'; classes and modules must be top-level");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -168,6 +171,9 @@ public final class Parser {
         while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (startsClassOrModuleDeclaration()) {
+                throw error(peek(), "class and module declarations must be top-level; nested declarations are not allowed");
+            }
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
@@ -528,6 +534,9 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        if (startsClassOrModuleDeclaration()) {
+            throw error(peek(), "class and module declarations must be top-level; nested declarations are not allowed");
+        }
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
         if (match(RETURN)) {
@@ -916,6 +925,21 @@ public final class Parser {
     }
 
     private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean startsClassOrModuleDeclaration() {
+        int i = current;
+        while (i < tokens.size() && isDeclarationModifier(tokens.get(i).type())) i++;
+        if (i >= tokens.size() || tokens.get(i).type() != DEFINE) return false;
+        i++;
+        while (i < tokens.size() && isDeclarationModifier(tokens.get(i).type())) i++;
+        if (i >= tokens.size()) return false;
+        Token.Type type = tokens.get(i).type();
+        return type == CLASS || type == MODULE;
+    }
+
+    private boolean isDeclarationModifier(Token.Type type) {
+        return type == PUB || type == PRIVATE || type == ASYNC || type == STATIC || type == ABSTRACT;
+    }
 
     private boolean match(Token.Type... types) {
         for (Token.Type type : types) {
