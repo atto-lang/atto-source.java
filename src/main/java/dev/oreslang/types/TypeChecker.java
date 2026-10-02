@@ -753,6 +753,10 @@ public final class TypeChecker {
             return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
         }
         if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof Union union) {
+            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
+            return true;
+        }
         if (type instanceof Tuple tuple) {
             for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings)) return false;
             return true;
