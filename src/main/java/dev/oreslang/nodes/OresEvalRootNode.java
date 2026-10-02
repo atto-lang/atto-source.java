@@ -68,6 +68,7 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
+        private final Map<ActorModuleStateKey, Env> initializingModuleStates = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -150,10 +151,10 @@ public final class OresEvalRootNode extends RootNode {
         private Env actorModuleState(Ast.ModuleDecl module) {
             if (module.singleton()) throw new IllegalArgumentException("singleton modules use process-owned state");
 
-            ActorModuleStateKey actorKey = new ActorModuleStateKey(
-                    codeUnitId,
-                    program.namespace() == null ? "<default>" : program.namespace(),
-                    module.name());
+            ActorModuleStateKey actorKey = moduleStateKey(module);
+            Env initializing = initializingModuleStates.get(actorKey);
+            if (initializing != null) return initializing;
+
             Env actorState = context.actors().currentActorLocal(
                     actorKey,
                     () -> initializeOrdinaryModuleState(module));
@@ -164,10 +165,25 @@ public final class OresEvalRootNode extends RootNode {
             return context.contextLocal(actorKey, () -> initializeOrdinaryModuleState(module));
         }
 
+        private ActorModuleStateKey moduleStateKey(Ast.ModuleDecl module) {
+            return new ActorModuleStateKey(
+                    codeUnitId,
+                    program.namespace() == null ? "<default>" : program.namespace(),
+                    module.name());
+        }
+
         private Env initializeOrdinaryModuleState(Ast.ModuleDecl module) {
             Env state = new Env(null);
-            initializeOrdinaryModuleState(module, state);
-            return state;
+            ActorModuleStateKey key = moduleStateKey(module);
+            if (initializingModuleStates.putIfAbsent(key, state) != null) {
+                throw new IllegalStateException("ordinary module initialization cycle involving " + module.name());
+            }
+            try {
+                initializeOrdinaryModuleState(module, state);
+                return state;
+            } finally {
+                initializingModuleStates.remove(key, state);
+            }
         }
 
         private void initializeOrdinaryModuleState(Ast.ModuleDecl module, Env state) {
