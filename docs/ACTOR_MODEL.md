@@ -95,25 +95,25 @@ State is not represented by recursive calls. Any local that is live across `rece
 
 ### Typed channels and select
 
-General channels are bounded by construction. `channel<T>(0)` is a rendezvous channel; positive capacities are bounded buffers. There is no implicit unbounded channel.
+General channels are bounded by construction. `channel<T>(0)` is a rendezvous channel; positive capacities are bounded buffers. There is no implicit unbounded channel. Explicit close semantics are deliberately not baked into v1 yet, avoiding Go's closed-channel zero-value ambiguity; cancellation/endpoint lifecycle is handled separately until a typed close result is specified.
 
 Blocking channel operations are dedicated suspension syntax:
 
 ```ores
 val Channel<Job> jobs = channel<Job>(64);
 
-send(jobs, job);          // suspend until admitted or closed
-val job = receive(jobs);  // suspend until a value or close result
+send(jobs, job);          // suspend until admitted, cancelled, or endpoint shutdown
+val job = receive(jobs);  // suspend until a value (or lifecycle cancellation)
 
-val sent = try_send(jobs, job);       // immediate admission result
-val polled = try_receive(jobs);       // immediate Ready/Empty/Closed result
+val SendResult sent = try_send(jobs, job); // immediate admission result
+val Option<Job> polled = try_receive(jobs); // Some(value) or None when currently empty
 ```
 
 `select` multiplexes receives and sends and commits exactly one ready operation:
 
 ```ores
 select {
-  case receive(commands) as cmd => {
+  case receive(commands) as Command cmd => {
     handle(cmd);
   }
 
@@ -183,6 +183,7 @@ Before actor/async v1 is declared stable:
 - [ ] reconcile typed `Protocol<M>`, `try_send`, and typed `ask` from the Erlang-wart branch onto the dispatcher actor stack;
 - [x] parse and statically check dedicated `receive loop`, `try_receive loop`, channel send/receive, and `select` AST nodes;
 - [x] parse/type-check FIFO receive case patterns with typed captures and bounded GC-safe `Symbol` protocol tags;
+- [ ] wire actor `Protocol<M>` into source declarations so simple mailbox receive types no longer need explicit annotations and closed protocols can prove pattern exhaustiveness;
 - [ ] continuation lowering for executable source `async`, patterned actor receive/send/select suspension, and actor-frame state hoisting;
 - [ ] typed bounded channels plus atomic/fair select registration;
 - [ ] structured actor error reports with source-span/correlation metadata;
