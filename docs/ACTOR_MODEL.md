@@ -69,9 +69,12 @@ shortcut for cross-tenant memory sharing.
 
 Monitors produce immutable `DOWN` messages. Runtime cleanup must continue even
 if a watcher is gone or overloaded. Because `DOWN` is currently a real actor
-message rather than a separate control-mailbox type, a typed watcher must admit
-the `DOWN` shape in its protocol. Monitor registration fails immediately when
-that contract is impossible instead of silently dropping supervision events.
+message rather than a separate unbounded control mailbox, a typed watcher must
+admit the `DOWN` shape in its protocol. Monitor registration fails immediately
+when that contract is impossible. If a registered `DOWN` cannot be admitted
+because the bounded watcher mailbox is full (or delivery otherwise fails), the
+watcher itself fails closed with an observable actor failure; supervision loss
+is never silently ignored.
 
 The runtime does not hard-code one-for-one/one-for-all policies. Supervisor
 actors can implement restart intensity, backoff, escalation, and child ordering
