@@ -175,6 +175,10 @@ public final class TypeChecker {
     }
 
     private void checkInterface(Ast.InterfaceDecl iface) {
+        validateInterfaceOwnershipConsistency(
+                iface,
+                new LinkedHashSet<>(),
+                new LinkedHashMap<>());
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
@@ -991,6 +995,33 @@ public final class TypeChecker {
             }
             validateClassOwnershipContract(klass, iface, new LinkedHashSet<>());
         }
+    }
+
+    private void validateInterfaceOwnershipConsistency(
+            Ast.InterfaceDecl iface,
+            Set<Ast.InterfaceDecl> stack,
+            Map<String, List<Ast.ParamMode>> modes) {
+        if (!stack.add(iface)) return;
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null) {
+                validateInterfaceOwnershipConsistency(parent, stack, modes);
+            }
+        }
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (!(member instanceof Ast.InterfaceFunctionDecl fn)) continue;
+            String key = methodKey(fn.name(), fn.parameters().size());
+            List<Ast.ParamMode> signature = fn.parameters().stream()
+                    .map(param -> param.structural() ? Ast.ParamMode.BORROW : param.mode())
+                    .toList();
+            List<Ast.ParamMode> previous = modes.putIfAbsent(key, signature);
+            if (previous != null && !previous.equals(signature)) {
+                throw new IllegalArgumentException(
+                        "interface ownership conflict for '" + key + "' in '" + iface.name()
+                                + "': inherited/declared modes " + previous + " vs " + signature);
+            }
+        }
+        stack.remove(iface);
     }
 
     private void validateClassOwnershipContract(
