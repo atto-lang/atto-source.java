@@ -540,6 +540,7 @@ public final class Parser {
             consumeStatementTerminator("defer statement should end with ';'");
             return new Ast.DeferStmt(expression);
         }
+        if (match(MATCH)) return parseMatch();
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
         if (match(FOR)) return parseFor();
@@ -642,6 +643,80 @@ public final class Parser {
 
     private boolean isDiscardToken(Token token) {
         return token.type() == IDENT && token.lexeme().equals("_");
+    }
+
+    private Ast.MatchStmt parseMatch() {
+        Ast.Expr value = parseExpression();
+        consume(LBRACE, "expected '{' after match value");
+        List<Ast.MatchArm> arms = new ArrayList<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            Ast.Pattern pattern = parsePattern();
+            consume(FAT_ARROW, "expected '=>' after match pattern");
+            List<Ast.Stmt> body = parseBlock();
+            arms.add(new Ast.MatchArm(pattern, body));
+            match(COMMA, SEMICOLON);
+        }
+        consume(RBRACE, "expected '}' after match arms");
+        if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
+        return new Ast.MatchStmt(value, arms);
+    }
+
+    private Ast.Pattern parsePattern() {
+        if (isDiscardToken(peek())) {
+            advance();
+            return new Ast.WildcardPattern();
+        }
+
+        if (isBindingKind(peek().type())) {
+            Ast.BindingKind kind = parseBindingKind();
+            Token name = consume(IDENT, "expected capture name after binding kind");
+            if (isDiscardToken(name)) return new Ast.WildcardPattern();
+            return new Ast.BindingPattern(kind, name.lexeme());
+        }
+
+        if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
+        if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
+        if (match(FALSE)) return new Ast.LiteralPattern(Boolean.FALSE);
+        if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(IMAG)) {
+            String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
+            return new Ast.LiteralPattern(new Ast.Imaginary(Double.parseDouble(raw)));
+        }
+        if (match(MINUS)) {
+            if (match(INT)) return new Ast.LiteralPattern(-Long.parseLong(previous().lexeme().replace("_", "")));
+            if (match(FLOAT)) return new Ast.LiteralPattern(-Double.parseDouble(previous().lexeme().replace("_", "")));
+            if (match(IMAG)) {
+                String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
+                return new Ast.LiteralPattern(new Ast.Imaginary(-Double.parseDouble(raw)));
+            }
+            throw error(peek(), "negative match literals must be numeric");
+        }
+
+        if (match(LPAREN)) {
+            Ast.Pattern first = parsePattern();
+            if (!match(COMMA)) {
+                consume(RPAREN, "expected ')' after grouped pattern");
+                return first;
+            }
+            List<Ast.Pattern> elements = new ArrayList<>();
+            elements.add(first);
+            do elements.add(parsePattern()); while (match(COMMA));
+            consume(RPAREN, "expected ')' after tuple pattern");
+            return new Ast.TuplePattern(elements);
+        }
+
+        if (match(LBRACKET)) {
+            List<Ast.Pattern> elements = new ArrayList<>();
+            if (!check(RBRACKET)) {
+                do elements.add(parsePattern()); while (match(COMMA));
+            }
+            consume(RBRACKET, "expected ']' after list pattern");
+            return new Ast.ListPattern(elements);
+        }
+
+        if (match(IDENT)) return new Ast.BindingPattern(Ast.BindingKind.VAL, previous().lexeme());
+        throw error(peek(), "expected match pattern");
     }
 
     private Ast.IfStmt parseIf() {

@@ -1,15 +1,184 @@
 package dev.oreslang;
 
+import com.oracle.truffle.api.interop.InteropLibrary;
+import dev.oreslang.runtime.OresTuple;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 final class PolyglotFeatureTest {
+    @Test
+    void tupleRuntimeValueExportsReadOnlyArrayInterop() throws Exception {
+        OresTuple tuple = new OresTuple(List.of("ok", 42L));
+        InteropLibrary interop = InteropLibrary.getUncached();
+
+        assertTrue(interop.hasArrayElements(tuple));
+        assertTrue(interop.isArrayElementReadable(tuple, 0));
+        assertTrue(interop.isArrayElementReadable(tuple, 1));
+        assertTrue(!interop.isArrayElementReadable(tuple, 2));
+        assertTrue(interop.getArraySize(tuple) == 2);
+        assertTrue(interop.readArrayElement(tuple, 0).equals("ok"));
+        assertTrue(interop.readArrayElement(tuple, 1).equals(42L));
+    }
+
+    @Test
+    void nonExhaustiveMatchErrorsDoNotEchoPayloads() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    match ("super-secret-token", 42) {
+                      ("ok", value) => {
+                        stdio.println(value);
+                      }
+                    }
+                    return;
+                  }
+                end
+                """;
+
+        Source source = Source.newBuilder(OresLanguage.ID, program, "non-exhaustive-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            RuntimeException error = assertThrows(RuntimeException.class, () -> context.eval(source));
+            assertTrue(error.getMessage().contains("tuple(arity=2)"));
+            assertFalse(error.getMessage().contains("super-secret-token"));
+        }
+    }
+
+    @Test
+    void executesTaggedTupleAndFiniteListMatches() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    match ("error", "enoent") {
+                      ("ok", value) => {
+                        stdio.println(value);
+                      }
+                      ("error", "enoent") => {
+                        stdio.println("missing");
+                      }
+                      ("error", reason) => {
+                        stdio.println(reason);
+                      }
+                      _ => {
+                        stdio.println("unexpected");
+                      }
+                    }
+
+                    match [1, 2, 3] {
+                      [1, second] => {
+                        stdio.println("wrong arity");
+                      }
+                      [1, second, _] => {
+                        stdio.println(second + 40);
+                      }
+                      _ => {
+                        stdio.println("fallback");
+                      }
+                    }
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pattern-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("missing"));
+        assertTrue(text.contains("42"));
+        assertTrue(!text.contains("wrong arity"));
+    }
+
+    @Test
+    void matchLiteralsAndTupleIdentityAreRuntimeStable() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    match -4i {
+                      -4i => {
+                        stdio.println("negative-imag");
+                      }
+                      _ => {
+                        stdio.println("bad-imag");
+                      }
+                    }
+
+                    stdio.println((1, 2) == [1, 2] ? "bad-shape" : "shape-distinct");
+                    stdio.println([1, 2] == (1, 2) ? "bad-reverse-shape" : "reverse-shape-distinct");
+                    stdio.println([(1, 2)] == [[1, 2]] ? "bad-nested-shape" : "nested-shape-distinct");
+                    stdio.println((1, 2) == (1, 2) ? "tuple-equal" : "bad-tuple");
+
+                    match 1.0 {
+                      1 => {
+                        stdio.println("numeric-pattern-equal");
+                      }
+                      _ => {
+                        stdio.println("bad-numeric-pattern");
+                      }
+                    }
+
+                    match [1.0, (2.0, 3)] {
+                      [1, (2, 3.0)] => {
+                        stdio.println("nested-numeric-pattern-equal");
+                      }
+                      _ => {
+                        stdio.println("bad-nested-numeric-pattern");
+                      }
+                    }
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "match-runtime-hardening.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("negative-imag"));
+        assertTrue(text.contains("shape-distinct"));
+        assertTrue(text.contains("reverse-shape-distinct"));
+        assertTrue(text.contains("nested-shape-distinct"));
+        assertTrue(text.contains("tuple-equal"));
+        assertTrue(text.contains("numeric-pattern-equal"));
+        assertTrue(text.contains("nested-numeric-pattern-equal"));
+        assertTrue(!text.contains("bad-imag"));
+        assertTrue(!text.contains("bad-shape"));
+        assertTrue(!text.contains("bad-reverse-shape"));
+        assertTrue(!text.contains("bad-nested-shape"));
+        assertTrue(!text.contains("bad-tuple"));
+        assertTrue(!text.contains("bad-numeric-pattern"));
+        assertTrue(!text.contains("bad-nested-numeric-pattern"));
+    }
+
     @Test
     void executesRepeatedUnderscoreDestructureDiscards() throws Exception {
         String program = """

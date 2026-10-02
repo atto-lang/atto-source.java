@@ -191,6 +191,181 @@ final class LanguageHardeningTest {
     }
 
     @Test
+    void matchPatternsAreTypedScopedAndCountAsTerminatingControlFlow() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc decode() => int {
+                    match ("error", 7) {
+                      ("ok", value) => {
+                        return value;
+                      }
+                      ("error", value) => {
+                        return value + 1;
+                      }
+                      _ => {
+                        return 0;
+                      }
+                    }
+                  }
+                end
+                """)));
+
+        IllegalArgumentException arity = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 2) {
+                      (a, b, c) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(arity.getMessage().contains("arity"));
+
+        IllegalArgumentException type = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, "ok") {
+                      (true, value) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(type.getMessage().contains("cannot match"));
+
+        IllegalArgumentException scope = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => int {
+                    match ("ok", 1) {
+                      ("ok", value) => { stdio.println(value); }
+                      _ => { stdio.println("fallback"); }
+                    }
+                    return value;
+                  }
+                end
+                """)));
+        assertTrue(scope.getMessage().contains("unknown name 'value'"));
+
+        IllegalArgumentException listAgainstTuple = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 2) {
+                      [a, b] => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(listAgainstTuple.getMessage().contains("list match pattern"));
+
+        IllegalArgumentException tupleAgainstList = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match [1, 2] {
+                      (a, b) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(tupleAgainstList.getMessage().contains("tuple match pattern"));
+
+        IllegalArgumentException duplicateCapture = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 1) {
+                      (value, value) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(duplicateCapture.getMessage().contains("duplicate capture 'value'"));
+
+        IllegalArgumentException unreachableAfterWildcard = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match ("ok", 1) {
+                      _ => { return; }
+                      ("ok", value) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(unreachableAfterWildcard.getMessage().contains("unreachable match arm"));
+
+        IllegalArgumentException unreachableAfterTupleCapture = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 2) {
+                      (left, right) => { return; }
+                      _ => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(unreachableAfterTupleCapture.getMessage().contains("unreachable match arm"));
+
+        IllegalArgumentException tupleSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match ("error", "enoent") {
+                      ("error", _) => { return; }
+                      ("error", reason) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(tupleSubsumed.getMessage().contains("earlier pattern already covers"));
+
+        IllegalArgumentException listSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match [1, 2] {
+                      [_, _] => { return; }
+                      [1, 2] => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(listSubsumed.getMessage().contains("earlier pattern already covers"));
+
+        IllegalArgumentException numericLiteralSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match 1.0 {
+                      1 => { return; }
+                      1.0 => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(numericLiteralSubsumed.getMessage().contains("earlier pattern already covers"));
+
+        IllegalArgumentException zeroComplexSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match 0i {
+                      0 => { return; }
+                      0i => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(zeroComplexSubsumed.getMessage().contains("earlier pattern already covers"));
+    }
+
+    @Test
+    void tupleElementsCannotBeAssignedByIndex() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    let pair = (1, 2);
+                    pair[0] = 9;
+                    return;
+                  }
+                end
+                """)));
+        assertTrue(error.getMessage().contains("tuple elements are immutable"));
+    }
+
+    @Test
     void valAndConstCannotBeReassigned() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app

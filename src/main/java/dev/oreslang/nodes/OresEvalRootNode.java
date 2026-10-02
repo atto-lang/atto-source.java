@@ -6,6 +6,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresTuple;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 
@@ -155,6 +156,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return;
             }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                Object value = eval(matched.value(), env);
+                for (Ast.MatchArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> captures = new LinkedHashMap<>();
+                    LinkedHashMap<String, Ast.BindingKind> kinds = new LinkedHashMap<>();
+                    if (!matchPattern(arm.pattern(), value, captures, kinds)) continue;
+
+                    Env armEnv = new Env(env);
+                    for (Map.Entry<String, Object> capture : captures.entrySet()) {
+                        armEnv.define(capture.getKey(), capture.getValue(), kinds.get(capture.getKey()));
+                    }
+                    executeBlock(arm.body(), armEnv);
+                    return;
+                }
+                throw new IllegalArgumentException("non-exhaustive match for " + describeMatchValue(value));
+            }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
@@ -193,7 +210,9 @@ public final class OresEvalRootNode extends RootNode {
                     executeBlock(loop.body(), loopEnv);
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
+                return;
             }
+            throw new IllegalArgumentException("runtime does not handle statement kind " + stmt.getClass().getSimpleName());
         }
 
         private Object eval(Ast.Expr expr, Env env) {
@@ -244,6 +263,9 @@ public final class OresEvalRootNode extends RootNode {
                     Object index = eval(target.index(), env);
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
                     int i = Math.toIntExact(number.longValue());
+                    if (receiver instanceof OresTuple) {
+                        throw new IllegalArgumentException("tuple elements are immutable");
+                    }
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
                         list.set(i, value);
@@ -296,6 +318,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object index = eval(indexed.index(), env);
                 if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
                 int i = Math.toIntExact(number.longValue());
+                if (receiver instanceof OresTuple tuple) return tuple.get(i);
                 if (receiver instanceof List<?> list) return list.get(i);
                 if (receiver instanceof Object[] array) return array[i];
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
@@ -327,7 +350,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) return new OresTuple(tuple.elements().stream().map(item -> eval(item, env)).toList());
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 for (Ast.ObjectField field : object.fields()) {
@@ -534,6 +557,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private List<?> iterableValues(Object value) {
+            if (value instanceof OresTuple tuple) return tuple.elements();
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
@@ -549,7 +573,7 @@ public final class OresEvalRootNode extends RootNode {
             return switch (op) {
                 case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
                 case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
-                case "==" -> Objects.equals(left, right); case "!=" -> !Objects.equals(left, right);
+                case "==" -> valueEquals(left, right); case "!=" -> !valueEquals(left, right);
                 case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
                 case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
@@ -592,10 +616,114 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("values are not comparable");
         }
 
+        private boolean valueEquals(Object left, Object right) {
+            if (left instanceof Complex || right instanceof Complex) {
+                if (!isNumericValue(left) || !isNumericValue(right)) return false;
+                return asComplex(left).equals(asComplex(right));
+            }
+            if (left instanceof Number leftNumber && right instanceof Number rightNumber) {
+                return numericEquals(leftNumber, rightNumber);
+            }
+            if (left instanceof OresTuple || right instanceof OresTuple) {
+                if (!(left instanceof OresTuple leftTuple) || !(right instanceof OresTuple rightTuple)) return false;
+                return sequenceEquals(leftTuple.elements(), rightTuple.elements());
+            }
+            if (left instanceof List<?> leftList && right instanceof List<?> rightList) {
+                return sequenceEquals(leftList, rightList);
+            }
+            return Objects.equals(left, right);
+        }
+
+        private boolean numericEquals(Number left, Number right) {
+            if (isIntegral(left) && isIntegral(right)) return left.longValue() == right.longValue();
+
+            double a = left.doubleValue();
+            double b = right.doubleValue();
+            if (!Double.isFinite(a) || !Double.isFinite(b)) return Double.compare(a, b) == 0;
+
+            java.math.BigDecimal leftDecimal = isIntegral(left)
+                    ? java.math.BigDecimal.valueOf(left.longValue())
+                    : java.math.BigDecimal.valueOf(a);
+            java.math.BigDecimal rightDecimal = isIntegral(right)
+                    ? java.math.BigDecimal.valueOf(right.longValue())
+                    : java.math.BigDecimal.valueOf(b);
+            return leftDecimal.compareTo(rightDecimal) == 0;
+        }
+
+        private boolean isNumericValue(Object value) {
+            return value instanceof Number || value instanceof Complex;
+        }
+
+        private boolean sequenceEquals(List<?> left, List<?> right) {
+            if (left.size() != right.size()) return false;
+            for (int i = 0; i < left.size(); i++) {
+                if (!valueEquals(left.get(i), right.get(i))) return false;
+            }
+            return true;
+        }
+
+        private boolean matchPattern(
+                Ast.Pattern pattern,
+                Object value,
+                Map<String, Object> captures,
+                Map<String, Ast.BindingKind> kinds) {
+            if (pattern instanceof Ast.WildcardPattern) return true;
+            if (pattern instanceof Ast.BindingPattern binding) {
+                if (captures.containsKey(binding.name())) {
+                    return valueEquals(captures.get(binding.name()), value);
+                }
+                captures.put(binding.name(), value);
+                kinds.put(binding.name(), binding.kind());
+                return true;
+            }
+            if (pattern instanceof Ast.LiteralPattern literal) {
+                Object expected = literal.value();
+                if (expected instanceof Ast.Imaginary imaginary) expected = new Complex(0.0, imaginary.coefficient());
+                return valueEquals(expected, value);
+            }
+
+            List<Ast.Pattern> elements;
+            List<?> values;
+            if (pattern instanceof Ast.TuplePattern tuplePattern) {
+                elements = tuplePattern.elements();
+                if (!(value instanceof OresTuple tupleValue)) return false;
+                values = tupleValue.elements();
+            } else if (pattern instanceof Ast.ListPattern listPattern) {
+                elements = listPattern.elements();
+                if (value instanceof OresTuple) return false;
+                if (value instanceof List<?> sequence) values = sequence;
+                else if (value instanceof Object[] array) values = List.of(array);
+                else return false;
+            } else return false;
+            if (values.size() != elements.size()) return false;
+
+            LinkedHashMap<String, Object> stagedCaptures = new LinkedHashMap<>(captures);
+            LinkedHashMap<String, Ast.BindingKind> stagedKinds = new LinkedHashMap<>(kinds);
+            for (int i = 0; i < elements.size(); i++) {
+                if (!matchPattern(elements.get(i), values.get(i), stagedCaptures, stagedKinds)) return false;
+            }
+            captures.clear();
+            captures.putAll(stagedCaptures);
+            kinds.clear();
+            kinds.putAll(stagedKinds);
+            return true;
+        }
+
+        private String describeMatchValue(Object value) {
+            if (value instanceof OresTuple tuple) return "tuple(arity=" + tuple.size() + ")";
+            if (value instanceof List<?> list) return "list(length=" + list.size() + ")";
+            if (value instanceof Object[] array) return "array(length=" + array.length + ")";
+            if (value instanceof String) return "string";
+            if (value instanceof Boolean) return "bool";
+            if (value instanceof Complex) return "complex";
+            if (value instanceof Number) return "number";
+            return value == null ? "null" : value.getClass().getSimpleName();
+        }
+
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
+        private List<?> asSequence(Object value) { if (value instanceof OresTuple tuple) return tuple.elements(); if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
 
@@ -643,6 +771,10 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record Complex(double real, double imaginary) {
+        private Complex {
+            if (real == 0.0d) real = 0.0d;
+            if (imaginary == 0.0d) imaginary = 0.0d;
+        }
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}

@@ -119,6 +119,47 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void mixedTuplePatternsPreserveCopyOwnershipPerPosition() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc decode() => int {
+                  val result = ("ok", arr[1, 2], 7);
+                  match result {
+                    ("ok", values, count) => {
+                      stdio.println(count);
+                      stdio.println(count);
+                      return values[0] + count;
+                    }
+                    _ => {
+                      return 0;
+                    }
+                  }
+                }
+                """)));
+    }
+
+    @Test
+    void typedArrayPatternsProjectCopyElementOwnership() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc make_values() => Array<int> {
+                  return arr[3, 4];
+                }
+
+                fnc decode() => int {
+                  match make_values() {
+                    [first, second] => {
+                      stdio.println(first);
+                      stdio.println(first);
+                      return first + second;
+                    }
+                    _ => {
+                      return 0;
+                    }
+                  }
+                }
+                """)));
+    }
+
+    @Test
     void useAfterMoveIsRejected() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
@@ -154,6 +195,54 @@ final class OwnershipAndClosureTest {
                         }
                         """)));
         assertTrue(error.getMessage().contains("outlive its owner"));
+    }
+
+    @Test
+    void aliasedBorrowOfLocalCannotEscapeFunction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad() => &Bar {
+                          let Bar b = new Bar();
+                          val &Bar read = &b;
+                          return read;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("outlive its owner"));
+    }
+
+    @Test
+    void aggregateBorrowsAreRejectedUntilTheirLifetimesAreTracked() {
+        IllegalArgumentException tupleError = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                        end
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val pair = (&b, 1);
+                          stdio.println(pair[1]);
+                          return;
+                        }
+                        """)));
+        assertTrue(tupleError.getMessage().contains("borrows inside tuple"));
+
+        IllegalArgumentException listError = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                        end
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val values = [&b];
+                          stdio.println(values[0]);
+                          return;
+                        }
+                        """)));
+        assertTrue(listError.getMessage().contains("borrows inside list"));
     }
 
     @Test
@@ -294,6 +383,42 @@ final class OwnershipAndClosureTest {
                         }
                         """)));
         assertTrue(error.getMessage().contains("use of moved value 'b'"));
+    }
+
+    @Test
+    void movesOnReturningMatchAndIfBranchesDoNotPoisonSurvivingPaths() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box
+                  pub val int value = 7;
+                end
+
+                fnc consume(Box box) => void { return; }
+
+                fnc through_match(bool take, Box box) => void {
+                  match take {
+                    true => {
+                      consume(box);
+                      return;
+                    }
+                    _ => {
+                      stdio.println("continue");
+                    }
+                  }
+                  consume(box);
+                  return;
+                }
+
+                fnc through_if(bool take, Box box) => void {
+                  if take; do
+                    consume(box);
+                    return;
+                  else
+                    stdio.println("continue");
+                  fi
+                  consume(box);
+                  return;
+                }
+                """)));
     }
 
     @Test

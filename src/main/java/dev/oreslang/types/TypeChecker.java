@@ -312,6 +312,23 @@ public final class TypeChecker {
             } else throw new IllegalArgumentException("destructuring requires a tuple or array/list value");
             return;
         }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            Type source = typeOf(matched.value(), env, generics, self);
+            List<Ast.Pattern> priorPatterns = new ArrayList<>();
+            for (Ast.MatchArm arm : matched.arms()) {
+                for (Ast.Pattern prior : priorPatterns) {
+                    if (isIrrefutablePattern(prior, source) || patternSubsumes(prior, arm.pattern())) {
+                        throw new IllegalArgumentException("unreachable match arm; an earlier pattern already covers it");
+                    }
+                }
+                validateUniquePatternBindings(arm.pattern(), new HashSet<>());
+                Env armEnv = new Env(env);
+                checkPattern(arm.pattern(), source, armEnv, generics, self);
+                checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+                priorPatterns.add(arm.pattern());
+            }
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
@@ -352,7 +369,151 @@ public final class TypeChecker {
             if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            return;
         }
+        throw new IllegalArgumentException("type checker does not handle statement kind " + stmt.getClass().getSimpleName());
+    }
+
+    private void validateUniquePatternBindings(Ast.Pattern pattern, Set<String> names) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            if (!names.add(binding.name())) {
+                throw new IllegalArgumentException("duplicate capture '" + binding.name() + "' in match pattern");
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) validateUniquePatternBindings(element, names);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern element : list.elements()) validateUniquePatternBindings(element, names);
+        }
+    }
+
+    private boolean isIrrefutablePattern(Ast.Pattern pattern, Type source) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
+        if (pattern instanceof Ast.TuplePattern tuplePattern && source instanceof Tuple tuple) {
+            if (tuplePattern.elements().size() != tuple.elements().size()) return false;
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                if (!isIrrefutablePattern(tuplePattern.elements().get(i), tuple.elements().get(i))) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private boolean patternSubsumes(Ast.Pattern earlier, Ast.Pattern later) {
+        if (earlier instanceof Ast.WildcardPattern || earlier instanceof Ast.BindingPattern) return true;
+
+        if (earlier instanceof Ast.LiteralPattern left && later instanceof Ast.LiteralPattern right) {
+            return patternLiteralEquals(left.value(), right.value());
+        }
+
+        if (earlier instanceof Ast.TuplePattern left && later instanceof Ast.TuplePattern right) {
+            return patternSequenceSubsumes(left.elements(), right.elements());
+        }
+
+        if (earlier instanceof Ast.ListPattern left && later instanceof Ast.ListPattern right) {
+            return patternSequenceSubsumes(left.elements(), right.elements());
+        }
+
+        return false;
+    }
+
+    private boolean patternSequenceSubsumes(List<Ast.Pattern> earlier, List<Ast.Pattern> later) {
+        if (earlier.size() != later.size()) return false;
+        for (int i = 0; i < earlier.size(); i++) {
+            if (!patternSubsumes(earlier.get(i), later.get(i))) return false;
+        }
+        return true;
+    }
+
+    private boolean patternLiteralEquals(Object left, Object right) {
+        if (left instanceof Ast.Imaginary a || right instanceof Ast.Imaginary) {
+            if (left instanceof Ast.Imaginary leftImaginary && right instanceof Ast.Imaginary rightImaginary) {
+                return Double.compare(leftImaginary.coefficient(), rightImaginary.coefficient()) == 0;
+            }
+            Ast.Imaginary imaginary = left instanceof Ast.Imaginary i ? i : (Ast.Imaginary) right;
+            Object scalar = left instanceof Ast.Imaginary ? right : left;
+            if (!(scalar instanceof Number number)) return false;
+            return Double.compare(imaginary.coefficient(), 0.0d) == 0 && numericLiteralIsZero(number);
+        }
+        if (left instanceof Number a && right instanceof Number b) {
+            double x = a.doubleValue();
+            double y = b.doubleValue();
+            if (!Double.isFinite(x) || !Double.isFinite(y)) return Double.compare(x, y) == 0;
+
+            java.math.BigDecimal leftDecimal = left instanceof Byte || left instanceof Short || left instanceof Integer || left instanceof Long
+                    ? java.math.BigDecimal.valueOf(a.longValue())
+                    : java.math.BigDecimal.valueOf(x);
+            java.math.BigDecimal rightDecimal = right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long
+                    ? java.math.BigDecimal.valueOf(b.longValue())
+                    : java.math.BigDecimal.valueOf(y);
+            return leftDecimal.compareTo(rightDecimal) == 0;
+        }
+        return java.util.Objects.equals(left, right);
+    }
+
+    private boolean numericLiteralIsZero(Number number) {
+        if (number instanceof Byte || number instanceof Short || number instanceof Integer || number instanceof Long) {
+            return number.longValue() == 0L;
+        }
+        return Double.compare(number.doubleValue(), 0.0d) == 0
+                || Double.compare(number.doubleValue(), -0.0d) == 0;
+    }
+
+    private void checkPattern(Ast.Pattern pattern, Type source, Env env, Set<String> generics, Type self) {
+        if (pattern instanceof Ast.WildcardPattern) return;
+        if (pattern instanceof Ast.BindingPattern binding) {
+            env.define(binding.name(), source, binding.kind());
+            return;
+        }
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), env, generics, self);
+            if (!patternLiteralCompatible(source, literalType)) {
+                throw new IllegalArgumentException("match literal has type " + literalType + " but cannot match " + source);
+            }
+            return;
+        }
+
+        if (pattern instanceof Ast.TuplePattern tuplePattern) {
+            List<Ast.Pattern> elements = tuplePattern.elements();
+            if (source instanceof Tuple tuple) {
+                if (tuple.elements().size() != elements.size()) {
+                    throw new IllegalArgumentException("match pattern arity " + elements.size() + " cannot match tuple arity " + tuple.elements().size());
+                }
+                for (int i = 0; i < elements.size(); i++) {
+                    checkPattern(elements.get(i), tuple.elements().get(i), env, generics, self);
+                }
+                return;
+            }
+            if (source == Unknown.INSTANCE) {
+                for (Ast.Pattern element : elements) checkPattern(element, Unknown.INSTANCE, env, generics, self);
+                return;
+            }
+            throw new IllegalArgumentException("tuple match pattern cannot match value of type " + source);
+        }
+
+        if (pattern instanceof Ast.ListPattern listPattern) {
+            if (source instanceof ListType list) {
+                for (Ast.Pattern element : listPattern.elements()) checkPattern(element, list.element(), env, generics, self);
+                return;
+            }
+            if (source == Unknown.INSTANCE) {
+                for (Ast.Pattern element : listPattern.elements()) checkPattern(element, Unknown.INSTANCE, env, generics, self);
+                return;
+            }
+            throw new IllegalArgumentException("list match pattern cannot match value of type " + source);
+        }
+
+        throw new IllegalArgumentException("unsupported match pattern " + pattern);
+    }
+
+    private boolean patternLiteralCompatible(Type source, Type literal) {
+        if (source == Unknown.INSTANCE || literal == Unknown.INSTANCE) return true;
+        if (isStringLike(source) && isStringLike(literal)) return true;
+        if (Types.isNumeric(source) && Types.isNumeric(literal)) return true;
+        return assignable(literal, source) || assignable(source, literal);
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
@@ -398,8 +559,8 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                else if (receiver instanceof Tuple) throw new IllegalArgumentException("tuple elements are immutable");
+                else throw new IllegalArgumentException("indexed assignment requires a mutable array/list");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
@@ -1084,6 +1245,9 @@ public final class TypeChecker {
                         && definitelyReturns(conditional.elseBody());
                 if (allBranches) return true;
             }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                if (!matched.arms().isEmpty() && matched.arms().stream().allMatch(arm -> definitelyReturns(arm.body()))) return true;
+            }
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
@@ -1134,7 +1298,12 @@ public final class TypeChecker {
     private void collectCalls(Ast.Stmt stmt, String module, Set<Ast.FunctionDecl> out) {
         if (stmt instanceof Ast.BindingStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.DestructureStmt s) collectCalls(s.initializer(), module, out);
-        else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
+        else if (stmt instanceof Ast.MatchStmt s) {
+            collectCalls(s.value(), module, out);
+            for (Ast.MatchArm arm : s.arms()) for (Ast.Stmt nested : arm.body()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.ReturnStmt s) {
+            if (s.value() != null) collectCalls(s.value(), module, out);
+        }
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.IfStmt s) {
@@ -1155,10 +1324,15 @@ public final class TypeChecker {
             if (s.condition() != null) collectCalls(s.condition(), module, out);
             if (s.update() != null) collectCalls(s.update(), module, out);
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        } else {
+            throw new IllegalArgumentException("call-graph analysis does not handle statement kind " + stmt.getClass().getSimpleName());
         }
     }
 
     private void collectCalls(Ast.Expr expr, String module, Set<Ast.FunctionDecl> out) {
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) {
+            return;
+        }
         if (expr instanceof Ast.CallExpr call) {
             Ast.FunctionDecl callee = resolveStaticCall(call.callee(), module);
             if (callee != null) out.add(callee);
@@ -1167,7 +1341,10 @@ public final class TypeChecker {
         } else if (expr instanceof Ast.BinaryExpr e) {
             collectCalls(e.left(), module, out); collectCalls(e.right(), module, out);
         } else if (expr instanceof Ast.UnaryExpr e) collectCalls(e.operand(), module, out);
-        else if (expr instanceof Ast.AssignExpr e) collectCalls(e.value(), module, out);
+        else if (expr instanceof Ast.AssignExpr e) {
+            collectCalls(e.target(), module, out);
+            collectCalls(e.value(), module, out);
+        }
         else if (expr instanceof Ast.ConditionalExpr e) {
             collectCalls(e.condition(), module, out); collectCalls(e.whenTrue(), module, out); collectCalls(e.whenFalse(), module, out);
         } else if (expr instanceof Ast.MemberExpr e) collectCalls(e.receiver(), module, out);
@@ -1180,6 +1357,8 @@ public final class TypeChecker {
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) collectCalls(e.expressionBody(), module, out);
             if (e.blockBody() != null) for (Ast.Stmt nested : e.blockBody()) collectCalls(nested, module, out);
+        } else {
+            throw new IllegalArgumentException("call-graph analysis does not handle expression kind " + expr.getClass().getSimpleName());
         }
     }
 

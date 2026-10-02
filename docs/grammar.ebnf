@@ -89,6 +89,7 @@ destructure_item= binding_kind IDENT | "_" ;
 block           = "{" { statement } "}" ;
 statement       = binding_decl
                 | destructure_stmt
+                | match_stmt
                 | return_stmt
                 | if_stmt
                 | try_stmt
@@ -98,6 +99,17 @@ statement       = binding_decl
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
+
+match_stmt      = "match" expression "{" match_arm { match_arm } "}" ;
+match_arm       = pattern "=>" block [ "," | ";" ] ;
+pattern         = "_"
+                | binding_kind IDENT
+                | IDENT
+                | pattern_literal
+                | "(" pattern [ "," pattern { "," pattern } ] ")"
+                | "[" [ pattern { "," pattern } ] "]" ;
+pattern_literal = [ "-" ] ( INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL )
+                | STRING_LITERAL | "true" | "false" ;
 
 if_stmt         = "if" condition [ ";" ] "do" { statement }
                   { "elseif" condition [ ";" ] "do" { statement } }

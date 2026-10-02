@@ -116,25 +116,41 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
-            for (Ast.DestructureBinding binding : destructure.bindings()) {
+            for (int i = 0; i < destructure.bindings().size(); i++) {
+                Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
+                ValueInfo item = sequenceElementInfo(source, i);
                 scope.define(binding.name(), new VarState(
-                        Ast.TypeRef.inferred(),
+                        item.type,
                         binding.kind() == Ast.BindingKind.LET,
-                        source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                        projectedKind(item.kind),
                         Origin.LOCAL));
             }
             return;
         }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            ValueInfo source = checkExpr(matched.value(), scope, true);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+
+            for (Ast.MatchArm arm : matched.arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                definePatternBindings(arm.pattern(), armScope, source);
+                checkBlock(arm.body(), armScope, returnType);
+                armScope.close();
+                if (!definitelyTerminates(arm.body())) exits.add(stateSnapshot(scope));
+            }
+
+            mergeBranchState(base, exits);
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() != null) {
-                if (ret.value() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-                    VarState owner = borrowOwner(unary.operand(), scope);
-                    if (owner.origin == Origin.LOCAL) {
-                        throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
-                    }
+                ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (returned.borrowSource != null && returned.borrowSource.origin == Origin.LOCAL) {
+                    throw error("cannot return a borrow of local value '" + returned.borrowSource.debugName + "'; borrowed value would outlive its owner");
                 }
-                checkExpr(ret.value(), scope, true);
             }
             return;
         }
@@ -154,13 +170,13 @@ public final class OwnershipChecker {
                 restoreState(base);
                 checkExpr(branch.condition(), scope, false);
                 checkBlock(branch.body(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyTerminates(branch.body())) exits.add(stateSnapshot(scope));
             }
 
             restoreState(base);
             if (!conditional.elseBody().isEmpty()) {
                 checkBlock(conditional.elseBody(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyTerminates(conditional.elseBody())) exits.add(stateSnapshot(scope));
             } else {
                 exits.add(base); // condition may be false with no else
             }
@@ -196,7 +212,49 @@ public final class OwnershipChecker {
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
             rejectLoopMoves(before, scope);
             loopScope.close();
+            return;
         }
+        throw error("ownership checker does not handle statement kind " + stmt.getClass().getSimpleName());
+    }
+
+    private void definePatternBindings(Ast.Pattern pattern, Scope scope, ValueInfo source) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            scope.define(binding.name(), new VarState(
+                    source.type,
+                    binding.kind() == Ast.BindingKind.LET,
+                    projectedKind(source.kind),
+                    Origin.LOCAL));
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                definePatternBindings(tuple.elements().get(i), scope, sequenceElementInfo(source, i));
+            }
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (int i = 0; i < list.elements().size(); i++) {
+                definePatternBindings(list.elements().get(i), scope, sequenceElementInfo(source, i));
+            }
+        }
+    }
+
+    private ValueInfo sequenceElementInfo(ValueInfo source, int index) {
+        if (index >= 0 && index < source.sequenceElements.size()) {
+            ValueInfo item = source.sequenceElements.get(index);
+            return new ValueInfo(item.type, projectedKind(item.kind), null, item.sequenceElements);
+        }
+        if (source.type != null
+                && (source.type.name().equals("Array") || source.type.name().equals("List"))
+                && source.type.arguments().size() == 1) {
+            Ast.TypeRef elementType = source.type.arguments().getFirst();
+            return new ValueInfo(elementType, projectedKind(kindOfType(elementType)), null);
+        }
+        return new ValueInfo(Ast.TypeRef.inferred(), projectedKind(source.kind), null);
+    }
+
+    private ValueKind projectedKind(ValueKind kind) {
+        return kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
@@ -227,6 +285,7 @@ public final class OwnershipChecker {
             placeholder.type = binding.declaredType() == null ? value.type : binding.declaredType();
             placeholder.kind = value.kind;
             placeholder.borrowSource = value.borrowSource;
+            placeholder.sequenceElements = value.sequenceElements;
             return;
         }
 
@@ -236,6 +295,7 @@ public final class OwnershipChecker {
                 value.kind,
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
+        state.sequenceElements = value.sequenceElements;
         scope.define(binding.name(), state);
     }
 
@@ -250,7 +310,7 @@ public final class OwnershipChecker {
             requireUsable(state, name.name(), false);
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
-            return new ValueInfo(state.type, state.kind, state.borrowSource);
+            return new ValueInfo(state.type, state.kind, state.borrowSource, state.sequenceElements);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
@@ -304,23 +364,34 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
-            for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
-            return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
+            ArrayList<ValueInfo> elements = new ArrayList<>(list.elements().size());
+            for (Ast.Expr item : list.elements()) {
+                ValueInfo info = checkExpr(item, scope, true);
+                rejectAggregateBorrow(info, "list");
+                elements.add(info);
+            }
+            return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null, elements);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
             boolean copy = true;
+            ArrayList<ValueInfo> elements = new ArrayList<>(tuple.elements().size());
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                rejectAggregateBorrow(info, "tuple");
+                elements.add(info);
                 copy &= info.kind == ValueKind.COPY;
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null, elements);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
+            for (Ast.ObjectField field : object.fields()) {
+                ValueInfo info = checkExpr(field.value(), scope, true);
+                rejectAggregateBorrow(info, "object");
+            }
             return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
-        return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        throw error("ownership checker does not handle expression kind " + expr.getClass().getSimpleName());
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
@@ -478,12 +549,18 @@ public final class OwnershipChecker {
                 if (!source.mutable) throw error("closure cannot mutate immutable capture '" + capture.name + "'");
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) throw error("closure cannot capture '" + capture.name + "' mutably while borrowed");
                 move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, true, source.kind, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, true, source.kind, Origin.CAPTURE);
+                captured.sequenceElements = source.sequenceElements;
+                closure.define(capture.name, captured);
             } else if (source.kind == ValueKind.MOVE_ONLY) {
                 move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE);
+                captured.sequenceElements = source.sequenceElements;
+                closure.define(capture.name, captured);
             } else {
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE);
+                captured.sequenceElements = source.sequenceElements;
+                closure.define(capture.name, captured);
             }
         }
 
@@ -512,8 +589,15 @@ public final class OwnershipChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
-            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
-                scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.MatchStmt matched) {
+                scanExpr(matched.value(), blockLocals, outer, recursiveBinding, captures, false);
+                for (Ast.MatchArm arm : matched.arms()) {
+                    Set<String> armLocals = new HashSet<>(blockLocals);
+                    collectPatternBindings(arm.pattern(), armLocals);
+                    scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
+                }
+            } else if (stmt instanceof Ast.ReturnStmt ret) {
+                if (ret.value() != null) scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.IfStmt s) {
@@ -534,15 +618,40 @@ public final class OwnershipChecker {
                 loop.add(s.bindingName());
                 scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ForStmt s) {
-                if (s.initializer() instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.condition() != null) scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
-                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                Set<String> loop = new HashSet<>(blockLocals);
+                if (s.initializer() instanceof Ast.BindingStmt binding) {
+                    scanExpr(binding.initializer(), loop, outer, recursiveBinding, captures, false);
+                    loop.add(binding.name());
+                } else if (s.initializer() instanceof Ast.ExprStmt e) {
+                    scanExpr(e.expression(), loop, outer, recursiveBinding, captures, false);
+                } else if (s.initializer() != null) {
+                    throw error("capture analysis does not handle for initializer " + s.initializer().getClass().getSimpleName());
+                }
+                if (s.condition() != null) scanExpr(s.condition(), loop, outer, recursiveBinding, captures, false);
+                if (s.update() != null) scanExpr(s.update(), loop, outer, recursiveBinding, captures, false);
+                scanStatements(s.body(), loop, outer, recursiveBinding, captures);
+            } else {
+                throw error("capture analysis does not handle statement kind " + stmt.getClass().getSimpleName());
             }
         }
     }
 
+    private void collectPatternBindings(Ast.Pattern pattern, Set<String> locals) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            locals.add(binding.name());
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) collectPatternBindings(element, locals);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern element : list.elements()) collectPatternBindings(element, locals);
+        }
+    }
+
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
+        if (expr instanceof Ast.LiteralExpr) return;
         if (expr instanceof Ast.NameExpr name) {
             if (name.name().equals(recursiveBinding)) return;
             if (!locals.contains(name.name())) {
@@ -576,6 +685,8 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.LambdaExpr) {
             // Nested lambda performs its own capture analysis when checked.
+        } else {
+            throw error("capture analysis does not handle expression kind " + expr.getClass().getSimpleName());
         }
     }
 
@@ -665,6 +776,30 @@ public final class OwnershipChecker {
         return state;
     }
 
+    private boolean definitelyTerminates(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                boolean allBranches = !conditional.branches().isEmpty()
+                        && conditional.branches().stream().allMatch(branch -> definitelyTerminates(branch.body()))
+                        && !conditional.elseBody().isEmpty()
+                        && definitelyTerminates(conditional.elseBody());
+                if (allBranches) return true;
+            }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                if (!matched.arms().isEmpty()
+                        && matched.arms().stream().allMatch(arm -> definitelyTerminates(arm.body()))) {
+                    return true;
+                }
+            }
+            if (stmt instanceof Ast.TryStmt attempted) {
+                if (definitelyTerminates(attempted.finallyBody())) return true;
+                if (definitelyTerminates(attempted.body()) && definitelyTerminates(attempted.catchBody())) return true;
+            }
+        }
+        return false;
+    }
+
     private Map<VarState, StateSnapshot> stateSnapshot(Scope scope) {
         Map<VarState, StateSnapshot> result = new IdentityHashMap<>();
         for (VarState state : scope.visibleStates()) {
@@ -685,8 +820,9 @@ public final class OwnershipChecker {
 
     private void mergeBranchState(Map<VarState, StateSnapshot> base, List<Map<VarState, StateSnapshot>> exits) {
         restoreState(base);
+        if (exits.isEmpty()) return;
         for (VarState state : base.keySet()) {
-            boolean movedOnAnyPath = base.get(state).moved();
+            boolean movedOnAnyPath = false;
             for (Map<VarState, StateSnapshot> exit : exits) {
                 StateSnapshot saved = exit.get(state);
                 if (saved != null) movedOnAnyPath |= saved.moved();
@@ -725,6 +861,13 @@ public final class OwnershipChecker {
         };
     }
 
+    private void rejectAggregateBorrow(ValueInfo value, String aggregateKind) {
+        if (value.kind == ValueKind.IMM_BORROW || value.kind == ValueKind.MUT_BORROW || value.borrowSource != null) {
+            throw error("borrows inside " + aggregateKind + " values are not supported until aggregate lifetime tracking is explicit");
+        }
+        for (ValueInfo nested : value.sequenceElements) rejectAggregateBorrow(nested, aggregateKind);
+    }
+
     private Ast.TypeRef inferLiteralType(Object value) {
         if (value instanceof Boolean) return Ast.TypeRef.simple("bool");
         if (value instanceof Long) return Ast.TypeRef.simple("int");
@@ -745,10 +888,17 @@ public final class OwnershipChecker {
         private final Ast.TypeRef type;
         private final ValueKind kind;
         private final VarState borrowSource;
+        private final List<ValueInfo> sequenceElements;
+
         private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource) {
+            this(type, kind, borrowSource, List.of());
+        }
+
+        private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource, List<ValueInfo> sequenceElements) {
             this.type = type;
             this.kind = kind;
             this.borrowSource = borrowSource;
+            this.sequenceElements = List.copyOf(sequenceElements);
         }
     }
 
@@ -761,6 +911,7 @@ public final class OwnershipChecker {
         private int immutableBorrows;
         private boolean mutableBorrowed;
         private VarState borrowSource;
+        private List<ValueInfo> sequenceElements = List.of();
         private String debugName = "<value>";
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {

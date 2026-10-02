@@ -97,6 +97,52 @@ Destructuring carries mutability per element. A bare `_` is a discard pattern: i
 
 `_` is not readable after the destructure because no lexical binding is created for it.
 
+## Pattern matching and expected errors
+
+Oreslang supports tagged-result matching for expected failures. A `match` evaluates its input exactly once, then tries arms from top to bottom. Tuple patterns use `(...)`; finite-list patterns use `[...]`; both require exact runtime arity. The shapes are distinct: tuple patterns match tuples, while list patterns match list/array values.
+
+Bare identifiers are immutable `val` captures. Use `let name` when the arm needs to mutate a capture, and `_` to discard a position.
+
+```ores
+match read_file("data.txt") {
+  ("ok", bytes) => {
+    process_data(bytes);
+  }
+
+  ("error", "enoent") => {
+    create_new_file();
+  }
+
+  ("error", reason) => {
+    stdio.println(reason);
+  }
+
+  _ => {
+    stdio.println("unexpected result shape");
+  }
+}
+```
+
+Finite lists use the same recursive pattern rules:
+
+```ores
+match [200, "ok", "cached"] {
+  [200, body, _] => {
+    stdio.println(body);
+  }
+
+  [status, _, _] => {
+    stdio.println(status);
+  }
+}
+```
+
+Patterns may be nested. String, boolean, integer, floating-point, imaginary, and negative numeric/imaginary literals may be used as value tests. Numeric matching follows Oreslang numeric equality, so equivalent numeric literals such as `1` and `1.0` match the same runtime value. Captures exist only inside their arm. Duplicate capture names in one pattern are rejected, and any arm structurally covered by an earlier arm is rejected as unreachable.
+
+A `match` with no matching arm raises a runtime error. This keeps expected failures in ordinary tagged values while preserving the "let it crash" path for unexpected shapes or states. Language/runtime exceptions remain separate and can still be handled with `try ... catch` when recovery from an exception is intentional.
+
+Borrowed values cannot currently be stored inside tuple/list/object aggregates. Oreslang rejects those constructions until aggregate lifetime tracking can preserve and transfer borrow leases soundly; direct borrows and borrowed parameters remain supported.
+
 ## Classes, receivers, multiple inheritance, and interfaces
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
