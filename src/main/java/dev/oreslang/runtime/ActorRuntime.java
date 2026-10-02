@@ -592,10 +592,17 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.isAlive()) stillRunning.add(cell.ref.id());
         }
 
-        if (interrupted) Thread.currentThread().interrupt();
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+            for (ActorCell<?> cell : snapshot) {
+                if (cell.isAlive() && !stillRunning.contains(cell.ref.id())) {
+                    stillRunning.add(cell.ref.id());
+                }
+            }
+        }
         if (!stillRunning.isEmpty()) {
             throw new IllegalStateException(
-                    "ActorRuntime close timed out waiting for actor termination: "
+                    "ActorRuntime close did not observe full actor termination: "
                             + stillRunning.size() + " actor(s) still running");
         }
     }
