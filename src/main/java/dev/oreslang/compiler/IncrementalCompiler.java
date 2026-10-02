@@ -154,6 +154,7 @@ public final class IncrementalCompiler {
             for (Ast.MethodDecl method : klass.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append(method.isStatic() ? " static-fnc " : " method ")
+                        .append(method.mutableReceiver() ? "mut-receiver " : "")
                         .append(method.name());
                 appendGenerics(abi, method.genericParameters());
                 appendParams(abi, method.parameters());
