@@ -145,7 +145,7 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
-            checkExpr(defer.expression(), scope, false);
+            checkDeferred(defer.expression(), scope);
             return;
         }
         if (stmt instanceof Ast.IfStmt conditional) {
@@ -576,6 +576,40 @@ public final class OwnershipChecker {
         validateBorrow(owner, mutable);
         if (mutable) owner.mutableBorrowed = true;
         else owner.immutableBorrows++;
+    }
+
+    private void checkDeferred(Ast.Expr expression, Scope scope) {
+        CaptureSet captures = new CaptureSet();
+        scanExpr(expression, Set.of(), scope, null, captures, false);
+
+        for (Capture capture : captures.values.values()) {
+            VarState source = capture.source;
+            source.debugName = capture.name;
+            requireUsable(source, capture.name, capture.write);
+
+            if (source.kind == ValueKind.IMM_BORROW
+                    || source.kind == ValueKind.MUT_BORROW
+                    || source.type.isBorrow()) {
+                throw error(
+                        "defer cannot capture borrowed value '" + capture.name
+                                + "'; defer an owned value or perform the borrowed operation before scope exit");
+            }
+            if (capture.write) {
+                throw error(
+                        "defer cannot directly mutate captured binding '" + capture.name
+                                + "'; move owned cleanup state into a cleanup function instead");
+            }
+        }
+
+        // Validate the deferred expression before transferring ownership.
+        checkExpr(expression, scope, false);
+
+        for (Capture capture : captures.values.values()) {
+            VarState source = capture.source;
+            if (source.kind == ValueKind.MOVE_ONLY && !source.moved) {
+                move(source, capture.name);
+            }
+        }
     }
 
     private ValueInfo checkLambda(Ast.LambdaExpr lambda, Scope outer, String recursiveBinding) {
