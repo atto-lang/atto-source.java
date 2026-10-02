@@ -21,6 +21,7 @@ final class MutexRuntimeTest {
         guard.value()[0] = 7;
 
         assertThrows(OresMutex.RecursiveLockException.class, mutex::lock);
+        assertTrue(mutex.tryLock().isEmpty(), "try_lock should report busy rather than recurse");
 
         AtomicReference<Throwable> otherThreadFailure = new AtomicReference<>();
         Thread thread = Thread.ofPlatform().start(() -> {
@@ -114,6 +115,23 @@ final class MutexRuntimeTest {
 
         assertFalse(mutex.isPoisoned());
         assertEquals(0, mutex.withLock(value -> value[0]));
+    }
+
+    @Test
+    void sharedTryLockReportsBusyAndCancelledAsyncWaitDoesNotLeakPermit() {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        assertTrue(mutex.tryLock().isEmpty());
+        var waiting = mutex.lockAsync();
+        assertFalse(waiting.isDone());
+        assertTrue(waiting.cancel(true));
+
+        guard.release();
+
+        var next = mutex.lock();
+        next.release();
+        assertTrue(waiting.isCancelled());
     }
 
     @Test
