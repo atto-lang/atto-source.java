@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -47,6 +49,18 @@ final class StringTemplateTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void capabilityChecksReachTemplateInterpolations() {
+        SecurityException denied = assertThrows(SecurityException.class, () ->
+                CapabilityChecker.check(Parser.parse("""
+                        pub fnc main() => void {
+                          val descriptor = `context ${process.context_id}`;
+                          return;
+                        }
+                        """), IsolatePolicy.strictFaas()));
+        assertTrue(denied.getMessage().contains("PROCESS_INFO"));
     }
 
     @Test
