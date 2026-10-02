@@ -6,6 +6,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 
@@ -94,10 +95,44 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
-            if (args.size() != fn.parameters().size()) {
-                if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
-                else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
+            List<?> normalizedArgs = normalizeFunctionArguments(fn, args);
+            if (fn.actorKind() == Ast.ActorKind.NONE) {
+                return callFunctionBody(fn, normalizedArgs);
             }
+
+            ActorRuntime.MemoryPolicy memoryPolicy = switch (fn.actorKind()) {
+                case NONE -> throw new AssertionError("unreachable non-actor callable");
+                case SHARED -> ActorRuntime.MemoryPolicy.sharedHeap();
+                case ISOLATED -> ActorRuntime.MemoryPolicy.privateArena(defaultIsoActorInitialBytes());
+            };
+
+            return context.actors().invoke(
+                    normalizedArgs,
+                    memoryPolicy,
+                    (deliveredArgs, actorContext) -> callFunctionBody(fn, deliveredArgs));
+        }
+
+        private List<?> normalizeFunctionArguments(Ast.FunctionDecl fn, List<?> args) {
+            if (args.size() != fn.parameters().size()) {
+                if (fn.parameters().isEmpty()
+                        && args.size() == 1
+                        && args.getFirst() instanceof Object[] array
+                        && array.length == 0) {
+                    return List.of();
+                }
+                throw new IllegalArgumentException(
+                        "function " + fn.name() + " expects " + fn.parameters().size()
+                                + " arguments, got " + args.size());
+            }
+            return args;
+        }
+
+        private long defaultIsoActorInitialBytes() {
+            long ceiling = context.isolatePolicy().maxHeapBytes();
+            return Math.min(1024L * 1024L, ceiling);
+        }
+
+        private Object callFunctionBody(Ast.FunctionDecl fn, List<?> args) {
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -106,7 +141,9 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) {
+                return signal.value;
+            }
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
