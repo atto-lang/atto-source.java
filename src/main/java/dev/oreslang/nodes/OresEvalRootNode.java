@@ -636,6 +636,12 @@ public final class OresEvalRootNode extends RootNode {
         private List<?> iterableValues(Object value) {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
+            if (value instanceof GpuRuntime.ArrayHandle) {
+                throw new IllegalArgumentException("GpuArray iteration is GPU-only; CPU code must copy_to_cpu() first");
+            }
+            if (value instanceof GpuRuntime.StreamHandle) {
+                throw new IllegalArgumentException("GpuStream consumption is GPU-only; CPU code must copy_to_cpu() first");
+            }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
@@ -643,6 +649,10 @@ public final class OresEvalRootNode extends RootNode {
                 return iterableValues(produced);
             }
             throw new IllegalArgumentException("value is not iterable");
+        }
+
+        private static void requireNone(List<Object> args, String name) {
+            if (!args.isEmpty()) throw new IllegalArgumentException(name + " expects no arguments");
         }
 
         private Object binary(String op, Object left, Object right) {
@@ -767,6 +777,29 @@ public final class OresEvalRootNode extends RootNode {
         }
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
+    private record GpuArrayFacade(OresContext context) {
+        private Object fromCpu(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.from_cpu");
+            requireOne(args, "GpuArray.from_cpu");
+            Object source = args.getFirst();
+            if (!(source instanceof List<?> list)) {
+                throw new IllegalArgumentException("GpuArray.from_cpu expects Array/List data");
+            }
+            return context.gpu().uploadArray(list);
+        }
+    }
+
+    private record GpuStreamFacade(OresContext context) {
+        private Object fromArray(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.from_array");
+            requireOne(args, "GpuStream.from_array");
+            if (!(args.getFirst() instanceof GpuRuntime.ArrayHandle array)) {
+                throw new IllegalArgumentException("GpuStream.from_array expects GpuArray");
+            }
+            return context.gpu().stream(array);
+        }
+    }
+
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.print");requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.println");requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
