@@ -50,9 +50,11 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+        private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
 
         private Evaluator(Ast.Program program, OresContext context) {
             this.program = program;
@@ -66,6 +68,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                    else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
                 }
             }
         }
@@ -89,6 +92,11 @@ public final class OresEvalRootNode extends RootNode {
             return classes.get(name);
         }
 
+        private Ast.TypeAliasDecl findTypeAlias(String name) {
+            if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias " + name + "; qualify it with its module");
+            return typeAliases.get(name);
+        }
+
         private Object execute(Object[] arguments) {
             Ast.FunctionDecl main = findFunction("main");
             if (main == null) return null;
@@ -108,7 +116,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "function " + fn.name()); }
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -122,7 +130,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -161,11 +169,22 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.DestructureStmt destructure) {
                 Object value = eval(destructure.initializer(), env);
-                List<?> items = asSequence(value);
-                if (items.size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
-                for (int i = 0; i < items.size(); i++) {
-                    Ast.DestructureBinding binding = destructure.bindings().get(i);
-                    env.define(binding.name(), items.get(i), binding.kind());
+                if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+                    List<?> items = asSequence(value);
+                    if (items.size() != destructure.bindings().size()) {
+                        throw new IllegalArgumentException("destructure arity mismatch: value has " + items.size()
+                                + " element(s), pattern has " + destructure.bindings().size());
+                    }
+                    for (int i = 0; i < items.size(); i++) {
+                        Ast.DestructureBinding binding = destructure.bindings().get(i);
+                        if (!binding.isDiscard()) env.define(binding.name(), items.get(i), binding.kind());
+                    }
+                } else {
+                    for (Ast.DestructureBinding binding : destructure.bindings()) {
+                        if (!binding.isDiscard()) {
+                            env.define(binding.name(), destructureMember(value, binding.name()), binding.kind());
+                        }
+                    }
                 }
                 return;
             }
@@ -502,7 +521,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
         }
 
         /**
@@ -677,7 +696,73 @@ public final class OresEvalRootNode extends RootNode {
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
+        private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
+            return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
+        }
+
+        private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable, Set<Ast.TypeAliasDecl> resolving) {
+            if (declared == null) return value;
+
+            Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
+            if (alias != null) {
+                if (alias.genericParameters().size() != declared.arguments().size()) {
+                    throw new IllegalArgumentException("type alias '" + alias.name() + "' expects "
+                            + alias.genericParameters().size() + " type argument(s), got " + declared.arguments().size());
+                }
+                if (!resolving.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+                try {
+                    Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+                    for (int i = 0; i < alias.genericParameters().size(); i++) {
+                        substitutions.put(alias.genericParameters().get(i), declared.arguments().get(i));
+                    }
+                    return shapeReturnedValue(substituteReturnType(alias.target(), substitutions), value, callable, resolving);
+                } finally {
+                    resolving.remove(alias);
+                }
+            }
+
+            if (declared.isTupleType()) {
+                List<?> items = asSequence(value);
+                if (items.size() != declared.arguments().size()) {
+                    throw new IllegalArgumentException(callable + " returned " + items.size()
+                            + " tuple element(s), expected " + declared.arguments().size());
+                }
+                Object[] fixed = items.toArray();
+                for (int i = 0; i < fixed.length; i++) {
+                    fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]", resolving);
+                }
+                return java.util.Arrays.asList(fixed);
+            }
+            if (declared.isRecordType()) {
+                for (Map.Entry<String, Ast.TypeRef> member : declared.recordMembers().entrySet()) {
+                    Object nested = destructureMember(value, member.getKey());
+                    shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
+                }
+            }
+            return value;
+        }
+
+        private Ast.TypeRef substituteReturnType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
+            Ast.TypeRef replacement = substitutions.get(ref.name());
+            if (replacement != null && ref.arguments().isEmpty() && !ref.inferArguments()) return replacement;
+            return new Ast.TypeRef(
+                    ref.name(),
+                    ref.arguments().stream().map(arg -> substituteReturnType(arg, substitutions)).toList(),
+                    ref.inferArguments());
+        }
+
+        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+        private Object destructureMember(Object value, String name) {
+            if (value instanceof Map<?, ?> map) {
+                if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
+                return map.get(name);
+            }
+            if (value instanceof OresObject object) {
+                if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
+                return object.fields.get(name);
+            }
+            throw new IllegalArgumentException("value is not object-destructurable");
+        }
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
 

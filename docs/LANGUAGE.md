@@ -72,6 +72,26 @@ fnc answer() {
 
 `@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
 
+Return types may be unions, homogeneous arrays, finite tuple types, or structural record types:
+
+```ores
+type intOrBoolOrString = bool | int | string;
+
+fnc mixed() => Array<type intOrBoolOrString> {
+  return [3, true, "yes"];
+}
+
+fnc fixed() => [int, bool, string] {
+  return [3, true, "yes"];
+}
+
+fnc named() => {foo: int, bar: string} {
+  return obj{foo: 5, bar: "x"};
+}
+```
+
+The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. A record type names required members; extra members remain compatible with the structural type system.
+
 ## Bindings
 
 Every local binding is declared as exactly one of:
@@ -87,11 +107,29 @@ let retries = 0;
 retries = retries + 1;
 ```
 
-Destructuring carries mutability per element:
+Destructuring carries mutability per element. A binding kind propagates through later unqualified names until another explicit binding kind appears. A binding kind may also prefix the whole pattern.
 
 ```ores
-[const code, let body] = (200, "ok");
+[const number, flag, answer] = fixed();   // all const
+const [x, y, z] = fixed();               // all const
+[const head, let middle, tail] = fixed(); // head const; middle/tail let
+
+const {foo, bar} = named();
+// Equivalent per-item spelling, shown in a separate scope:
+// {const foo, const bar} = named();
 ```
+
+A bare `_` is a discard pattern: it consumes that position without declaring a variable, so it can be repeated in the same pattern or reused by later destructures.
+
+```ores
+[const code, _, let body] = (200, "ignored", "ok");
+[const next, _, let tail] = (201, "ignored again", "done");
+[_, _, const final] = (1, 2, 3);
+```
+
+`_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
+
+Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. Function-parameter destructuring is intentionally not part of this syntax yet.
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
@@ -157,11 +195,17 @@ val first = values[0];
 
 `arr[...]` is the canonical inline-array spelling. The original bare `[...]` literal remains accepted for source compatibility and destructuring migration.
 
-Tuples preserve per-position static types:
+Tuples preserve per-position static types. Parenthesized tuple literals and list-backed values returned against a finite tuple type both retain the declared positional types:
 
 ```ores
 val pair = (1, "one");
 [const number, let label] = pair;
+
+fnc result() => [int, bool, string] {
+  return [3, true, "yes"];
+}
+
+const [num, ok, answer] = result();
 ```
 
 ## Structural typing and interfaces
