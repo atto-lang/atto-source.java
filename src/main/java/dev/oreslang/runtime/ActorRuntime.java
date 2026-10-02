@@ -154,6 +154,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public T value() {
+            rejectPrivateActorSharedMemoryAccess("Shared.value");
             if (sharedClosed.get()) throw new IllegalStateException("Shared value belongs to a closed actor runtime");
             return value;
         }
@@ -787,7 +788,9 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
         IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
-                ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
+                ? policy.withoutCapabilities(
+                        IsolatePolicy.Capability.SHARED_MEMORY,
+                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
                 : policy;
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
@@ -1088,6 +1091,7 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
         requireCallerRuntimeAffinity("share readonly values");
+        rejectPrivateActorSharedMemoryAccess("shareReadonly");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         IsolatePolicy callerPolicy = currentActorPolicy();
         if (callerPolicy != null) {
