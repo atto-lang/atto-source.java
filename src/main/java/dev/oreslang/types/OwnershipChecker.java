@@ -242,6 +242,14 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.LiteralExpr literal) {
             return new ValueInfo(inferLiteralType(literal.value()), ValueKind.COPY, null);
         }
+        if (expr instanceof Ast.TemplateExpr template) {
+            for (Ast.TemplatePart part : template.parts()) {
+                if (part instanceof Ast.TemplateInterpolation interpolation) {
+                    checkExpr(interpolation.expression(), scope, false);
+                }
+            }
+            return new ValueInfo(Ast.TypeRef.simple("String"), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
@@ -551,6 +559,12 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             scanExpr(assignment.target(), locals, outer, recursiveBinding, captures, true);
             scanExpr(assignment.value(), locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.TemplateExpr e) {
+            for (Ast.TemplatePart part : e.parts()) {
+                if (part instanceof Ast.TemplateInterpolation interpolation) {
+                    scanExpr(interpolation.expression(), locals, outer, recursiveBinding, captures, false);
+                }
+            }
         } else if (expr instanceof Ast.BinaryExpr e) {
             scanExpr(e.left(), locals, outer, recursiveBinding, captures, false);
             scanExpr(e.right(), locals, outer, recursiveBinding, captures, false);
