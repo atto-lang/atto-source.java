@@ -548,6 +548,64 @@ final class MutexRuntimeTest {
     }
 
 @Test
+    @Test
+    void queuedBlockingHostWaiterIsNotBargedByNewAsyncRequest() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var initial = mutex.lock();
+
+        CountDownLatch blockingAttempted = new CountDownLatch(1);
+        CountDownLatch blockingAcquired = new CountDownLatch(1);
+        CountDownLatch releaseBlocking = new CountDownLatch(1);
+        AtomicReference<Throwable> blockingFailure = new AtomicReference<>();
+
+        Thread blocking = Thread.ofPlatform().start(() -> {
+            blockingAttempted.countDown();
+            try {
+                var guard = mutex.lock();
+                blockingAcquired.countDown();
+                releaseBlocking.await();
+                guard.release();
+            } catch (Throwable failure) {
+                blockingFailure.set(failure);
+            }
+        });
+
+        assertTrue(blockingAttempted.await(1, TimeUnit.SECONDS));
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (blocking.getState() != Thread.State.WAITING
+                && blocking.getState() != Thread.State.TIMED_WAITING
+                && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertTrue(blocking.getState() == Thread.State.WAITING
+                        || blocking.getState() == Thread.State.TIMED_WAITING,
+                "blocking host waiter must be queued before async contender arrives");
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> asyncRef =
+                new AtomicReference<>();
+        Thread asyncRequester = Thread.ofPlatform().start(() -> asyncRef.set(mutex.lockAsync()));
+        asyncRequester.join();
+        var async = asyncRef.get();
+        assertNotNull(async);
+        assertFalse(async.isDone());
+
+        initial.release();
+
+        assertTrue(blockingAcquired.await(2, TimeUnit.SECONDS),
+                "already-queued blocking waiter must acquire before later async request");
+        assertFalse(async.isDone(),
+                "later async request must not barge ahead of queued blocking waiter");
+
+        releaseBlocking.countDown();
+        var asyncGuard = async.get(2, TimeUnit.SECONDS);
+        asyncGuard.release();
+
+        blocking.join();
+        assertNull(blockingFailure.get());
+    }
+
+    @Test
     void blockingAndAsyncWaitersBothMakeProgress() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var initial = mutex.lock();
