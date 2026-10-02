@@ -1772,6 +1772,41 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void expiredParentDeadlineRejectsNestedCallBeforeTransportExecution() {
+        String aKey = "expired-parent-a:" + UUID.randomUUID();
+        String bKey = "expired-parent-b:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> a =
+                ProcessSingletonRegistry.getOrCreate(aKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> b =
+                ProcessSingletonRegistry.getOrCreate(bKey, Object::new);
+        AtomicInteger bExecutions = new AtomicInteger();
+
+        CompletableFuture<Object> call = a.call(
+                List.of(), 8, Duration.ofMillis(35),
+                (aState, ignored) -> {
+                    Thread.sleep(60);
+                    return b.call(
+                            List.of("payload"),
+                            8,
+                            Duration.ofSeconds(1),
+                            (bState, args) -> {
+                                bExecutions.incrementAndGet();
+                                return "unreachable";
+                            })
+                            .toCompletableFuture()
+                            .join();
+                })
+                .toCompletableFuture();
+
+        RuntimeException failure = assertThrows(RuntimeException.class, call::join);
+        assertTrue(causeChainContains(failure, "wall-time budget")
+                        || causeChainContains(failure, "expired"),
+                String.valueOf(failure));
+        assertEquals(0, bExecutions.get());
+    }
+
+    @Test
     void nestedSingletonCallsInheritTheParentsRemainingDeadline() {
         String aKey = "deadline-a:" + UUID.randomUUID();
         String bKey = "deadline-b:" + UUID.randomUUID();
