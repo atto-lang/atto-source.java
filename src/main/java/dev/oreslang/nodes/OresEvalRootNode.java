@@ -626,6 +626,11 @@ public final class OresEvalRootNode extends RootNode {
             public String actorContractKey() {
                 return actorParameterContract(function.parameters()) + "=>" + function.returnType();
             }
+
+            @Override
+            public Ast.TypeRef actorMessageType() {
+                return function.parameters().isEmpty() ? null : function.parameters().getFirst().type();
+            }
         }
 
         private final class LambdaValue implements Invokable {
@@ -673,6 +678,11 @@ public final class OresEvalRootNode extends RootNode {
             public String actorContractKey() {
                 return actorParameterContract(lambda.parameters());
             }
+
+            @Override
+            public Ast.TypeRef actorMessageType() {
+                return lambda.parameters().isEmpty() ? null : lambda.parameters().getFirst().type();
+            }
         }
 
         private final class ActorFacade {
@@ -689,6 +699,7 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.ActorRef<Object> ref = context.actors().spawnOwned(
                         context.isolatePolicy(),
                         initialStateBytes,
+                        actorProtocol(handler),
                         () -> statefulBehavior(
                                 handler,
                                 stateful,
@@ -715,6 +726,7 @@ public final class OresEvalRootNode extends RootNode {
                         name,
                         initialStateBytes,
                         singletonContract(handler, stateful, initialArgument),
+                        actorProtocol(handler),
                         () -> statefulBehavior(
                                 handler,
                                 stateful,
@@ -722,6 +734,68 @@ public final class OresEvalRootNode extends RootNode {
                                 initialStateBytes,
                                 initialArgument instanceof ActorRuntime.Shared<?>));
                 return new GuestActorRef(ref);
+            }
+
+            private ActorRuntime.Protocol<Object> actorProtocol(Invokable handler) {
+                Ast.TypeRef messageType = handler.actorMessageType();
+                String contract = messageType == null ? "actor-message:dynamic" : "actor-message:" + messageType;
+                if (messageType == null) return ActorRuntime.Protocol.any(contract);
+                return new ActorRuntime.Protocol<>(
+                        contract,
+                        value -> runtimeActorMessageMatches(messageType, value));
+            }
+
+            private boolean runtimeActorMessageMatches(Ast.TypeRef type, Object value) {
+                if (type == null || type.inferArguments() || type.name().equals("$infer$")) return true;
+                if (type.isBorrow()) return runtimeActorMessageMatches(type.borrowedTarget(), value);
+                if (type.isStringLiteral()) {
+                    return value instanceof String text && text.equals(type.stringLiteralValue());
+                }
+
+                return switch (type.name()) {
+                    case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                            "int", "uint", "bigint" -> value instanceof Byte
+                                    || value instanceof Short
+                                    || value instanceof Integer
+                                    || value instanceof Long
+                                    || value instanceof java.math.BigInteger;
+                    case "f32", "f64", "float", "decimal" -> value instanceof Number;
+                    case "complex64", "complex128", "complex" -> value instanceof Complex;
+                    case "bool", "Bool" -> value instanceof Boolean;
+                    case "string", "String" -> value instanceof String;
+                    case "Array", "List" -> {
+                        if (!(value instanceof List<?> list)) yield false;
+                        if (type.arguments().size() != 1 || type.arguments().getFirst().inferArguments()) yield true;
+                        Ast.TypeRef element = type.arguments().getFirst();
+                        boolean matches = true;
+                        for (Object item : list) {
+                            if (!runtimeActorMessageMatches(element, item)) {
+                                matches = false;
+                                break;
+                            }
+                        }
+                        yield matches;
+                    }
+                    case "Option" -> {
+                        if (!(value instanceof OptionValue option)) yield false;
+                        if (!option.present()) yield true;
+                        if (type.arguments().size() != 1) yield true;
+                        yield runtimeActorMessageMatches(type.arguments().getFirst(), option.value());
+                    }
+                    case "ActorRef" -> value instanceof ActorRuntime.ActorRef<?> || value instanceof GuestActorRef;
+                    case "MonitorRef" -> value instanceof ActorRuntime.MonitorRef || value instanceof GuestMonitorRef;
+                    case "Shared" -> value instanceof ActorRuntime.Shared<?>;
+                    default -> {
+                        if (value instanceof OresObject object) {
+                            yield object.klass.name().equals(type.name());
+                        }
+                        // Interfaces, structs, aliases, generics, and imported
+                        // runtime values remain statically checked. The runtime
+                        // protocol must not invent a stricter rule than the
+                        // language type checker can justify.
+                        yield true;
+                    }
+                };
             }
 
             private ActorRuntime.Behavior<Object> statefulBehavior(
@@ -1061,6 +1135,7 @@ public final class OresEvalRootNode extends RootNode {
         Object call(List<Object> arguments);
         default boolean actorEntrySafe() { return false; }
         default String actorContractKey() { return null; }
+        default Ast.TypeRef actorMessageType() { return null; }
     }
 
     private static final class Env {
