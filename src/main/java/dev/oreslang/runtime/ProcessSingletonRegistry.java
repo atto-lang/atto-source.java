@@ -19,6 +19,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
@@ -170,10 +171,16 @@ public final class ProcessSingletonRegistry {
             }
 
             int admissionLimit = Math.min(callerMailboxLimit, MAILBOX_CAPACITY);
-            if (cell.mailbox.size() >= admissionLimit || !cell.mailbox.offer(request)) {
+            if (!cell.reserveQueuedSlot(admissionLimit)) {
                 reply.completeExceptionally(new IllegalStateException(
                         "singleton mailbox limit exceeded for " + cell.key
                                 + " (caller limit " + admissionLimit + ")"));
+                return reply;
+            }
+            if (!cell.mailbox.offer(request)) {
+                cell.releaseQueuedSlot();
+                reply.completeExceptionally(new IllegalStateException(
+                        "singleton mailbox process ceiling exceeded for " + cell.key));
                 return reply;
             }
 
@@ -208,6 +215,7 @@ public final class ProcessSingletonRegistry {
         private final String key;
         private final UUID instanceId = UUID.randomUUID();
         private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY);
+        private final AtomicInteger queuedRequests = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
         private volatile Supplier<?> stateFactory;
         private volatile Throwable terminalFailure;
@@ -222,6 +230,22 @@ public final class ProcessSingletonRegistry {
             return terminalFailure != null
                     && !initialized
                     && !(terminalFailure instanceof VirtualMachineError);
+        }
+
+        private boolean reserveQueuedSlot(int admissionLimit) {
+            while (true) {
+                int current = queuedRequests.get();
+                if (current >= admissionLimit || current >= MAILBOX_CAPACITY) return false;
+                if (queuedRequests.compareAndSet(current, current + 1)) return true;
+            }
+        }
+
+        private void releaseQueuedSlot() {
+            int remaining = queuedRequests.decrementAndGet();
+            if (remaining < 0) {
+                queuedRequests.incrementAndGet();
+                throw new IllegalStateException("singleton queued-request accounting underflow for " + key);
+            }
         }
 
         private void ensureStarted() {
@@ -249,6 +273,7 @@ public final class ProcessSingletonRegistry {
                 Request request;
                 try {
                     request = mailbox.take();
+                    releaseQueuedSlot();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     failTerminal(new CancellationException("singleton actor interrupted: " + key));
@@ -292,7 +317,10 @@ public final class ProcessSingletonRegistry {
         private void failTerminal(Throwable failure) {
             terminalFailure = Objects.requireNonNull(failure);
             Request queued;
-            while ((queued = mailbox.poll()) != null) queued.reply.completeExceptionally(failure);
+            while ((queued = mailbox.poll()) != null) {
+                releaseQueuedSlot();
+                queued.reply.completeExceptionally(failure);
+            }
         }
     }
 
