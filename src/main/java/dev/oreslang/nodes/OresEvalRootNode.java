@@ -20,7 +20,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
@@ -48,9 +50,9 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Evaluator {
         private final Ast.Program program;
         private final OresContext context;
-        private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
-        private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
-        private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
+        private final Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
+        private final Map<String, Ast.ModuleDecl> modules = new LinkedHashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -251,6 +253,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (klass != null) return new ClassFacade(klass);
                 Ast.FunctionDecl fn = findFunction(name.name());
                 if (fn != null) return new NamedFunctionValue(fn);
+                if (isOwnershipIntrinsic(name.name())) return ownershipIntrinsic(name.name());
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
@@ -293,7 +296,6 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);
                 return switch (unary.operator()) {
-                    case "&", "&mut" -> value;
                     case "!" -> !truth(value); case "+" -> value; case "-" -> negate(value);
                     default -> throw new IllegalArgumentException("unsupported unary operator " + unary.operator());
                 };
@@ -351,7 +353,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) return stage.toCompletableFuture().join();
+                if (value instanceof CompletionStage<?> stage) return awaitStage(stage);
                 return value;
             }
             if (expr instanceof Ast.ListExpr list) {
@@ -1103,6 +1105,42 @@ public final class OresEvalRootNode extends RootNode {
                 return iterableValues(produced);
             }
             throw new IllegalArgumentException("value is not iterable");
+        }
+
+        private boolean isOwnershipIntrinsic(String name) {
+            return name.equals("borrow") || name.equals("borrow_mut")
+                    || name.equals("take") || name.equals("copy") || name.equals("share");
+        }
+
+        private Invokable ownershipIntrinsic(String name) {
+            return args -> {
+                requireOne(args, name);
+                Object value = args.getFirst();
+                return switch (name) {
+                    case "borrow", "borrow_mut", "take", "copy" -> value;
+                    case "share" -> {
+                        context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "share");
+                        yield context.actors().shareReadonly(value);
+                    }
+                    default -> throw new IllegalArgumentException("unknown ownership intrinsic " + name);
+                };
+            };
+        }
+
+        private Object awaitStage(CompletionStage<?> stage) {
+            try {
+                return stage.toCompletableFuture().get();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                CancellationException cancellation = new CancellationException("await interrupted");
+                cancellation.initCause(interrupted);
+                throw cancellation;
+            } catch (ExecutionException failed) {
+                Throwable cause = failed.getCause();
+                if (cause instanceof RuntimeException runtime) throw runtime;
+                if (cause instanceof Error error) throw error;
+                throw new IllegalStateException("awaited operation failed", cause);
+            }
         }
 
         private Object binary(String op, Object left, Object right) {
