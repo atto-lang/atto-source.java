@@ -30,6 +30,7 @@ import java.util.function.Supplier;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_FREEZE_DEPTH = 256;
     private static final int MAX_FREEZE_NODES = 100_000;
+    private static final long MAX_FREEZE_BYTES = 16L * 1024 * 1024;
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -165,18 +166,35 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> path,
             FreezeBudget budget,
             int depth) {
-        if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
-                || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
-                || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
-            return value;
-        }
         if (depth > MAX_FREEZE_DEPTH) {
             throw new IllegalArgumentException("actor message exceeds maximum nesting depth " + MAX_FREEZE_DEPTH);
         }
-        if (++budget.nodes > MAX_FREEZE_NODES) {
-            throw new IllegalArgumentException("actor message exceeds maximum graph size " + MAX_FREEZE_NODES);
+        budget.addNode();
+
+        if (value == null) {
+            budget.addBytes(1);
+            return null;
         }
+        if (value instanceof String text) {
+            budget.addBytes(16L + 2L * text.length());
+            return value;
+        }
+        if (value instanceof BigInteger integer) {
+            budget.addBytes(32L + Math.max(1L, (integer.bitLength() + 7L) / 8L));
+            return value;
+        }
+        if (value instanceof BigDecimal decimal) {
+            budget.addBytes(40L + Math.max(1L, (decimal.unscaledValue().bitLength() + 7L) / 8L));
+            return value;
+        }
+        if (value instanceof Boolean || value instanceof Character
+                || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
+                || value instanceof Float || value instanceof Double
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
+            budget.addBytes(32);
+            return value;
+        }
+        budget.addBytes(24);
 
         /*
          * Shared is public host API, so do not trust an externally constructed
@@ -265,6 +283,20 @@ public final class ActorRuntime implements AutoCloseable {
 
     private static final class FreezeBudget {
         private int nodes;
+        private long bytes;
+
+        private void addNode() {
+            if (++nodes > MAX_FREEZE_NODES) {
+                throw new IllegalArgumentException("actor message exceeds maximum graph size " + MAX_FREEZE_NODES);
+            }
+        }
+
+        private void addBytes(long amount) {
+            if (amount < 0 || bytes > MAX_FREEZE_BYTES - amount) {
+                throw new IllegalArgumentException("actor message exceeds maximum frozen size " + MAX_FREEZE_BYTES + " bytes");
+            }
+            bytes += amount;
+        }
     }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
