@@ -13,6 +13,7 @@ The language is intentionally opinionated:
 - `val`, `const`, and `let` are the only variable declarations;
 - actor heaps are semantically isolated: mutable values are never shared between actors, even though the Java reference runtime still uses the JVM heap as its backing store;
 - every actor has an independent logical heap budget covering persistent state, queued mailbox data, and the in-flight message; `actor.status` reports the accounting and the current `logical_jvm` backend explicitly;
+- isolates also bound total live actors with an atomic `maxActors` ceiling, so actor spawning cannot bypass sandbox resource policy;
 - ownership/move/drop semantics reclaim statically-known lifetimes early, with automatic backing GC for residual dynamic graphs and capability-gated `process.gc()` for explicit collection requests;
 - immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
 - `actor.singleton(name, handler)` provides one named mutable actor without introducing shared mutable memory;
