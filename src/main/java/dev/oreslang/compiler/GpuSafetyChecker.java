@@ -370,7 +370,13 @@ public final class GpuSafetyChecker {
         }
         if (expr instanceof Ast.CallExpr call) {
             requireGpuCallTarget(module, call);
-            for (Ast.Expr arg : call.arguments()) validateGpuExpressionTree(module, scope, arg);
+            for (Ast.Expr arg : call.arguments()) {
+                if (!sideEffectFreeGpuArgument(arg)) {
+                    throw new IllegalArgumentException(
+                            "GPU call arguments must be side-effect-free; bind complex work to a local before the call");
+                }
+                validateGpuExpressionTree(module, scope, arg);
+            }
             return;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
@@ -395,6 +401,24 @@ public final class GpuSafetyChecker {
         if (expr instanceof Ast.AwaitExpr) throw new IllegalArgumentException("await is not supported inside GPU code");
         if (expr instanceof Ast.LambdaExpr) throw new IllegalArgumentException("nested closures are not supported inside GPU code");
         throw new IllegalArgumentException("expression is not supported inside GPU code: " + expr.getClass().getSimpleName());
+    }
+
+    private boolean sideEffectFreeGpuArgument(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary) return sideEffectFreeGpuArgument(unary.operand());
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return sideEffectFreeGpuArgument(binary.left()) && sideEffectFreeGpuArgument(binary.right());
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return sideEffectFreeGpuArgument(conditional.condition())
+                    && sideEffectFreeGpuArgument(conditional.whenTrue())
+                    && sideEffectFreeGpuArgument(conditional.whenFalse());
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return sideEffectFreeGpuArgument(indexed.receiver())
+                    && sideEffectFreeGpuArgument(indexed.index());
+        }
+        return false;
     }
 
     private void requireGpuCallTarget(String module, Ast.CallExpr call) {
