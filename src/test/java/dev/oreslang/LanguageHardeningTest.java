@@ -203,6 +203,8 @@ final class LanguageHardeningTest {
                 define module app
                   fnc keep(Option<String> x) => Option<String> { return x; }
                   fnc explicit_marker(Option<null> x) => Option<null> { return x; }
+                  fnc some_value() => Option<int> { return Some(1); }
+                  fnc no_value() => Option<int> { return None; }
                 end
                 """)));
     }
