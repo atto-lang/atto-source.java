@@ -296,4 +296,68 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void leakedPrivateMemorySliceCannotBeReservedOutsideOwningActorTurn() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch captured = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorMemorySlice> leaked = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                leaked.set(context.privateMemory().orElseThrow());
+                captured.countDown();
+            });
+
+            ref.send("capture");
+            assertTrue(captured.await(2, TimeUnit.SECONDS));
+
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> leaked.get().reserveHeap(1));
+            assertTrue(failure.getMessage().contains("owning actor"));
+        }
+    }
+
+    @Test
+    void privateActorsShareParentAggregateMemoryCeiling() throws Exception {
+        IsolatePolicy parent = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024 * 1024,
+                32,
+                IsolatePolicy.developer().maxWallTime(),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(parent, new ActorRuntime.DispatcherConfig(2, 1, 8))) {
+            CountDownLatch firstReserved = new CountDownLatch(1);
+            CountDownLatch holdFirst = new CountDownLatch(1);
+
+            var first = runtime.<String>spawnPrivate(parent, context -> {
+                var reservation = context.privateMemory().orElseThrow().reserveHeap(10L * 1024 * 1024);
+                firstReserved.countDown();
+                return (message, turn) -> {
+                    try {
+                        assertTrue(holdFirst.await(2, TimeUnit.SECONDS));
+                    } finally {
+                        reservation.close();
+                    }
+                };
+            });
+
+            var second = runtime.<String>spawnPrivate(parent, () -> (message, context) -> { });
+
+            first.send("start");
+            assertTrue(firstReserved.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.privateMemoryBytes() >= 10L * 1024 * 1024);
+
+            // ~8 MiB logical footprint: below the second actor's 16 MiB slice,
+            // but above the remaining aggregate parent budget.
+            String payload = "x".repeat(4 * 1024 * 1024);
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> second.send(payload));
+            assertTrue(failure.getMessage().contains("aggregate runtime limit exceeded"));
+
+            holdFirst.countDown();
+        }
+    }
+
 }
