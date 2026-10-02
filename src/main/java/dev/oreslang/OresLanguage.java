@@ -8,6 +8,7 @@ import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
 import dev.oreslang.runtime.OresContext;
+import org.graalvm.polyglot.SandboxPolicy;
 
 @TruffleLanguage.Registration(
         id = OresLanguage.ID,
@@ -16,6 +17,7 @@ import dev.oreslang.runtime.OresContext;
         defaultMimeType = OresLanguage.MIME_TYPE,
         characterMimeTypes = OresLanguage.MIME_TYPE,
         contextPolicy = TruffleLanguage.ContextPolicy.EXCLUSIVE,
+        sandbox = SandboxPolicy.UNTRUSTED,
         website = "https://github.com/ores-truffle-oreslang/oreslang-source.java")
 public final class OresLanguage extends TruffleLanguage<OresContext> {
     public static final String ID = "ores";
