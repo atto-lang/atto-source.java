@@ -617,6 +617,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private boolean valueEquals(Object left, Object right) {
+            if (left instanceof Complex || right instanceof Complex) {
+                if (!isNumericValue(left) || !isNumericValue(right)) return false;
+                return asComplex(left).equals(asComplex(right));
+            }
+            if (left instanceof Number leftNumber && right instanceof Number rightNumber) {
+                return numericEquals(leftNumber, rightNumber);
+            }
             if (left instanceof OresTuple || right instanceof OresTuple) {
                 if (!(left instanceof OresTuple leftTuple) || !(right instanceof OresTuple rightTuple)) return false;
                 return sequenceEquals(leftTuple.elements(), rightTuple.elements());
@@ -625,6 +632,26 @@ public final class OresEvalRootNode extends RootNode {
                 return sequenceEquals(leftList, rightList);
             }
             return Objects.equals(left, right);
+        }
+
+        private boolean numericEquals(Number left, Number right) {
+            if (isIntegral(left) && isIntegral(right)) return left.longValue() == right.longValue();
+
+            double a = left.doubleValue();
+            double b = right.doubleValue();
+            if (!Double.isFinite(a) || !Double.isFinite(b)) return Double.compare(a, b) == 0;
+
+            java.math.BigDecimal leftDecimal = isIntegral(left)
+                    ? java.math.BigDecimal.valueOf(left.longValue())
+                    : java.math.BigDecimal.valueOf(a);
+            java.math.BigDecimal rightDecimal = isIntegral(right)
+                    ? java.math.BigDecimal.valueOf(right.longValue())
+                    : java.math.BigDecimal.valueOf(b);
+            return leftDecimal.compareTo(rightDecimal) == 0;
+        }
+
+        private boolean isNumericValue(Object value) {
+            return value instanceof Number || value instanceof Complex;
         }
 
         private boolean sequenceEquals(List<?> left, List<?> right) {
