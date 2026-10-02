@@ -1043,9 +1043,14 @@ public final class ActorRuntime implements AutoCloseable {
             down.put("error_message", failure.message() == null ? "" : failure.message());
         }
         try {
-            trySend((ActorRef<Object>) watcherCell.ref, Map.copyOf(down));
-        } catch (RuntimeException ignored) {
-            // Watcher overload or protocol mismatch cannot prevent target cleanup.
+            SendResult result = trySend((ActorRef<Object>) watcherCell.ref, Map.copyOf(down));
+            if (result != SendResult.SENT) {
+                watcherCell.failControlPlane(new IllegalStateException(
+                        "monitor DOWN delivery failed: " + result));
+            }
+        } catch (RuntimeException deliveryFailure) {
+            watcherCell.failControlPlane(new IllegalStateException(
+                    "monitor DOWN delivery failed", deliveryFailure));
         }
     }
 
@@ -1173,6 +1178,7 @@ public final class ActorRuntime implements AutoCloseable {
 
             try {
                 while (true) {
+                    if (state == ActorState.FAILED) return;
                     if (state == ActorState.STOPPING && mailbox.isEmpty()) {
                         state = ActorState.STOPPED;
                         return;
@@ -1192,6 +1198,7 @@ public final class ActorRuntime implements AutoCloseable {
                         actorDeadlineNanos.remove();
                         activeMessageBytes.set(0L);
                     }
+                    if (state == ActorState.FAILED) return;
                     if (state == ActorState.STOPPING && mailbox.isEmpty()) {
                         state = ActorState.STOPPED;
                         return;
@@ -1226,7 +1233,7 @@ public final class ActorRuntime implements AutoCloseable {
             return observed == ActorState.STOPPED || observed == ActorState.FAILED;
         }
 
-        private void recordFailure(Throwable failure) {
+        private synchronized void recordFailure(Throwable failure) {
             state = ActorState.FAILED;
             ActorFailure record = new ActorFailure(
                     failure.getClass().getName(),
@@ -1240,6 +1247,15 @@ public final class ActorRuntime implements AutoCloseable {
                 if (oldest == null) break;
                 failures.remove(oldest);
             }
+        }
+
+        private void failControlPlane(Throwable failure) {
+            synchronized (this) {
+                if (state == ActorState.STOPPED || state == ActorState.FAILED) return;
+                recordFailure(failure);
+            }
+            Thread t = thread;
+            if (t != null) t.interrupt();
         }
 
         private void removeSingletonMapping() {
