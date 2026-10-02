@@ -237,8 +237,26 @@ public final class Ast {
     public record MemberExpr(Expr receiver, String member) implements Expr { }
     public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
-    public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
-        public NewExpr { arguments = List.copyOf(arguments); }
+    /**
+     * Construction expression. The optional anonymous body supports two orthogonal
+     * features without conflating them:
+     * - entries: map/object data used to seed map-like builtins
+     * - methods: per-instance method overrides for anonymous implementations
+     */
+    public record NewExpr(
+            TypeRef type,
+            List<Expr> arguments,
+            List<ObjectField> entries,
+            List<MethodDecl> methods) implements Expr {
+        public NewExpr {
+            arguments = List.copyOf(arguments);
+            entries = List.copyOf(entries);
+            methods = List.copyOf(methods);
+        }
+        public NewExpr(TypeRef type, List<Expr> arguments) {
+            this(type, arguments, List.of(), List.of());
+        }
+        public boolean hasAnonymousBody() { return !entries.isEmpty() || !methods.isEmpty(); }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
