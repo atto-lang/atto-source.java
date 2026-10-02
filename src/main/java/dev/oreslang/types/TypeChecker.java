@@ -154,6 +154,7 @@ public final class TypeChecker {
                 if (!assignable(actual, expected)) {
                     throw new IllegalArgumentException("module '" + module.name() + "' does not adhere to interface '" + ref.name() + "': expected " + expected + " but got " + actual);
                 }
+                validateModuleOwnershipContract(module, iface, new LinkedHashSet<>());
             }
         }
     }
@@ -277,7 +278,7 @@ public final class TypeChecker {
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
         validateSingletonTransportStatements(fn.body(), module.name());
         checkBlock(fn.body(), env, generics, returns, null);
@@ -967,7 +968,7 @@ public final class TypeChecker {
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(classModuleEnv);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
             validateSingletonTransportStatements(method.body(), module);
             checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -987,6 +988,85 @@ public final class TypeChecker {
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+            }
+            validateClassOwnershipContract(klass, iface, new LinkedHashSet<>());
+        }
+    }
+
+    private void validateClassOwnershipContract(
+            Ast.ClassDecl klass,
+            Ast.InterfaceDecl iface,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null) validateClassOwnershipContract(klass, parent, seen);
+        }
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (!(member instanceof Ast.InterfaceFunctionDecl fn)) continue;
+            Ast.MethodDecl method = findMethod(
+                    klass,
+                    fn.name(),
+                    fn.parameters().size(),
+                    new LinkedHashSet<>());
+            if (method == null || method.visibility() != Ast.Visibility.PUBLIC) continue;
+            requireParameterOwnershipMatch(
+                    fn.parameters(),
+                    method.parameters(),
+                    "interface " + iface.name() + "." + fn.name()
+                            + " vs class " + klass.name() + "." + method.name());
+        }
+        seen.remove(iface);
+    }
+
+    private void validateModuleOwnershipContract(
+            Ast.ModuleDecl module,
+            Ast.InterfaceDecl iface,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null) validateModuleOwnershipContract(module, parent, seen);
+        }
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (!(member instanceof Ast.InterfaceFunctionDecl expected)) continue;
+            Ast.FunctionDecl actual = null;
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.name().equals(expected.name())
+                        && fn.parameters().size() == expected.parameters().size()) {
+                    actual = fn;
+                    break;
+                }
+            }
+            if (actual != null) {
+                requireParameterOwnershipMatch(
+                        expected.parameters(),
+                        actual.parameters(),
+                        "interface " + iface.name() + "." + expected.name()
+                                + " vs module " + module.name() + "." + actual.name());
+            }
+        }
+        seen.remove(iface);
+    }
+
+    private void requireParameterOwnershipMatch(
+            List<Ast.Param> expected,
+            List<Ast.Param> actual,
+            String where) {
+        if (expected.size() != actual.size()) return;
+        for (int i = 0; i < expected.size(); i++) {
+            Ast.Param left = expected.get(i);
+            Ast.Param right = actual.get(i);
+            Ast.ParamMode expectedMode = left.structural() ? Ast.ParamMode.BORROW : left.mode();
+            Ast.ParamMode actualMode = right.structural() ? Ast.ParamMode.BORROW : right.mode();
+            if (expectedMode != actualMode) {
+                throw new IllegalArgumentException(
+                        "parameter ownership mismatch in " + where
+                                + " at argument " + (i + 1)
+                                + ": expected " + expectedMode.name().toLowerCase()
+                                + " but implementation uses " + actualMode.name().toLowerCase());
             }
         }
     }
@@ -1194,6 +1274,21 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr intrinsic
+                    && (intrinsic.name().equals("borrow")
+                    || intrinsic.name().equals("copy")
+                    || intrinsic.name().equals("take")
+                    || intrinsic.name().equals("share"))) {
+                if (intrinsic.name().equals("share")) {
+                    throw new IllegalArgumentException(
+                            "share(...) is reserved for explicit shared capabilities; ordinary ownership cannot be converted implicitly");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(intrinsic.name() + "(...) expects exactly one argument");
+                }
+                Type value = typeOf(call.arguments().getFirst(), env, generics, self);
+                return intrinsic.name().equals("borrow") ? new Borrow(value, false) : value;
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -1413,7 +1508,7 @@ public final class TypeChecker {
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
-                lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                lambdaEnv.define(param.name(), type, Ast.BindingKind.VAL);
             }
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
@@ -1444,7 +1539,7 @@ public final class TypeChecker {
             Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
-            lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            lambdaEnv.define(param.name(), declared, Ast.BindingKind.VAL);
         }
         checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
         if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
