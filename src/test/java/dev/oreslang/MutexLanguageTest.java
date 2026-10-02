@@ -776,4 +776,53 @@ final class MutexLanguageTest {
         assertTrue(declaredError.getMessage().contains("owned value type"));
     }
 
+
+    @Test
+    void conditionalExpressionsCannotEraseGuardLinearity() {
+        var awaitProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  async fnc bad(bool choose) => void {
+                    val mutex = Mutex.new(new Counter());
+                    val maybe_guard = choose ? 1 : mutex.lock();
+                    await mutex.lock_async();
+                    stdio.println(maybe_guard);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException awaitError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(awaitProgram));
+        assertTrue(awaitError.getMessage().contains(
+                "cannot await while holding a MutexGuard"));
+
+        var returnProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad(bool choose) => int | Counter {
+                    val mutex = Mutex.new(new Counter());
+                    return choose ? 1 : mutex.lock();
+                  }
+                end
+                """);
+
+        IllegalArgumentException returnError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(returnProgram));
+        assertTrue(returnError.getMessage().contains(
+                "MutexGuard values are lexical and cannot be returned"));
+    }
+
 }
