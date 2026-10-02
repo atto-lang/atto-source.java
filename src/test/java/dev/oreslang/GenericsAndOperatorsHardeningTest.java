@@ -149,6 +149,13 @@ final class GenericsAndOperatorsHardeningTest {
                     return child.value;
                   }
 
+                  fnc reuseInheritedGenericField(IntChild child) => void {
+                    val value = child.value;
+                    stdio.println(value);
+                    stdio.println(value);
+                    return;
+                  }
+
                   fnc make() => Child<int> {
                     return new Child<int>(7);
                   }
