@@ -91,6 +91,42 @@ final class AsyncAndNumericHardeningTest {
     }
 
     @Test
+    void asyncCallableCannotCaptureCallScopedBorrow() {
+        String program = """
+                define module app
+                  pub async fnc bad(Borrow<int> value) => int {
+                    return 1;
+                  }
+                end
+                """;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("Borrow"));
+        assertTrue(failure.getMessage().contains("async"));
+    }
+
+    @Test
+    void asyncInstanceMethodIsRejectedUntilReceiverOwnershipIsExplicit() {
+        String program = """
+                define module app
+                  define class Box
+                    pub async value() => int {
+                      return 1;
+                    }
+                  end
+                end
+                """;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("async"));
+        assertTrue(failure.getMessage().contains("receiver"));
+    }
+
+    @Test
     void signedIntegerOverflowNeverSilentlyWraps() throws Exception {
         String program = """
                 define module app
