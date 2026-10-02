@@ -216,11 +216,19 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime.this.send(this, message);
         }
 
+        public void sendShared(Shared<? extends M> message) {
+            ActorRuntime.this.sendShared(this, message);
+        }
+
         public ActorSnapshot snapshot() {
             return ActorRuntime.this.snapshot(this);
         }
 
         public SendResult trySend(M message) { return ActorRuntime.this.trySend(this, message); }
+
+        public SendResult trySendShared(Shared<? extends M> message) {
+            return ActorRuntime.this.trySendShared(this, message);
+        }
 
         @Override
         public String toString() {
