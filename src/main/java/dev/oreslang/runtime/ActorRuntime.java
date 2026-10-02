@@ -627,6 +627,15 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
+        public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
+            Objects.requireNonNull(unit);
+            if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
+            ActorCell<?> cell = actors.get(id);
+            if (cell == null) return true;
+            cell.awaitFinalized(unit.toNanos(timeout));
+            return cell.finalized();
+        }
+
         public void send(M message) {
             ActorRuntime.this.send(this, message);
         }
@@ -751,7 +760,7 @@ public final class ActorRuntime implements AutoCloseable {
         for (java.lang.reflect.Field field : factory.getClass().getDeclaredFields()) {
             if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
                 throw new SecurityException(
-                        "adversarial private actor BehaviorFactory must be stateless; captured host state is not actor-private memory");
+                        "private actor BehaviorFactory must be stateless; captured host state is not actor-private memory");
             }
         }
     }
