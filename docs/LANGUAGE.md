@@ -289,7 +289,7 @@ The slice has two simultaneous limits:
 
 This prevents many private actors from multiplying the parent's memory ceiling. Destroying the actor closes its slice and releases its accounting.
 
-The JVM backend's slice is a language/runtime ownership and accounting boundary, not a separate Java GC heap. When physical heap separation is required for adversarial tenant code, the same private-actor semantics must be backed by a separate Graal polyglot/native isolate.
+The JVM backend's slice is a language/runtime ownership and accounting boundary, not a separate Java GC heap. The slice follows the actor id across dispatcher workers; it is not thread-local state. When physical heap separation is required for adversarial tenant code, the same private-actor semantics must be backed by a cross-thread-capable private region or a separate Graal polyglot/native isolate.
 
 Shared actors may additionally receive:
 
