@@ -107,17 +107,39 @@ public final class TypeChecker {
     }
 
     private void validate(Ast.Program program) {
-        for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
-        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        for (Ast.ClassDecl klass : classOwners.keySet()) {
+            String previous = resolutionModule;
+            resolutionModule = classOwners.get(klass);
+            try {
+                classShape(klass, new LinkedHashSet<>());
+            } finally {
+                resolutionModule = previous;
+            }
+        }
+        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) {
+            String previous = resolutionModule;
+            resolutionModule = interfaceOwners.get(iface);
+            try {
+                interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            } finally {
+                resolutionModule = previous;
+            }
+        }
 
         for (Ast.ModuleDecl module : program.modules()) {
-            checkModuleAdherence(module);
-            for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
-                else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
-                else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
-                else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+            String previous = resolutionModule;
+            resolutionModule = module.name();
+            try {
+                checkModuleAdherence(module);
+                for (Ast.Decl decl : module.declarations()) {
+                    if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
+                    else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
+                    else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
+                    else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
+                    else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+                }
+            } finally {
+                resolutionModule = previous;
             }
         }
     }
