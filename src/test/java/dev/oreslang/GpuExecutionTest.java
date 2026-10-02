@@ -204,6 +204,12 @@ final class GpuExecutionTest {
         assertTrue(kernel.hiddenParameters().stream()
                 .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.BUFFER_LENGTH
                         && "xs".equals(p.sourceParameter())));
+        assertTrue(kernel.parameters().stream()
+                .filter(GpuKernelCompiler.GpuParameter::buffer)
+                .allMatch(GpuKernelCompiler.GpuParameter::noAlias));
+        assertTrue(compilation.gpuProgram().manifest().contains("DATA_PARALLEL_1D"));
+        assertTrue(compilation.gpuProgram().manifest().contains("noAlias") == false,
+                "manifest is positional/deterministic rather than label-dependent");
     }
 
     @Test
