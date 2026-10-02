@@ -58,10 +58,6 @@ public final class Types {
         if (from.equals(to)) return true;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
 
-        if (from instanceof SingletonProxy source && to instanceof Named target) {
-            return isAssignable(source.target(), target);
-        }
-
         if (from instanceof Borrow source && to instanceof Borrow target) {
             if (target.mutable() && !source.mutable()) return false;
             return isAssignable(source.target(), target.target()) && isAssignable(target.target(), source.target());
