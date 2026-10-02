@@ -410,4 +410,33 @@ final class LanguageHardeningTest {
         assertTrue(lambdaError.getMessage().contains("await is only valid"));
     }
 
+
+    @Test
+    void gcRuntimeNamespacesAreTypedAndActorGcIsActorScoped() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc sweep_process() => int {
+                  return process.gc();
+                }
+
+                pub actor fnc sweep_actor() => int {
+                  return actor.gc();
+                }
+                """)));
+
+        IllegalArgumentException outsideActor = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc bad() => int {
+                          return actor.gc();
+                        }
+                        """)));
+        assertTrue(outsideActor.getMessage().contains("only inside actor"));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub fnc bad_arity() => int {
+                          return process.gc(1);
+                        }
+                        """)));
+    }
+
 }
