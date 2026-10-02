@@ -198,6 +198,17 @@ public final class TraitComposer {
                 Set<String> generics) {
             for (Ast.Stmt stmt : statements) {
                 if (stmt instanceof Ast.TypeDeclStmt local) {
+                    String localName = switch (local.declaration()) {
+                        case Ast.ClassDecl klass -> klass.name();
+                        case Ast.InterfaceDecl iface -> iface.name();
+                        case Ast.TraitDecl trait -> trait.name();
+                        case Ast.TypeAliasDecl alias -> alias.name();
+                        default -> null;
+                    };
+                    if (localName != null && generics.contains(localName)) {
+                        throw new IllegalArgumentException("callable-local type '" + localName
+                                + "' collides with an in-scope generic type parameter");
+                    }
                     validateDeclarationTypes(moduleName, local.declaration(), generics);
                 } else if (stmt instanceof Ast.BindingStmt binding) {
                     rejectTraitType(moduleName, binding.declaredType(), generics, "local binding " + binding.name());
