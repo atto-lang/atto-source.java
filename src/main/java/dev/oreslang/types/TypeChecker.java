@@ -1486,7 +1486,7 @@ public final class TypeChecker {
             if (receiver instanceof SingletonProxy proxy) {
                 Ast.ClassDecl klass = findClass(proxy.target().name());
                 if (klass == null) throw new IllegalArgumentException("unknown singleton proxy class '" + proxy.target().name() + "'");
-                if (findFieldType(klass, member.member(), proxy.target(), new LinkedHashSet<>()) != null) {
+                if (findFieldType(klass, member.member(), proxy.target(), new LinkedHashSet<>(), false) != null) {
                     throw new IllegalArgumentException("singleton object fields are actor-private; invoke a public method on "
                             + proxy.moduleName() + "." + proxy.fieldName());
                 }
@@ -2321,7 +2321,7 @@ public final class TypeChecker {
     private IllegalArgumentException inaccessibleMethod(Ast.ClassDecl owner, Ast.MethodDecl method) {
         if (method.composed()) {
             return new IllegalArgumentException(
-                    "trait method '" + method.compositionOwner() + "." + method.name()
+                    "trait-private method '" + method.compositionOwner() + "." + method.name()
                             + "' is private to that trait");
         }
         String label = method.isStatic() ? "static function" : "method";
