@@ -14,29 +14,21 @@ public final class Types {
     }
 
     public record Named(String name, List<Type> arguments) implements Type {
-        public Named {
-            arguments = List.copyOf(arguments);
-        }
+        public Named { arguments = List.copyOf(arguments); }
     }
 
     public record Record(Map<String, Type> members) implements Type {
-        public Record {
-            members = Map.copyOf(members);
-        }
+        public Record { members = Map.copyOf(members); }
     }
 
     public record Function(List<Type> parameters, Type result) implements Type {
-        public Function {
-            parameters = List.copyOf(parameters);
-        }
+        public Function { parameters = List.copyOf(parameters); }
     }
 
     public record ListType(Type element) implements Type { }
 
     public record Tuple(List<Type> elements) implements Type {
-        public Tuple {
-            elements = List.copyOf(elements);
-        }
+        public Tuple { elements = List.copyOf(elements); }
     }
 
     public record Generic(String name) implements Type { }
@@ -49,7 +41,15 @@ public final class Types {
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
-        if (from == Primitive.NULL && to instanceof Named) return true;
+
+        if (from instanceof Named source && to instanceof Named target && source.name().equals(target.name())) {
+            if (source.arguments().size() != target.arguments().size()) return false;
+            for (int i = 0; i < source.arguments().size(); i++) {
+                Type a = source.arguments().get(i), b = target.arguments().get(i);
+                if (!isAssignable(a, b) || !isAssignable(b, a)) return false;
+            }
+            return true;
+        }
 
         if (from instanceof Record source && to instanceof Record target) {
             for (Map.Entry<String, Type> required : target.members().entrySet()) {
@@ -73,7 +73,6 @@ public final class Types {
 
         if (from instanceof Function source && to instanceof Function target) {
             if (source.parameters().size() != target.parameters().size()) return false;
-            // Function inputs are contravariant; result is covariant.
             for (int i = 0; i < source.parameters().size(); i++) {
                 if (!isAssignable(target.parameters().get(i), source.parameters().get(i))) return false;
             }
