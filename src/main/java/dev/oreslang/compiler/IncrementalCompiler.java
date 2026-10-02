@@ -232,6 +232,10 @@ public final class IncrementalCompiler {
                     appendParams(abi, method.parameters());
                     abi.append("=>").append(typeRef(method.returnType())).append('\n');
                 }
+            } else if (local.declaration() instanceof Ast.TypeAliasDecl alias) {
+                abi.append(" local-type ").append(alias.name());
+                appendGenerics(abi, alias.genericParameters());
+                abi.append('=').append(typeRef(alias.target())).append('\n');
             }
         }
     }
