@@ -114,6 +114,7 @@ public record IsolatePolicy(
             long guestHeap = Math.max(8L * 1024 * 1024, maxHeapBytes * 3 / 4);
             long maxOutput = allows(Capability.STDOUT) ? 1024L * 1024 : 0L;
             builder.sandbox(SandboxPolicy.UNTRUSTED)
+                    .spawnIsolate(true)
                     .option("engine.MaxIsolateMemory", bytes(maxHeapBytes))
                     .option("sandbox.MaxHeapMemory", bytes(guestHeap))
                     .option("sandbox.MaxCPUTime", duration(maxWallTime))
