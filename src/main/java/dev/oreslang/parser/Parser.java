@@ -586,6 +586,18 @@ public final class Parser {
             consumeStatementTerminator("panic statement should end with ';'");
             return new Ast.PanicStmt(value);
         }
+        if (match(THROW)) {
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(peek(), "throw requires a value");
+            }
+            Ast.Expr value = parseExpression();
+            consumeStatementTerminator("throw statement should end with ';'");
+            return new Ast.ThrowStmt(value);
+        }
+        if (match(RAISE)) {
+            consumeStatementTerminator("raise statement should end with ';'");
+            return new Ast.RaiseStmt();
+        }
         if (match(STOP)) {
             consumeStatementTerminator("stop statement should end with ';'");
             return new Ast.StopStmt();
@@ -851,7 +863,7 @@ public final class Parser {
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, DONE, AWAIT, ASYNC, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER, BREAK, CONTINUE,
-                    ACTOR, ISOLATE, RECOVER, PANIC, STOP,
+                    ACTOR, ISOLATE, RECOVER, PANIC, THROW, RAISE, STOP,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
         };
@@ -1022,7 +1034,7 @@ public final class Parser {
 
     private boolean isReservedIdentifierKeyword(Token.Type type) {
         return type == AS || type == IS || type == OF
-                || type == ACTOR || type == ISOLATE || type == RECOVER || type == PANIC || type == STOP;
+                || type == ACTOR || type == ISOLATE || type == RECOVER || type == PANIC || type == THROW || type == RAISE || type == STOP;
     }
 
     private boolean check(Token.Type type) { return peek().type() == type; }
