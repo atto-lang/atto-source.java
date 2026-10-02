@@ -198,6 +198,62 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
+    void letDestructureIsRebindableAndAlsoProvidesMutableOwnership() throws Exception {
+        String output = run("""
+                struct Counter {
+                  pub let int count = 0;
+
+                  pub bump(self &mut self)() => int {
+                    self.count = self.count + 1;
+                    return self.count;
+                  }
+                }
+
+                fnc counters() => Array<Counter> {
+                  return arr[Counter {}, Counter {}];
+                }
+
+                pub fnc main() => void {
+                  [let first, const second] = counters();
+                  stdio.stdout.write(first.bump());
+                  first = Counter {};
+                  stdio.stdout.write(first.bump());
+                  stdio.stdout.write(second.count);
+                  return;
+                }
+                """);
+
+        assertEquals("110", output);
+    }
+
+    @Test
+    void valWithoutMutCannotUseMutableStructReceiver() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Counter {
+                          pub let int count = 0;
+
+                          pub bump(self &mut self)() => int {
+                            self.count = self.count + 1;
+                            return self.count;
+                          }
+                        }
+
+                        fnc counters() => Array<Counter> {
+                          return arr[Counter {}, Counter {}];
+                        }
+
+                        fnc bad() => void {
+                          [val first, let second] = counters();
+                          first.bump();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("immutable"));
+    }
+
+    @Test
     void constAndMutCannotDescribeTheSameDestructuredBinding() {
         for (String program : new String[] {
                 """
