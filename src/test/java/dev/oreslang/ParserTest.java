@@ -184,4 +184,94 @@ final class ParserTest {
     }
 
 
+    @Test
+    void actorSelfAndMutableActorStateCannotEscapeMailboxTurn() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    shared actor Account {
+                      let balance = 100;
+
+                      pub fnc leak() => Account {
+                        return self;
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    shared actor Account {
+                      let balance = 100;
+
+                      pub fnc leak() => &mut Account {
+                        return &mut self;
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    shared actor Account {
+                      let balance = 100;
+
+                      pub fnc leak() => &mut Account {
+                        val alias = &mut self;
+                        return alias;
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    shared actor Account {
+                      let Array<int> items = [1, 2, 3];
+
+                      pub fnc leak() => Array<int> {
+                        return self.items;
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+    }
+
+    @Test
+    void actorMayReturnCopyLikeStateButCannotPassSelfBorrowToOrdinaryFunction() {
+        assertDoesNotThrow(() -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    shared actor Account {
+                      let balance = 100;
+
+                      pub fnc current() => int {
+                        return self.balance;
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            Ast.Program typed = TypeChecker.check(Parser.parse("""
+                    fnc inspect(&Account account) => int {
+                      return 1;
+                    }
+
+                    shared actor Account {
+                      let balance = 100;
+
+                      pub fnc inspectSelf() => int {
+                        return inspect(&self);
+                      }
+                    }
+                    """));
+            OwnershipChecker.check(typed);
+        });
+    }
+
+
 }
