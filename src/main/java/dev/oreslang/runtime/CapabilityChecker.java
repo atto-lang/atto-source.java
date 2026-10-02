@@ -65,6 +65,10 @@ public final class CapabilityChecker {
                 if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
+                if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
+                if (path.equals("actor.spawn") || path.equals("actor.singleton")) require(policy, IsolatePolicy.Capability.ACTOR_SPAWN, path);
+                if (path.equals("actor.send") || path.equals("actor.self")) require(policy, IsolatePolicy.Capability.ACTOR_SEND, path);
+                if (path.equals("actor.stop") || path.equals("actor.join") || path.equals("actor.status")) require(policy, IsolatePolicy.Capability.ACTOR_CONTROL, path);
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
