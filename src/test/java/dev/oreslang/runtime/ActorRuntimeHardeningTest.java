@@ -63,6 +63,10 @@ final class ActorRuntimeHardeningTest {
 
             assertThrows(SecurityException.class,
                     () -> left.freezeForActorState(Map.of("child", foreign)));
+
+            ActorRuntime.Shared<List<Integer>> foreignShared = right.shareReadonly(List.of(1, 2, 3));
+            assertThrows(SecurityException.class,
+                    () -> left.sharedValueForActorState(foreignShared));
         }
     }
 
@@ -164,6 +168,42 @@ final class ActorRuntimeHardeningTest {
             assertTrue(runtime.join(ref, Duration.ofSeconds(2)));
             assertEquals(2, seen.get());
             assertEquals(ActorRuntime.ActorState.STOPPED, runtime.snapshot(ref).state());
+        }
+    }
+
+    @Test
+    void gracefulStopLetsAlreadyAdmittedStatefulWorkFinish() throws Exception {
+        IsolatePolicy parent = IsolatePolicy.developer();
+        IsolatePolicy policy = new IsolatePolicy(
+                parent.capabilities(),
+                16L * 1024L * 1024L,
+                4,
+                parent.maxActors(),
+                Duration.ofSeconds(5),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(parent)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<String> ref = runtime.spawnOwned(
+                    policy,
+                    1024L,
+                    ActorRuntime.Protocol.ofClass("stateful", String.class),
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        assertTrue(release.await(2, TimeUnit.SECONDS));
+                        context.replaceOwnedStateBytes(2048L);
+                    });
+
+            ref.send("work");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.stop(ref));
+            release.countDown();
+
+            assertTrue(runtime.join(ref, Duration.ofSeconds(2)));
+            assertEquals(ActorRuntime.ActorState.STOPPED, runtime.snapshot(ref).state());
+            assertNull(runtime.snapshot(ref).failure());
         }
     }
 
