@@ -956,7 +956,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private record GuestActorRef(ActorRuntime.ActorRef<Object> delegate) implements ActorRuntime.Sendable {
             @Override
-            public Object freezeForSend() {
+            public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
                 return delegate;
             }
 
@@ -968,7 +968,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private record GuestMonitorRef(ActorRuntime.MonitorRef delegate) implements ActorRuntime.Sendable {
             @Override
-            public Object freezeForSend() {
+            public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
                 return delegate;
             }
 
@@ -1117,23 +1117,61 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) {
+    private record Complex(double real, double imaginary) implements ActorRuntime.Sendable {
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
         private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
+        @Override public Object freezeForSend(ActorRuntime.SendFreezer freezer){return new Complex(real,imaginary);}
+        @Override public long estimatedSendBytes(ActorRuntime.SendSizer sizer){return 32L;}
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
 
-    private static final class OresObject {
-        private final Ast.ClassDecl klass; private final Map<String,Object> fields;
-        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){this.klass=klass;this.fields=fields;}
+    private static final class OresObject implements ActorRuntime.Sendable {
+        private final Ast.ClassDecl klass;
+        private final Map<String,Object> fields;
+
+        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){
+            this.klass=klass;
+            this.fields=fields;
+        }
+
+        @Override
+        public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
+            LinkedHashMap<String,Object> copied = new LinkedHashMap<>();
+            for (Map.Entry<String,Object> field : fields.entrySet()) {
+                copied.put(field.getKey(), freezer.freeze(field.getValue()));
+            }
+            return new OresObject(klass, copied);
+        }
+
+        @Override
+        public long estimatedSendBytes(ActorRuntime.SendSizer sizer) {
+            long total = 64L;
+            for (Map.Entry<String,Object> field : fields.entrySet()) {
+                total = saturatingAdd(total, sizer.estimatedBytes(field.getKey()));
+                total = saturatingAdd(total, sizer.estimatedBytes(field.getValue()));
+            }
+            return total;
+        }
+
         @Override public String toString(){return klass.name()+fields;}
     }
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
     private record ClassFacade(Ast.ClassDecl klass) { }
-    private record OptionValue(boolean present, Object value) {
+
+    private record OptionValue(boolean present, Object value) implements ActorRuntime.Sendable {
+        @Override
+        public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
+            return present ? new OptionValue(true, freezer.freeze(value)) : new OptionValue(false, null);
+        }
+
+        @Override
+        public long estimatedSendBytes(ActorRuntime.SendSizer sizer) {
+            return present ? saturatingAdd(24L, sizer.estimatedBytes(value)) : 24L;
+        }
+
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
     private record StdioFacade(OresContext context) {
@@ -1150,6 +1188,13 @@ public final class OresEvalRootNode extends RootNode {
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
         private Object gc(List<Object> args){context.requireCapability(IsolatePolicy.Capability.GC_CONTROL,"process.gc");requireZero(args,"process.gc");return context.gc().collect();}
     }
+    private static long saturatingAdd(long left, long right) {
+        if (left == Long.MAX_VALUE || right == Long.MAX_VALUE || right > Long.MAX_VALUE - left) {
+            return Long.MAX_VALUE;
+        }
+        return left + right;
+    }
+
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
     private static void requireTwo(List<Object> args,String name){if(args.size()!=2)throw new IllegalArgumentException(name+" expects two arguments");}
