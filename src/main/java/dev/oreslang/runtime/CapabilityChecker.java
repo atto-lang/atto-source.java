@@ -59,6 +59,9 @@ public final class CapabilityChecker {
 
     private static void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
+        else if (expr instanceof Ast.NameExpr n && (n.name().equals("GpuArray") || n.name().equals("GpuStream"))) {
+            require(policy, IsolatePolicy.Capability.GPU, n.name());
+        }
         else if (expr instanceof Ast.CallExpr c) {
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
@@ -76,6 +79,7 @@ public final class CapabilityChecker {
                 if (path.startsWith("polyglot.")) require(policy, IsolatePolicy.Capability.POLYGLOT, path);
                 if (path.startsWith("thread.")) require(policy, IsolatePolicy.Capability.THREAD_CREATE, path);
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
+                if (path.startsWith("GpuArray.") || path.startsWith("GpuStream.")) require(policy, IsolatePolicy.Capability.GPU, path);
             }
             checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
