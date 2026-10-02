@@ -347,7 +347,7 @@ Both structured exceptions and lexical `defer` are supported:
 try {
   risky();
 } catch (err) {
-  recover(err);
+  stdio.println(err);
 } finally {
   cleanup();
 }
@@ -465,10 +465,11 @@ let Fnc<int, int> fact = |int n| -> {
 
 ## Reserved keywords
 
-`of`, `is`, and `as` are **globally reserved** Oreslang keywords. The lexer never
-emits them as ordinary identifiers, so they cannot be used as variable, parameter,
-function, routine, module, class, interface, field, method, type-alias, generic,
-namespace, import-alias, or member names.
+`of`, `is`, `as`, `actor`, `isolate`, `recover`, and `panic` are
+**globally reserved** Oreslang keywords. The lexer never emits them as ordinary
+identifiers, so they cannot be used as variable, parameter, function, routine,
+module, class, interface, field, method, type-alias, generic, namespace,
+import-alias, or member names.
 
 ```ores
 val is = 1;             // compile-time parse error
