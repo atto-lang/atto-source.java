@@ -173,6 +173,9 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (ref == null || !ref.belongsTo(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to another ActorRuntime");
+        }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
         Object frozen = freezeForThisRuntime(message);
@@ -452,13 +455,14 @@ public final class ActorRuntime implements AutoCloseable {
         private void run() {
             CURRENT_ACTOR_POLICY.set(policy);
             CURRENT_ACTOR_DOMAIN.set(ref.id());
-            final Behavior<M> behavior = behaviorFactory.get();
-            final ActorContext<M> context = new ActorContext<>() {
-                @Override public ActorRef<M> self() { return ref; }
-                @Override public ActorRuntime runtime() { return ActorRuntime.this; }
-                @Override public IsolatePolicy policy() { return policy; }
-            };
             try {
+                final Behavior<M> behavior = java.util.Objects.requireNonNull(
+                        behaviorFactory.get(), "actor behavior factory returned null");
+                final ActorContext<M> context = new ActorContext<>() {
+                    @Override public ActorRef<M> self() { return ref; }
+                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                    @Override public IsolatePolicy policy() { return policy; }
+                };
                 while (true) {
                     Object message = mailbox.take();
                     if (message == STOP) return;
@@ -466,9 +470,12 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
             } catch (Throwable failure) {
-                // v0 fail-stop supervision policy. A later supervisor layer will
-                // expose restart/escalation strategies as typed Oreslang APIs.
+                // v0 fail-stop supervision policy. The cell is removed below
+                // so subsequent sends fail immediately instead of targeting a
+                // dead actor left behind in the runtime registry.
             } finally {
                 CURRENT_ACTOR_DOMAIN.remove();
                 CURRENT_ACTOR_POLICY.remove();
