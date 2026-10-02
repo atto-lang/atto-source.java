@@ -1379,6 +1379,7 @@ public final class OresEvalRootNode extends RootNode {
                         || copyMethod.isAbstract()
                         || copyMethod.async()
                         || copyMethod.composed()
+                        || !object.klass.methods().contains(copyMethod)
                         || !copyMethod.genericParameters().isEmpty()
                         || !immutableReceiver) {
                     throw new IllegalArgumentException("class '" + object.klass.name()
