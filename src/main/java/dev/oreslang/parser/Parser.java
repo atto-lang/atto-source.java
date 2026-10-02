@@ -902,7 +902,7 @@ public final class Parser {
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
         if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical, explicitLexical);
     }
 
     private boolean looksLikeLambda() {
