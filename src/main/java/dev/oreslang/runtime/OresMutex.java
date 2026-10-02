@@ -17,7 +17,7 @@ import java.util.function.Function;
  * use a JVM lock: the creating semantic execution domain owns it and recursive
  * acquisition is rejected. Shared actors may migrate JVM worker threads without
  * changing that domain. {@link Shared} is an explicit same-process
- * shared-memory capability backed by a JVM lock with poisoning and
+ * shared-memory capability backed by a JVM synchronizer with poisoning and
  * acquire/release ordering.</p>
  */
 public final class OresMutex {
@@ -105,7 +105,7 @@ public final class OresMutex {
 
         @Override
         public Guard<T> lock() {
-            requireOwnerThread();
+            requireOwnerDomain();
             if (held) throw new RecursiveLockException("Mutex<T>");
             held = true;
             return new LocalGuard();
@@ -113,8 +113,8 @@ public final class OresMutex {
 
         @Override
         public Optional<Guard<T>> tryLock() {
-            requireOwnerThread();
-            if (held) throw new RecursiveLockException("Mutex<T>");
+            requireOwnerDomain();
+            if (held) return Optional.empty();
             held = true;
             return Optional.of(new LocalGuard());
         }
@@ -162,7 +162,7 @@ public final class OresMutex {
 
             @Override
             public void release() {
-                requireOwnerThread();
+                requireOwnerDomain();
                 if (released) return;
                 released = true;
                 held = false;
@@ -229,7 +229,7 @@ public final class OresMutex {
 
         @Override
         public Optional<Guard<T>> tryLock() {
-            rejectRecursiveAcquisition();
+            if (synchronousOwner.get() == Thread.currentThread()) return Optional.empty();
             if (!permit.tryAcquire()) return Optional.empty();
             Thread owner = Thread.currentThread();
             synchronousOwner.set(owner);
@@ -241,7 +241,7 @@ public final class OresMutex {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
             rejectBlockingActorAcquisition();
-            rejectRecursiveAcquisition();
+            if (synchronousOwner.get() == Thread.currentThread()) return Optional.empty();
             try {
                 if (!permit.tryAcquire(timeout.toNanos(), TimeUnit.NANOSECONDS)) return Optional.empty();
                 Thread owner = Thread.currentThread();
