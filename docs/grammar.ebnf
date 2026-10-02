@@ -40,7 +40,7 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
-                = { annotation } visibility [ "async" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                = { annotation } visibility [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
@@ -53,7 +53,7 @@ actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
-                = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
+                = { annotation } visibility [ "static" ] [ "fnc" ] method_name [ generic_params ]
                   method_head return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
