@@ -689,6 +689,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final String category;
         private final ConcurrentHashMap<ActorId, ActorRef<M>> members = new ConcurrentHashMap<>();
         private final AtomicBoolean groupClosed = new AtomicBoolean();
+        private final Object groupLifecycleLock = new Object();
 
         private ActorGroup(String category) {
             String normalized = Objects.requireNonNull(category, "group category").trim();
@@ -701,37 +702,53 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorGroupId id() { return id; }
         public String category() { return category; }
-        public int size() { requireOpen(); return members.size(); }
+        public int size() {
+            requireCallerRuntimeAffinity("inspect actor groups");
+            synchronized (groupLifecycleLock) {
+                requireOpenLocked();
+                return members.size();
+            }
+        }
         public boolean closed() { return groupClosed.get(); }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
 
         public ActorGroup<M> add(ActorRef<M> ref) {
-            requireOpen();
+            requireCallerRuntimeAffinity("modify actor groups");
             Objects.requireNonNull(ref);
-            if (!ref.ownedBy(ActorRuntime.this)) {
-                throw new IllegalArgumentException(
-                        "ActorRef belongs to a different ActorRuntime; cross-runtime groups require an explicit bridge");
+            synchronized (groupLifecycleLock) {
+                requireOpenLocked();
+                if (!ref.ownedBy(ActorRuntime.this)) {
+                    throw new IllegalArgumentException(
+                            "ActorRef belongs to a different ActorRuntime; cross-runtime groups require an explicit bridge");
+                }
+                if (!ref.isAlive()) throw terminated(ref);
+                members.put(ref.id(), ref);
             }
-            members.put(ref.id(), ref);
             return this;
         }
 
         public ActorGroup<M> remove(ActorRef<M> ref) {
-            requireOpen();
+            requireCallerRuntimeAffinity("modify actor groups");
             Objects.requireNonNull(ref);
-            if (!ref.ownedBy(ActorRuntime.this)) {
-                throw new IllegalArgumentException(
-                        "ActorRef belongs to a different ActorRuntime; cross-runtime groups require an explicit bridge");
+            synchronized (groupLifecycleLock) {
+                requireOpenLocked();
+                if (!ref.ownedBy(ActorRuntime.this)) {
+                    throw new IllegalArgumentException(
+                            "ActorRef belongs to a different ActorRuntime; cross-runtime groups require an explicit bridge");
+                }
+                members.remove(ref.id(), ref);
             }
-            members.remove(ref.id(), ref);
             return this;
         }
 
         public List<ActorRef<M>> members() {
-            requireOpen();
-            ArrayList<ActorRef<M>> snapshot = new ArrayList<>(members.values());
-            snapshot.sort(java.util.Comparator.comparing(ref -> ref.id().value().toString()));
-            return List.copyOf(snapshot);
+            requireCallerRuntimeAffinity("inspect actor groups");
+            synchronized (groupLifecycleLock) {
+                requireOpenLocked();
+                ArrayList<ActorRef<M>> snapshot = new ArrayList<>(members.values());
+                snapshot.sort(java.util.Comparator.comparing(ref -> ref.id().value().toString()));
+                return List.copyOf(snapshot);
+            }
         }
 
         public FanoutReceipt broadcast(M message) {
@@ -765,6 +782,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireOpen() {
             requireCallerRuntimeAffinity("use actor groups");
+            synchronized (groupLifecycleLock) {
+                requireOpenLocked();
+            }
+        }
+
+        private void requireOpenLocked() {
             if (groupClosed.get()) throw new IllegalStateException("actor group is closed");
             if (ActorRuntime.this.closed.get()) throw new IllegalStateException("actor runtime is closed");
         }
@@ -772,8 +795,10 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             requireCallerRuntimeAffinity("close actor groups");
-            if (!groupClosed.compareAndSet(false, true)) return;
-            members.clear();
+            synchronized (groupLifecycleLock) {
+                if (!groupClosed.compareAndSet(false, true)) return;
+                members.clear();
+            }
         }
     }
 
@@ -2421,7 +2446,7 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeTurns;
         private boolean finalized;
         private Behavior<M> behavior;
-        private CompletableFuture<M> pendingReceive;
+        private ReceiveFuture pendingReceive;
         private int manuallyReceivedThisBatch;
 
         private ActorCell(
@@ -2599,11 +2624,17 @@ public final class ActorRuntime implements AutoCloseable {
                     MessageEnvelope envelope = mailbox.poll();
                     if (envelope == null) break;
                     releaseMailboxSlot();
-                    CompletableFuture<M> receiver = claimPendingReceive();
+                    ReceiveFuture receiver = claimPendingReceive();
                     if (receiver != null) {
                         M message;
                         try (envelope) { message = (M) envelope.value(); }
-                        receiver.complete(message);
+                        if (!receiver.completeFromRuntime(message)) {
+                            throw new IllegalStateException(
+                                    "actor receive completion lost runtime ownership for " + ref.id());
+                        }
+                        if (kind == ActorKind.PRIVATE && !trustedFactory) {
+                            validatePrivateBehaviorState(ref.id(), behavior);
+                        }
                     } else {
                         try (envelope) {
                             behavior.onMessage((M) envelope.value(), context);
@@ -2634,6 +2665,67 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Runtime-owned completion for one mailbox pull.
+         *
+         * Callers may attach dependent stages and await it, but cannot forge a
+         * mailbox delivery, cancel it from an arbitrary thread, inject timeout
+         * completion, or obtrude a value. Those operations would otherwise race
+         * the mailbox claim and could silently drop or fabricate messages.
+         */
+        private final class ReceiveFuture extends CompletableFuture<M> {
+            private boolean completeFromRuntime(M value) {
+                return super.complete(value);
+            }
+
+            private boolean failFromRuntime(Throwable failure) {
+                return super.completeExceptionally(failure);
+            }
+
+            @Override public boolean complete(M value) {
+                throw new UnsupportedOperationException("actor receive completion is runtime-owned");
+            }
+
+            @Override public boolean completeExceptionally(Throwable ex) {
+                throw new UnsupportedOperationException("actor receive completion is runtime-owned");
+            }
+
+            @Override public CompletableFuture<M> completeAsync(
+                    java.util.function.Supplier<? extends M> supplier) {
+                throw new UnsupportedOperationException("actor receive completion is runtime-owned");
+            }
+
+            @Override public CompletableFuture<M> completeAsync(
+                    java.util.function.Supplier<? extends M> supplier,
+                    java.util.concurrent.Executor executor) {
+                throw new UnsupportedOperationException("actor receive completion is runtime-owned");
+            }
+
+            @Override public boolean cancel(boolean mayInterruptIfRunning) {
+                throw new UnsupportedOperationException(
+                        "actor receive cancellation must be coordinated by the actor runtime");
+            }
+
+            @Override public CompletableFuture<M> orTimeout(long timeout, TimeUnit unit) {
+                throw new UnsupportedOperationException(
+                        "actor receive timeouts must be expressed by actor/runtime timeout semantics");
+            }
+
+            @Override public CompletableFuture<M> completeOnTimeout(
+                    M value, long timeout, TimeUnit unit) {
+                throw new UnsupportedOperationException(
+                        "actor receive timeout completion is runtime-owned");
+            }
+
+            @Override public void obtrudeValue(M value) {
+                throw new UnsupportedOperationException("actor receive completion is runtime-owned");
+            }
+
+            @Override public void obtrudeException(Throwable ex) {
+                throw new UnsupportedOperationException("actor receive completion is runtime-owned");
+            }
+        }
+
         private void requireCurrentTurn(String operation) {
             if (currentActor.get() != this || CURRENT_ACTOR_EXECUTION.get() == null) {
                 throw new IllegalStateException(operation + " is valid only during this actor's mailbox turn");
@@ -2660,14 +2752,14 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalStateException(
                             "actor already has an outstanding receiveAsync; one mailbox must have exactly one pull consumer");
                 }
-                pendingReceive = new CompletableFuture<>();
+                pendingReceive = new ReceiveFuture();
                 return pendingReceive;
             }
         }
 
         private CompletableFuture<M> claimPendingReceive() {
             synchronized (lifecycleLock) {
-                CompletableFuture<M> receiver = pendingReceive;
+                ReceiveFuture receiver = pendingReceive;
                 if (receiver == null) return null;
                 pendingReceive = null;
                 return receiver.isDone() ? null : receiver;
@@ -2675,7 +2767,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private CompletableFuture<M> detachPendingReceiveLocked() {
-            CompletableFuture<M> receiver = pendingReceive;
+            ReceiveFuture receiver = pendingReceive;
             pendingReceive = null;
             return receiver;
         }
@@ -2689,7 +2781,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void fail(Throwable failure) {
-            CompletableFuture<M> receiver;
+            ReceiveFuture receiver;
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
@@ -2701,7 +2793,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void stop() {
-            CompletableFuture<M> receiver;
+            ReceiveFuture receiver;
             synchronized (lifecycleLock) {
                 stopped.set(true);
                 receiver = detachPendingReceiveLocked();
