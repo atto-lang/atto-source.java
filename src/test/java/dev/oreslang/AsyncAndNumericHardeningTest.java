@@ -127,6 +127,58 @@ final class AsyncAndNumericHardeningTest {
     }
 
     @Test
+    void integerDivisionMatchesStaticIntType() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    stdio.println(5 / 2);
+                    return;
+                  }
+                end
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "integer-division.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("2"));
+        assertFalse(output.toString(StandardCharsets.UTF_8).contains("2.5"));
+    }
+
+    @Test
+    void integerDivisionByZeroIsAlwaysAnError() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    stdio.println(1 / 0);
+                    return;
+                  }
+                end
+                """;
+
+        Source source = Source.newBuilder(OresLanguage.ID, program, "division-zero.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class, () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("division by zero"));
+        }
+    }
+
+    @Test
     void signedIntegerOverflowNeverSilentlyWraps() throws Exception {
         String program = """
                 define module app
