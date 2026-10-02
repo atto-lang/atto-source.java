@@ -574,6 +574,31 @@ final class CallableLocalTypeTest {
         assertTrue(error.getMessage().contains("collides with an in-scope generic type parameter"));
     }
 
+    @Test
+    void nestedBlockLocalStructMethodsRetainEnclosingModuleStateAtRuntime() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  val String prefix = "module:";
+
+                  pub fnc main() => void {
+                    if true; do
+                      struct Local {
+                        pub text() => String {
+                          return prefix + "ok";
+                        }
+                      }
+
+                      val Local value = Local {};
+                      stdio.stdout.write(value.text());
+                    fi
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("module:ok", output);
+    }
+
     private static String runProgram(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callable-local-types.ores")
