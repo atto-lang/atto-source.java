@@ -17,7 +17,8 @@ public final class GcController {
     private static final AtomicLong GLOBAL_LAST_HOST_GC_NANOS = new AtomicLong(Long.MIN_VALUE);
 
     private final ActorRuntime actors;
-    private final AtomicLong requests = new AtomicLong();
+    private final AtomicLong processRequests = new AtomicLong();
+    private final AtomicLong actorRequests = new AtomicLong();
     private final AtomicLong executedHostHints = new AtomicLong();
     private final AtomicLong coalescedRequests = new AtomicLong();
 
@@ -25,9 +26,13 @@ public final class GcController {
         this.actors = java.util.Objects.requireNonNull(actors);
     }
 
+    /** Context/backing-runtime collection request used by process.gc(). */
     public Map<String, Object> collect() {
-        long request = requests.incrementAndGet();
-        actors.noteManualGcRequest();
+        return collectProcess();
+    }
+
+    public Map<String, Object> collectProcess() {
+        long request = processRequests.incrementAndGet();
 
         long before = usedHeapBytes();
         boolean hostHintEnabled = Boolean.parseBoolean(System.getProperty("oreslang.gc.host-hint", "true"));
@@ -45,11 +50,12 @@ public final class GcController {
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("request", request);
-        result.put("scope", actors.currentActorId().map(id -> "actor:" + id).orElse("context"));
+        result.put("scope", "context");
         result.put("semantic_policy", "ownership_drop_then_gc");
         result.put("backing_collector", "jvm");
         result.put("host_gc_hint_enabled", hostHintEnabled);
         result.put("host_gc_hint_executed", executed);
+        result.put("actor_local_physical_collection", false);
         result.put("used_bytes_before", before);
         result.put("used_bytes_after", after);
         result.put("elapsed_nanos", elapsed);
@@ -58,9 +64,42 @@ public final class GcController {
         return Map.copyOf(result);
     }
 
-    public long requests() {
-        return requests.get();
+    /**
+     * Actor-local collection request used by actor.gc(). The logical JVM actor
+     * heap has no independent physical collector, so this must never disguise a
+     * global System.gc() as actor-local work.
+     */
+    public Map<String, Object> collectActor() {
+        ActorRuntime.ActorId actorId = actors.currentActorId()
+                .orElseThrow(() -> new IllegalStateException("actor.gc() is only available inside an actor"));
+        long request = actorRequests.incrementAndGet();
+        actors.noteManualGcRequest();
+
+        ActorRuntime.ActorSnapshot snapshot = actors.currentActorRef()
+                .map(actors::snapshot)
+                .orElseThrow(() -> new IllegalStateException("current actor is no longer registered"));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("request", request);
+        result.put("scope", "actor:" + actorId);
+        result.put("semantic_policy", "ownership_drop_then_gc");
+        result.put("backing_collector", "logical_jvm");
+        result.put("host_gc_hint_enabled", false);
+        result.put("host_gc_hint_executed", false);
+        result.put("actor_local_physical_collection", false);
+        result.put("estimated_actor_heap_bytes", snapshot.asMap().get("estimated_actor_heap_bytes"));
+        result.put("owned_state_bytes", snapshot.ownedStateBytes());
+        result.put("mailbox_bytes", snapshot.mailboxBytes());
+        result.put("active_message_bytes", snapshot.activeMessageBytes());
+        return Map.copyOf(result);
     }
+
+    public long requests() {
+        return processRequests.get() + actorRequests.get();
+    }
+
+    public long processRequests() { return processRequests.get(); }
+    public long actorRequests() { return actorRequests.get(); }
 
     private boolean reserveHostGcSlot(long now) {
         while (true) {
