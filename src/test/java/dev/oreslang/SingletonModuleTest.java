@@ -285,6 +285,77 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void processSingletonCodeCannotReenterCallerLocalHelpersOrAmbientApis() {
+        IllegalArgumentException ordinaryHelper = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc caller_local_helper() => int {
+                          return 7;
+                        }
+
+                        define singleton module process_effect_guard as
+                          pub fnc read() => int {
+                            return caller_local_helper();
+                          }
+                        end
+                        """)));
+        assertTrue(ordinaryHelper.getMessage().contains("ordinary helper function"));
+
+        IllegalArgumentException ambient = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module ambient_effect_guard as
+                          pub fnc read_context() => String {
+                            return process.context_id;
+                          }
+                        end
+                        """)));
+        assertTrue(ambient.getMessage().contains("ambient capability"));
+    }
+
+    @Test
+    void exportedProcessObjectMethodsCannotUseCallerAmbientEffects() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class AmbientFoo as
+                          pub context_id() => String {
+                            return process.context_id;
+                          }
+                        end
+
+                        define singleton module ambient_object_owner as
+                          pub val AmbientFoo foo = new AmbientFoo();
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("ambient capability"));
+    }
+
+    @Test
+    void singletonServicesMayCallOtherSingletonServicesWhenImmediatelyAwaited() throws Exception {
+        String output = eval("""
+                define singleton module service_a as
+                  pub fnc read() => int {
+                    return 40;
+                  }
+                end
+
+                define singleton module service_b as
+                  pub fnc read() => int {
+                    return await service_a.read() + 2;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await service_b.read());
+                    return;
+                  }
+                end
+                """, "singleton-service-dependency.ores");
+
+        assertTrue(output.contains("42"), output);
+    }
+
+    @Test
     void crossSingletonCallsMustBeImmediatelyAwaited() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -566,6 +637,111 @@ final class SingletonModuleTest {
 
         assertTrue(eval(program, "singleton-object-export.ores").contains("42"));
         assertTrue(eval(program, "singleton-object-export.ores").contains("43"));
+    }
+
+    @Test
+    void hotReloadedSingletonObjectUsesCurrentMethodBehaviorWithExistingState() throws Exception {
+        String firstProgram = """
+                define class HotValue as
+                  val int base = 1;
+
+                  pub read() => int {
+                    return self.base;
+                  }
+                end
+
+                define singleton module hot_object_owner as
+                  pub val HotValue value = new HotValue();
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await hot_object_owner.value.read());
+                    return;
+                  }
+                end
+                """;
+
+        String secondProgram = """
+                define class HotValue as
+                  val int base = 1;
+
+                  pub read() => int {
+                    return self.base + 10;
+                  }
+                end
+
+                define singleton module hot_object_owner as
+                  pub val HotValue value = new HotValue();
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await hot_object_owner.value.read());
+                    return;
+                  }
+                end
+                """;
+
+        assertTrue(eval(firstProgram, "hot-object-proxy.ores").contains("1"));
+        assertTrue(eval(secondProgram, "hot-object-proxy.ores").contains("11"));
+    }
+
+    @Test
+    void singletonServiceFunctionValuesCannotBeExtracted() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module extraction_guard as
+                          let int value = 1;
+                          pub fnc read() => int { return value; }
+                        end
+
+                        define module app as
+                          pub routine main() => void {
+                            val f = extraction_guard.read;
+                            return;
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot be extracted"));
+    }
+
+    @Test
+    void singletonModulesCannotAdvertiseOrdinarySynchronousInterfaces() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface CounterService {
+                          fnc read() => int;
+                        }
+
+                        @AdheresTo(CounterService)
+                        define singleton module counter_service as
+                          let int value = 1;
+                          pub fnc read() => int { return value; }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("external surface is asynchronous"));
+    }
+
+    @Test
+    void exportedSingletonObjectsRejectInheritanceUntilInheritedSurfaceIsSendChecked() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class BaseValue as
+                          pub read() => int { return 1; }
+                        end
+
+                        define class ChildValue extends BaseValue as
+                        end
+
+                        define singleton module inherited_proxy_owner as
+                          pub val ChildValue value = new ChildValue();
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot use class inheritance"));
     }
 
     @Test
