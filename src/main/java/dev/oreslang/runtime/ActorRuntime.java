@@ -201,7 +201,12 @@ public final class ActorRuntime implements AutoCloseable {
             enterComposite(value, path);
             try {
                 Set<Object> frozen = new LinkedHashSet<>();
-                for (Object item : set) frozen.add(freeze(item, path, budget, depth + 1));
+                for (Object item : set) {
+                    Object copy = freeze(item, path, budget, depth + 1);
+                    if (!frozen.add(copy)) {
+                        throw new IllegalArgumentException("actor message set elements collide after freezing");
+                    }
+                }
                 return Collections.unmodifiableSet(frozen);
             } finally {
                 path.remove(value);
@@ -214,9 +219,10 @@ public final class ActorRuntime implements AutoCloseable {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     Object key = freeze(entry.getKey(), path, budget, depth + 1);
                     Object item = freeze(entry.getValue(), path, budget, depth + 1);
-                    if (frozen.putIfAbsent(key, item) != null) {
+                    if (frozen.containsKey(key)) {
                         throw new IllegalArgumentException("actor message map keys collide after freezing");
                     }
+                    frozen.put(key, item);
                 }
                 return Collections.unmodifiableMap(frozen);
             } finally {
