@@ -304,6 +304,20 @@ final class LanguageHardeningTest {
     }
 
     @Test
+    void tupleElementsCannotBeAssignedByIndex() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    let pair = (1, 2);
+                    pair[0] = 9;
+                    return;
+                  }
+                end
+                """)));
+        assertTrue(error.getMessage().contains("tuple elements are immutable"));
+    }
+
+    @Test
     void valAndConstCannotBeReassigned() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
