@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -195,6 +196,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
+    private volatile Consumer<Object> actorExitHook = ignored -> { };
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
@@ -243,6 +245,15 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /**
+     * Installs a host-owned hook invoked exactly once when an actor execution
+     * domain is retired. Guest code cannot mutate this hook.
+     */
+    public void setActorExitHook(Consumer<Object> actorExitHook) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
+    }
     public int actorCount() { return actorCount.get(); }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
@@ -2383,6 +2394,14 @@ public final class ActorRuntime implements AutoCloseable {
             finalized = true;
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
+            try {
+                actorExitHook.accept(executionDomain);
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable ignored) {
+                // Actor termination must still complete. Runtime cleanup hooks
+                // are best-effort and retryable by the process collector.
+            }
             unregisterActor(this);
             lifecycleLock.notifyAll();
         }
