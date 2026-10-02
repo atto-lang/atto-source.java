@@ -57,7 +57,9 @@ Method code is stored once per class declaration. Direct calls dispatch to that 
 
 `ActorRuntime` owns host dispatcher threads; guest code still receives no ambient thread-creation authority. A dispatcher carrier is marked by the runtime, explicitly enters/leaves the associated `TruffleContext` for each actor batch, and only marked actor carriers are accepted for concurrent context access.
 
-Non-adversarial contexts may therefore execute independent actor turns concurrently. Strict/adversarial contexts currently serialize guest actor turns with a fair context-level lock even though private/shared dispatcher pools remain separate. This preserves the strict one-guest-thread sandbox contract until isolated/private actor execution is backed by per-actor inner/polyglot/native contexts.
+Non-adversarial contexts may therefore execute independent cooperative actor turns concurrently. Strict/adversarial contexts currently serialize guest actor turns with a fair context-level lock even though the shared, private, and untrusted dispatcher queues remain separate.
+
+An **untrusted** actor is never admitted merely because it has its own JVM thread pool. A Java carrier cannot safely preempt arbitrary hostile code. `spawnUntrusted(...)` therefore fails closed unless the host `TurnExecutor` advertises a hard containment boundary. The standard adversarial `OresContext` qualifies because it is created through Graal `SandboxPolicy.UNTRUSTED` with `spawnIsolate(true)`, hard CPU/heap limits, and a one-guest-thread ceiling. A developer/non-adversarial context does not qualify.
 
 The guest `THREAD_CREATE` capability is separate from host/runtime dispatcher scheduling. Denying guest-created threads is never bypassed merely because the runtime owns carrier pools.
 
@@ -109,14 +111,19 @@ Compiler-generated/context-aware `BehaviorFactory` values are capture-free for b
 
 The host actor runtime follows the same scheduling shape as Akka's event-based dispatcher: many actors share an executor, each actor has its own mailbox, and a scheduled actor drains only a bounded number of messages before yielding back to the executor. The configured throughput bound prevents one hot mailbox from monopolizing a worker.
 
-Oreslang deliberately uses two executors:
+Oreslang deliberately uses three bulkheaded executors:
 
-- **private dispatcher** — private actors, isolation-copy message transport;
-- **shared dispatcher** — shared actors, immutable sharing plus explicit `SyncCell<T>` shared state.
+- **shared dispatcher** — cooperative shared actors in same-process memory, with ordinary actor-owned state plus explicit synchronized shared state;
+- **private dispatcher** — cooperative/trusted actors with isolation-copy transport and actor-confined memory slices;
+- **untrusted dispatcher** — potentially uncooperative actors with the same isolated-memory semantics as private actors, plus mandatory adversarial policy and hard host sandbox/isolate containment.
 
-A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
+A per-actor atomic scheduling gate ensures only one drain task for that actor is active. Ready actors enter bounded FIFO queues, and one scheduled actor drains at most `throughput` mailbox deliveries before it clears its gate and, if still runnable, re-enters at the tail. Manual pull receives consume that same budget. Thread identity is never actor identity, and a hot mailbox cannot create multiple simultaneous ready tasks for one actor.
 
-The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors.
+The global actor ceiling also bounds scheduler queue growth: at most one queued/running task exists per actor per dispatcher. `ActorGroup` membership does not create a scheduler lane or priority class, so placing an actor in many groups cannot multiply its scheduler weight. Large group fan-out yields at throughput-sized intervals and every target still enters through the target actor's ordinary bounded mailbox.
+
+This is cooperative fairness, not magic preemption. Shared/private actor handlers must return, suspend through nonblocking `await`/receive lowering, or reach compiler-injected scheduler safepoints. Potentially hostile code belongs in the untrusted domain, where hard host containment supplies the enforcement a JVM executor cannot.
+
+The runtime does not interrupt a cooperative carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt all three dispatcher executors.
 
 ## Await and mailbox suspension
 
@@ -130,9 +137,15 @@ Await context is checked statically as well as at runtime: ordinary functions/me
 
 ## Actor groups and fan-out
 
-`ActorGroup<T>` is a same-runtime deduplicated set of actor refs. Categories are metadata, not a global registry. Fan-out snapshots membership and reuses the normal validation, isolation-copy/shared-handle, quota, and bounded-mailbox admission path. It is not an atomic multi-actor transaction: the receipt distinguishes delivered, terminated, and rejected targets. Cross-runtime groups require an explicit bridge.
+`ActorGroup<T>` is a same-runtime deduplicated set of actor refs. Categories are metadata, not a global registry, and one actor may belong to many groups without receiving extra scheduler priority. Fan-out snapshots membership and reuses the normal validation, isolation-copy/shared-handle, quota, and bounded-mailbox admission path. It is not an atomic multi-actor transaction: the receipt distinguishes delivered, terminated, and rejected targets. Dead actors are pruned both when termination is finalized and when a fan-out observes termination. Cross-runtime groups require an explicit bridge.
+
+Large fan-outs cooperatively yield after each dispatcher-throughput-sized chunk so one group operation cannot hold a cooperative actor turn indefinitely merely by iterating a huge membership list.
 
 Erlang-style selective-receive queue scans are not a scheduler primitive; classify traffic with typed messages, separate actors/mailboxes, or explicit groups.
+
+## Actor identity
+
+Every actor receives an opaque public string id of the form `actor_id_<uuid>`. The UUID is generated with normal UUID randomness; it is not derived from an incrementing integer. Each `ActorRuntime` also assigns an internal monotonic `localSequence` for diagnostics and deterministic local observations. That sequence is not globally unique, is not an authority token, and is not used as UUID entropy.
 
 
 ## Shared actor memory
@@ -145,9 +158,9 @@ A private actor turn cannot create, snapshot, read, update, or close synchronize
 
 Actor failures are fail-stop in this layer. The actor ref retains the failure cause for diagnostics, queued reservations are drained, and later sends receive an `ActorTerminatedException` rather than silently targeting a dead mailbox.
 
-## Private actor memory confinement
+## Isolated actor memory confinement
 
-A private actor is assigned an `ActorMemorySlice` when it is created. The slice is keyed by actor identity rather than by dispatcher thread because actor turns may migrate between worker threads.
+A private or untrusted actor is assigned an `ActorMemorySlice` when it is created. The slice is keyed by actor identity rather than by dispatcher thread because actor turns may migrate between worker threads.
 
 Private mailbox admission is:
 
