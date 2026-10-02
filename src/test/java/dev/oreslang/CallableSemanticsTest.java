@@ -109,8 +109,8 @@ final class CallableSemanticsTest {
 
         assertDoesNotThrow(() ->
                 TypeChecker.check(Parser.parse("""
-                        fnc loop(bool done) => void {
-                          if done; do
+                        fnc loop(bool finished) => void {
+                          if finished; do
                             return;
                           else
                             loop(true);
