@@ -316,15 +316,16 @@ gpu fnc sum(GpuStream<int> values) => int {
   return total;
 }
 
-gpu fnc increment(GpuArray<int> values) => void {
-  for (let i = 0; i < values.length(); i = i + 1) {
-    values[i] = values[i] + 1;
+gpu fnc sum_array(GpuArray<int> values) => int {
+  let int total = 0;
+  for (val value of values) {
+    total = total + value;
   }
-  return;
+  return total;
 }
 ```
 
-The current conservative GPU verifier permits GPU-side indexing/iteration but may reject method-style operations inside a GPU body until they receive dedicated lowering. CPU-side code must use `copy_to_cpu()` before indexing or iterating. `GpuStream` is never indexable.
+The current conservative GPU verifier permits GPU-side indexing/iteration but rejects method-style resource-control operations inside a GPU body until they receive dedicated lowering. `GpuArray.length()`, `stream()`, `collect()`, and copy operations are therefore host-side orchestration APIs; kernel bodies consume the device resources directly. CPU-side code must use `copy_to_cpu()` before indexing or iterating. `GpuStream` is never indexable.
 
 Device handles are bound to the backend that created them. Passing a `GpuArray` or `GpuStream` to a different installed backend fails rather than copying or falling back implicitly. Core GPU container APIs require the `GPU` isolate capability at admission and runtime.
 
