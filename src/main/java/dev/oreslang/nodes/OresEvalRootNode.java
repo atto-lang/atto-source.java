@@ -392,11 +392,20 @@ public final class OresEvalRootNode extends RootNode {
                     case "stop" -> (Invokable) actor::stop;
                     case "join" -> (Invokable) actor::join;
                     case "status" -> (Invokable) actor::status;
+                    case "monitor" -> (Invokable) actor::monitor;
+                    case "demonitor" -> (Invokable) actor::demonitor;
                     case "self" -> actor.self();
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
             if (receiver instanceof GuestActorRef ref && name.equals("id")) return ref.delegate().id().toString();
+            if (receiver instanceof GuestMonitorRef ref) {
+                return switch (name) {
+                    case "id" -> ref.delegate().value().toString();
+                    case "target_id" -> ref.delegate().target().toString();
+                    default -> throw new IllegalArgumentException("unknown monitor member " + name);
+                };
+            }
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
@@ -621,23 +630,51 @@ public final class OresEvalRootNode extends RootNode {
         private final class ActorFacade {
             private Object spawn(List<Object> args) {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_SPAWN, "actor.spawn");
-                requireOne(args, "actor.spawn");
+                if (args.size() != 1 && args.size() != 2) {
+                    throw new IllegalArgumentException("actor.spawn expects handler or handler, initial_state");
+                }
                 Invokable handler = actorHandler(args.getFirst());
+                boolean stateful = args.size() == 2;
+                Object initialState = stateful ? actorOwnedInitialState(args.get(1)) : null;
                 ActorRuntime.ActorRef<Object> ref = context.actors().spawn(
-                        () -> (message, actorContext) -> handler.call(List.of(message)));
+                        () -> statefulBehavior(handler, stateful, initialState));
                 return new GuestActorRef(ref);
             }
 
             private Object singleton(List<Object> args) {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_SPAWN, "actor.singleton");
-                requireTwo(args, "actor.singleton");
+                if (args.size() != 2 && args.size() != 3) {
+                    throw new IllegalArgumentException("actor.singleton expects name, handler or name, handler, initial_state");
+                }
                 if (!(args.getFirst() instanceof String name)) {
                     throw new IllegalArgumentException("actor.singleton first argument must be a string name");
                 }
                 Invokable handler = actorHandler(args.get(1));
+                boolean stateful = args.size() == 3;
+                Object initialState = stateful ? actorOwnedInitialState(args.get(2)) : null;
                 ActorRuntime.ActorRef<Object> ref = context.actors().spawnSingleton(
-                        name, () -> (message, actorContext) -> handler.call(List.of(message)));
+                        name, () -> statefulBehavior(handler, stateful, initialState));
                 return new GuestActorRef(ref);
+            }
+
+            private ActorRuntime.Behavior<Object> statefulBehavior(
+                    Invokable handler,
+                    boolean stateful,
+                    Object initialState) {
+                return new ActorRuntime.Behavior<>() {
+                    private Object state = initialState;
+
+                    @Override
+                    public void onMessage(Object message, ActorRuntime.ActorContext<Object> actorContext) {
+                        if (stateful) state = handler.call(List.of(message, state));
+                        else handler.call(List.of(message));
+                    }
+                };
+            }
+
+            private Object actorOwnedInitialState(Object value) {
+                if (value instanceof ActorRuntime.Shared<?> shared) return shared.value();
+                return ActorRuntime.freeze(value);
             }
 
             private Object send(List<Object> args) {
@@ -665,6 +702,34 @@ public final class OresEvalRootNode extends RootNode {
                 return context.actors().snapshot(actorRef(args.getFirst())).asMap();
             }
 
+            private Object monitor(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.monitor");
+                if (args.size() != 1 && args.size() != 2) {
+                    throw new IllegalArgumentException("actor.monitor expects target or target, watcher");
+                }
+                ActorRuntime.ActorRef<Object> target = actorRef(args.getFirst());
+                ActorRuntime.ActorRef<Object> watcher = args.size() == 2
+                        ? actorRef(args.get(1))
+                        : context.actors().<Object>currentActorRef()
+                            .orElseThrow(() -> new IllegalStateException(
+                                    "actor.monitor(target) must run inside an actor; use actor.monitor(target, watcher) from control code"));
+                return new GuestMonitorRef(context.actors().monitor(watcher, target));
+            }
+
+            private Object demonitor(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.demonitor");
+                if (args.size() != 1 && args.size() != 2) {
+                    throw new IllegalArgumentException("actor.demonitor expects monitor or monitor, watcher");
+                }
+                ActorRuntime.MonitorRef monitor = monitorRef(args.getFirst());
+                ActorRuntime.ActorRef<Object> watcher = args.size() == 2
+                        ? actorRef(args.get(1))
+                        : context.actors().<Object>currentActorRef()
+                            .orElseThrow(() -> new IllegalStateException(
+                                    "actor.demonitor(monitor) must run inside an actor; use actor.demonitor(monitor, watcher) from control code"));
+                return context.actors().demonitor(watcher, monitor);
+            }
+
             private Object self() {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_SEND, "actor.self");
                 ActorRuntime.ActorRef<Object> ref = context.actors().<Object>currentActorRef()
@@ -690,6 +755,12 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("expected ActorRef");
             }
+
+            private ActorRuntime.MonitorRef monitorRef(Object value) {
+                if (value instanceof GuestMonitorRef ref) return ref.delegate();
+                if (value instanceof ActorRuntime.MonitorRef ref) return ref;
+                throw new IllegalArgumentException("expected MonitorRef");
+            }
         }
 
         private record GuestActorRef(ActorRuntime.ActorRef<Object> delegate) implements ActorRuntime.Sendable {
@@ -701,6 +772,18 @@ public final class OresEvalRootNode extends RootNode {
             @Override
             public String toString() {
                 return delegate.toString();
+            }
+        }
+
+        private record GuestMonitorRef(ActorRuntime.MonitorRef delegate) implements ActorRuntime.Sendable {
+            @Override
+            public Object freezeForSend() {
+                return delegate;
+            }
+
+            @Override
+            public String toString() {
+                return "MonitorRef[" + delegate.value() + "]";
             }
         }
 
