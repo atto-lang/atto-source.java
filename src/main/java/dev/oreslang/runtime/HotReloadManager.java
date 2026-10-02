@@ -53,14 +53,21 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     /**
-     * Reuses an incrementally compiled unit. Static compilation work is reused,
-     * while capability admission is deliberately repeated for the destination
-     * isolate because authority belongs to the runtime policy, not the cache.
+     * Loads an incrementally compiled unit across a trust boundary.
+     *
+     * CompiledUnit is externally constructible, so its AST/digest metadata is
+     * advisory only here. Recompute source integrity and repeat syntax, type,
+     * and capability admission against the exact source that will execute.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
         requireOpen();
-        CapabilityChecker.check(unit.program(), policy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        java.util.Objects.requireNonNull(unit, "unit");
+        String actualDigest = digest(unit.sourceText());
+        if (!actualDigest.equals(unit.sourceDigest())) {
+            throw new IllegalArgumentException("compiled unit source digest mismatch for " + unit.unitId());
+        }
+        OresCompiler.validateForIsolate(unit.sourceText(), policy);
+        return stage(unit.unitId(), actualDigest, unit.sourceText());
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
