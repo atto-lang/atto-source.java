@@ -1011,7 +1011,7 @@ public final class TypeChecker {
                         case "send" -> new Function(List.of(messageType), Primitive.VOID);
                         case "stop", "join" -> new Function(List.of(), Primitive.VOID);
                         case "alive", "failed" -> Primitive.BOOL;
-                        case "kind" -> Primitive.STRING;
+                        case "failure_trace", "failureTrace", "kind" -> Primitive.STRING;
                         default -> throw new IllegalArgumentException("unknown Actor member '" + member.member() + "'");
                     };
                 }
@@ -1019,7 +1019,7 @@ public final class TypeChecker {
                     return switch (member.member()) {
                         case "stop", "join" -> new Function(List.of(), Primitive.VOID);
                         case "alive", "failed" -> Primitive.BOOL;
-                        case "kind" -> Primitive.STRING;
+                        case "failure_trace", "failureTrace", "kind" -> Primitive.STRING;
                         default -> throw new IllegalArgumentException("unknown ActorTask member '" + member.member() + "'");
                     };
                 }
