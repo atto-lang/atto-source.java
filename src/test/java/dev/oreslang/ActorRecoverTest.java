@@ -780,6 +780,76 @@ final class ActorRecoverTest {
     }
 
     @Test
+    void actorInActorDistinguishesSupervisorFromActorExecution() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  stdio.stdout.write(actor.inActor());
+
+                  val worker = actor |String msg| -> {
+                    stdio.stdout.write(actor.in_actor());
+                    stop;
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                }
+                """);
+
+        assertEquals("falsetrue", output);
+    }
+
+    @Test
+    void guardedStopIsLegalInReusableCallable() throws Exception {
+        String output = run("""
+                fnc maybe_stop() => void {
+                  if actor.inActor(); do
+                    stop;
+                  fi
+
+                  stdio.stdout.write("S");
+                }
+
+                pub routine main() => void {
+                  maybe_stop();
+
+                  val worker = actor |String msg| -> {
+                    maybe_stop();
+                    stdio.stdout.write("B");
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failed);
+                }
+                """);
+
+        assertEquals("Sfalse", output);
+    }
+
+    @Test
+    void stopRecursivelyGracefullyDrainsChildActorsBeforeParentJoinReturns() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val parent = actor |String msg| -> {
+                    val child = actor |int value| -> {
+                      stdio.stdout.write(value);
+                    };
+
+                    child.send(1);
+                    child.send(2);
+                    stop;
+                  };
+
+                  parent.send("go");
+                  parent.join();
+                  stdio.stdout.write(parent.failed);
+                }
+                """);
+
+        assertEquals("12false", output);
+    }
+
+    @Test
     void stopKeywordCleanlyTerminatesActorAndRunsDefersWithoutRecover() throws Exception {
         String output = run("""
                 pub routine main() => void {
