@@ -562,9 +562,12 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException("actor fnc '" + target.name()
-                                + "' cannot execute as an ordinary synchronous call; spawn it through the actor runtime");
+                    if (target.actorKind() != Ast.ActorKind.NONE
+                            && currentActorKind != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + target.name()
+                                        + "' cannot be synchronously invoked from another actor turn; "
+                                        + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
@@ -584,9 +587,12 @@ public final class TypeChecker {
                     && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException("actor fnc '" + namespace.name() + "." + target.name()
-                                + "' cannot execute as an ordinary synchronous call; spawn it through the actor runtime");
+                    if (target.actorKind() != Ast.ActorKind.NONE
+                            && currentActorKind != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + namespace.name() + "." + target.name()
+                                        + "' cannot be synchronously invoked from another actor turn; "
+                                        + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
