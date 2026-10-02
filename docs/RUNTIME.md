@@ -49,8 +49,9 @@ Each callable invocation owns a private LIFO defer frame. Lexical blocks reuse t
 current callable frame; they never create or drain a defer stack.
 
 At a `defer expression` statement, the runtime evaluates `expression` immediately.
-The resulting value must be callable and is pushed onto the frame. At callable exit,
-the frame invokes each registered callable with zero arguments in LIFO order.
+The resulting value must be callable and is moved into the frame. At callable exit,
+the frame invokes each registered callable with zero arguments in LIFO order. Moving the
+callable into the frame means a named move-only closure cannot also be used afterward.
 
 All registered actions are attempted even if one fails. A body failure remains the
 primary failure and defer failures are suppressed onto it. With no body failure, the
