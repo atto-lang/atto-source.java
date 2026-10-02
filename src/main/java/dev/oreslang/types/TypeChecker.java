@@ -741,14 +741,30 @@ public final class TypeChecker {
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
-                    Set<String> fnGenerics = new HashSet<>(klass.genericParameters());
-                    fnGenerics.addAll(fn.genericParameters());
+                    Set<String> fnGenerics = new HashSet<>(fn.genericParameters());
+                    List<Type> actualArguments = call.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList();
+                    List<Type> expectedArguments = fn.parameters().stream()
+                            .map(param -> resolveParam(param, fnGenerics, null))
+                            .toList();
+                    Map<String, Type> inferred = inferMethodGenericBindings(
+                            expectedArguments,
+                            actualArguments,
+                            Set.copyOf(fn.genericParameters()),
+                            "static function '" + klass.name() + "." + member.member()
+                                    + "' with arity " + call.arguments().size());
                     for (int i = 0; i < call.arguments().size(); i++) {
-                        Type expected = resolveParam(fn.parameters().get(i), fnGenerics, null);
+                        Type expected = resolveSharedGeneric(expectedArguments.get(i), inferred);
                         validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                        requireAssignable(
+                                actualArguments.get(i),
+                                expected,
+                                "argument " + (i + 1) + " to static function '"
+                                        + klass.name() + "." + member.member()
+                                        + "' with arity " + call.arguments().size());
                     }
-                    return resolve(fn.returnType(), fnGenerics, null);
+                    return resolveSharedGeneric(resolve(fn.returnType(), fnGenerics, null), inferred);
                 }
                 if (receiver instanceof Named named) {
                     if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
@@ -772,12 +788,29 @@ public final class TypeChecker {
                     if (klass != null) {
                         ResolvedMethod resolved = findResolvedMethod(named, member.member(), call.arguments().size());
                         if (resolved == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
+                        List<Type> actualArguments = call.arguments().stream()
+                                .map(argument -> typeOf(argument, env, generics, self))
+                                .toList();
+                        List<Type> expectedArguments = resolved.method().parameters().stream()
+                                .map(param -> resolvedMethodParameter(resolved, param))
+                                .toList();
+                        Map<String, Type> inferred = inferMethodGenericBindings(
+                                expectedArguments,
+                                actualArguments,
+                                Set.copyOf(resolved.method().genericParameters()),
+                                "method '" + named.name() + "." + member.member()
+                                        + "' with arity " + call.arguments().size());
                         for (int i = 0; i < call.arguments().size(); i++) {
-                            Type expected = resolvedMethodParameter(resolved, resolved.method().parameters().get(i));
+                            Type expected = resolveSharedGeneric(expectedArguments.get(i), inferred);
                             validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                            requireAssignable(
+                                    actualArguments.get(i),
+                                    expected,
+                                    "argument " + (i + 1) + " to method '"
+                                            + named.name() + "." + member.member()
+                                            + "' with arity " + call.arguments().size());
                         }
-                        return resolvedMethodReturn(resolved);
+                        return resolveSharedGeneric(resolvedMethodReturn(resolved), inferred);
                     }
                 }
             }
@@ -1439,6 +1472,114 @@ public final class TypeChecker {
             return null;
         } finally {
             seen.remove(klass);
+        }
+    }
+
+    private Map<String, Type> inferMethodGenericBindings(
+            List<Type> expectedArguments,
+            List<Type> actualArguments,
+            Set<String> methodGenerics,
+            String callableLabel) {
+        if (methodGenerics.isEmpty()) return Map.of();
+        Map<String, Type> bindings = new HashMap<>();
+        for (int i = 0; i < expectedArguments.size(); i++) {
+            inferMethodGenericBindings(
+                    expectedArguments.get(i),
+                    actualArguments.get(i),
+                    methodGenerics,
+                    bindings,
+                    callableLabel + " argument " + (i + 1));
+        }
+        return Map.copyOf(bindings);
+    }
+
+    private void inferMethodGenericBindings(
+            Type expected,
+            Type actual,
+            Set<String> methodGenerics,
+            Map<String, Type> bindings,
+            String where) {
+        if (expected instanceof Generic generic && methodGenerics.contains(generic.name())) {
+            Type existing = bindings.get(generic.name());
+            if (existing == null) {
+                bindings.put(generic.name(), actual);
+                return;
+            }
+            if (!assignable(actual, existing) || !assignable(existing, actual)) {
+                throw new IllegalArgumentException(
+                        where + " requires generic '" + generic.name()
+                                + "' to have one consistent type; inferred "
+                                + existing + " and " + actual);
+            }
+            return;
+        }
+
+        if (expected instanceof Named expectedNamed
+                && actual instanceof Named actualNamed
+                && expectedNamed.name().equals(actualNamed.name())
+                && expectedNamed.arguments().size() == actualNamed.arguments().size()) {
+            for (int i = 0; i < expectedNamed.arguments().size(); i++) {
+                inferMethodGenericBindings(
+                        expectedNamed.arguments().get(i),
+                        actualNamed.arguments().get(i),
+                        methodGenerics,
+                        bindings,
+                        where);
+            }
+            return;
+        }
+
+        if (expected instanceof ListType expectedList && actual instanceof ListType actualList) {
+            inferMethodGenericBindings(
+                    expectedList.element(),
+                    actualList.element(),
+                    methodGenerics,
+                    bindings,
+                    where);
+            return;
+        }
+
+        if (expected instanceof Tuple expectedTuple
+                && actual instanceof Tuple actualTuple
+                && expectedTuple.elements().size() == actualTuple.elements().size()) {
+            for (int i = 0; i < expectedTuple.elements().size(); i++) {
+                inferMethodGenericBindings(
+                        expectedTuple.elements().get(i),
+                        actualTuple.elements().get(i),
+                        methodGenerics,
+                        bindings,
+                        where);
+            }
+            return;
+        }
+
+        if (expected instanceof Borrow expectedBorrow && actual instanceof Borrow actualBorrow) {
+            inferMethodGenericBindings(
+                    expectedBorrow.target(),
+                    actualBorrow.target(),
+                    methodGenerics,
+                    bindings,
+                    where);
+            return;
+        }
+
+        if (expected instanceof Function expectedFunction
+                && actual instanceof Function actualFunction
+                && expectedFunction.parameters().size() == actualFunction.parameters().size()) {
+            for (int i = 0; i < expectedFunction.parameters().size(); i++) {
+                inferMethodGenericBindings(
+                        expectedFunction.parameters().get(i),
+                        actualFunction.parameters().get(i),
+                        methodGenerics,
+                        bindings,
+                        where);
+            }
+            inferMethodGenericBindings(
+                    expectedFunction.result(),
+                    actualFunction.result(),
+                    methodGenerics,
+                    bindings,
+                    where);
         }
     }
 
