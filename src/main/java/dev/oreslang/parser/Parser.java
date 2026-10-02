@@ -705,8 +705,30 @@ public final class Parser {
             if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
             throw error(previous(), "callable-local 'define' only supports struct, trait, or interface declarations; type aliases use 'type Name = ...'");
         }
+        if ((isBindingKind(peek().type()) || check(MUT)) && looksLikePrefixedDestructure()) {
+            Ast.BindingKind inheritedKind = null;
+            boolean inheritedMutable = false;
+            if (isBindingKind(peek().type())) inheritedKind = parseBindingKind();
+            if (match(MUT)) {
+                if (inheritedKind == Ast.BindingKind.CONST) {
+                    throw error(previous(), "destructure binding cannot be both const and mut");
+                }
+                if (inheritedKind == null) inheritedKind = Ast.BindingKind.VAL;
+                inheritedMutable = true;
+            }
+            if (inheritedKind == Ast.BindingKind.LET) inheritedMutable = true;
+            return parseDestructure(
+                    check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT,
+                    inheritedKind,
+                    inheritedMutable);
+        }
         if (isBindingKind(peek().type())) return parseBindingStatement();
-        if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
+        if (check(LBRACKET) && looksLikeDestructure()) {
+            return parseDestructure(Ast.DestructureKind.SEQUENCE, null, false);
+        }
+        if (check(LBRACE) && looksLikeDestructure()) {
+            return parseDestructure(Ast.DestructureKind.OBJECT, null, false);
+        }
         if (match(RETURN)) {
             Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeStatementTerminator("return statement should end with ';'");
@@ -790,23 +812,97 @@ public final class Parser {
         return new Ast.BindingStmt(kind, type, name, initializer);
     }
 
-    private Ast.DestructureStmt parseDestructure() {
-        consume(LBRACKET, "expected '['");
+    private Ast.DestructureStmt parseDestructure(
+            Ast.DestructureKind kind,
+            Ast.BindingKind inheritedKind,
+            boolean inheritedMutable) {
+        Token.Type close;
+        if (kind == Ast.DestructureKind.SEQUENCE) {
+            consume(LBRACKET, "expected '['");
+            close = RBRACKET;
+        } else {
+            consume(LBRACE, "expected '{'");
+            close = RBRACE;
+        }
+
+        if (check(close)) throw error(peek(), "destructure pattern cannot be empty");
+
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        Ast.BindingKind currentKind = inheritedKind;
+        boolean currentMutable = inheritedMutable || inheritedKind == Ast.BindingKind.LET;
+
         do {
-            Ast.BindingKind kind = parseBindingKind();
+            if (isBindingKind(peek().type())) {
+                currentKind = parseBindingKind();
+                currentMutable = currentKind == Ast.BindingKind.LET;
+            }
+
+            if (match(MUT)) {
+                if (currentKind == Ast.BindingKind.CONST) {
+                    throw error(previous(), "destructure binding cannot be both const and mut");
+                }
+                if (currentKind == null) currentKind = Ast.BindingKind.VAL;
+                currentMutable = true;
+            }
+
+            if (isDiscardToken(peek())) {
+                if (kind == Ast.DestructureKind.OBJECT) {
+                    throw error(peek(), "bare '_' discard is only valid in sequence destructuring");
+                }
+                advance();
+                bindings.add(Ast.DestructureBinding.discard());
+                continue;
+            }
+
+            if (currentKind == null) {
+                throw error(peek(), "destructure binding kind must be declared before the first binding");
+            }
+
             String name = consume(IDENT, "expected binding name in destructure").lexeme();
-            bindings.add(new Ast.DestructureBinding(kind, name));
+            bindings.add(new Ast.DestructureBinding(currentKind, currentMutable, name));
         } while (match(COMMA));
-        consume(RBRACKET, "expected ']'");
+
+        consume(close, kind == Ast.DestructureKind.SEQUENCE ? "expected ']'" : "expected '}'");
         consume(EQUAL, "expected '=' after destructure pattern");
         Ast.Expr initializer = parseExpression();
         consumeStatementTerminator("destructure should end with ';'");
-        return new Ast.DestructureStmt(bindings, initializer);
+        return new Ast.DestructureStmt(kind, bindings, initializer);
     }
 
     private boolean looksLikeDestructure() {
-        return current + 1 < tokens.size() && isBindingKind(tokens.get(current + 1).type());
+        if (current + 1 >= tokens.size()) return false;
+        Token first = tokens.get(current + 1);
+        return isBindingKind(first.type()) || first.type() == MUT || isDiscardToken(first);
+    }
+
+    private boolean looksLikePrefixedDestructure() {
+        int i = current;
+        if (i < tokens.size() && isBindingKind(tokens.get(i).type())) i++;
+        if (i < tokens.size() && tokens.get(i).type() == MUT) i++;
+        if (i == current || i >= tokens.size()) return false;
+
+        Token.Type open = tokens.get(i).type();
+        Token.Type close;
+        if (open == LBRACKET) close = RBRACKET;
+        else if (open == LBRACE) close = RBRACE;
+        else return false;
+
+        int depth = 0;
+        for (; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == open) depth++;
+            else if (type == close) {
+                depth--;
+                if (depth == 0) {
+                    return i + 1 < tokens.size() && tokens.get(i + 1).type() == EQUAL;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isDiscardToken(Token token) {
+        return token.type() == IDENT && token.lexeme().equals("_");
     }
 
     private Ast.IfStmt parseIf() {
