@@ -403,6 +403,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object moduleMember(Ast.ModuleDecl module, String name) {
             for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
+                    return new ClassFacade(klass);
+                }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
                     return (Invokable) args -> callFunction(fn, args);
                 }
