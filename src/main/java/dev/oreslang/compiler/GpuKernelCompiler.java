@@ -143,14 +143,20 @@ public final class GpuKernelCompiler {
                 if (decl instanceof Ast.TypeAliasDecl alias) {
                     putAlias(module.name(), alias);
                 } else if (decl instanceof Ast.FunctionDecl fn && Ast.hasGpuPlacement(fn.annotations())) {
-                    Target target = Target.namedFunction(module.name(), fn, symbolBase(module.name(), fn.name(), fn.parameters().size()));
+                    Target target = Target.namedFunction(module.name(), fn,
+                            symbolBase("fn", module.name(), fn.name(), fn.name(), fn.parameters().size()));
                     putNamed(module.name() + "." + fn.name(), fn.name(), target);
                     namedTargets.add(target);
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     for (Ast.MethodDecl method : klass.methods()) {
                         if (Ast.hasGpuPlacement(method.annotations())) {
                             String sourceName = klass.name() + "." + method.name();
-                            String base = symbolBase(module.name(), klass.name() + "_" + method.name(), method.parameters().size());
+                            String base = symbolBase(
+                                    "static",
+                                    module.name(),
+                                    klass.name() + "_" + method.name(),
+                                    klass.name() + "\u0000" + method.name(),
+                                    method.parameters().size());
                             Target target = Target.staticFunction(module.name(), klass.name(), sourceName, method, base);
                             putNamed(module.name() + "." + sourceName, sourceName, target);
                             putNamed(module.name() + "." + klass.name() + "." + method.name(),
@@ -290,7 +296,12 @@ public final class GpuKernelCompiler {
     private void addLambdaTarget(String module, String owner, Ast.LambdaExpr lambda, Ast.GpuMode mode, String batchId, int batchIndex) {
         int ordinal = ++lambdaOrdinal;
         String sourceName = owner + "$gpu$" + ordinal;
-        String base = symbolBase(module, owner + "_lambda_" + ordinal, lambda.parameters().size());
+        String base = symbolBase(
+                "lambda",
+                module,
+                owner + "_lambda_" + ordinal,
+                owner + "\u0000" + ordinal,
+                lambda.parameters().size());
         lambdaTargets.add(Target.lambda(module, sourceName, lambda, base, mode, batchId, batchIndex));
     }
 
@@ -1226,10 +1237,10 @@ public final class GpuKernelCompiler {
         return type.name() + "<" + String.join(",", type.arguments().stream().map(this::oresType).toList()) + ">";
     }
 
-    private String symbolBase(String module, String name, int arity) {
-        String semanticIdentity = module + "\u0000" + name + "\u0000" + arity;
+    private String symbolBase(String kind, String module, String readableName, String semanticName, int arity) {
+        String semanticIdentity = kind + "\u0000" + module + "\u0000" + semanticName + "\u0000" + arity;
         String hash = digest(semanticIdentity).substring(0, 12);
-        return sanitize(module) + "_" + sanitize(name) + "_a" + arity + "_" + hash;
+        return sanitize(module) + "_" + sanitize(readableName) + "_a" + arity + "_" + hash;
     }
 
     private static String variableName(String sourceName) {
