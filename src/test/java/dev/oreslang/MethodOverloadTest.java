@@ -35,6 +35,66 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void selectedInstanceArityStillRequiresEveryArgumentTypeToMatch() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub pick(int value) => int { return value; }
+                            pub pick(int left, String right) => int { return left; }
+                          end
+                        end
+
+                        fnc bad() => void {
+                          val c = new m.C();
+                          c.pick("wrong");
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("argument 1"));
+    }
+
+    @Test
+    void selectedMultiArgumentArityChecksTypesPositionally() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub pick(int left, String right) => int { return left; }
+                          end
+                        end
+
+                        fnc bad() => void {
+                          val c = new m.C();
+                          c.pick(1, 2);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("argument 2"));
+    }
+
+    @Test
+    void selectedStaticArityStillRequiresArgumentTypesToMatch() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub static fnc pick(int value) => int { return value; }
+                          end
+                        end
+
+                        fnc bad() => void {
+                          m.C.pick("wrong");
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("argument 1"));
+    }
+
+    @Test
     void parameterTypesDoNotCreateDistinctOverloads() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
