@@ -305,6 +305,9 @@ public final class ActorRuntime implements AutoCloseable {
         java.util.Objects.requireNonNull(ref, "ref");
         java.util.Objects.requireNonNull(timeout, "timeout");
         if (timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("timeout must be positive");
+        if (ref.id().equals(currentActor.get())) {
+            throw new IllegalStateException("an actor cannot join itself");
+        }
         ActorCell<?> cell = actors.get(ref.id());
         if (cell == null) return true;
         Thread thread = cell.thread;
