@@ -88,7 +88,7 @@ final class IsolationHotReloadTest {
 
             assertNotEquals(first.id(), second.id());
             assertNotEquals(first.sha256(), second.sha256());
-            assertNotSame(first.context(), second.context());
+            assertNotSame(first.source(), second.source());
             assertEquals(second.id(), hot.active().id());
             assertEquals(2, hot.liveGenerations());
 
@@ -392,6 +392,12 @@ final class IsolationHotReloadTest {
             assertTrue(secondId > firstId,
                     "hot-reload generation IDs must stay process-monotonic across manager restarts");
         }
+    }
+
+    @Test
+    void generationDoesNotExposeRawGraalContext() {
+        assertThrows(NoSuchMethodException.class,
+                () -> HotReloadManager.Generation.class.getMethod("context"));
     }
 
     @Test
