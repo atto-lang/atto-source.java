@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -16,6 +16,9 @@ public final class Types {
     public record Named(String name, List<Type> arguments) implements Type {
         public Named { arguments = List.copyOf(arguments); }
     }
+
+    /** Rust-style compile-time borrow; erased by the interpreter runtime. */
+    public record Borrow(Type target, boolean mutable) implements Type { }
 
     /** Compile-time meta-value for access to static class functions. */
     public record ClassNamespace(String className) implements Type { }
@@ -47,6 +50,11 @@ public final class Types {
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
+
+        if (from instanceof Borrow source && to instanceof Borrow target) {
+            if (target.mutable() && !source.mutable()) return false;
+            return isAssignable(source.target(), target.target()) && isAssignable(target.target(), source.target());
+        }
 
         if (from instanceof Named source && to instanceof Named target && source.name().equals(target.name())) {
             if (source.arguments().size() != target.arguments().size()) return false;

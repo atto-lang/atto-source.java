@@ -387,7 +387,8 @@ public final class Parser {
                 Token marker = consume(IDENT, "expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
                 Ast.TypeRef type = parseTypeRef();
-                params.add(new Ast.Param(type, name, true));
+                boolean mutable = match(MUT);
+                params.add(new Ast.Param(type, name, true, mutable));
                 continue;
             }
 
@@ -395,7 +396,8 @@ public final class Parser {
             if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
                 String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
-                params.add(new Ast.Param(type, name, true));
+                boolean mutable = match(MUT);
+                params.add(new Ast.Param(type, name, true, mutable));
                 continue;
             }
 
@@ -406,8 +408,9 @@ public final class Parser {
                 structural = true;
             }
             Ast.TypeRef type = parseTypeRef();
+            boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name").lexeme();
-            params.add(new Ast.Param(type, name, structural));
+            params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         return params;
     }
@@ -434,7 +437,7 @@ public final class Parser {
         for (Ast.Param param : params) {
             boolean structural = param.structural() || allowed.contains(param.name());
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
@@ -445,6 +448,10 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeRef() {
+        if (match(AMP)) {
+            boolean mutable = match(MUT);
+            return Ast.TypeRef.borrowed(parseTypeRef(), mutable);
+        }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
         if (match(TYPEOF)) {
@@ -682,7 +689,9 @@ public final class Parser {
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
-            if (!(expr instanceof Ast.NameExpr)) throw error(previous(), "assignment target must be a local name in v0");
+            if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
+                throw error(previous(), "assignment target must be a local, field, or index");
+            }
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
@@ -741,6 +750,10 @@ public final class Parser {
 
     private Ast.Expr parseUnary() {
         if (match(BANG, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
+        if (match(AMP)) {
+            boolean mutable = match(MUT);
+            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+        }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         return parsePostfix();
     }
@@ -845,11 +858,12 @@ public final class Parser {
             do {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
-                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name));
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
                 } else {
                     Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name));
+                    params.add(new Ast.Param(type, name, false, mutable));
                 }
             } while (match(COMMA));
         }

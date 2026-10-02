@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.types.Types.Function;
+import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
@@ -49,6 +50,7 @@ public final class TypeChecker {
         checker.collect(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
+        OwnershipChecker.check(program);
         return program;
     }
 
@@ -176,7 +178,7 @@ public final class TypeChecker {
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
         checkBlock(fn.body(), env, generics, returns, null);
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -237,7 +239,7 @@ public final class TypeChecker {
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), Ast.BindingKind.VAL);
+            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
             checkBlock(method.body(), env, generics, returns, callableSelf);
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
@@ -376,13 +378,29 @@ public final class TypeChecker {
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
-            Ast.NameExpr name = (Ast.NameExpr) assignment.target();
-            Env.Binding binding = env.lookup(name.name());
-            if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
-            if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
+            Type targetType;
+            String where;
+            if (assignment.target() instanceof Ast.NameExpr name) {
+                Env.Binding binding = env.lookup(name.name());
+                if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
+                if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
+                targetType = binding.type();
+                where = name.name();
+            } else if (assignment.target() instanceof Ast.MemberExpr member) {
+                targetType = memberType(member, env, generics, self);
+                where = member.member();
+            } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
+                Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+                Type index = typeOf(indexed.index(), env, generics, self);
+                requireAssignable(index, Primitive.INT, "array/list index");
+                if (receiver instanceof ListType list) targetType = list.element();
+                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                where = "index";
+            } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
-            requireAssignable(value, binding.type(), "assignment to " + name.name());
-            return binding.type();
+            requireAssignable(value, targetType, "assignment to " + where);
+            return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             requireAssignable(typeOf(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
@@ -392,6 +410,8 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
+            if (unary.operator().equals("&")) return new Borrow(operand, false);
+            if (unary.operator().equals("&mut")) return new Borrow(operand, true);
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
@@ -426,7 +446,7 @@ public final class TypeChecker {
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = typeOf(member.receiver(), env, generics, self);
+                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
@@ -515,7 +535,7 @@ public final class TypeChecker {
             return Unknown.INSTANCE;
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            Type receiver = typeOf(indexed.receiver(), env, generics, self);
+            Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
@@ -568,7 +588,7 @@ public final class TypeChecker {
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
-                lambdaEnv.define(param.name(), type, Ast.BindingKind.VAL);
+                lambdaEnv.define(param.name(), type, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
@@ -599,12 +619,33 @@ public final class TypeChecker {
             Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
             requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
-            lambdaEnv.define(param.name(), declared, Ast.BindingKind.VAL);
+            lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
         checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
         if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
+    }
+
+    private Type deref(Type type) {
+        return type instanceof Borrow borrow ? borrow.target() : type;
+    }
+
+    private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
+        Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+        if (receiver instanceof Record record) {
+            Type result = record.members().get(member.member());
+            if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
+            return result;
+        }
+        if (receiver instanceof Named named) {
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
+                if (field != null) return field;
+            }
+        }
+        throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
     private Type iterableElementType(Type iterable) {
@@ -861,6 +902,7 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
+        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) return self == null ? Unknown.INSTANCE : self;

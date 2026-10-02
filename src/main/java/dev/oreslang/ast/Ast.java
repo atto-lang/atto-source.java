@@ -46,6 +46,15 @@ public final class Ast {
         public TypeRef { arguments = List.copyOf(arguments); }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
+        public static TypeRef borrowed(TypeRef target, boolean mutable) {
+            return new TypeRef(mutable ? "$borrow_mut$" : "$borrow$", List.of(target), false);
+        }
+        public boolean isBorrow() { return name.equals("$borrow$") || name.equals("$borrow_mut$"); }
+        public boolean mutableBorrow() { return name.equals("$borrow_mut$"); }
+        public TypeRef borrowedTarget() {
+            if (!isBorrow() || arguments.size() != 1) throw new IllegalStateException("not a borrow type");
+            return arguments.getFirst();
+        }
         public static TypeRef functionType(List<TypeRef> parameters, TypeRef result) {
             java.util.ArrayList<TypeRef> all = new java.util.ArrayList<>(parameters);
             all.add(result);
@@ -56,8 +65,9 @@ public final class Ast {
         public String stringLiteralValue() { return name.substring("$string$".length()); }
     }
 
-    public record Param(TypeRef type, String name, boolean structural) {
-        public Param(TypeRef type, String name) { this(type, name, false); }
+    public record Param(TypeRef type, String name, boolean structural, boolean mutable) {
+        public Param(TypeRef type, String name) { this(type, name, false, false); }
+        public Param(TypeRef type, String name, boolean structural) { this(type, name, structural, false); }
     }
 
     public record FunctionDecl(

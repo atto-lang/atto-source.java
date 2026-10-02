@@ -1,4 +1,4 @@
-# Oreslang language design (v0.5)
+# Oreslang language design (v0.6)
 
 Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
@@ -671,3 +671,139 @@ Lambda parameters may be inferred from a contextual function type (`|foo|`) or t
 There are no expression-body lambdas. Every lambda has braces. When the contextual result type is non-void, every control-flow path must contain an explicit `return <value>;`. Void lambdas may use `return;`.
 
 This means higher-order functions and functors do not introduce a second return convention: named functions, methods, static functions, and anonymous functions all use the same explicit `return` statement semantics.
+
+
+## Lexical closures
+
+Closures are lexical. A lambda resolves free variables from the scope where the lambda is created, not from the scope where it is called.
+
+```ores
+fnc makeCounter() => (() -> int) {
+  let int count = 0;
+
+  return || -> {
+    count = count + 1;
+    return count;
+  };
+}
+```
+
+The returned closure owns the captured lexical environment, so repeated calls observe the same captured `count`.
+
+Capture rules are ownership-aware:
+
+- immutable `Copy` captures are copied into the closure environment;
+- non-`Copy` captures transfer ownership into the closure;
+- a capture that the closure mutates also transfers the mutable lexical slot into the closure;
+- after a move-only/mutable capture is transferred, the outer binding cannot be used;
+- an already borrowed value may not be captured by an escaping closure; pass the borrow as a lambda parameter or capture the owner by value.
+
+This makes returned closures safe without retaining raw stack references.
+
+## Parameter immutability and `mut`
+
+Parameters are immutable by default.
+
+```ores
+fnc bad(Bar b) => void {
+  b.foo = "foobar"; // compile-time error
+  return;
+}
+```
+
+An owned parameter may explicitly opt into mutation by putting `mut` between the type and parameter name:
+
+```ores
+fnc change(Bar mut b) => Bar {
+  b.foo = "foobar";
+  return b;
+}
+```
+
+`Bar mut b` still receives `Bar` **by value**. For a non-`Copy` value, the caller transfers ownership to `change`; returning the value transfers ownership back.
+
+Local mutation continues to use `let`. `val` and `const` remain immutable.
+
+Class fields follow the same bias: a field declared with `val` or `const` cannot be assigned after construction. Mutable object state must use a `let` field and mutable access to the owning value.
+
+## Ownership, moves, and borrows
+
+Oreslang uses Rust-style affine ownership for mutable/heap-backed values.
+
+The initial `Copy` family is:
+
+- integer types;
+- floating/decimal/complex scalar types;
+- booleans;
+- immutable strings.
+
+Class instances, arrays/lists, object records, and closures are move-only by default.
+
+A by-value binding, argument, or return consumes a non-`Copy` value:
+
+```ores
+fnc consume(Bar value) => void {
+  return;
+}
+
+fnc example() => void {
+  let Bar b = new Bar();
+  consume(b);
+  // b.foo; // compile-time error: use of moved value
+  return;
+}
+```
+
+Shared immutable borrowing uses `&T`:
+
+```ores
+fnc inspect(&Bar value) => void {
+  stdio.println(value.foo);
+  return;
+}
+```
+
+Exclusive mutable borrowing uses `&mut T`:
+
+```ores
+fnc change(&mut Bar value) => void {
+  value.foo = "changed";
+  return;
+}
+
+fnc example() => void {
+  let Bar b = new Bar();
+  change(&mut b);
+  stdio.println(b.foo); // owner is usable again after the call
+  return;
+}
+```
+
+Borrow rules:
+
+- any number of immutable borrows may coexist;
+- a mutable borrow is exclusive;
+- mutation/move of the owner is forbidden while any borrow is active;
+- reading the owner is forbidden while an exclusive mutable borrow is active;
+- mutable borrowing requires a mutable owner;
+- a borrow of a local value may not escape the owner's lifetime;
+- temporary call borrows end at the call boundary;
+- borrows stored in local bindings remain active until that binding's lexical scope ends.
+
+The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
+
+Structural parameters remain read-only views and therefore do not consume the supplied value.
+
+## Multi-threaded targets
+
+Actors/isolate message passing remains the primary concurrency model, but the ownership contract is backend-independent.
+
+The same compiled program can target a secondary multi-threaded runtime because:
+
+- mutable state has one owner unless temporarily accessed through an exclusive `&mut` borrow;
+- shared aliases are immutable;
+- move-only values cannot remain accessible from both sides of an ownership transfer;
+- closures cannot smuggle an outstanding stack borrow into a longer-lived task;
+- actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
+
+When explicit thread/task spawning is added, cross-thread transfer will require move semantics and a `Send`-equivalent capability; shared cross-thread references will additionally require a `Sync`-equivalent guarantee. Those marker traits are intentionally a future surface feature—the current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
