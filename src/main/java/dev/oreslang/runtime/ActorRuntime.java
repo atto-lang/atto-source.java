@@ -61,7 +61,12 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public static Object currentExecutionDomain() {
         Object actorDomain = CURRENT_ACTOR_DOMAIN.get();
-        return actorDomain != null ? actorDomain : Thread.currentThread();
+        if (actorDomain != null) return actorDomain;
+        if (CURRENT_ACTOR_POLICY.get() != null) {
+            throw new IllegalStateException(
+                    "actor execution is missing its semantic execution domain; refusing to fall back to JVM Thread identity");
+        }
+        return Thread.currentThread();
     }
 
     public record ActorId(UUID value) {
@@ -274,7 +279,6 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
-        private final Object executionDomain = new Object();
         private volatile Thread thread;
 
         private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
@@ -291,7 +295,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private void run() {
             CURRENT_ACTOR_POLICY.set(policy);
-            CURRENT_ACTOR_DOMAIN.set(executionDomain);
+            CURRENT_ACTOR_DOMAIN.set(ref.id());
             final Behavior<M> behavior = behaviorFactory.get();
             final ActorContext<M> context = new ActorContext<>() {
                 @Override public ActorRef<M> self() { return ref; }
