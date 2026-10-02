@@ -1206,7 +1206,18 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
-                return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+                try {
+                    return switch (op) {
+                        case '+' -> Math.addExact(x, y);
+                        case '-' -> Math.subtractExact(x, y);
+                        case '*' -> Math.multiplyExact(x, y);
+                        case '%' -> x % y;
+                        default -> throw new IllegalArgumentException("bad numeric operator");
+                    };
+                } catch (ArithmeticException overflow) {
+                    throw new ArithmeticException(
+                            "Oreslang integer overflow for " + x + " " + op + " " + y);
+                }
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
@@ -1214,7 +1225,15 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object negate(Object value) {
             if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
-            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
+            if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) {
+                long integer = ((Number) value).longValue();
+                try {
+                    return Math.negateExact(integer);
+                } catch (ArithmeticException overflow) {
+                    throw new ArithmeticException(
+                            "Oreslang integer overflow for unary - on " + integer);
+                }
+            }
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
         }
