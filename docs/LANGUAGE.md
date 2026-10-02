@@ -210,8 +210,9 @@ Numeric widening is loss-aware; real values can widen toward complex values, but
 
 ## Lambdas
 
-Lambdas are lexical closures by default and use `->`. The canonical block
-form keeps returns explicit:
+Lambdas are lexical closures by default and use `->`. The explicit `lex`
+and `lexical` prefixes are aliases for that default when capture intent should
+be visible in source. The canonical block form keeps returns explicit:
 
 ```ores
 val Fnc<int, int> inc = |int x| -> {
@@ -221,6 +222,23 @@ val Fnc<int, int> inc = |int x| -> {
 
 A normal lambda may capture activation-local bindings from its enclosing
 function or block. Captured mutable state remains part of the closure.
+
+```ores
+val short = lex || -> {
+  return local_value;
+};
+
+val long = lexical || -> {
+  return local_value;
+};
+```
+
+The compiler computes a free-variable capture plan for each lexical lambda.
+Only referenced activation-local bindings are retained. Unreferenced locals
+(including secrets) are not copied into or retained by the closure environment.
+Immutable captures are detached from the outer frame; mutable captures share
+only the required mutable slot. A lexical lambda whose capture plan is empty
+uses the same no-environment fast path as an `nlex` lambda.
 
 ## Non-lexical callables (`nlex`)
 
@@ -258,14 +276,25 @@ Inside an `nlex` region:
   such as `stdio`, `process`, and `print` remain available;
 - an enclosing activation-local binding is not available for capture;
 - lambdas created inside an `nlex fnc`, `nlex routine`, or `nlex` lambda
-  inherit the capture barrier recursively.
+  inherit the capture barrier recursively;
+- `lex`/`lexical` may not reopen an inherited `nlex` region. The barrier is
+  one-way so an inner helper cannot accidentally regain access to private outer
+  activation data.
 
 For named top-level/module `fnc` and `routine` declarations, `nlex` is
 mainly a compile-time guarantee about any closures created in their bodies:
 those named callables already begin with their own invocation frame. The
-runtime benefit is at lambda creation. Ordinary lambdas snapshot/retain the
-lexical environment they need; an `nlex` lambda takes the no-environment
-path and skips that closure-environment snapshot.
+runtime benefit is at lambda creation. Ordinary lambdas retain only the
+specific lexical slots in their compiler-produced capture plan; an `nlex`
+lambda takes the no-environment path. Capture-free lexical lambdas are lowered
+to that same no-environment representation.
+
+Nested lexical lambdas are analyzed transitively. If an inner lambda needs a
+grandparent local, the enclosing closure retains that specific local so the
+inner lambda can be created safely later. An inner `nlex` lambda stops that
+transitive retention. This is both an optimization and a privacy boundary:
+creating a helper closure does not implicitly preserve unrelated locals from
+its enclosing activation.
 
 This distinction also resolves the import question. JavaScript/TypeScript
 imports are presented as lexical module bindings, while Java imports/static
