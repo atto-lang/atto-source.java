@@ -419,11 +419,36 @@ public final class OresEvalRootNode extends RootNode {
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+            Throwable pending = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
-            } finally {
-                while (!deferred.isEmpty()) eval(deferred.pop(), env);
+            } catch (Throwable failure) {
+                pending = failure;
             }
+
+            Throwable cleanupFailure = null;
+            while (!deferred.isEmpty()) {
+                try {
+                    eval(deferred.pop(), env);
+                } catch (VirtualMachineError fatalCleanupFailure) {
+                    if (pending != null) fatalCleanupFailure.addSuppressed(pending);
+                    if (cleanupFailure != null) fatalCleanupFailure.addSuppressed(cleanupFailure);
+                    throw fatalCleanupFailure;
+                } catch (Throwable failure) {
+                    if (cleanupFailure == null) cleanupFailure = failure;
+                    else cleanupFailure.addSuppressed(failure);
+                }
+            }
+
+            if (pending instanceof ExecutionTerminated || pending instanceof Error) {
+                if (cleanupFailure != null) pending.addSuppressed(cleanupFailure);
+                throwUnchecked(pending);
+            }
+            if (cleanupFailure != null) {
+                if (pending != null) cleanupFailure.addSuppressed(pending);
+                throwUnchecked(cleanupFailure);
+            }
+            if (pending != null) throwUnchecked(pending);
         }
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
