@@ -383,12 +383,18 @@ public final class OresMutex {
                 throw new java.util.concurrent.CancellationException("SharedMutex recovery wait interrupted");
             }
             try {
-                R result = repair.apply(value);
-                poisoned.set(false);
-                return result;
-            } catch (RuntimeException | Error failure) {
-                poisoned.set(true);
-                throw failure;
+                if (!poisoned.get()) {
+                    throw new IllegalStateException(
+                            "SharedMutex is not poisoned; recover(...) is only for repairing poisoned state");
+                }
+                try {
+                    R result = repair.apply(value);
+                    poisoned.set(false);
+                    return result;
+                } catch (RuntimeException | Error failure) {
+                    poisoned.set(true);
+                    throw failure;
+                }
             } finally {
                 releaseDomain(ownerDomain);
                 permit.release();
