@@ -216,7 +216,20 @@ public final class OwnershipChecker {
 
             for (Ast.SelectCase branch : select.cases()) {
                 restoreState(base);
-                checkExpr(branch.operation(), scope, false);
+                if (branch.operation().kind() == Ast.ChannelOpKind.SEND) {
+                    ValueInfo staged = checkExpr(branch.operation().value(), scope, false);
+                    if (staged.kind == ValueKind.MOVE_ONLY
+                            || staged.kind == ValueKind.IMM_BORROW
+                            || staged.kind == ValueKind.MUT_BORROW) {
+                        throw error("select send cases currently require Copy/Shared-safe values; "
+                                + "move-only or borrowed values need ownership-phi lowering so losing cases can restore ownership");
+                    }
+                    if (branch.operation().channel() != null) {
+                        checkExpr(branch.operation().channel(), scope, false);
+                    }
+                } else {
+                    checkExpr(branch.operation(), scope, false);
+                }
                 Scope caseScope = new Scope(scope);
                 if (branch.bindingName() != null) {
                     Ast.TypeRef bindingType = branch.bindingType() == null
@@ -401,7 +414,15 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.simple("Option"), ValueKind.MOVE_ONLY, null);
             }
             if (operation.kind() == Ast.ChannelOpKind.TRY_SEND) {
-                return new ValueInfo(Ast.TypeRef.simple("SendResult"), ValueKind.COPY, null);
+                Ast.TypeRef element = Ast.TypeRef.inferred();
+                if (operation.value() instanceof Ast.NameExpr name) {
+                    VarState state = scope.lookup(name.name());
+                    if (state != null) element = state.type;
+                }
+                return new ValueInfo(
+                        new Ast.TypeRef("TrySendResult", List.of(element), false),
+                        ValueKind.MOVE_ONLY,
+                        null);
             }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
