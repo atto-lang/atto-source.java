@@ -150,7 +150,11 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
-                    env.initialize(binding.name(), eval(binding.initializer(), env));
+                    Object value = eval(binding.initializer(), env);
+                    env.initialize(binding.name(), value);
+                    if (value instanceof LambdaValue lambda) {
+                        lambda.bindRecursiveSelf(binding.name(), value);
+                    }
                 } else {
                     env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
                 }
@@ -604,6 +608,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            private void bindRecursiveSelf(String name, Object value) {
+                if (captured != null) captured.initializeReservedCapture(name, value);
+            }
+
             @Override
             public boolean actorEntrySafe() {
                 return nonLexical;
@@ -789,6 +797,14 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             slot.value = value;
+        }
+        private boolean initializeReservedCapture(String name, Object value) {
+            Slot slot = slots.get(name);
+            if (slot != null && slot.value == MISSING) {
+                slot.value = value;
+                return true;
+            }
+            return parent != null && parent.initializeReservedCapture(name, value);
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
