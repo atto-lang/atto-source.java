@@ -390,11 +390,18 @@ public final class OresEvalRootNode extends RootNode {
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
             if (stmt instanceof Ast.TypeDeclStmt) return;
             if (stmt instanceof Ast.BindingStmt binding) {
-                Object value = coerceDeclaredAggregate(binding.declaredType(), eval(binding.initializer(), env), env);
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
+                    Object value = coerceDeclaredAggregate(
+                            binding.declaredType(),
+                            eval(binding.initializer(), env),
+                            env);
                     env.initialize(binding.name(), value);
                 } else {
+                    Object value = coerceDeclaredAggregate(
+                            binding.declaredType(),
+                            eval(binding.initializer(), env),
+                            env);
                     env.define(binding.name(), value, binding.kind());
                 }
                 return;
