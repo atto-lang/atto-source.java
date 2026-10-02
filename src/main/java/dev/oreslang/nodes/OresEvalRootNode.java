@@ -178,6 +178,8 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
+            if (stmt instanceof Ast.BreakStmt) throw BreakSignal.INSTANCE;
+            if (stmt instanceof Ast.ContinueStmt) throw ContinueSignal.INSTANCE;
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) {
                 Object produced = eval(defer.expression(), env);
@@ -198,6 +200,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 try { executeBlock(tried.body(), env, frame); }
                 catch (ReturnSignal signal) { throw signal; }
+                catch (BreakSignal | ContinueSignal signal) { throw signal; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
@@ -211,7 +214,13 @@ public final class OresEvalRootNode extends RootNode {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
                     iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    executeBlock(loop.body(), iteration, frame);
+                    try {
+                        executeBlock(loop.body(), iteration, frame);
+                    } catch (ContinueSignal ignored) {
+                        continue;
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
                 }
                 return;
             }
@@ -220,7 +229,13 @@ public final class OresEvalRootNode extends RootNode {
                 if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, frame);
                 while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                     context.schedulerSafepoint();
-                    executeBlock(loop.body(), loopEnv, frame);
+                    try {
+                        executeBlock(loop.body(), loopEnv, frame);
+                    } catch (ContinueSignal ignored) {
+                        // C-style for semantics: continue still runs the update expression.
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
             }
@@ -670,6 +685,16 @@ public final class OresEvalRootNode extends RootNode {
     private static final class ReturnSignal extends RuntimeException {
         private final Object value;
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
+    }
+
+    private static final class BreakSignal extends RuntimeException {
+        private static final BreakSignal INSTANCE = new BreakSignal();
+        private BreakSignal() { super(null, null, false, false); }
+    }
+
+    private static final class ContinueSignal extends RuntimeException {
+        private static final ContinueSignal INSTANCE = new ContinueSignal();
+        private ContinueSignal() { super(null, null, false, false); }
     }
 
     private record Complex(double real, double imaginary) {
