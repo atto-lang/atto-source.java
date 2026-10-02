@@ -491,6 +491,7 @@ public final class GpuKernelCompiler {
 
         String launchExtent = null;
         if (parallelLoop != null) {
+            out.append("  __ores_error[get_global_id(0)] = 0;\n");
             LoweringEnv env = parameterEnv(target.parameters, target.module);
             Ast.BindingStmt initializer = (Ast.BindingStmt) parallelLoop.loop.initializer();
             Ast.TypeRef inductionType = initializer.declaredType() == null ? Ast.TypeRef.simple("i64") : resolveAlias(initializer.declaredType(), target.module);
@@ -504,6 +505,7 @@ public final class GpuKernelCompiler {
             emitStatements(out, target.module, parallelLoop.loop.body(), env, "  ");
         } else {
             out.append("  if (get_global_id(0) != 0 || get_global_id(1) != 0 || get_global_id(2) != 0) return;\n");
+            out.append("  __ores_error[0] = 0;\n");
             String args = argumentNames(target.parameters, target.module);
             if (isVoid(resultType)) {
                 out.append("  ").append(target.helperSymbol).append('(').append(args).append(");\n");
@@ -525,6 +527,7 @@ public final class GpuKernelCompiler {
                 target.batchId,
                 target.batchIndex,
                 parameters,
+                hiddenParameters(target, resultType),
                 oresType(resultType),
                 launchExtent);
         return new KernelEmission(meta);
@@ -936,6 +939,33 @@ public final class GpuKernelCompiler {
                     + "* restrict " + sanitize(param.name());
         }
         return cScalar(type) + " " + sanitize(param.name());
+    }
+
+    private List<GpuHiddenParameter> hiddenParameters(Target target, Ast.TypeRef resultType) {
+        ArrayList<GpuHiddenParameter> hidden = new ArrayList<>();
+        for (Ast.Param param : target.parameters) {
+            Ast.TypeRef type = resolveAlias(param.type(), target.module);
+            if (isBuffer(type)) {
+                hidden.add(new GpuHiddenParameter(
+                        sanitize(param.name()) + "__len",
+                        "ulong",
+                        HiddenPurpose.BUFFER_LENGTH,
+                        param.name()));
+            }
+        }
+        if (!isVoid(resultType)) {
+            hidden.add(new GpuHiddenParameter(
+                    "__ores_out",
+                    "__global " + cScalar(resultType) + "* restrict",
+                    HiddenPurpose.RESULT,
+                    null));
+        }
+        hidden.add(new GpuHiddenParameter(
+                "__ores_error",
+                "__global int* restrict",
+                HiddenPurpose.ERROR_SLOTS,
+                null));
+        return List.copyOf(hidden);
     }
 
     private GpuParameter metadataParameter(Ast.Param param, String module) {
