@@ -40,11 +40,13 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
 
+actor_isolation = "shared" | "untrusted" ;
+
 actor_callable_decl
-                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                = { annotation } visibility [ "async" ] [ "nlex" ] [ actor_isolation ] "actor" "fnc" IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
-actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
+actor_decl      = visibility [ actor_isolation ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
@@ -241,7 +243,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - "=>" belongs to named callable return declarations.
    - "->" belongs to function types and lambdas.
    - Unqualified "actor" declarations are private actors; "shared actor" opts
-     into the SHARED_MEMORY execution domain.
+     into the SHARED_MEMORY execution domain; "untrusted actor" opts into the
+     deny-by-default hostile-code sandbox. "shared" and "untrusted" are mutually
+     exclusive actor modifiers and remain contextual words in ordinary identifier
+     positions.
    - Actor fields are private mailbox-owned state; public actor API is exposed
      through actor methods/messages rather than public mutable fields.
    - Actor inheritance must preserve actor isolation kind.
