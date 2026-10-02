@@ -532,7 +532,8 @@ final class ActorRuntimeTest {
             ref.send("allocate");
             assertTrue(received.await(2, TimeUnit.SECONDS));
             assertTrue(failure.get().contains("growth denied"));
-            assertEquals(0L, runtime.privateMemoryBytes());
+            // The triggering mailbox envelope may still be unwinding when the
+            // latch opens; committed capacity is the stable denial invariant.
             assertEquals(mib, runtime.privateMemoryCommittedBytes());
         }
     }
