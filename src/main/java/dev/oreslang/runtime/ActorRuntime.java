@@ -63,7 +63,15 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /** Deeply immutable value that shared actors may reference without copying. */
-    public record Shared<T>(T value) { }
+    public static final class Shared<T> {
+        private final T value;
+
+        private Shared(T value) {
+            this.value = value;
+        }
+
+        public T value() { return value; }
+    }
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -497,7 +505,43 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
+        rejectSharedMutableHandles(value, new IdentityHashMap<>());
         return new Shared<>((T) freeze(value));
+    }
+
+    private static void rejectSharedMutableHandles(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting) {
+        if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value instanceof ActorRuntime.SyncCell<?>) {
+            throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
+        }
+        if (value instanceof Shared<?>) return;
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot be shared read-only");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) rejectSharedMutableHandles(item, visiting);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) rejectSharedMutableHandles(item, visiting);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectSharedMutableHandles(entry.getKey(), visiting);
+                    rejectSharedMutableHandles(entry.getValue(), visiting);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    rejectSharedMutableHandles(Array.get(value, i), visiting);
+                }
+            } else if (!(value instanceof Sendable)) {
+                throw new IllegalArgumentException("value of type " + value.getClass().getName()
+                        + " is not Sendable; mutable host objects cannot be shared read-only");
+            }
+        } finally {
+            visiting.remove(value);
+        }
     }
 
     /**
