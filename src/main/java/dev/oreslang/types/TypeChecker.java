@@ -311,6 +311,10 @@ public final class TypeChecker {
                     for (Ast.DestructureBinding binding : destructure.bindings()) {
                         defineDestructureBinding(env, binding, list.element());
                     }
+                } else if (source == Unknown.INSTANCE) {
+                    for (Ast.DestructureBinding binding : destructure.bindings()) {
+                        defineDestructureBinding(env, binding, Unknown.INSTANCE);
+                    }
                 } else {
                     throw new IllegalArgumentException("sequence destructuring requires a tuple or array/list value");
                 }
@@ -413,6 +417,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
             String where;
+            Tuple dynamicTupleTarget = null;
             if (assignment.target() instanceof Ast.NameExpr name) {
                 Env.Binding binding = env.lookup(name.name());
                 if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
@@ -426,13 +431,24 @@ public final class TypeChecker {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                if (receiver instanceof ListType list) {
+                    targetType = list.element();
+                } else if (receiver instanceof Tuple tuple) {
+                    targetType = tupleIndexType(tuple, indexed.index());
+                    if (constantTupleIndex(indexed.index()) == null) dynamicTupleTarget = tuple;
+                } else {
+                    throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
-            requireAssignable(value, targetType, "assignment to " + where);
+            if (dynamicTupleTarget != null) {
+                for (Type slot : dynamicTupleTarget.elements()) {
+                    requireAssignable(value, slot, "assignment through dynamic finite-tuple index");
+                }
+            } else {
+                requireAssignable(value, targetType, "assignment to " + where);
+            }
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
@@ -474,6 +490,36 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr builtin
+                    && builtin.receiver() instanceof Ast.NameExpr namespace
+                    && builtinCollectionNamespaceAvailable(namespace.name())
+                    && namespace.name().equals("List")
+                    && builtin.member().equals("of")) {
+                return new Tuple(call.arguments().stream()
+                        .map(argument -> widenCollectionElement(typeOf(argument, env, generics, self)))
+                        .toList());
+            }
+            if (call.callee() instanceof Ast.MemberExpr builtin
+                    && builtin.receiver() instanceof Ast.NameExpr namespace
+                    && builtinCollectionNamespaceAvailable(namespace.name())
+                    && namespace.name().equals("Map")
+                    && builtin.member().equals("of")) {
+                if ((call.arguments().size() & 1) != 0) {
+                    throw new IllegalArgumentException("Map.of requires alternating string keys and values");
+                }
+                Map<String, Type> members = new LinkedHashMap<>();
+                for (int i = 0; i < call.arguments().size(); i += 2) {
+                    Ast.Expr keyExpr = call.arguments().get(i);
+                    if (!(keyExpr instanceof Ast.LiteralExpr literal) || !(literal.value() instanceof String key)) {
+                        throw new IllegalArgumentException("Map.of record keys must be compile-time strings");
+                    }
+                    Type valueType = typeOf(call.arguments().get(i + 1), env, generics, self);
+                    if (members.putIfAbsent(key, valueType) != null) {
+                        throw new IllegalArgumentException("duplicate Map.of record key '" + key + "'");
+                    }
+                }
+                return new Record(members);
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -572,7 +618,7 @@ public final class TypeChecker {
             Type index = typeOf(indexed.index(), env, generics, self);
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
-            if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            if (receiver instanceof Tuple tuple) return tupleIndexType(tuple, indexed.index());
             throw new IllegalArgumentException("indexing requires an array/list or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
@@ -714,6 +760,35 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
+    }
+
+    private boolean builtinCollectionNamespaceAvailable(String name) {
+        return !modules.containsKey(name)
+                && !classes.containsKey(name)
+                && !ambiguousClasses.contains(name)
+                && !importedValues.contains(name);
+    }
+
+    private Integer constantTupleIndex(Ast.Expr index) {
+        if (index instanceof Ast.LiteralExpr literal && literal.value() instanceof Long value) {
+            try {
+                return Math.toIntExact(value);
+            } catch (ArithmeticException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private Type tupleIndexType(Tuple tuple, Ast.Expr index) {
+        Integer constant = constantTupleIndex(index);
+        if (constant != null) {
+            if (constant < 0 || constant >= tuple.elements().size()) {
+                throw new IllegalArgumentException("finite tuple index " + constant + " is out of bounds for length " + tuple.elements().size());
+            }
+            return tuple.elements().get(constant);
+        }
+        return Types.unionOf(tuple.elements());
     }
 
     private Type widenCollectionElement(Type type) {
