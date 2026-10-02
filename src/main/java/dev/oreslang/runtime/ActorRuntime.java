@@ -25,6 +25,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -60,6 +61,20 @@ public final class ActorRuntime implements AutoCloseable {
     public record ActorId(UUID value) {
         public ActorId { Objects.requireNonNull(value); }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
+    }
+
+    public static final class ActorTerminatedException extends IllegalStateException {
+        private final ActorId actorId;
+        private final ActorKind actorKind;
+
+        private ActorTerminatedException(ActorId actorId, ActorKind actorKind, Throwable cause) {
+            super("actor " + actorId + " (" + actorKind + ") is terminated", cause);
+            this.actorId = actorId;
+            this.actorKind = actorKind;
+        }
+
+        public ActorId actorId() { return actorId; }
+        public ActorKind actorKind() { return actorKind; }
     }
 
     /** Deeply immutable value that shared actors may reference without copying. */
@@ -305,6 +320,7 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -313,9 +329,15 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
+        public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
+        public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
+        }
+
+        public void stop() {
+            ActorRuntime.this.stop(this);
         }
 
         @Override
@@ -347,6 +369,7 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
         Objects.requireNonNull(behaviorFactory);
+        requireTrustedSupplierPolicy(policy);
         return spawn(ActorKind.PRIVATE, policy, context -> behaviorFactory.get());
     }
 
@@ -368,6 +391,7 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
         Objects.requireNonNull(behaviorFactory);
+        requireTrustedSupplierPolicy(policy);
         return spawn(ActorKind.SHARED, policy, context -> behaviorFactory.get());
     }
 
@@ -387,7 +411,17 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
         Objects.requireNonNull(behaviorFactory);
+        requireTrustedSupplierPolicy(policy);
         return spawn(kind, policy, context -> behaviorFactory.get());
+    }
+
+    private void requireTrustedSupplierPolicy(IsolatePolicy policy) {
+        Objects.requireNonNull(policy);
+        if (policy.adversarial()) {
+            throw new SecurityException(
+                    "adversarial actors require the context-aware BehaviorFactory path; "
+                            + "Supplier factories can capture host/shared mutable references");
+        }
     }
 
     /**
@@ -462,13 +496,30 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    public boolean isAlive(ActorRef<?> ref) {
+        Objects.requireNonNull(ref);
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell != null && !cell.stopped.get();
+    }
+
+    public void stop(ActorRef<?> ref) {
+        Objects.requireNonNull(ref);
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell != null) cell.stop();
+    }
+
+    private ActorTerminatedException terminated(ActorRef<?> ref) {
+        return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
+    }
+
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(ref);
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null || cell.stopped.get()) {
-            throw new IllegalStateException("unknown or stopped actor " + ref.id());
+        if (cell == null || cell.stopped.get()) throw terminated(ref);
+        if (cell.mailbox.remainingCapacity() == 0) {
+            throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
 
         Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freeze(message);
@@ -484,9 +535,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         MessageEnvelope envelope = new MessageEnvelope(prepared, reservation);
-        if (!cell.mailbox.offer(envelope)) {
-            envelope.close();
-            throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+        synchronized (cell.lifecycleLock) {
+            if (closed.get() || cell.stopped.get()) {
+                envelope.close();
+                throw terminated(ref);
+            }
+            if (!cell.mailbox.offer(envelope)) {
+                envelope.close();
+                throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+            }
         }
         cell.schedule();
     }
@@ -764,6 +821,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        private final Object lifecycleLock = new Object();
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -825,12 +883,12 @@ public final class ActorRuntime implements AutoCloseable {
                     processed++;
                 }
             } catch (Throwable failure) {
-                // v0 fail-stop supervision. A later supervisor layer can expose
-                // restart/escalation strategies without weakening serialization.
-                stopped.set(true);
-                drainMailboxReservations();
-                if (memorySlice != null) memorySlice.close();
-                actors.remove(ref.id(), this);
+                // Fail-stop supervision for ordinary actor failures. Fatal VM
+                // errors are cleaned up and then rethrown rather than swallowed.
+                fail(failure);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
                 currentActor.remove();
                 scheduled.set(false);
@@ -849,11 +907,23 @@ public final class ActorRuntime implements AutoCloseable {
             while ((envelope = mailbox.poll()) != null) envelope.close();
         }
 
+        private void fail(Throwable failure) {
+            synchronized (lifecycleLock) {
+                ref.terminationCause.compareAndSet(null, failure);
+                stopped.set(true);
+                drainMailboxReservations();
+                if (memorySlice != null) memorySlice.close();
+                actors.remove(ref.id(), this);
+            }
+        }
+
         private void stop() {
-            if (!stopped.compareAndSet(false, true)) return;
-            drainMailboxReservations();
-            if (memorySlice != null) memorySlice.close();
-            actors.remove(ref.id(), this);
+            synchronized (lifecycleLock) {
+                if (!stopped.compareAndSet(false, true)) return;
+                drainMailboxReservations();
+                if (memorySlice != null) memorySlice.close();
+                actors.remove(ref.id(), this);
+            }
         }
     }
 }
