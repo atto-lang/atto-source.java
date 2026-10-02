@@ -14,7 +14,10 @@ public final class CapabilityChecker {
     public static void check(Ast.Program program, IsolatePolicy policy) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn) checkStatements(fn.body(), policy);
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    if (fn.gpu()) require(policy, IsolatePolicy.Capability.GPU, "gpu callable " + module.name() + "." + fn.name());
+                    checkStatements(fn.body(), policy);
+                }
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.FieldDecl field : klass.fields()) if (field.initializer() != null) checkExpr(field.initializer(), policy);
                     for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
