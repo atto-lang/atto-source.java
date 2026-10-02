@@ -419,7 +419,7 @@ define class Lookup
 end
 ```
 
-Overload identity is exactly **name + arity**, where arity counts only caller-supplied arguments; the implicit or explicit `self` receiver is not counted. Two instance methods with the same name and same arity are a compile-time error even when their parameter types, parameter names, generic parameters, async modifier, or return types differ. Types are checked only after arity has selected the callable; they never participate in overload resolution.
+Overload identity is exactly **name + arity**, where arity counts only caller-supplied arguments; the implicit or explicit `self` receiver is not counted. Two instance methods with the same name and same arity are a compile-time error even when their parameter types, parameter names, generic parameters, async modifier, or return types differ. Arity selects the callable slot; after that selection, every supplied argument must still type-check positionally against that slot's declared parameter types or compilation fails. Parameter and return types validate the selected callable contract, but they never choose between overloads.
 
 Static class functions follow the same arity-only rule in their separate class-level namespace. A static function in a generic class does not implicitly capture the class's generic parameters because a class-level call has no instance generic binding; it must declare any static-function generics itself.
 
