@@ -8,6 +8,8 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -72,6 +74,7 @@ public final class HotReloadManager implements AutoCloseable {
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
         requireOpen();
+        codeUnitId = normalizeCodeUnitId(codeUnitId);
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
         Context context = policy.restrictedContextBuilder(
                 executionProfile,
@@ -167,6 +170,21 @@ public final class HotReloadManager implements AutoCloseable {
         activeByCodeUnit.clear();
         active.set(null);
         for (Generation generation : live) generation.closeContextOnly();
+    }
+
+    private static String normalizeCodeUnitId(String id) {
+        if (id == null || id.isBlank()) {
+            throw new IllegalArgumentException("hot-reload code unit id cannot be blank");
+        }
+        try {
+            String normalized = Path.of(id).normalize().toString().replace('\\', '/');
+            if (normalized.isBlank()) {
+                throw new IllegalArgumentException("hot-reload code unit id cannot normalize to an empty path");
+            }
+            return normalized;
+        } catch (InvalidPathException invalid) {
+            throw new IllegalArgumentException("invalid hot-reload code unit id: " + id, invalid);
+        }
     }
 
     private static String digest(String text) {
