@@ -116,7 +116,7 @@ final class IsolationHotReloadTest {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
             var first = hot.load("managed-singleton-generation.ores", """
-                    define singleton module managed_generation
+                    define singleton module managed_generation as
                       let int count = 0;
                       pub fnc next() => int {
                         count = count + 1;
@@ -131,7 +131,7 @@ final class IsolationHotReloadTest {
                     """);
 
             var second = hot.load("managed-singleton-generation.ores", """
-                    define singleton module managed_generation
+                    define singleton module managed_generation as
                       let int count = 0;
                       pub fnc next() => int {
                         count = count + 10;
@@ -213,7 +213,7 @@ final class IsolationHotReloadTest {
     @Test
     void extractedMethodValueKeepsReceiverAndSelfCannotBeRebound() throws Exception {
         String output = run("""
-                define class Box
+                define class Box as
                   val int value;
 
                   pub get() => int {
@@ -230,7 +230,7 @@ final class IsolationHotReloadTest {
         assertEquals("17", output);
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define class Box
+                define class Box as
                   pub bad() => void {
                     self = new Box();
                     return;
