@@ -126,6 +126,8 @@ Only one pending receive is permitted. Stop/failure completes it exceptionally. 
 
 The pending receive future is sealed against caller-driven completion, exceptional completion, cancellation, timeout completion, and value/exception obtrusion. Mailbox delivery and actor termination are the only authorities that complete it. This removes the claim-vs-cancel race that could otherwise consume an envelope without delivering it.
 
+Await context is checked statically as well as at runtime: ordinary functions/methods require `async`, actor-dispatched callables are suspension-capable by definition, and non-async nested lambdas cannot inherit suspension authority from an async outer callable.
+
 ## Actor groups and fan-out
 
 `ActorGroup<T>` is a same-runtime deduplicated set of actor refs. Categories are metadata, not a global registry. Fan-out snapshots membership and reuses the normal validation, isolation-copy/shared-handle, quota, and bounded-mailbox admission path. It is not an atomic multi-actor transaction: the receipt distinguishes delivered, terminated, and rejected targets. Cross-runtime groups require an explicit bridge.
