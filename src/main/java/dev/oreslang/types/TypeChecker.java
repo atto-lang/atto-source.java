@@ -499,6 +499,7 @@ public final class TypeChecker {
                             target.returnType(),
                             call.arguments(),
                             env, generics, self,
+                            null,
                             Map.of(),
                             "function " + functionName.name());
                 }
@@ -534,6 +535,7 @@ public final class TypeChecker {
                             fn.returnType(),
                             call.arguments(),
                             env, generics, self,
+                            null,
                             Map.of(),
                             "static function " + klass.name() + "." + fn.name());
                 }
@@ -567,6 +569,7 @@ public final class TypeChecker {
                                 method.returnType(),
                                 call.arguments(),
                                 env, generics, self,
+                                named,
                                 classGenericBindings(klass, named),
                                 "method " + klass.name() + "." + method.name());
                     }
@@ -1192,28 +1195,32 @@ public final class TypeChecker {
             Env env,
             Set<String> callerGenerics,
             Type callerSelf,
+            Type callableSelf,
             Map<String, Type> initialBindings,
             String label) {
         if (params.size() != arguments.size()) throw new IllegalArgumentException(label + " arity mismatch");
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
-        List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callerSelf)).toList();
+        List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
         for (int i = 0; i < arguments.size(); i++) {
             Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
             inferGenericBindings(patterns.get(i), actual, bindings, label);
         }
+        Set<String> unbound = new HashSet<>(unique);
+        unbound.removeAll(bindings.keySet());
+
         for (int i = 0; i < arguments.size(); i++) {
             Type expected = substituteGenerics(patterns.get(i), bindings);
-            if (containsUnboundGeneric(expected)) {
+            if (containsGenericNamed(expected, unbound)) {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
             }
             validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
             requireAssignable(typeOf(arguments.get(i), env, callerGenerics, callerSelf), expected, "argument " + (i + 1));
         }
 
-        Type result = substituteGenerics(resolve(returnRef, unique, callerSelf), bindings);
-        if (containsUnboundGeneric(result)) {
+        Type result = substituteGenerics(resolve(returnRef, unique, callableSelf), bindings);
+        if (containsGenericNamed(result, unbound)) {
             throw new IllegalArgumentException("cannot infer generic return type for " + label + "; add an inferable value parameter");
         }
         return result;
@@ -1270,16 +1277,17 @@ public final class TypeChecker {
         return type;
     }
 
-    private boolean containsUnboundGeneric(Type type) {
-        if (type instanceof Generic) return true;
-        if (type instanceof Borrow borrow) return containsUnboundGeneric(borrow.target());
-        if (type instanceof ListType list) return containsUnboundGeneric(list.element());
-        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnboundGeneric);
-        if (type instanceof Union union) return union.options().stream().anyMatch(this::containsUnboundGeneric);
-        if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsUnboundGeneric);
-        if (type instanceof Function fn) return fn.parameters().stream().anyMatch(this::containsUnboundGeneric)
-                || containsUnboundGeneric(fn.result());
-        if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsUnboundGeneric);
+    private boolean containsGenericNamed(Type type, Set<String> names) {
+        if (names.isEmpty()) return false;
+        if (type instanceof Generic generic) return names.contains(generic.name());
+        if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
+        if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
+        if (type instanceof Union union) return union.options().stream().anyMatch(t -> containsGenericNamed(t, names));
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(t -> containsGenericNamed(t, names));
+        if (type instanceof Function fn) return fn.parameters().stream().anyMatch(t -> containsGenericNamed(t, names))
+                || containsGenericNamed(fn.result(), names);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(t -> containsGenericNamed(t, names));
         return false;
     }
 
