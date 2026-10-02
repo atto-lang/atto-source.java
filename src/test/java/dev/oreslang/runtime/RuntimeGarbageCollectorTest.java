@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -79,6 +80,74 @@ final class RuntimeGarbageCollectorTest {
             assertEquals("actor", report.get().scope());
             assertFalse(report.get().jvmGcRequested());
             assertEquals(0, gcRequests.get());
+        }
+    }
+
+
+    @Test
+    void actorCollectionReportsOnlyItsOwnIndexedDomain() throws Exception {
+        AtomicReference<RuntimeGarbageCollector.CollectionReport> firstReport = new AtomicReference<>();
+        AtomicReference<RuntimeGarbageCollector.CollectionReport> secondReport = new AtomicReference<>();
+        CountDownLatch registered = new CountDownLatch(2);
+        CountDownLatch done = new CountDownLatch(2);
+
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             ActorRuntime runtime = new ActorRuntime()) {
+            var first = runtime.<String>spawn(() -> (message, context) -> {
+                Object owner = new Object();
+                gc.track(owner, () -> {});
+                registered.countDown();
+                assertTrue(registered.await(2, TimeUnit.SECONDS));
+                firstReport.set(gc.collectCurrentActor());
+                assertNotNull(owner);
+                done.countDown();
+            });
+            var second = runtime.<String>spawn(() -> (message, context) -> {
+                Object owner = new Object();
+                gc.track(owner, () -> {});
+                registered.countDown();
+                assertTrue(registered.await(2, TimeUnit.SECONDS));
+                secondReport.set(gc.collectCurrentActor());
+                assertNotNull(owner);
+                done.countDown();
+            });
+
+            first.send("gc");
+            second.send("gc");
+
+            assertTrue(done.await(2, TimeUnit.SECONDS));
+            assertEquals(1, firstReport.get().trackedBefore());
+            assertEquals(1, secondReport.get().trackedBefore());
+            assertEquals(1, firstReport.get().inspected());
+            assertEquals(1, secondReport.get().inspected());
+        }
+    }
+
+    @Test
+    void actorCollectionHasABoundedInspectionQuantum() throws Exception {
+        AtomicReference<RuntimeGarbageCollector.CollectionReport> report = new AtomicReference<>();
+        CountDownLatch done = new CountDownLatch(1);
+
+        try (RuntimeGarbageCollector gc = new RuntimeGarbageCollector(() -> {}, Duration.ofHours(1));
+             ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                ArrayList<Object> owners = new ArrayList<>();
+                for (int i = 0; i < 300; i++) {
+                    Object owner = new Object();
+                    owners.add(owner);
+                    gc.track(owner, () -> {});
+                }
+                report.set(gc.collectCurrentActor());
+                assertEquals(300, owners.size());
+                done.countDown();
+            });
+
+            ref.send("gc");
+            assertTrue(done.await(2, TimeUnit.SECONDS));
+            assertEquals(300, report.get().trackedBefore());
+            assertEquals(256, report.get().inspected());
+            assertEquals(300, report.get().trackedAfter());
+            assertFalse(report.get().jvmGcRequested());
         }
     }
 
