@@ -271,6 +271,20 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
+    void bareDiscardIsRejectedInObjectPatterns() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                fnc result() => {foo: int, bar: string} {
+                  return obj{foo: 5, bar: "x"};
+                }
+
+                pub fnc main() => void {
+                  const {foo, _} = result();
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void unionTupleAndArrayReturnsExecuteThroughRuntimeShapeChecks() throws Exception {
         String program = """
                 type Scalar = int | bool | string;
