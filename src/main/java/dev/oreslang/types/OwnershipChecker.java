@@ -66,19 +66,41 @@ public final class OwnershipChecker {
     private void validate(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(fn);
+                if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
             }
         }
     }
 
-    private void checkFunction(Ast.FunctionDecl fn) {
+    private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
         Scope scope = new Scope(null);
+        if (module.singleton()) seedSingletonModuleState(module, scope);
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
         }
         checkBlock(fn.body(), scope, fn.returnType());
         scope.close();
+    }
+
+    private void seedSingletonModuleState(Ast.ModuleDecl module, Scope scope) {
+        for (Ast.Decl decl : module.declarations()) {
+            if (!(decl instanceof Ast.FieldDecl field)) continue;
+            Ast.TypeRef type = field.type() == null ? inferFieldType(field.initializer()) : field.type();
+            scope.define(field.name(), new VarState(
+                    type,
+                    field.bindingKind() == Ast.BindingKind.LET,
+                    kindOfType(type),
+                    Origin.MODULE));
+        }
+    }
+
+    private Ast.TypeRef inferFieldType(Ast.Expr initializer) {
+        if (initializer instanceof Ast.LiteralExpr literal) return inferLiteralType(literal.value());
+        if (initializer instanceof Ast.ListExpr) return Ast.TypeRef.simple("Array");
+        if (initializer instanceof Ast.ObjectExpr) return Ast.TypeRef.simple("obj");
+        if (initializer instanceof Ast.NewExpr created) return created.type();
+        if (initializer instanceof Ast.LambdaExpr) return Ast.TypeRef.simple("Fnc");
+        return Ast.TypeRef.inferred();
     }
 
     private void checkClass(Ast.ClassDecl klass) {
@@ -736,7 +758,7 @@ public final class OwnershipChecker {
     }
 
     private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW }
-    private enum Origin { PARAM, LOCAL, CAPTURE }
+    private enum Origin { PARAM, LOCAL, CAPTURE, MODULE }
 
     private static final class ValueInfo {
         private final Ast.TypeRef type;
