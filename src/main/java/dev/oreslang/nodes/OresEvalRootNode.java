@@ -54,8 +54,6 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Map<Ast.LambdaExpr, ClosureCaptureAnalyzer.CapturePlan> capturePlans = new IdentityHashMap<>();
-        private final Map<Ast.LambdaExpr, Invokable> lexicalNoEnvClosures = new IdentityHashMap<>();
-        private final Map<Ast.LambdaExpr, Invokable> nonLexicalNoEnvClosures = new IdentityHashMap<>();
 
         private Evaluator(Ast.Program program, OresContext context) {
             this.program = program;
@@ -354,12 +352,12 @@ public final class OresEvalRootNode extends RootNode {
                         ? null
                         : env.capture(capturePlan.names());
 
-                if (captured == null) {
-                    Map<Ast.LambdaExpr, Invokable> cache = nonLexical ? nonLexicalNoEnvClosures : lexicalNoEnvClosures;
-                    return cache.computeIfAbsent(lambda,
-                            ignored -> args -> invokeLambda(lambda, null, nonLexical, args));
-                }
-
+                /*
+                 * Keep producing a distinct first-class function value even on
+                 * the no-environment path. Oreslang currently exposes object
+                 * equality, so interning stateless closures here would change
+                 * observable function identity.
+                 */
                 return (Invokable) args -> invokeLambda(lambda, captured, nonLexical, args);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
