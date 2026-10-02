@@ -410,6 +410,67 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void ordinaryClassMessagesAreMutableCopiesButSharedClassesAreReadonly() throws Exception {
+        String copied = run("""
+                define class Bar
+                  pub let String foo = "start";
+                end
+
+                fnc mutate_copy(Bar mut bar) => void {
+                  bar.foo = "actor-copy";
+                  stdio.stdout.write(bar.foo);
+                  return;
+                }
+
+                pub routine main() => void {
+                  let Bar original = new Bar();
+                  val ref = actor.spawn(mutate_copy);
+                  actor.send(ref, original);
+                  actor.stop(ref);
+                  actor.join(ref);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(original.foo);
+                  return;
+                }
+                """);
+        assertEquals("actor-copy:start", copied);
+
+        String shared = run("""
+                pub interface DownMessage {
+                  reason: String;
+                }
+
+                define class Bar
+                  pub let String foo = "start";
+                end
+
+                fnc supervisor(@Structural DownMessage message) => void {
+                  stdio.stdout.write(message.reason);
+                  return;
+                }
+
+                fnc mutate_shared(Bar mut bar) => void {
+                  bar.foo = "forbidden";
+                  return;
+                }
+
+                pub routine main() => void {
+                  let Bar original = new Bar();
+                  val shared_bar = process.share_readonly(original);
+                  val supervisor_ref = actor.spawn(supervisor);
+                  val worker_ref = actor.spawn(mutate_shared);
+                  actor.monitor(worker_ref, supervisor_ref);
+                  actor.send(worker_ref, shared_bar);
+                  actor.join(worker_ref);
+                  actor.stop(supervisor_ref);
+                  actor.join(supervisor_ref);
+                  return;
+                }
+                """);
+        assertEquals("failed", shared);
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
