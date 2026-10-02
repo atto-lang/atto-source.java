@@ -349,6 +349,76 @@ public final class ActorRuntime implements AutoCloseable {
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
     }
 
+    /**
+     * Materializes a receiver-owned mutable copy from a value that has already
+     * passed freeze(). This is used by actor RPC boundaries where Oreslang
+     * by-value aggregates must become owned by the receiving actor rather than
+     * retaining the transport's unmodifiable container representation.
+     *
+     * Shared<T> deliberately remains shared/read-only.
+     */
+    static Object ownedCopyOfFrozen(Object value) {
+        if (value == null
+                || value instanceof String
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Byte
+                || value instanceof Short
+                || value instanceof Integer
+                || value instanceof Long
+                || value instanceof Float
+                || value instanceof Double
+                || value instanceof BigInteger
+                || value instanceof BigDecimal
+                || value instanceof Enum<?>
+                || value instanceof UUID
+                || value instanceof ActorId
+                || value instanceof OresValues.Complex) {
+            return value;
+        }
+        if (value instanceof OresValues.OptionValue option) {
+            return option.present()
+                    ? new OresValues.OptionValue(true, ownedCopyOfFrozen(option.value()))
+                    : option;
+        }
+        if (value instanceof Shared<?>) return value;
+        if (value instanceof ActorRef<?>) {
+            throw new IllegalArgumentException(
+                    "context-free actor RPC cannot materialize a live ActorRef capability");
+        }
+        if (value instanceof List<?> list) {
+            ArrayList<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(ownedCopyOfFrozen(item));
+            return copy;
+        }
+        if (value instanceof Set<?> set) {
+            LinkedHashSet<Object> copy = new LinkedHashSet<>();
+            for (Object item : set) {
+                Object owned = ownedCopyOfFrozen(item);
+                if (!copy.add(owned)) {
+                    throw new IllegalArgumentException(
+                            "actor-owned set elements collide during transport materialization");
+                }
+            }
+            return copy;
+        }
+        if (value instanceof Map<?, ?> map) {
+            LinkedHashMap<Object, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                Object key = ownedCopyOfFrozen(entry.getKey());
+                Object item = ownedCopyOfFrozen(entry.getValue());
+                if (copy.containsKey(key)) {
+                    throw new IllegalArgumentException(
+                            "actor-owned map keys collide during transport materialization");
+                }
+                copy.put(key, item);
+            }
+            return copy;
+        }
+        throw new IllegalArgumentException(
+                "frozen transport contains unsupported value " + value.getClass().getName());
+    }
+
     private static void enterComposite(Object value, IdentityHashMap<Object, Boolean> path) {
         if (path.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic actor message graphs are not Sendable");
