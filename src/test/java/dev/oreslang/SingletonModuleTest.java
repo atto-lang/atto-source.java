@@ -658,6 +658,38 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void nestedLocalStructInsideSingletonRetainsProcessOwnedModuleState() throws Exception {
+        String program = """
+                define singleton module nested_local_singleton_owner as
+                  let int count = 41;
+
+                  pub fnc read() => int {
+                    if true; do
+                      struct Local {
+                        pub value() => int {
+                          return count + 1;
+                        }
+                      }
+
+                      val Local local = Local {};
+                      return local.value();
+                    fi
+                    return 0;
+                  }
+                end
+
+                define module app as
+                  pub fnc main() => void {
+                    stdio.stdout.write(await nested_local_singleton_owner.read());
+                    return;
+                  }
+                end
+                """;
+
+        assertTrue(eval(program, "nested-local-singleton-owner.ores").contains("42"));
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
