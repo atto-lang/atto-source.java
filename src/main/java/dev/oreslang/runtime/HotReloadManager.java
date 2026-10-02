@@ -61,7 +61,9 @@ public final class HotReloadManager implements AutoCloseable {
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
         long id = sequence.incrementAndGet();
-        Context context = policy.restrictedContextBuilder(executionProfile).build();
+        Context context = policy.restrictedContextBuilder(
+                executionProfile,
+                "--ores-code-generation=" + id).build();
         try {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
