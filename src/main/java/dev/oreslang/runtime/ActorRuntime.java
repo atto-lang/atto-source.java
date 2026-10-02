@@ -13,6 +13,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CancellationException;
 import java.util.function.Supplier;
 
@@ -27,14 +28,23 @@ import java.util.function.Supplier;
 public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong actorGcRequests = new AtomicLong();
+    private final AtomicLong processGcRequests = new AtomicLong();
+    private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final IsolatePolicy policyCeiling;
+    private final GarbageCollector garbageCollector;
 
     public ActorRuntime() {
         this(IsolatePolicy.developer());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling) {
+        this(policyCeiling, GarbageCollector.hostDefault());
+    }
+
+    public ActorRuntime(IsolatePolicy policyCeiling, GarbageCollector garbageCollector) {
         this.policyCeiling = java.util.Objects.requireNonNull(policyCeiling);
+        this.garbageCollector = java.util.Objects.requireNonNull(garbageCollector);
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
@@ -45,6 +55,45 @@ public final class ActorRuntime implements AutoCloseable {
 
     public record Shared<T>(T value) { }
 
+    /**
+     * Backend hook for explicit GC requests.
+     *
+     * The language contract distinguishes actor-local collection from
+     * process-wide collection. A backend must never implement collectActor by
+     * silently escalating it to process-wide GC.
+     */
+    public interface GarbageCollector {
+        void collectActor(ActorId actorId);
+        void collectProcess();
+
+        static GarbageCollector hostDefault() {
+            return HostGarbageCollector.INSTANCE;
+        }
+    }
+
+    private enum HostGarbageCollector implements GarbageCollector {
+        INSTANCE;
+
+        @Override
+        public void collectActor(ActorId actorId) {
+            /*
+             * HotSpot/Graal JVM GC has no API for collecting one actor's Java
+             * object graph. Preserve the actor-local semantic boundary: this is
+             * a cooperative collection point only. Native/isolate backends plug
+             * in a collector that can reclaim the actor heap physically.
+             */
+            Thread.yield();
+        }
+
+        @Override
+        public void collectProcess() {
+            // Explicit process.gc() is a request/hint; the host VM may ignore it.
+            System.gc();
+        }
+    }
+
+    public record GcStats(long actorRequests, long processRequests) { }
+
     @FunctionalInterface
     public interface Behavior<M> {
         void onMessage(M message, ActorContext<M> context) throws Exception;
@@ -54,6 +103,9 @@ public final class ActorRuntime implements AutoCloseable {
         ActorRef<M> self();
         ActorRuntime runtime();
         IsolatePolicy policy();
+
+        /** Request collection of this actor's private heap only. */
+        void gc();
     }
 
     public final class ActorRef<M> {
@@ -123,6 +175,34 @@ public final class ActorRuntime implements AutoCloseable {
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
+    }
+
+    /**
+     * Request collection of the current actor's private heap.
+     *
+     * This method is valid only while running actor behavior. It deliberately
+     * does not fall back to process-wide System.gc(), because doing so would
+     * violate the actor isolation/latency contract.
+     */
+    public void gcCurrentActor() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            throw new IllegalStateException("actor.gc() requires a current actor");
+        }
+        actorGcRequests.incrementAndGet();
+        cell.gcRequests.incrementAndGet();
+        garbageCollector.collectActor(cell.ref.id());
+    }
+
+    /** Request process-wide collection. This is intentionally the expensive path. */
+    public void gcProcess() {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        processGcRequests.incrementAndGet();
+        garbageCollector.collectProcess();
+    }
+
+    public GcStats gcStats() {
+        return new GcStats(actorGcRequests.get(), processGcRequests.get());
     }
 
     /**
@@ -201,6 +281,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
+        private final AtomicLong gcRequests = new AtomicLong();
         private volatile Thread thread;
 
         private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
@@ -216,11 +297,16 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void run() {
+            if (currentActor.get() != null) {
+                throw new IllegalStateException("nested actor execution on one carrier is not allowed");
+            }
+            currentActor.set(this);
             final Behavior<M> behavior = behaviorFactory.get();
             final ActorContext<M> context = new ActorContext<>() {
                 @Override public ActorRef<M> self() { return ref; }
                 @Override public ActorRuntime runtime() { return ActorRuntime.this; }
                 @Override public IsolatePolicy policy() { return policy; }
+                @Override public void gc() { ActorRuntime.this.gcCurrentActor(); }
             };
             try {
                 while (true) {
@@ -234,6 +320,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // v0 fail-stop supervision policy. A later supervisor layer will
                 // expose restart/escalation strategies as typed Oreslang APIs.
             } finally {
+                mailbox.clear();
+                currentActor.remove();
                 actors.remove(ref.id(), this);
             }
         }
