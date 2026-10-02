@@ -419,6 +419,18 @@ public final class TypeChecker {
                     + "' cannot use a generic class until proxy Send constraints are explicit");
         }
 
+        for (Ast.FieldDecl classField : klass.fields()) {
+            if (classField.type() == null) {
+                throw new IllegalArgumentException("singleton proxy storage field '" + klass.name() + "."
+                        + classField.name() + "' requires an explicit process-stable type");
+            }
+            if (containsTypeAlias(classField.type())) {
+                throw new IllegalArgumentException("singleton proxy storage field '" + klass.name() + "."
+                        + classField.name()
+                        + "' cannot use type aliases in process-lifetime state; spell the storage type explicitly");
+            }
+        }
+
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) continue;
             if (method.async()) {
