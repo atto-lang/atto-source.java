@@ -544,7 +544,9 @@ public final class TypeChecker {
                 locals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 validateProcessOwnedExpr(processOwner, processClass, destructure.initializer(), locals, where);
-                for (Ast.DestructureBinding binding : destructure.bindings()) locals.add(binding.name());
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) locals.add(binding.name());
+                }
             } else if (stmt instanceof Ast.ReturnStmt ret) {
                 if (ret.value() != null) validateProcessOwnedExpr(processOwner, processClass, ret.value(), locals, where);
             } else if (stmt instanceof Ast.ExprStmt expression) {
@@ -753,7 +755,9 @@ public final class TypeChecker {
                 shadowed.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 if (referencesActorModuleBinding(destructure.initializer(), actorBindings, shadowed)) return true;
-                for (Ast.DestructureBinding binding : destructure.bindings()) shadowed.add(binding.name());
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) shadowed.add(binding.name());
+                }
             } else if (stmt instanceof Ast.ReturnStmt ret) {
                 if (ret.value() != null && referencesActorModuleBinding(ret.value(), actorBindings, shadowed)) return true;
             } else if (stmt instanceof Ast.ExprStmt expression) {
@@ -1102,16 +1106,22 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
-            Type source = typeOf(destructure.initializer(), env, generics, self);
-            if (source instanceof Tuple tuple) {
-                if (tuple.elements().size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
+            Type source = deref(typeOf(destructure.initializer(), env, generics, self));
+            if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+                List<Type> elementTypes = sequenceDestructureTypes(source, destructure.bindings().size());
                 for (int i = 0; i < destructure.bindings().size(); i++) {
                     Ast.DestructureBinding binding = destructure.bindings().get(i);
-                    env.define(binding.name(), tuple.elements().get(i), binding.kind());
+                    if (!binding.isDiscard()) {
+                        env.define(binding.name(), elementTypes.get(i), binding.kind());
+                    }
                 }
-            } else if (source instanceof ListType list) {
-                for (Ast.DestructureBinding binding : destructure.bindings()) env.define(binding.name(), list.element(), binding.kind());
-            } else throw new IllegalArgumentException("destructuring requires a tuple or array/list value");
+            } else {
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) {
+                        env.define(binding.name(), objectDestructureMemberType(source, binding.name()), binding.kind());
+                    }
+                }
+            }
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
@@ -1793,6 +1803,46 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
+    }
+
+    private List<Type> sequenceDestructureTypes(Type source, int arity) {
+        source = deref(source);
+        if (source instanceof Tuple tuple) {
+            if (tuple.elements().size() != arity) {
+                throw new IllegalArgumentException("destructure arity mismatch: tuple has "
+                        + tuple.elements().size() + " element(s), pattern has " + arity);
+            }
+            return tuple.elements();
+        }
+        if (source instanceof ListType list) {
+            return java.util.Collections.nCopies(arity, list.element());
+        }
+        throw new IllegalArgumentException("sequence destructuring requires a tuple or array/list value");
+    }
+
+    private Type objectDestructureMemberType(Type source, String memberName) {
+        source = deref(source);
+        if (source instanceof Record record) {
+            Type member = record.members().get(memberName);
+            if (member == null) {
+                throw new IllegalArgumentException("object destructure requires member '" + memberName + "'");
+            }
+            return member;
+        }
+        if (source instanceof Named named) {
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) {
+                throw new IllegalArgumentException("object destructuring requires a struct, class, or record/map-like value");
+            }
+            Type member = findFieldType(klass, memberName, named, new LinkedHashSet<>());
+            if (member == null) {
+                throw new IllegalArgumentException("object destructure requires field '" + memberName
+                        + "' on " + klass.name());
+            }
+            return member;
+        }
+        if (source == Unknown.INSTANCE) return Unknown.INSTANCE;
+        throw new IllegalArgumentException("object destructuring requires a struct, class, or record/map-like value");
     }
 
     private Type iterableElementType(Type iterable) {
