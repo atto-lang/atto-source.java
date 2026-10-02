@@ -570,11 +570,13 @@ public final class ActorRuntime implements AutoCloseable {
                 return List.copyOf(frozen);
             }
             if (value instanceof Sendable sendable) {
-                Object replacement = sendable.freezeForSend();
+                Object replacement = sendable.freezeForSend(
+                        nested -> freeze(nested, path, depth + 1));
                 if (replacement == value) {
-                    throw new IllegalArgumentException("Sendable.freezeForSend() must return an immutable transport representation, not this");
+                    throw new IllegalArgumentException(
+                            "Sendable.freezeForSend() must return an actor-local copy or immutable transport value, not this");
                 }
-                return freeze(replacement, path, depth + 1);
+                return replacement;
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -583,9 +585,28 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    /** Implemented by generated Oreslang values that define a safe transport representation. */
+    @FunctionalInterface
+    public interface SendFreezer {
+        Object freeze(Object value);
+    }
+
+    @FunctionalInterface
+    public interface SendSizer {
+        long estimatedBytes(Object value);
+    }
+
+    /**
+     * Implemented only by trusted/generated Oreslang runtime values.
+     * Implementations must create a transport-safe actor-local copy and must
+     * recursively process nested values through the supplied freezer so cycle
+     * detection and depth limits remain one graph traversal.
+     */
     public interface Sendable {
-        Object freezeForSend();
+        Object freezeForSend(SendFreezer freezer);
+
+        default long estimatedSendBytes(SendSizer sizer) {
+            return 64L;
+        }
     }
 
     public static long estimatedFrozenBytes(Object value) {
@@ -615,7 +636,8 @@ public final class ActorRuntime implements AutoCloseable {
         boolean composite = value instanceof List<?>
                 || value instanceof Set<?>
                 || value instanceof Map<?, ?>
-                || value.getClass().isArray();
+                || value.getClass().isArray()
+                || value instanceof Sendable;
         if (composite && path.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic mutable graphs cannot cross actor boundaries");
         }
@@ -650,6 +672,10 @@ public final class ActorRuntime implements AutoCloseable {
                     total = safeAdd(total, estimatedFrozenBytes(Array.get(value, i), path, depth + 1));
                 }
                 return total;
+            }
+            if (value instanceof Sendable sendable) {
+                return sendable.estimatedSendBytes(
+                        nested -> estimatedFrozenBytes(nested, path, depth + 1));
             }
             return 64L;
         } finally {
