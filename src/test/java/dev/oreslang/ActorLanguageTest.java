@@ -75,6 +75,62 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void statefulActorKeepsPrivateStateAcrossMessages() throws Exception {
+        String output = run("""
+                fnc counter(str message, int state) => int {
+                  stdio.stdout.write(state);
+                  return state + 1;
+                }
+
+                pub routine main() => void {
+                  val counter_ref = actor.spawn(counter, 0);
+                  actor.send(counter_ref, "tick");
+                  actor.send(counter_ref, "tick");
+                  actor.stop(counter_ref);
+                  actor.join(counter_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("01", output);
+    }
+
+    @Test
+    void supervisorCanMonitorChildFailure() throws Exception {
+        String output = run("""
+                pub interface DownMessage {
+                  type: String;
+                  reason: String;
+                }
+
+                fnc supervisor(@Structural DownMessage message) => void {
+                  stdio.stdout.write(message.type);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(message.reason);
+                  return;
+                }
+
+                fnc crashing_worker(str message) => void {
+                  actor.join(actor.self);
+                  return;
+                }
+
+                pub routine main() => void {
+                  val supervisor_ref = actor.spawn(supervisor);
+                  val child_ref = actor.spawn(crashing_worker);
+                  actor.monitor(child_ref, supervisor_ref);
+                  actor.send(child_ref, "boom");
+                  actor.join(child_ref);
+                  actor.stop(supervisor_ref);
+                  actor.join(supervisor_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("DOWN:failed", output);
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
