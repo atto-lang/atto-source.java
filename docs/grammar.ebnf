@@ -95,6 +95,7 @@ statement       = binding_decl
                 | defer_stmt
                 | recover_stmt
                 | panic_stmt
+                | stop_stmt
                 | break_stmt
                 | continue_stmt
                 | for_stmt
@@ -104,6 +105,7 @@ return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
 recover_stmt    = "recover" expression stmt_terminator ;
 panic_stmt      = "panic" expression stmt_terminator ;
+stop_stmt       = "stop" stmt_terminator ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
 
@@ -206,7 +208,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 *)
 
 (* Reserved keywords:
-   - "of", "is", "as", "actor", "isolate", "recover", and "panic" are globally reserved tokens.
+   - "of", "is", "as", "actor", "isolate", "recover", "panic", and "stop" are globally reserved tokens.
    - They may appear only in grammar positions assigned to those keywords.
    - They are never IDENT tokens and therefore cannot name variables, parameters,
      callables, modules, classes, interfaces, fields, methods, type aliases,
@@ -245,6 +247,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - actor defaults to SHARED runtime mode; "actor isolate" requests the stronger
      isolate backend contract and cannot capture mutable, borrowed, or move-only outer state.
    - actor failure is fail-stop for that actor; it does not unwind the spawning/main callable.
+   - "stop;" is legal only in an actor body. It immediately terminates that actor after
+     finally/defer cleanup, bypasses catch/recover, discards queued mailbox work, and does
+     not mark the actor failed. ActorRef.stop() remains the graceful/FIFO shutdown API.
    - recover evaluates/registers an arity-1 handler on the current callable invocation.
    - defer handlers run before recovery. Recovery handlers run LIFO while a failure unwinds.
    - normal recover-handler completion consumes the failure and becomes the callable result.
