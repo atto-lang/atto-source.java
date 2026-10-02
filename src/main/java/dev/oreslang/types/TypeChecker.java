@@ -1909,8 +1909,8 @@ public final class TypeChecker {
                 if (declaration != null) {
                     if (declaration.bindingKind() != Ast.BindingKind.LET) {
                         throw new IllegalArgumentException("field '" + klass.name() + "." + member.member()
-                                + "' is " + declaration.bindingKind().name().toLowerCase()
-                                + " and cannot be assigned; declare it with let for mutable state");
+                                + "' is immutable (" + declaration.bindingKind().name().toLowerCase()
+                                + ") and cannot be assigned; declare the field with let to permit mutation");
                     }
                     Type field = findFieldType(klass, member.member(), named, new LinkedHashSet<>());
                     if (field != null) return field;
