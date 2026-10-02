@@ -47,7 +47,7 @@ final class ActorRuntimeTest {
             AtomicReference<IsolatePolicy> observed = new AtomicReference<>();
             IsolatePolicy strict = IsolatePolicy.strictFaas();
 
-            var ref = runtime.<String>spawn(strict, () -> (message, context) -> {
+            var ref = runtime.<String>spawnPrivate(strict, factoryContext -> (message, context) -> {
                 observed.set(context.policy());
                 received.countDown();
             });
@@ -408,6 +408,71 @@ final class ActorRuntimeTest {
                     IllegalStateException.class,
                     () -> captured.get().reserveHeap(64));
             assertTrue(failure.getMessage().contains("owning actor"));
+        }
+    }
+
+
+    @Test
+    void adversarialActorsRejectSupplierFactoriesThatCanCaptureHostState() {
+        IsolatePolicy strict = IsolatePolicy.strictFaas();
+        try (ActorRuntime runtime = new ActorRuntime(strict)) {
+            assertThrows(SecurityException.class, () ->
+                    runtime.<String>spawnPrivate(strict, () -> (message, context) -> { }));
+
+            assertDoesNotThrow(() ->
+                    runtime.<String>spawnPrivate(strict, factoryContext -> (message, context) -> { }));
+        }
+    }
+
+    @Test
+    void actorFailureIsRetainedOnRefAndSubsequentSendReportsTermination() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                entered.countDown();
+                throw new IllegalStateException("boom");
+            });
+
+            ref.send("fail");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
+
+            assertFalse(ref.isAlive());
+            assertTrue(ref.failure().isPresent());
+            assertEquals("boom", ref.failure().orElseThrow().getMessage());
+
+            ActorRuntime.ActorTerminatedException terminated = assertThrows(
+                    ActorRuntime.ActorTerminatedException.class,
+                    () -> ref.send("after-failure"));
+            assertSame(ref.failure().orElseThrow(), terminated.getCause());
+        }
+    }
+
+    @Test
+    void explicitStopClosesPrivateSliceAndRejectsFurtherMessages() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch reserved = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.MemoryReservation> reservation = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(factoryContext -> {
+                reservation.set(factoryContext.privateMemory().orElseThrow().reserveHeap(4096));
+                reserved.countDown();
+                return (message, context) -> { };
+            });
+
+            ref.send("initialize");
+            assertTrue(reserved.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.privateMemoryBytes() >= 4096);
+
+            ref.stop();
+
+            assertFalse(ref.isAlive());
+            assertEquals(0L, runtime.privateMemoryBytes());
+            assertThrows(ActorRuntime.ActorTerminatedException.class, () -> ref.send("after-stop"));
+            reservation.get().close(); // idempotent after slice teardown
+            assertEquals(0L, runtime.privateMemoryBytes());
         }
     }
 
