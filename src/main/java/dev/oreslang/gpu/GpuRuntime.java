@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class GpuRuntime {
     private static final AtomicReference<Backend> PROCESS_BACKEND = new AtomicReference<>();
 
+    public enum CallableKind { FNC, ROUTINE }
+
     public interface Backend {
         String name();
 
@@ -25,7 +27,7 @@ public final class GpuRuntime {
 
     public record Invocation(
             String callable,
-            String callableKind,
+            CallableKind callableKind,
             List<?> arguments) {
         public Invocation {
             Objects.requireNonNull(callable, "callable");
@@ -51,7 +53,7 @@ public final class GpuRuntime {
         return backend == null ? "unavailable" : backend.name();
     }
 
-    public Object dispatch(String callable, String callableKind, List<?> arguments) {
+    public Object dispatch(String callable, CallableKind callableKind, List<?> arguments) {
         Invocation invocation = new Invocation(callable, callableKind, arguments);
         Backend backend = PROCESS_BACKEND.get();
         if (backend == null) {
