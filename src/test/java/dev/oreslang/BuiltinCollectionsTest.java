@@ -17,7 +17,7 @@ final class BuiltinCollectionsTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
                   pub fnc main() => void {
-                    val map = new Map<String, String>() {
+                    let map = new Map<String, String>() {
                       "field1": "bar",
                       "field2": "baz",
                       @override
