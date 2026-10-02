@@ -139,6 +139,31 @@ end
 
 Inline object and array literals are values, not classes, and cannot be inherited from.
 
+## Strings and template strings
+
+Oreslang uses JavaScript-style text delimiters:
+
+- both single-quoted and double-quoted strings are supported;
+- the opposite quote may appear unescaped, for example `"it's valid"` and `'say "hello"'`;
+- matching quotes and backslashes may be escaped;
+- ordinary single/double-quoted strings are single-line;
+- backticks create template strings, permit raw multiline text, and evaluate `${...}` as a normal Oreslang expression;
+- interpolation stringifies its result and reads referenced values without moving them.
+
+```ores
+val who = "Ores";
+val count = 2;
+val message = `hello ${who}: ${count + 1}`;
+
+val multiline = `first line
+second line: ${who}`;
+
+val nested = `outer ${`inner ${count}`}`;
+val escaped = `literal \${who} and a \`backtick\``;
+```
+
+Template interpolation understands nested braces, quoted strings, comments, and nested template strings.
+
 ## Inline values
 
 Structural inline object:
