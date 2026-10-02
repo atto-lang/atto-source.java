@@ -56,11 +56,6 @@ public final class CapabilityChecker {
 
     private static void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
-        if (expr instanceof Ast.CallExpr call
-                && call.callee() instanceof Ast.NameExpr n
-                && n.name().equals("share")) {
-            require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "share");
-        }
         else if (expr instanceof Ast.CallExpr c) {
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
