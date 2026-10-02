@@ -44,6 +44,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private boolean awaitAllowed;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -186,7 +187,13 @@ public final class TypeChecker {
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
-        checkBlock(fn.body(), env, generics, returns, null);
+        boolean previousAwaitAllowed = awaitAllowed;
+        awaitAllowed = fn.async() || fn.actorKind() != Ast.ActorKind.NONE;
+        try {
+            checkBlock(fn.body(), env, generics, returns, null);
+        } finally {
+            awaitAllowed = previousAwaitAllowed;
+        }
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
         }
@@ -266,7 +273,13 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
-            checkBlock(method.body(), env, generics, returns, callableSelf);
+            boolean previousAwaitAllowed = awaitAllowed;
+            awaitAllowed = method.async() || klass.actorKind() != Ast.ActorKind.NONE;
+            try {
+                checkBlock(method.body(), env, generics, returns, callableSelf);
+            } finally {
+                awaitAllowed = previousAwaitAllowed;
+            }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
@@ -664,6 +677,10 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (!awaitAllowed) {
+                throw new IllegalArgumentException(
+                        "await is only valid in async callables or actor-dispatched callables");
+            }
             return awaitResultType(typeOf(awaited.expression(), env, generics, self));
         }
         if (expr instanceof Ast.ListExpr list) {
@@ -697,7 +714,13 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            boolean previousAwaitAllowed = awaitAllowed;
+            awaitAllowed = false; // async lambdas are not a language feature yet.
+            try {
+                checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            } finally {
+                awaitAllowed = previousAwaitAllowed;
+            }
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
