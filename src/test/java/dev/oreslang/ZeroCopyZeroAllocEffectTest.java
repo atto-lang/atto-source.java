@@ -509,6 +509,114 @@ final class ZeroCopyZeroAllocEffectTest {
         assertTrue(duplicateError.getMessage().contains("duplicate @NoCopy"));
     }
 
+    @Test
+    void genericPrimitiveStructCopyRemainsNoAlloc() {
+        assertDoesNotThrow(() -> check("""
+                struct Box<T> {
+                  value: T;
+                }
+
+                @NoAlloc
+                fnc duplicate(Box<int> value) => Box<int> {
+                  return copy(value);
+                }
+                """));
+    }
+
+    @Test
+    void immutableShareIsActuallyZeroCopy() {
+        assertDoesNotThrow(() -> check("""
+                @NoAlloc
+                @NoCopy
+                fnc expose(String value) => &String {
+                  return share(value);
+                }
+                """));
+
+        assertDoesNotThrow(() -> check("""
+                @NoAlloc
+                @NoCopy
+                fnc expose(int value) => &int {
+                  return share(value);
+                }
+                """));
+    }
+
+    @Test
+    void traitOwnedDefaultInitializerCannotBeMaskedByPositionalArgs() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                check("""
+                        struct Point {
+                          x: int;
+                        }
+
+                        define trait HasDefault as
+                          private val Point point = copy(Point { x = 1 });
+                        end
+
+                        define class Holder with HasDefault as
+                          pub val int value;
+                        end
+
+                        @NoCopy
+                        fnc make() => Holder {
+                          return new Holder(5);
+                        }
+                        """));
+
+        assertTrue(error.getMessage().contains("@NoCopy contract violated"));
+        assertTrue(error.getMessage().contains("copy(...)"));
+    }
+
+    @Test
+    void shadowedCallableNamesRemainDynamicAndConservative() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                check("""
+                        fnc target() => int {
+                          return 1;
+                        }
+
+                        @NoAlloc
+                        fnc invoke((() -> int) target) => int {
+                          return target();
+                        }
+                        """));
+
+        assertTrue(error.getMessage().contains("@NoAlloc contract violated"));
+        assertTrue(error.getMessage().contains("dynamic callable binding 'target(...)'"));
+    }
+
+    @Test
+    void capturingClosureAllocatesButNonCapturingLambdaBodyDoesNotRunAtCreation() {
+        IllegalArgumentException capture = assertThrows(IllegalArgumentException.class, () ->
+                check("""
+                        @NoAlloc
+                        fnc make() => int {
+                          val int base = 41;
+                          val callback = || -> {
+                            return base + 1;
+                          };
+                          return 1;
+                        }
+                        """));
+        assertTrue(capture.getMessage().contains("capturing closure/lambda environment"));
+
+        assertDoesNotThrow(() -> check("""
+                define class Buffer as
+                  pub val int value = 1;
+                end
+
+                @NoAlloc
+                fnc make() => int {
+                  val callback = || -> {
+                    val Buffer buffer = new Buffer();
+                    return buffer.value;
+                  };
+                  return 1;
+                }
+                """));
+    }
+
     private static void check(String source) {
         TypeChecker.check(Parser.parse(source));
     }
