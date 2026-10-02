@@ -690,6 +690,29 @@ public final class ChannelRuntime {
             throw new UnsupportedOperationException("channel completion is runtime-owned");
         }
 
+        @Override
+        public final CompletableFuture<V> completeAsync(
+                java.util.function.Supplier<? extends V> supplier) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
+        @Override
+        public final CompletableFuture<V> completeAsync(
+                java.util.function.Supplier<? extends V> supplier,
+                java.util.concurrent.Executor executor) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
+        @Override
+        public final CompletableFuture<V> completeOnTimeout(V value, long timeout, TimeUnit unit) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
+        @Override
+        public final CompletableFuture<V> orTimeout(long timeout, TimeUnit unit) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
         final boolean completeDirect(V value) {
             return super.complete(value);
         }
