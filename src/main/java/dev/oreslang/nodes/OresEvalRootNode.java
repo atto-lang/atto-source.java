@@ -69,7 +69,6 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
-        private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new ConcurrentHashMap<>();
         private final Map<String, Env> actorModuleStates = new HashMap<>();
         private final Set<String> actorModuleInitializing = new LinkedHashSet<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
@@ -239,8 +238,10 @@ public final class OresEvalRootNode extends RootNode {
         private ProcessSingletonRegistry.Handle<SingletonState> singletonHandle(Ast.ModuleDecl module) {
             ProcessSingletonRegistry.requireBackendFor(context.graalIsolated());
             String key = singletonKey(module);
-            return singletonHandles.computeIfAbsent(key,
-                    ignored -> ProcessSingletonRegistry.getOrCreate(key, () -> initializeSingleton(module)));
+            // Do not cache handles per evaluator. A retryable initialization
+            // failure replaces the registry cell; every access must resolve the
+            // current process cell rather than pinning a stale failed handle.
+            return ProcessSingletonRegistry.getOrCreate(key, () -> initializeSingleton(module));
         }
 
         private SingletonState initializeSingleton(Ast.ModuleDecl module) {
