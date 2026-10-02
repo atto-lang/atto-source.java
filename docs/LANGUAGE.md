@@ -312,7 +312,46 @@ try {
 
 ## Actors
 
-Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
+Actors own their mutable heaps **semantically**. Cross-actor communication occurs only through mailboxes. Ordinary messages are deep-frozen/copied at the boundary; cyclic mutable graphs and arbitrary host objects are rejected. Mailboxes are bounded by both message count and estimated bytes.
+
+The Java/Truffle reference runtime still uses the JVM heap as its physical backing store. That is an implementation detail, not permission to share mutable guest objects: actor-local allocation/lifetime ownership is enforced by the language contract, while the compiler uses affine ownership and lexical drop points to eliminate most garbage before tracing collection is needed.
+
+Actor entrypoints are named functions or `nlex` lambdas. A lexical lambda that captures caller-local state cannot be spawned as an actor because that would create a mutable cross-actor alias.
+
+```ores
+fnc worker(str message) => void {
+  stdio.stdout.write(message);
+  return;
+}
+
+pub routine main() => void {
+  val ref = actor.spawn(worker);
+  actor.send(ref, "hello");
+  actor.stop(ref);
+  actor.join(ref);
+  return;
+}
+```
+
+For large immutable payloads, `process.share_readonly(value)` freezes the graph once and returns an opaque shared-region handle. Sending that handle reuses the immutable backing graph instead of copying it again.
+
+### Singleton actors
+
+`actor.singleton(name, handler)` returns one named actor instance per Oreslang runtime/context. This is the safe singleton primitive for mutable state: the state remains inside that actor's heap and every other actor accesses it by sending messages.
+
+A `singleton` keyword that means "shared mutable object in every actor" is intentionally **not** part of the language. If source syntax is added later, `singleton actor ...` should lower to the same named-actor primitive. Read-only data sharing remains explicit through `process.share_readonly`.
+
+## Memory reclamation
+
+Oreslang is ownership/drop first and GC second:
+
+1. affine ownership and move checking make lifetimes statically knowable where possible;
+2. lexical scope exit releases owned interpreter bindings promptly;
+3. actor termination drops the actor's reachable state as a unit at the language-semantic level;
+4. cycles, dynamic graphs, hot-loaded generations, and backing-runtime objects are reclaimed by automatic collection;
+5. `process.gc()` gives trusted/developer code an explicit collection request.
+
+In the current Java reference runtime, `process.gc()` is a **rate-limited JVM collector hint** because the physical backing heap is still JVM-wide. The call is capability-gated by `GC_CONTROL` so adversarial/FaaS guest code cannot force repeated global collection pauses. The API is deliberately shaped so a future actor-local heap collector can implement the same call without changing source programs.
 
 ## Isolates
 
@@ -507,7 +546,7 @@ Security is layered. Oreslang uses a deny-by-default language capability policy 
 
 An isolate policy can independently allow or deny:
 
-`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SPAWN`, `ACTOR_SEND`, `ACTOR_CONTROL`, `ACTOR_SHARE_READONLY`, `GC_CONTROL`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
 
 The trusted compiler API can reject forbidden API usage before execution:
 
