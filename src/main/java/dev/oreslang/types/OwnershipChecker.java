@@ -41,6 +41,10 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final ArrayDeque<Map<String, Ast.ClassDecl>> localClassScopes = new ArrayDeque<>();
     private final ArrayDeque<Map<String, Ast.TypeAliasDecl>> localAliasScopes = new ArrayDeque<>();
+    private final IdentityHashMap<Ast.ClassDecl, String> localClassIdentities = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.ClassDecl, List<Ast.Stmt>> localClassLexicalBodies = new IdentityHashMap<>();
+    private final Map<String, Ast.ClassDecl> escapedLocalClasses = new HashMap<>();
+    private int nextLocalTypeIdentity = 1;
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -97,15 +101,20 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
-        Scope moduleScope = new Scope(null);
-        seedModuleState(module, moduleScope);
-        Scope scope = new Scope(moduleScope);
-        for (Ast.Param param : fn.parameters()) {
-            scope.define(param.name(), stateForParam(param));
+        pushLocalTypeScope(fn.body());
+        try {
+            Scope moduleScope = new Scope(null);
+            seedModuleState(module, moduleScope);
+            Scope scope = new Scope(moduleScope);
+            for (Ast.Param param : fn.parameters()) {
+                scope.define(param.name(), stateForParam(param));
+            }
+            checkBlock(fn.body(), scope, canonicalOwnershipType(fn.returnType()));
+            scope.close();
+            moduleScope.close();
+        } finally {
+            popLocalTypeScope();
         }
-        checkBlock(fn.body(), scope, fn.returnType());
-        scope.close();
-        moduleScope.close();
     }
 
     private void seedModuleState(Ast.ModuleDecl module, Scope scope) {
@@ -131,59 +140,77 @@ public final class OwnershipChecker {
 
     private void checkClass(Ast.ModuleDecl module, Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
-            Scope moduleScope = new Scope(null);
-            seedModuleState(module, moduleScope);
-            Scope scope = new Scope(moduleScope);
-            if (!method.isStatic()) {
-                Ast.TypeRef explicit = method.explicitReceiverType();
-                boolean mutableReceiver = explicit != null
-                        && explicit.isBorrow()
-                        && explicit.mutableBorrow();
-                Ast.TypeRef selfType = Ast.TypeRef.simple(klass.name());
-                scope.define(
-                        "self",
-                        new VarState(
-                                selfType,
-                                false,
-                                mutableReceiver ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
-                                Origin.PARAM));
+            pushLocalTypeScope(method.body());
+            try {
+                Scope moduleScope = new Scope(null);
+                seedModuleState(module, moduleScope);
+                Scope scope = new Scope(moduleScope);
+                if (!method.isStatic()) {
+                    Ast.TypeRef explicit = method.explicitReceiverType();
+                    boolean mutableReceiver = explicit != null
+                            && explicit.isBorrow()
+                            && explicit.mutableBorrow();
+                    Ast.TypeRef selfType = canonicalOwnershipClassType(klass);
+                    scope.define(
+                            "self",
+                            new VarState(
+                                    selfType,
+                                    false,
+                                    mutableReceiver ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
+                                    Origin.PARAM));
+                }
+                for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
+                checkBlock(method.body(), scope, canonicalOwnershipType(method.returnType()));
+                scope.close();
+                moduleScope.close();
+            } finally {
+                popLocalTypeScope();
             }
-            for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
-            moduleScope.close();
         }
     }
 
     private VarState stateForParam(Ast.Param param) {
-        ValueKind kind = param.structural() && !param.type().isBorrow() ? ValueKind.IMM_BORROW : kindOfType(param.type());
+        Ast.TypeRef type = canonicalOwnershipType(param.type());
+        ValueKind kind = param.structural() && !type.isBorrow() ? ValueKind.IMM_BORROW : kindOfType(type);
         boolean mutableOwner = param.mutable();
-        if (param.type().isBorrow() && param.type().mutableBorrow()) mutableOwner = false;
-        return new VarState(param.type(), mutableOwner, kind, Origin.PARAM);
+        if (type.isBorrow() && type.mutableBorrow()) mutableOwner = false;
+        return new VarState(type, mutableOwner, kind, Origin.PARAM);
     }
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
         Scope scope = new Scope(parent);
+        pushLocalTypeScope(body);
+        try {
+            for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
+        } finally {
+            popLocalTypeScope();
+            scope.close();
+        }
+    }
+
+    private void pushLocalTypeScope(List<Ast.Stmt> body) {
         LinkedHashMap<String, Ast.ClassDecl> localClasses = new LinkedHashMap<>();
         LinkedHashMap<String, Ast.TypeAliasDecl> localAliases = new LinkedHashMap<>();
         for (Ast.Stmt stmt : body) {
             if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
             if (local.declaration() instanceof Ast.ClassDecl klass) {
                 localClasses.put(klass.name(), klass);
+                String identity = localClassIdentities.computeIfAbsent(
+                        klass,
+                        ignored -> "$ownership_local$" + (nextLocalTypeIdentity++) + "." + klass.name());
+                escapedLocalClasses.put(identity, klass);
+                localClassLexicalBodies.putIfAbsent(klass, body);
             } else if (local.declaration() instanceof Ast.TypeAliasDecl alias) {
                 localAliases.put(alias.name(), alias);
             }
         }
-
         localClassScopes.push(localClasses);
         localAliasScopes.push(localAliases);
-        try {
-            for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
-        } finally {
-            localAliasScopes.pop();
-            localClassScopes.pop();
-            scope.close();
-        }
+    }
+
+    private void popLocalTypeScope() {
+        localAliasScopes.pop();
+        localClassScopes.pop();
     }
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
@@ -313,11 +340,13 @@ public final class OwnershipChecker {
             return;
         }
 
-        Ast.TypeRef bindingType = binding.declaredType() == null ? value.type : binding.declaredType();
+        Ast.TypeRef bindingType = binding.declaredType() == null
+                ? value.type
+                : canonicalOwnershipType(binding.declaredType());
         ValueKind bindingValueKind = binding.declaredType() == null
                 || binding.declaredType().name().equals("$infer$")
                 ? value.kind
-                : kindOfType(binding.declaredType());
+                : kindOfType(bindingType);
         VarState state = new VarState(
                 bindingType,
                 binding.kind() == Ast.BindingKind.LET,
@@ -436,7 +465,7 @@ public final class OwnershipChecker {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
                 checkArguments(call.arguments(), fn.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null);
+                return callableReturnValue(fn.returnType(), fn.body());
             }
         }
 
@@ -450,7 +479,7 @@ public final class OwnershipChecker {
                     checkExpr(member.receiver(), scope, false);
                 }
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
-                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                return callableReturnValue(method.returnType(), method.body());
             }
             checkExpr(member.receiver(), scope, false);
         }
@@ -736,24 +765,24 @@ public final class OwnershipChecker {
             VarState state = scope.lookup(name.name());
             return state == null ? null : state.type;
         }
-        if (receiver instanceof Ast.NewExpr created) return created.type();
-        if (receiver instanceof Ast.StructInitExpr created) return created.type();
+        if (receiver instanceof Ast.NewExpr created) return canonicalOwnershipType(created.type());
+        if (receiver instanceof Ast.StructInitExpr created) return canonicalOwnershipType(created.type());
         if (receiver instanceof Ast.MemberExpr member) {
             Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
             if (owner == null) return null;
             Ast.FieldDecl field = findField(owner, member.member(), new LinkedHashSet<>());
-            return field == null ? null : field.type();
+            return field == null ? null : typeInAggregateLexicalScope(owner, field.type());
         }
         if (receiver instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.NameExpr name) {
                 Ast.FunctionDecl fn = findFunction(name.name());
-                return fn == null ? null : fn.returnType();
+                return fn == null ? null : callableReturnType(fn.returnType(), fn.body());
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
                 if (owner == null) return null;
                 Ast.MethodDecl method = findMethod(owner, member.member(), call.arguments().size(), new LinkedHashSet<>());
-                return method == null ? null : method.returnType();
+                return method == null ? null : callableReturnType(method.returnType(), method.body());
             }
         }
         if (receiver instanceof Ast.AwaitExpr awaited) {
@@ -761,7 +790,7 @@ public final class OwnershipChecker {
             if (awaitedType != null
                     && awaitedType.name().equals("Future")
                     && awaitedType.arguments().size() == 1) {
-                return awaitedType.arguments().getFirst();
+                return canonicalOwnershipType(awaitedType.arguments().getFirst());
             }
         }
         return null;
@@ -844,6 +873,8 @@ public final class OwnershipChecker {
             Ast.ClassDecl local = scope.get(name);
             if (local != null) return local;
         }
+        Ast.ClassDecl escaped = escapedLocalClasses.get(name);
+        if (escaped != null) return escaped;
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
     }
@@ -1003,6 +1034,75 @@ public final class OwnershipChecker {
         return left.name().equals(right.name())
                 && left.arguments().equals(right.arguments())
                 && left.inferArguments() == right.inferArguments();
+    }
+
+    private ValueInfo callableReturnValue(Ast.TypeRef returnType, List<Ast.Stmt> body) {
+        Ast.TypeRef type = callableReturnType(returnType, body);
+        return new ValueInfo(type, kindOfType(type), null);
+    }
+
+    private Ast.TypeRef callableReturnType(Ast.TypeRef returnType, List<Ast.Stmt> body) {
+        pushLocalTypeScope(body);
+        try {
+            return canonicalOwnershipType(returnType);
+        } finally {
+            popLocalTypeScope();
+        }
+    }
+
+    private Ast.TypeRef typeInAggregateLexicalScope(Ast.ClassDecl owner, Ast.TypeRef type) {
+        List<Ast.Stmt> body = localClassLexicalBodies.get(owner);
+        if (body == null) return canonicalOwnershipType(type);
+        pushLocalTypeScope(body);
+        try {
+            return canonicalOwnershipType(type);
+        } finally {
+            popLocalTypeScope();
+        }
+    }
+
+    private Ast.TypeRef canonicalOwnershipClassType(Ast.ClassDecl klass) {
+        String identity = localClassIdentities.get(klass);
+        return Ast.TypeRef.simple(identity == null ? klass.name() : identity);
+    }
+
+    private Ast.TypeRef canonicalOwnershipType(Ast.TypeRef type) {
+        if (type == null) return Ast.TypeRef.inferred();
+        if (type.isBorrow()) {
+            return Ast.TypeRef.borrowed(
+                    canonicalOwnershipType(type.borrowedTarget()),
+                    type.mutableBorrow());
+        }
+
+        Ast.TypeRef resolved = resolveOwnershipAlias(type, new LinkedHashSet<>());
+        if (resolved != type) return canonicalOwnershipType(resolved);
+
+        Ast.ClassDecl lexical = findLexicalClass(type.name());
+        String name = lexical == null
+                ? type.name()
+                : localClassIdentities.computeIfAbsent(
+                        lexical,
+                        ignored -> "$ownership_local$" + (nextLocalTypeIdentity++) + "." + lexical.name());
+        if (lexical != null) {
+            escapedLocalClasses.put(name, lexical);
+        }
+
+        if (type.arguments().isEmpty()) {
+            return new Ast.TypeRef(name, List.of(), type.inferArguments());
+        }
+        return new Ast.TypeRef(
+                name,
+                type.arguments().stream().map(this::canonicalOwnershipType).toList(),
+                type.inferArguments());
+    }
+
+    private Ast.ClassDecl findLexicalClass(String name) {
+        if (name.contains(".")) return null;
+        for (Map<String, Ast.ClassDecl> scope : localClassScopes) {
+            Ast.ClassDecl local = scope.get(name);
+            if (local != null) return local;
+        }
+        return null;
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
