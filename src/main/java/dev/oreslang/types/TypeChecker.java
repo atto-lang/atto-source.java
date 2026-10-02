@@ -500,22 +500,26 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            Ast.FunctionDecl actorFn = null;
             if (call.callee() instanceof Ast.NameExpr actorName) {
-                Ast.FunctionDecl actorFn = findFunction(actorName.name());
-                if (actorFn != null && actorFn.actorKind() != Ast.ActorKind.NONE) {
-                    if (actorFn.parameters().size() != call.arguments().size()) {
-                        throw new IllegalArgumentException("actor fnc '" + actorFn.name() + "' expects "
-                                + actorFn.parameters().size() + " argument(s), got " + call.arguments().size());
-                    }
-                    Set<String> actorGenerics = Set.copyOf(actorFn.genericParameters());
-                    for (int i = 0; i < actorFn.parameters().size(); i++) {
-                        Type expected = resolveParam(actorFn.parameters().get(i), actorGenerics, null);
-                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
-                                "actor argument " + (i + 1));
-                    }
-                    return new Named("ActorHandle", List.of(resolve(actorFn.returnType(), actorGenerics, null)));
+                actorFn = findFunction(actorName.name());
+            } else if (call.callee() instanceof Ast.MemberExpr actorMember
+                    && actorMember.receiver() instanceof Ast.NameExpr namespace) {
+                actorFn = functions.get(namespace.name() + "." + actorMember.member());
+            }
+            if (actorFn != null && actorFn.actorKind() != Ast.ActorKind.NONE) {
+                if (actorFn.parameters().size() != call.arguments().size()) {
+                    throw new IllegalArgumentException("actor fnc '" + actorFn.name() + "' expects "
+                            + actorFn.parameters().size() + " argument(s), got " + call.arguments().size());
                 }
+                Set<String> actorGenerics = Set.copyOf(actorFn.genericParameters());
+                for (int i = 0; i < actorFn.parameters().size(); i++) {
+                    Type expected = resolveParam(actorFn.parameters().get(i), actorGenerics, null);
+                    validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                    requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
+                            "actor argument " + (i + 1));
+                }
+                return new Named("ActorHandle", List.of(resolve(actorFn.returnType(), actorGenerics, null)));
             }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
