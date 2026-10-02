@@ -741,4 +741,39 @@ final class MutexLanguageTest {
         assertTrue(error.getMessage().contains("concrete shared-safe type"));
     }
 
+
+    @Test
+    void mutexPayloadsMustBeOwnedRatherThanBorrowed() {
+        IllegalArgumentException factoryError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad() => void {
+                            val data = arr[1, 2, 3];
+                            val mutex = Mutex.new(&data);
+                            stdio.println(mutex);
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(factoryError.getMessage().contains("requires owned data"));
+
+        IllegalArgumentException declaredError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module model
+                          define class Counter
+                            pub let int value = 0;
+                          end
+                        end
+
+                        define module app
+                          fnc bad(Mutex<&Counter> value) => void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(declaredError.getMessage().contains("owned value type"));
+    }
+
 }
