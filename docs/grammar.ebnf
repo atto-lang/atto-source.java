@@ -259,7 +259,8 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - @Structural, name structural Type, or @AllowStructural(name) opt a
      parameter into public-shape compatibility.
    - every loop iteration contains an injected scheduler safepoint; untrusted
-     actor call/recursion boundaries are metered as additional checkpoints.
+     actor statement/expression execution and call/recursion boundaries are
+     metered as additional checkpoints.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
