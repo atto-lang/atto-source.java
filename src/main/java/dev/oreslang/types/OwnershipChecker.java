@@ -116,12 +116,14 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
-            for (Ast.DestructureBinding binding : destructure.bindings()) {
+            for (int i = 0; i < destructure.bindings().size(); i++) {
+                Ast.DestructureBinding binding = destructure.bindings().get(i);
                 if (binding.isDiscard()) continue;
+                ValueInfo item = sequenceElementInfo(source, i);
                 scope.define(binding.name(), new VarState(
-                        Ast.TypeRef.inferred(),
+                        item.type,
                         binding.kind() == Ast.BindingKind.LET,
-                        source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                        projectedKind(item.kind),
                         Origin.LOCAL));
             }
             return;
@@ -134,7 +136,7 @@ public final class OwnershipChecker {
             for (Ast.MatchArm arm : matched.arms()) {
                 restoreState(base);
                 Scope armScope = new Scope(scope);
-                definePatternBindings(arm.pattern(), armScope, source.kind);
+                definePatternBindings(arm.pattern(), armScope, source);
                 checkBlock(arm.body(), armScope, returnType);
                 armScope.close();
                 exits.add(stateSnapshot(scope));
@@ -218,23 +220,44 @@ public final class OwnershipChecker {
         throw error("ownership checker does not handle statement kind " + stmt.getClass().getSimpleName());
     }
 
-    private void definePatternBindings(Ast.Pattern pattern, Scope scope, ValueKind sourceKind) {
+    private void definePatternBindings(Ast.Pattern pattern, Scope scope, ValueInfo source) {
         if (pattern instanceof Ast.BindingPattern binding) {
-            ValueKind kind = sourceKind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY;
             scope.define(binding.name(), new VarState(
-                    Ast.TypeRef.inferred(),
+                    source.type,
                     binding.kind() == Ast.BindingKind.LET,
-                    kind,
+                    projectedKind(source.kind),
                     Origin.LOCAL));
             return;
         }
         if (pattern instanceof Ast.TuplePattern tuple) {
-            for (Ast.Pattern element : tuple.elements()) definePatternBindings(element, scope, sourceKind);
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                definePatternBindings(tuple.elements().get(i), scope, sequenceElementInfo(source, i));
+            }
             return;
         }
         if (pattern instanceof Ast.ListPattern list) {
-            for (Ast.Pattern element : list.elements()) definePatternBindings(element, scope, sourceKind);
+            for (int i = 0; i < list.elements().size(); i++) {
+                definePatternBindings(list.elements().get(i), scope, sequenceElementInfo(source, i));
+            }
         }
+    }
+
+    private ValueInfo sequenceElementInfo(ValueInfo source, int index) {
+        if (index >= 0 && index < source.sequenceElements.size()) {
+            ValueInfo item = source.sequenceElements.get(index);
+            return new ValueInfo(item.type, projectedKind(item.kind), null, item.sequenceElements);
+        }
+        if (source.type != null
+                && (source.type.name().equals("Array") || source.type.name().equals("List"))
+                && source.type.arguments().size() == 1) {
+            Ast.TypeRef elementType = source.type.arguments().getFirst();
+            return new ValueInfo(elementType, projectedKind(kindOfType(elementType)), null);
+        }
+        return new ValueInfo(Ast.TypeRef.inferred(), projectedKind(source.kind), null);
+    }
+
+    private ValueKind projectedKind(ValueKind kind) {
+        return kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
@@ -265,6 +288,7 @@ public final class OwnershipChecker {
             placeholder.type = binding.declaredType() == null ? value.type : binding.declaredType();
             placeholder.kind = value.kind;
             placeholder.borrowSource = value.borrowSource;
+            placeholder.sequenceElements = value.sequenceElements;
             return;
         }
 
@@ -274,6 +298,7 @@ public final class OwnershipChecker {
                 value.kind,
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
+        state.sequenceElements = value.sequenceElements;
         scope.define(binding.name(), state);
     }
 
@@ -288,7 +313,7 @@ public final class OwnershipChecker {
             requireUsable(state, name.name(), false);
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
-            return new ValueInfo(state.type, state.kind, state.borrowSource);
+            return new ValueInfo(state.type, state.kind, state.borrowSource, state.sequenceElements);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
@@ -342,16 +367,19 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
-            for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
-            return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
+            ArrayList<ValueInfo> elements = new ArrayList<>(list.elements().size());
+            for (Ast.Expr item : list.elements()) elements.add(checkExpr(item, scope, true));
+            return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null, elements);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
             boolean copy = true;
+            ArrayList<ValueInfo> elements = new ArrayList<>(tuple.elements().size());
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
+                elements.add(info);
                 copy &= info.kind == ValueKind.COPY;
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null, elements);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
@@ -516,12 +544,18 @@ public final class OwnershipChecker {
                 if (!source.mutable) throw error("closure cannot mutate immutable capture '" + capture.name + "'");
                 if (source.immutableBorrows > 0 || source.mutableBorrowed) throw error("closure cannot capture '" + capture.name + "' mutably while borrowed");
                 move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, true, source.kind, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, true, source.kind, Origin.CAPTURE);
+                captured.sequenceElements = source.sequenceElements;
+                closure.define(capture.name, captured);
             } else if (source.kind == ValueKind.MOVE_ONLY) {
                 move(source, capture.name);
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, false, ValueKind.MOVE_ONLY, Origin.CAPTURE);
+                captured.sequenceElements = source.sequenceElements;
+                closure.define(capture.name, captured);
             } else {
-                closure.define(capture.name, new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE));
+                VarState captured = new VarState(source.type, false, ValueKind.COPY, Origin.CAPTURE);
+                captured.sequenceElements = source.sequenceElements;
+                closure.define(capture.name, captured);
             }
         }
 
@@ -817,10 +851,17 @@ public final class OwnershipChecker {
         private final Ast.TypeRef type;
         private final ValueKind kind;
         private final VarState borrowSource;
+        private final List<ValueInfo> sequenceElements;
+
         private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource) {
+            this(type, kind, borrowSource, List.of());
+        }
+
+        private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource, List<ValueInfo> sequenceElements) {
             this.type = type;
             this.kind = kind;
             this.borrowSource = borrowSource;
+            this.sequenceElements = List.copyOf(sequenceElements);
         }
     }
 
@@ -833,6 +874,7 @@ public final class OwnershipChecker {
         private int immutableBorrows;
         private boolean mutableBorrowed;
         private VarState borrowSource;
+        private List<ValueInfo> sequenceElements = List.of();
         private String debugName = "<value>";
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
