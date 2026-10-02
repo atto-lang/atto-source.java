@@ -559,4 +559,100 @@ final class LanguageHardeningTest {
                         """)));
         assertTrue(wrong.getMessage().contains("constructor field value"));
     }
+    @Test
+    void inheritedGenericMethodsUseDeclaringOwnerInstantiation() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Parent<U> as
+                  pub val U value;
+
+                  pub get() => U {
+                    return self.value;
+                  }
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc read(Child<int> child) => int {
+                  return child.get();
+                }
+                """)));
+
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Parent<U> as
+                          pub val U value;
+                          pub get() => U { return self.value; }
+                        end
+
+                        define class Child<T> extends Parent<T> as
+                        end
+
+                        fnc bad(Child<int> child) => String {
+                          return child.get();
+                        }
+                        """)));
+        assertTrue(wrong.getMessage().contains("return"));
+    }
+
+    @Test
+    void nominalGenericSubtypeProjectionPreservesArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Parent<U> as
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc class_upcast(Child<int> child) => Parent<int> {
+                  return child;
+                }
+
+                define interface ValueApi<U> as
+                  fnc get() => U;
+                end
+
+                define interface DerivedApi<T> extends ValueApi<T> as
+                end
+
+                define class Impl<T> is DerivedApi<T> as
+                  pub get() => T {
+                    return 7;
+                  }
+                end
+
+                fnc interface_upcast(Impl<int> value) => ValueApi<int> {
+                  return value;
+                }
+                """)));
+
+        IllegalArgumentException wrongClass = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Parent<U> as
+                        end
+                        define class Child<T> extends Parent<T> as
+                        end
+
+                        fnc bad(Child<int> child) => Parent<String> {
+                          return child;
+                        }
+                        """)));
+        assertTrue(wrongClass.getMessage().contains("return"));
+
+        IllegalArgumentException wrongInterface = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<U> as
+                          fnc get() => U;
+                        end
+
+                        define class Impl<T> is ValueApi<T> as
+                          pub get() => T { return 7; }
+                        end
+
+                        fnc bad(Impl<int> value) => ValueApi<String> {
+                          return value;
+                        }
+                        """)));
+        assertTrue(wrongInterface.getMessage().contains("return"));
+    }
 }
