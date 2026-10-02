@@ -35,6 +35,7 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
+    private boolean awaitAllowed;
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -78,7 +79,13 @@ public final class OwnershipChecker {
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
         }
-        checkBlock(fn.body(), scope, fn.returnType());
+        boolean previousAwaitAllowed = awaitAllowed;
+        awaitAllowed = fn.async() || fn.actorKind() != Ast.ActorKind.NONE;
+        try {
+            checkBlock(fn.body(), scope, fn.returnType());
+        } finally {
+            awaitAllowed = previousAwaitAllowed;
+        }
         scope.close();
     }
 
@@ -103,7 +110,13 @@ public final class OwnershipChecker {
                 }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
-            checkBlock(method.body(), scope, method.returnType());
+            boolean previousAwaitAllowed = awaitAllowed;
+            awaitAllowed = method.async() || klass.actorKind() != Ast.ActorKind.NONE;
+            try {
+                checkBlock(method.body(), scope, method.returnType());
+            } finally {
+                awaitAllowed = previousAwaitAllowed;
+            }
             scope.close();
         }
     }
@@ -395,6 +408,9 @@ public final class OwnershipChecker {
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (!awaitAllowed) {
+                throw error("await is only valid in async callables or actor-dispatched callables");
+            }
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
             }
@@ -701,7 +717,13 @@ public final class OwnershipChecker {
         }
 
         for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
-        for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
+        boolean previousAwaitAllowed = awaitAllowed;
+        awaitAllowed = false; // async lambdas are not a language feature yet.
+        try {
+            for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
+        } finally {
+            awaitAllowed = previousAwaitAllowed;
+        }
         closure.close();
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
