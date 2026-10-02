@@ -307,7 +307,16 @@ public final class OwnershipChecker {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
-        if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
+        if (expr instanceof Ast.AwaitExpr awaited) {
+            ValueInfo future = checkExpr(awaited.expression(), scope, true);
+            Ast.TypeRef resultType = future.type;
+            if (resultType != null
+                    && resultType.name().equals("Future")
+                    && resultType.arguments().size() == 1) {
+                resultType = resultType.arguments().getFirst();
+            }
+            return new ValueInfo(resultType, kindOfType(resultType), null);
+        }
         if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
             return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
@@ -955,6 +964,14 @@ public final class OwnershipChecker {
             if (closed) return;
             closed = true;
             for (VarState state : locals.values()) {
+                if (!state.moved
+                        && state.type != null
+                        && state.type.name().equals("Future")
+                        && state.type.arguments().size() == 1) {
+                    throw new IllegalArgumentException(
+                            "Oreslang ownership error: Future binding '" + state.debugName
+                                    + "' leaves scope without being awaited or transferred");
+                }
                 if (state.borrowSource != null) {
                     if (state.kind == ValueKind.MUT_BORROW) state.borrowSource.mutableBorrowed = false;
                     else if (state.kind == ValueKind.IMM_BORROW) state.borrowSource.immutableBorrows--;
