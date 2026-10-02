@@ -11,7 +11,7 @@
 7. Hot reload never requires loading executable native libraries.
 8. Production multi-tenant hosts use one isolated Graal `Engine` per tenant; hot-loaded contexts for that tenant share that Engine/isolate.
 9. Actors choose `SHARED_HEAP` or `PRIVATE_ARENA` independently at spawn time; neither mode may cross the tenant policy ceiling.
-10. `PRIVATE_ARENA` is a bounded `Arena.ofConfined()` native block owned by the actor Thread, not a second Graal isolate or Java GC heap.
+10. `PRIVATE_ARENA` is a bounded, growable set of `Arena.ofConfined()` native segments owned by the actor Thread, not a second Graal isolate, Java GC heap, or OS address space.
 11. Raw `MemorySegment` handles are not sendable across actor boundaries.
 12. `self` cannot be rebound.
 
@@ -29,10 +29,18 @@ host JVM / OS process
    ├─ shared actor ---- managed objects on tenant isolate heap
    ├─ shared actor ---- managed objects on tenant isolate heap
    └─ arena actor ----- Arena.ofConfined()
-                        └─ bounded MemorySegment + Oreslang allocator
+                        ├─ initial MemorySegment
+                        ├─ growth MemorySegment
+                        └─ ... up to actor + tenant limits
 ```
 
 A confined arena is created **inside the actor's own virtual Thread**. Java's FFM access checks therefore reject dereference from another Thread, even if a host bug leaks a `MemorySegment` reference. Oreslang additionally rejects raw segments at mailbox/send boundaries.
+
+`MemoryPolicy.privateArena(initialBytes)` commits only the initial segment. If an allocation does not fit, the actor allocator adds another segment, normally growing geometrically (1 MiB -> 2 MiB -> 4 MiB, for example). Existing segments are never relocated, so previously returned actor-local pointers remain stable. Growth stops at the actor's `IsolatePolicy.maxHeapBytes()` hard limit and at the tenant/runtime aggregate private-arena budget. A hungry actor can therefore expand when capacity is available without pre-reserving its worst-case footprint or starving neighboring actors.
+
+`capacityBytes()` reports currently committed native memory, `maxCapacityBytes()` the actor hard limit, `usedBytes()` the consumed bytes including alignment padding, and `segmentCount()` the number of committed backing segments. All segments are released together when the actor exits.
+
+A confined arena is **not** an OS-process address-space boundary. For protection against arbitrary native memory access by hostile code, use a separate tenant Graal isolate/process. The private-arena actor mode is a stronger actor-local ownership and FFM thread-confinement boundary inside that tenant isolate.
 
 The arena path requires Oreslang value representations to opt into the actor allocator. Merely selecting `PRIVATE_ARENA` does not magically relocate arbitrary Java objects; runtime/compiler lowering must use `ActorContext.memory().allocate(...)` for arena-backed values.
 
