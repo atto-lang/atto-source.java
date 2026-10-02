@@ -15,6 +15,71 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class MutexLanguageTest {
     @Test
+    void sharedMutexAcceptsFullySharedSafeUnionTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc good(SharedMutex<int | String> value) => void {
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void sharedMutexRejectsUnionWhenAnyAlternativeIsActorLocal() {
+        var program = Parser.parse("""
+                define module app
+                  fnc bad(SharedMutex<int | Mutex<int>> value) => void {
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("shared-safe"));
+    }
+
+    @Test
+    void sharedMutexSubstitutesGenericsInsideUnionFields() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub val T | int value;
+                  end
+                end
+
+                define module app
+                  fnc good(Box<String> box) => void {
+                    val shared = SharedMutex.new(box);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """)));
+
+        var unsafe = Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub val T | int value;
+                  end
+                end
+
+                define module app
+                  fnc bad(Box<Mutex<int>> box) => void {
+                    val shared = SharedMutex.new(box);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(unsafe));
+        assertTrue(error.getMessage().contains("shared-safe"));
+    }
+
+    @Test
     void declaredSharedMutexTypesMustAlsoBeSharedSafe() {
         var unsafe = Parser.parse("""
                 define module app
