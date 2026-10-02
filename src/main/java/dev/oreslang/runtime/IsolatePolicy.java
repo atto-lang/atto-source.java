@@ -98,6 +98,10 @@ public record IsolatePolicy(
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile) {
+        return restrictedContextBuilder(profile, new String[0]);
+    }
+
+    public Context.Builder restrictedContextBuilder(ExecutionProfile profile, String... extraArguments) {
         HostAccess hostAccess = adversarial
                 ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
                 : HostAccess.NONE;
@@ -112,7 +116,7 @@ public record IsolatePolicy(
                 .in(new ByteArrayInputStream(new byte[0]))
                 .out(new ByteArrayOutputStream())
                 .err(new ByteArrayOutputStream())
-                .arguments(OresLanguage.ID, applicationArguments(profile));
+                .arguments(OresLanguage.ID, applicationArguments(profile, extraArguments));
 
         /*
          * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
@@ -152,8 +156,12 @@ public record IsolatePolicy(
     }
 
     public String[] applicationArguments(ExecutionProfile profile) {
+        return applicationArguments(profile, new String[0]);
+    }
+
+    public String[] applicationArguments(ExecutionProfile profile, String... extraArguments) {
         String caps = capabilities.stream().map(Enum::name).sorted().collect(Collectors.joining(","));
-        return new String[] {
+        String[] base = new String[] {
                 "--ores-capabilities=" + caps,
                 "--ores-max-heap-bytes=" + maxHeapBytes,
                 "--ores-max-mailbox-messages=" + maxMailboxMessages,
@@ -162,6 +170,10 @@ public record IsolatePolicy(
                 "--ores-execution-mode=" + profile.mode().name(),
                 "--ores-platform=" + profile.platform().name()
         };
+        if (extraArguments == null || extraArguments.length == 0) return base;
+        String[] combined = java.util.Arrays.copyOf(base, base.length + extraArguments.length);
+        System.arraycopy(extraArguments, 0, combined, base.length, extraArguments.length);
+        return combined;
     }
 
     public static IsolatePolicy fromApplicationArguments(String[] args) {
