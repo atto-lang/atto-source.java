@@ -13,13 +13,13 @@ final class ParserTest {
     @Test
     void supportsMultipleModulesAndComplexNumbers() {
         String source = """
-                define module math
+                define module math as
                   fnc z() => complex {
                     return 3 + 4i;
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     const answer = 40 + 2;
                     [const first, let second] = [1, 2];
@@ -37,7 +37,7 @@ final class ParserTest {
     @Test
     void parsesIfDoFiWithCommaAndPipeConditions() {
         String source = """
-                define module app
+                define module app as
                   fnc choose(bool a, bool b) => int {
                     if a, b | false; do
                       return 1;
@@ -53,7 +53,7 @@ final class ParserTest {
     @Test
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
-                define module model
+                define module model as
                   define class x
                     @Ret<self>
                     find() {
@@ -71,6 +71,29 @@ final class ParserTest {
         Ast.ClassDecl klass = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertNull(klass.methods().getFirst().explicitReceiverType());
         assertEquals("x", klass.methods().get(1).explicitReceiverType().name());
+    }
+
+    @Test
+    void requiresAsBeforeClassAndModuleBodies() {
+        IllegalArgumentException missingModuleAs = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  pub fnc main() => void { return; }
+                end
+                """));
+        assertTrue(missingModuleAs.getMessage().contains("expected 'as'"));
+
+        IllegalArgumentException missingClassAs = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Box
+                end
+                """));
+        assertTrue(missingClassAs.getMessage().contains("expected 'as'"));
+
+        assertDoesNotThrow(() -> Parser.parse("""
+                define module app as
+                  define class Box as
+                  end
+                end
+                """));
     }
 
     @Test

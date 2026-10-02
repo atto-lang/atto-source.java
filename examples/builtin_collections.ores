@@ -1,5 +1,5 @@
-define module app
-  define abstract class Finder
+define module app as
+  define abstract class Finder as
     pub abstract find(String key) => String;
   end
 

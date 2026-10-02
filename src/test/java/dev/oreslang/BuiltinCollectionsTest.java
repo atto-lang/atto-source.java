@@ -15,7 +15,7 @@ final class BuiltinCollectionsTest {
     @Test
     void typechecksBuiltinCollectionFamiliesAndAnonymousOverrides() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module app
+                define module app as
                   pub fnc main() => void {
                     let map = new Map<String, String>() {
                       "field1": "bar",
@@ -60,8 +60,8 @@ final class BuiltinCollectionsTest {
     @Test
     void anonymousImplementationCanMakeAnAbstractClassInstantiable() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module app
-                  define abstract class Finder
+                define module app as
+                  define abstract class Finder as
                     pub abstract find(String key) => String;
                   end
 
@@ -77,8 +77,8 @@ final class BuiltinCollectionsTest {
                 """)));
 
         IllegalArgumentException missing = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module app
-                  define abstract class Finder
+                define module app as
+                  define abstract class Finder as
                     pub abstract find(String key) => String;
                   end
                   pub fnc main() => void {
@@ -93,7 +93,7 @@ final class BuiltinCollectionsTest {
     @Test
     void anonymousMethodsMustActuallyOverride() {
         IllegalArgumentException missingAnnotation = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val map = new Map<String, String>() {
                       find(String key) => Option<String> { return Some("x"); }
@@ -105,7 +105,7 @@ final class BuiltinCollectionsTest {
         assertTrue(missingAnnotation.getMessage().contains("@override"));
 
         IllegalArgumentException wrongMethod = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val map = new Map<String, String>() {
                       @override
@@ -121,8 +121,8 @@ final class BuiltinCollectionsTest {
     @Test
     void executesBuiltinCollectionsAndAnonymousDispatch() throws Exception {
         String program = """
-                define module app
-                  define abstract class Finder
+                define module app as
+                  define abstract class Finder as
                     pub abstract find(String key) => String;
                   end
 
@@ -180,15 +180,15 @@ final class BuiltinCollectionsTest {
     @Test
     void coreCollectionTypeNamesAreReservedAndAnonymousMethodsCannotCaptureLocals() {
         IllegalArgumentException reserved = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module app
-                  define class Map
+                define module app as
+                  define class Map as
                   end
                 end
                 """)));
         assertTrue(reserved.getMessage().contains("reserved"));
 
         IllegalArgumentException captured = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val suffix = "captured";
                     val map = new Map<String, String>() {
@@ -207,8 +207,8 @@ final class BuiltinCollectionsTest {
     @Test
     void jsonMapRejectsNonJsonValuesAtRuntime() throws Exception {
         String program = """
-                define module app
-                  define class NotJson
+                define module app as
+                  define class NotJson as
                   end
 
                   pub fnc main() => void {
@@ -235,7 +235,7 @@ final class BuiltinCollectionsTest {
     @Test
     void jsonMapRejectsNonJsonRuntimeValues() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val json = new JsonMap() {
                       "ok": obj{nested: arr[1, 2, 3]}

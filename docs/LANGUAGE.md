@@ -7,13 +7,13 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
 
 ```ores
-define module math
+define module math as
   pub fnc add(int a, int b) => int {
     return a + b;
   }
 end
 
-define module app
+define module app as
   pub fnc main() => void {
     val answer = math.add(40, 2);
     stdio.println(answer);
@@ -39,7 +39,7 @@ Wildcard imports always require a namespace alias. This avoids silently injectin
 Interfaces can describe the structural public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
 
 ```ores
-define module contracts
+define module contracts as
   define interface MathApi
     fnc add(int a, int b) => int;
     String name;
@@ -47,7 +47,7 @@ define module contracts
 end
 
 @AdheresTo(contracts.MathApi)
-define module math
+define module math as
   pub fnc add(int a, int b) => int { return a + b; }
   pub val String name = "math";
 end
@@ -98,7 +98,7 @@ Destructuring carries mutability per element:
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
 
 ```ores
-define class Box<T>
+define class Box<T> as
   val T value;
 
   @Ret<self>
@@ -121,7 +121,7 @@ The receiver variable name is always `self`.
 A class may list multiple parent classes and multiple interfaces:
 
 ```ores
-define class Combined extends Cacheable, Serializable implements HasId, Named
+define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
@@ -130,11 +130,11 @@ Parent order is significant and is the deterministic v0.2 method-resolution orde
 Abstract methods are declarations without bodies, and concrete classes must discharge every inherited abstract method:
 
 ```ores
-define abstract class Finder
+define abstract class Finder as
   pub abstract find(String key) => String;
 end
 
-define class FixedFinder extends Finder
+define class FixedFinder extends Finder as
   @override
   pub find(String key) => String { return "fixed"; }
 end
@@ -152,10 +152,10 @@ val finder = new Finder() {
 `Object` and `List` are extensible base classes:
 
 ```ores
-define class RecordBag extends Object
+define class RecordBag extends Object as
 end
 
-define class Names extends List
+define class Names extends List as
 end
 ```
 
@@ -255,7 +255,7 @@ define interface Named
   String name;
 end
 
-define class User implements Named
+define class User implements Named as
   pub val String name;
 end
 ```
@@ -365,7 +365,7 @@ The parser and static checker execute no user code.
 Named modules remain the normal namespace unit, but a source file may also contain file-level callables such as an entrypoint. The compiler places those declarations in an internal file-root namespace; that namespace is not written by user code.
 
 ```ores
-define module x
+define module x as
   define class y
   end
 end
@@ -446,7 +446,7 @@ Explicit `implements` and module `@AdheresTo(...)` checks remain structural conf
 Only methods overload, and only by arity:
 
 ```ores
-define class Lookup
+define class Lookup as
   find() => Option<int> {
     return None;
   }
@@ -490,7 +490,7 @@ for (val item of values) {
 Classes can expose a JavaScript-like iterator symbol:
 
 ```ores
-define class Bag
+define class Bag as
   [Symbol.iterator]() => Array<int> {
     return arr[1, 2, 3];
   }
@@ -653,6 +653,8 @@ pub fnc charge() => void {
 
 Namespaces are flat. `namespace company.payments;` is illegal. Modules are also flat: a module name is one identifier and a module may not contain another module.
 
+Module and class bodies are introduced by the reserved `as` keyword. The canonical forms are `define module app as ... end` and `define class User as ... end`; inheritance stays in the header, e.g. `define class Admin extends User implements Named as ... end`. Omitting `as` is a syntax error.
+
 The incremental compiler uses separate **source** and **ABI** digests:
 
 1. hash every source unit;
@@ -675,7 +677,7 @@ A deployment may still aggregate many code units into one Native Image for start
 Instance methods continue to omit `fnc`:
 
 ```ores
-define class Counter
+define class Counter as
   read() => int {
     return self.value;
   }
@@ -685,7 +687,7 @@ end
 Class-level functions are not methods. They are declared with the explicit `static fnc` form:
 
 ```ores
-define class Counter
+define class Counter as
   pub static fnc twice(int value) => int {
     return value * 2;
   }
