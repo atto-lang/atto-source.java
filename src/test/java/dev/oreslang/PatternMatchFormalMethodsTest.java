@@ -123,9 +123,13 @@ final class PatternMatchFormalMethodsTest {
     void catchAllMakesOpenStructuralMatchExhaustiveAndLaterArmsAreRejected() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
-                  fnc label(obj value) => int {
+                  define class Person
+                    pub val String name;
+                  end
+
+                  fnc label(Person value) => int {
                     return match value {
-                      obj{name: name} => 1,
+                      obj{name: "special"} => 1,
                       _ => 0
                     };
                   }
