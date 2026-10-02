@@ -64,6 +64,50 @@ final class ParserTest {
     }
 
     @Test
+    void parsesTaggedTupleAndFiniteListMatchPatterns() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define module app
+                  pub fnc main() => void {
+                    match ("error", "enoent") {
+                      ("ok", value) => {
+                        stdio.println(value);
+                      }
+                      ("error", "enoent") => {
+                        stdio.println("missing");
+                      }
+                      ("error", let reason) => {
+                        reason = "handled";
+                        stdio.println(reason);
+                      }
+                      _ => {
+                        stdio.println("unexpected");
+                      }
+                    }
+
+                    match [1, 2, 3] {
+                      [1, second, _] => {
+                        stdio.println(second);
+                      }
+                      _ => {
+                        stdio.println("no match");
+                      }
+                    }
+                    return;
+                  }
+                end
+                """));
+
+        Ast.FunctionDecl main = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.MatchStmt tupleMatch = (Ast.MatchStmt) main.body().getFirst();
+        assertEquals(4, tupleMatch.arms().size());
+        assertInstanceOf(Ast.TuplePattern.class, tupleMatch.arms().getFirst().pattern());
+        assertInstanceOf(Ast.WildcardPattern.class, tupleMatch.arms().get(3).pattern());
+
+        Ast.MatchStmt listMatch = (Ast.MatchStmt) main.body().get(1);
+        assertInstanceOf(Ast.ListPattern.class, listMatch.arms().getFirst().pattern());
+    }
+
+    @Test
     void parsesIfDoFiWithCommaAndPipeConditions() {
         String source = """
                 define module app
