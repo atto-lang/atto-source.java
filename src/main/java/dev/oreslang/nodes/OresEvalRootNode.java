@@ -1247,7 +1247,8 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) {
+    private record Complex(double real, double imaginary) implements OresMutex.SharedState {
+        @Override public Iterable<?> sharedStateChildren(){return List.of();}
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
@@ -1255,7 +1256,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
 
-    private static final class OresObject {
+    private static final class OresObject implements OresMutex.SharedState {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
@@ -1264,6 +1265,7 @@ public final class OresEvalRootNode extends RootNode {
             this.klass = klass;
             this.fields = fields;
         }
+        @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public String toString(){return klass.name()+fields;}
     }
 
@@ -1343,10 +1345,12 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
     }
-    private record OptionValue(boolean present, Object value) {
+    private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
+        @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
-    private record ResultValue(boolean ok, Object value) {
+    private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
+        @Override public Iterable<?> sharedStateChildren(){return List.of(value);}
         @Override public String toString(){return ok ? "Ok(" + value + ")" : "Err(" + value + ")";}
     }
     private record OptionUnwrapError(String reason) {
