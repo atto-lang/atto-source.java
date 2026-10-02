@@ -455,6 +455,27 @@ or recovered according to the runtime-failure policy. Scheduler/runtime cancella
 actor-stop control are non-recoverable and cannot be swallowed by either `recover` or
 guest `catch`.
 
+## Logical stack traces
+
+Oreslang stack traces are logical language traces, not raw JVM carrier-thread stacks. They
+retain callable and execution-boundary frames across actor messages and are designed to be
+captured/restored across async tasks, virtual threads, CompletionStage callbacks, and event-loop
+dispatch. Actor frames include the actor id.
+
+Use `@NoStackTrace` on a hot callable when trace capture cost is not worth paying:
+
+```ores
+@NoStackTrace
+fnc hot_probe() => void {
+  sample();
+}
+```
+
+The host process can override annotation behavior with `ORES_STACK_TRACE=auto|full|off`.
+`auto` is the default and respects the annotation; `full` forces frames on; `off` disables
+logical trace capture process-wide. This is runtime configuration, separate from guest `env`
+access and its `ENVIRONMENT` capability.
+
 ## Exceptions and defer
 
 Both structured exceptions and lexical `defer` are supported:
