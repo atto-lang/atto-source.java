@@ -171,6 +171,18 @@ public final class OwnershipChecker {
                     }
                 }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if ((returned.kind == ValueKind.IMM_BORROW || returned.kind == ValueKind.MUT_BORROW)
+                        && returned.borrowSource != null) {
+                    if (returned.borrowSource.origin == Origin.LOCAL
+                            || returned.borrowSource.origin == Origin.CAPTURE) {
+                        throw error("cannot return a borrow derived from local value '"
+                                + returned.borrowSource.debugName
+                                + "'; inferred lifetime ends before the caller can use it");
+                    }
+                    if (isActorConfinedBorrow(returned.borrowSource)) {
+                        throw error("actor-confined borrows cannot escape their mailbox turn");
+                    }
+                }
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
