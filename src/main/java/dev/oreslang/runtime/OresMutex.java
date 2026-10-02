@@ -41,7 +41,9 @@ public final class OresMutex {
     }
 
     /** Runtime marker for futures whose successful value is a lexical MutexGuard. */
-    public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> { }
+    public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+        private GuardFuture() { }
+    }
 
     public sealed interface Lock<T> permits Local, Shared {
         Guard<T> lock();
