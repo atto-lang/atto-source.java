@@ -59,6 +59,14 @@ The arena path requires Oreslang value representations to opt into the actor all
 GraalVM Native Image 25 supports the FFM foreign-memory APIs, so the same scheme can live inside the tenant polyglot isolate image.
 
 
+## Source-level actor callable lowering
+
+The source modifiers `actor` and `isoactor` lower directly onto this runtime rather than introducing a parallel concurrency subsystem.
+
+`actor fnc/routine` uses `MemoryPolicy.sharedHeap()`; `isoactor fnc/routine` uses `MemoryPolicy.privateArena(...)`. A call becomes a one-message, one-shot actor invocation. Arguments and results pass through `ActorRuntime.freeze`, failures are rethrown to the caller, and the actor is stopped after the invocation. This keeps actor-callable signatures ordinary and composable while still making the call site a real actor scheduling and ownership boundary.
+
+The current interpreter uses a 1 MiB initial arena for `isoactor` and permits geometric growth up to the configured actor/isolate ceiling. This initial size is a commit size, not a maximum.
+
 ## Actor scheduling
 
 The default JVM-level scheduler bounds are configurable before Oreslang runtime initialization:
