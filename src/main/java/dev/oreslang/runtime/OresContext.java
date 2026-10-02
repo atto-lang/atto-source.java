@@ -19,7 +19,7 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
-    private final ActorRuntime actors = new ActorRuntime();
+    private final ActorRuntime actors;
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
@@ -32,6 +32,7 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
+        this.actors = new ActorRuntime(isolatePolicy);
     }
 
     public static OresContext get(Node node) {
