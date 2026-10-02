@@ -292,4 +292,33 @@ final class LanguageHardeningTest {
                 """)));
     }
 
+
+    @Test
+    void gcRuntimeFacadesAreTypedAsZeroArgumentCalls() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc maintenance() => void {
+                    process.gc();
+                    actor.gc();
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    process.gc(1);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void processWideGcControlIsDeniedByStrictFaasPolicy() {
+        assertTrue(IsolatePolicy.developer().allows(IsolatePolicy.Capability.GC_CONTROL));
+        assertFalse(IsolatePolicy.strictFaas().allows(IsolatePolicy.Capability.GC_CONTROL));
+    }
+
 }
