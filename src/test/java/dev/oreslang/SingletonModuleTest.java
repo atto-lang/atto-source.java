@@ -292,147 +292,27 @@ final class SingletonModuleTest {
     }
 
     @Test
-    void hotReloadRejectsNestedPersistedClassLayoutChanges() throws Exception {
-        String firstProgram = """
-                define class NestedLeaf as
-                  val int value;
+    void nestedClassInstancesRemainRejectedAsSingletonProxyStorage() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class NestedLeaf as
+                          val int value;
+                        end
 
-                  pub get() => int {
-                    return self.value;
-                  }
-                end
+                        define class NestedRoot as
+                          val NestedLeaf leaf;
+                          pub read() => int { return 1; }
+                        end
 
-                define class NestedRoot as
-                  val NestedLeaf leaf;
+                        define singleton module nested_storage_service as
+                          pub val NestedRoot root = new NestedRoot(new NestedLeaf(7));
+                        end
+                        """)));
 
-                  pub read() => int {
-                    return self.leaf.get();
-                  }
-                end
-
-                define singleton module nested_schema_service as
-                  pub val NestedRoot root = new NestedRoot(new NestedLeaf(7));
-                end
-
-                define module app as
-                  pub routine main() => void {
-                    stdio.println(await nested_schema_service.root.read());
-                    return;
-                  }
-                end
-                """;
-
-        String changedNestedLayout = """
-                define class NestedLeaf as
-                  val int value;
-                  val int generation;
-
-                  pub get() => int {
-                    return self.value;
-                  }
-                end
-
-                define class NestedRoot as
-                  val NestedLeaf leaf;
-
-                  pub read() => int {
-                    return self.leaf.get();
-                  }
-                end
-
-                define singleton module nested_schema_service as
-                  pub val NestedRoot root = new NestedRoot(new NestedLeaf(7, 2));
-                end
-
-                define module app as
-                  pub routine main() => void {
-                    stdio.println(await nested_schema_service.root.read());
-                    return;
-                  }
-                end
-                """;
-
-        assertTrue(eval(firstProgram, "nested-schema-change.ores").contains("7"));
-
-        RuntimeException failure = assertThrows(
-                RuntimeException.class,
-                () -> eval(changedNestedLayout, "nested-schema-change.ores"));
-        assertTrue(causeChainContains(failure, "state schema changed"), String.valueOf(failure));
-    }
-
-    @Test
-    void nestedSchemaResolutionUsesTheOwningModuleWhenClassNamesAreAmbiguous() throws Exception {
-        String firstProgram = """
-                define module nested_types_a as
-                  define class SharedLeafName as
-                    val int value;
-                    pub get() => int { return self.value; }
-                  end
-
-                  define class Root as
-                    val SharedLeafName leaf;
-                    pub read() => int { return self.leaf.get(); }
-                  end
-                end
-
-                define module nested_types_b as
-                  define class SharedLeafName as
-                    val String label;
-                  end
-                end
-
-                define singleton module nested_lexical_schema_service as
-                  pub val nested_types_a.Root root =
-                    new nested_types_a.Root(new nested_types_a.SharedLeafName(9));
-                end
-
-                define module app as
-                  pub routine main() => void {
-                    stdio.println(await nested_lexical_schema_service.root.read());
-                    return;
-                  }
-                end
-                """;
-
-        String changedNestedLayout = """
-                define module nested_types_a as
-                  define class SharedLeafName as
-                    val int value;
-                    val int generation;
-                    pub get() => int { return self.value; }
-                  end
-
-                  define class Root as
-                    val SharedLeafName leaf;
-                    pub read() => int { return self.leaf.get(); }
-                  end
-                end
-
-                define module nested_types_b as
-                  define class SharedLeafName as
-                    val String label;
-                  end
-                end
-
-                define singleton module nested_lexical_schema_service as
-                  pub val nested_types_a.Root root =
-                    new nested_types_a.Root(new nested_types_a.SharedLeafName(9, 2));
-                end
-
-                define module app as
-                  pub routine main() => void {
-                    stdio.println(await nested_lexical_schema_service.root.read());
-                    return;
-                  }
-                end
-                """;
-
-        assertTrue(eval(firstProgram, "nested-lexical-schema.ores").contains("9"));
-
-        RuntimeException failure = assertThrows(
-                RuntimeException.class,
-                () -> eval(changedNestedLayout, "nested-lexical-schema.ores"));
-        assertTrue(causeChainContains(failure, "state schema changed"), String.valueOf(failure));
+        assertTrue(error.getMessage().contains("process-stable")
+                        || error.getMessage().contains("context-free"),
+                error.getMessage());
     }
 
     @Test
