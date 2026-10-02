@@ -113,7 +113,7 @@ public final class TypeChecker {
         for (Ast.ClassDecl klass : classOwners.keySet()) validateLocalClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) validateInheritedClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
-        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, nominalInterfaceType(iface), new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
             checkModuleAdherence(module);
@@ -135,7 +135,8 @@ public final class TypeChecker {
             for (Ast.TypeRef ref : annotation.arguments()) {
                 Ast.InterfaceDecl iface = findInterface(ref.name());
                 if (iface == null) throw new IllegalArgumentException("unknown module interface '" + ref.name() + "'");
-                Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+                Named interfaceType = resolveInterfaceView(iface, ref, Set.of(), null);
+                Record expected = interfaceShape(iface, interfaceType, new LinkedHashSet<>());
                 if (!assignable(actual, expected)) {
                     throw new IllegalArgumentException("module '" + module.name() + "' does not adhere to interface '" + ref.name() + "': expected " + expected + " but got " + actual);
                 }
@@ -392,7 +393,8 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            Named interfaceType = resolveInterfaceView(iface, interfaceRef, classGenerics, self);
+            Record expected = interfaceShape(iface, interfaceType, new LinkedHashSet<>());
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
@@ -1125,28 +1127,88 @@ public final class TypeChecker {
         return new Record(members);
     }
 
-    private Record interfaceShape(Ast.InterfaceDecl iface, Set<String> generics, Set<Ast.InterfaceDecl> stack) {
+    private Record interfaceShape(Ast.InterfaceDecl iface, Named ifaceType, Set<Ast.InterfaceDecl> stack) {
         if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
-        Map<String, Type> members = new LinkedHashMap<>();
-        for (Ast.TypeRef parentRef : iface.parents()) {
-            Ast.InterfaceDecl parent = findInterface(parentRef.name());
-            if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
-            for (Map.Entry<String, Type> inherited : interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack).members().entrySet()) {
-                mergeMember(members, inherited.getKey(), inherited.getValue(), "interface inheritance of " + iface.name());
+        try {
+            Named canonical = canonicalInterfaceView(iface, ifaceType);
+            Map<String, Type> bindings = interfaceGenericBindings(iface, canonical);
+            Map<String, Type> members = new LinkedHashMap<>();
+
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Ast.InterfaceDecl parent = findInterface(parentRef.name());
+                if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+                Named parentType = resolveParentInterfaceView(iface, canonical, parentRef, parent);
+                for (Map.Entry<String, Type> inherited : interfaceShape(parent, parentType, stack).members().entrySet()) {
+                    mergeMember(members, inherited.getKey(), inherited.getValue(), "interface inheritance of " + iface.name());
+                }
             }
-        }
-        for (Ast.InterfaceMember member : iface.members()) {
-            if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                Set<String> all = new HashSet<>(generics);
-                all.addAll(fn.genericParameters());
-                mergeMember(members, methodKey(fn.name(), fn.parameters().size()),
-                        functionType(fn.parameters(), fn.returnType(), all, null), "interface " + iface.name());
-            } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
+
+            Set<String> generics = Set.copyOf(iface.genericParameters());
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                    Set<String> all = new HashSet<>(generics);
+                    all.addAll(fn.genericParameters());
+                    Type raw = functionType(fn.parameters(), fn.returnType(), all, null);
+                    Type resolved = resolveSharedGeneric(raw, bindings);
+                    mergeMember(members, methodKey(fn.name(), fn.parameters().size()),
+                            resolved, "interface " + iface.name());
+                } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                    Type raw = resolve(field.type(), generics, null);
+                    mergeMember(members, field.name(), resolveSharedGeneric(raw, bindings), "interface " + iface.name());
+                }
             }
+            return new Record(members);
+        } finally {
+            stack.remove(iface);
         }
-        stack.remove(iface);
-        return new Record(members);
+    }
+
+    private Named nominalInterfaceType(Ast.InterfaceDecl iface) {
+        return new Named(qualifiedInterfaceName(iface),
+                iface.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
+    }
+
+    private Named canonicalInterfaceView(Ast.InterfaceDecl iface, Named view) {
+        if (view.arguments().size() != iface.genericParameters().size()) {
+            throw new IllegalArgumentException("interface '" + qualifiedInterfaceName(iface) + "' expects "
+                    + iface.genericParameters().size() + " type argument(s), got " + view.arguments().size());
+        }
+        return new Named(qualifiedInterfaceName(iface), view.arguments());
+    }
+
+    private Map<String, Type> interfaceGenericBindings(Ast.InterfaceDecl iface, Named ifaceType) {
+        Named canonical = canonicalInterfaceView(iface, ifaceType);
+        Map<String, Type> bindings = new HashMap<>();
+        for (int i = 0; i < iface.genericParameters().size(); i++) {
+            bindings.put(iface.genericParameters().get(i), canonical.arguments().get(i));
+        }
+        return bindings;
+    }
+
+    private Named resolveParentInterfaceView(
+            Ast.InterfaceDecl child,
+            Named childType,
+            Ast.TypeRef parentRef,
+            Ast.InterfaceDecl parent) {
+        Map<String, Type> bindings = interfaceGenericBindings(child, childType);
+        Type rawParent = resolve(parentRef, Set.copyOf(child.genericParameters()), null);
+        Type substituted = resolveSharedGeneric(rawParent, bindings);
+        if (!(substituted instanceof Named named)) {
+            throw new IllegalArgumentException("parent interface view for '" + parentRef.name() + "' is not nominal");
+        }
+        return canonicalInterfaceView(parent, new Named(qualifiedInterfaceName(parent), named.arguments()));
+    }
+
+    private Named resolveInterfaceView(
+            Ast.InterfaceDecl iface,
+            Ast.TypeRef ref,
+            Set<String> generics,
+            Type self) {
+        Type resolved = resolve(ref, generics, self);
+        if (!(resolved instanceof Named named)) {
+            throw new IllegalArgumentException("interface reference '" + ref.name() + "' is not nominal");
+        }
+        return canonicalInterfaceView(iface, new Named(qualifiedInterfaceName(iface), named.arguments()));
     }
 
     private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
@@ -1331,7 +1393,10 @@ public final class TypeChecker {
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
         if (!param.structural()) return resolve(param.type(), generics, self);
         Ast.InterfaceDecl iface = findInterface(param.type().name());
-        if (iface != null) return interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        if (iface != null) {
+            Named ifaceType = resolveInterfaceView(iface, param.type(), generics, self);
+            return interfaceShape(iface, ifaceType, new LinkedHashSet<>());
+        }
         Ast.ClassDecl klass = findClass(param.type().name());
         if (klass != null) return publicClassShape(klass, new LinkedHashSet<>());
         throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
