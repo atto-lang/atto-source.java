@@ -272,6 +272,7 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean closed() { return cellClosed.get(); }
 
         public T snapshot() {
+            rejectPrivateActorSharedMemoryAccess("SyncCell.snapshot");
             lock.lock();
             try {
                 requireOpen();
@@ -324,6 +325,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
+            rejectPrivateActorSharedMemoryAccess("SyncCell.close");
             lock.lock();
             try {
                 if (!cellClosed.compareAndSet(false, true)) return;
@@ -492,13 +494,21 @@ public final class ActorRuntime implements AutoCloseable {
 
     public <T> SyncCell<T> syncCell(T initialValue) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        ActorCell<?> current = currentActor.get();
-        if (current != null && current.kind == ActorKind.PRIVATE) {
-            throw new IllegalStateException("private actors cannot create synchronized shared-memory cells");
-        }
+        rejectPrivateActorSharedMemoryAccess("SyncCell creation");
         SyncCell<T> cell = new SyncCell<>(initialValue);
         syncCells.add(cell);
+        if (closed.get()) {
+            cell.close();
+            throw new IllegalStateException("actor runtime is closed");
+        }
         return cell;
+    }
+
+    private void rejectPrivateActorSharedMemoryAccess(String operation) {
+        ActorCell<?> current = currentActor.get();
+        if (current != null && current.kind == ActorKind.PRIVATE) {
+            throw new IllegalStateException("private actors cannot access synchronized shared memory via " + operation);
+        }
     }
 
     private void requireSharedActorTurn() {
