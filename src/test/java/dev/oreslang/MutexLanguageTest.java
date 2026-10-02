@@ -361,6 +361,142 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void guardedMoveOnlyFieldsAndMethodValuesCannotEscape() {
+        var fieldProgram = Parser.parse("""
+                define module model
+                  define class Child
+                    pub let int value = 1;
+                  end
+                  define class Holder
+                    pub val Child child = new Child();
+                  end
+                end
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Holder());
+                    val guard = mutex.lock();
+                    val escaped = guard.child;
+                    stdio.println(escaped);
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException fieldError = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(fieldProgram));
+        assertTrue(fieldError.getMessage().contains("cannot extract move-only field"));
+
+        var methodProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub read() => int { return 1; }
+                  end
+                end
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    val callback = guard.read;
+                    stdio.println(callback);
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException methodError = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(methodProgram));
+        assertTrue(methodError.getMessage().contains("cannot extract a bound method"));
+    }
+
+    @Test
+    void directGuardedCopyReturningMethodCallIsAllowed() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model
+                  define class Counter
+                    pub read() => int { return 7; }
+                  end
+                end
+                define module app
+                  fnc good() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    val value = guard.read();
+                    stdio.println(value);
+                    guard.release();
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void withLockProtectedBorrowCannotMoveOrReturnState() {
+        var moved = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    mutex.with_lock(|counter| -> {
+                      val escaped = counter;
+                      stdio.println(escaped);
+                      return;
+                    });
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException movedError = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(moved));
+        assertTrue(movedError.getMessage().contains("protected with_lock/recover state cannot be moved"));
+
+        var returned = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    mutex.with_lock(|counter| -> {
+                      return counter.value;
+                    });
+                    return;
+                  }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(returned));
+    }
+
+    @Test
+    void withLockRequiresInlineLambda() {
+        var program = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+                define module app
+                  fnc mutate(Counter counter) => void {
+                    counter.value = counter.value + 1;
+                    return;
+                  }
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    mutex.with_lock(mutate);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("requires an inline one-argument lambda"));
+    }
+
+    @Test
     void guardCannotBeStoredInAggregate() {
         var program = Parser.parse("""
                 define module model
