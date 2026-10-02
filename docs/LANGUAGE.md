@@ -119,7 +119,7 @@ const {foo, bar} = named();
 // {const foo, const bar} = named();
 ```
 
-A bare `_` is a discard pattern: it consumes that position without declaring a variable, so it can be repeated in the same pattern or reused by later destructures.
+A bare `_` is a sequence discard pattern: it consumes that array/tuple position without declaring a variable, so it can be repeated in the same sequence pattern or reused by later destructures. Object patterns do not accept bare `_` because object destructuring is key-based rather than positional.
 
 ```ores
 [const code, _, let body] = (200, "ignored", "ok");
