@@ -43,6 +43,8 @@ import java.util.function.UnaryOperator;
  * shared actors may coordinate through explicitly synchronized shared cells.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
+
     public enum ActorKind { PRIVATE, SHARED }
 
     public record DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
@@ -253,7 +255,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private SyncCell(T initialValue) {
             Object frozen = freeze(initialValue);
-            rejectSharedMutableHandles(frozen, new IdentityHashMap<>());
+            rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
             this.value = (T) frozen;
         }
 
@@ -285,7 +287,7 @@ public final class ActorRuntime implements AutoCloseable {
             lock.lock();
             try {
                 Object frozen = freeze(updater.apply(value));
-                rejectSharedMutableHandles(frozen, new IdentityHashMap<>());
+                rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
                 value = (T) frozen;
                 return value;
             } finally {
@@ -567,13 +569,15 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
         Object frozen = freeze(value);
-        rejectSharedMutableHandles(frozen, new IdentityHashMap<>());
+        rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
         return new Shared<>((T) frozen);
     }
 
     private static void rejectSharedMutableHandles(
             Object value,
-            IdentityHashMap<Object, Boolean> visiting) {
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
@@ -584,18 +588,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                for (Object item : list) rejectSharedMutableHandles(item, visiting);
+                for (Object item : list) rejectSharedMutableHandles(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
-                for (Object item : set) rejectSharedMutableHandles(item, visiting);
+                for (Object item : set) rejectSharedMutableHandles(item, visiting, depth + 1);
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    rejectSharedMutableHandles(entry.getKey(), visiting);
-                    rejectSharedMutableHandles(entry.getValue(), visiting);
+                    rejectSharedMutableHandles(entry.getKey(), visiting, depth + 1);
+                    rejectSharedMutableHandles(entry.getValue(), visiting, depth + 1);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 for (int i = 0; i < length; i++) {
-                    rejectSharedMutableHandles(Array.get(value, i), visiting);
+                    rejectSharedMutableHandles(Array.get(value, i), visiting, depth + 1);
                 }
             } else if (!(value instanceof Sendable)) {
                 throw new IllegalArgumentException("value of type " + value.getClass().getName()
@@ -606,15 +610,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static void requireGraphDepth(int depth) {
+        if (depth > MAX_MESSAGE_GRAPH_DEPTH) {
+            throw new IllegalArgumentException(
+                    "actor message graph exceeds maximum nesting depth " + MAX_MESSAGE_GRAPH_DEPTH);
+        }
+    }
+
     /**
      * Converts supported values into a deeply immutable/sendable graph.
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
-        return freeze(value, new IdentityHashMap<>());
+        return freeze(value, new IdentityHashMap<>(), 0);
     }
 
-    private static Object freeze(Object value, IdentityHashMap<Object, Boolean> visiting) {
+    private static Object freeze(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
         if (isScalar(value)) return value;
         if (value instanceof Shared<?> shared) return shared;
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
@@ -626,18 +641,18 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             if (value instanceof List<?> list) {
                 List<Object> frozen = new ArrayList<>(list.size());
-                for (Object item : list) frozen.add(freeze(item, visiting));
+                for (Object item : list) frozen.add(freeze(item, visiting, depth + 1));
                 return List.copyOf(frozen);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> frozen = new LinkedHashSet<>();
-                for (Object item : set) frozen.add(freeze(item, visiting));
+                for (Object item : set) frozen.add(freeze(item, visiting, depth + 1));
                 return Collections.unmodifiableSet(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    frozen.put(freeze(entry.getKey(), visiting), freeze(entry.getValue(), visiting));
+                    frozen.put(freeze(entry.getKey(), visiting, depth + 1), freeze(entry.getValue(), visiting, depth + 1));
                 }
                 return Collections.unmodifiableMap(frozen);
             }
@@ -645,7 +660,7 @@ public final class ActorRuntime implements AutoCloseable {
                 int length = Array.getLength(value);
                 List<Object> frozen = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
-                    frozen.add(freeze(Array.get(value, i), visiting));
+                    frozen.add(freeze(Array.get(value, i), visiting, depth + 1));
                 }
                 return List.copyOf(frozen);
             }
@@ -655,7 +670,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalArgumentException(
                             "Sendable.freezeForSend() must not return the mutable source object");
                 }
-                return freeze(frozen, visiting);
+                return freeze(frozen, visiting, depth + 1);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -669,15 +684,19 @@ public final class ActorRuntime implements AutoCloseable {
      * shared wrappers are unwrapped and copied into the private message graph.
      */
     private static Object isolateCopy(Object value) {
-        return isolateCopy(value, new IdentityHashMap<>());
+        return isolateCopy(value, new IdentityHashMap<>(), 0);
     }
 
-    private static Object isolateCopy(Object value, IdentityHashMap<Object, Boolean> visiting) {
+    private static Object isolateCopy(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
         }
-        if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting);
+        if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
 
         if (visiting.put(value, Boolean.TRUE) != null) {
@@ -686,18 +705,18 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             if (value instanceof List<?> list) {
                 List<Object> copy = new ArrayList<>(list.size());
-                for (Object item : list) copy.add(isolateCopy(item, visiting));
+                for (Object item : list) copy.add(isolateCopy(item, visiting, depth + 1));
                 return Collections.unmodifiableList(copy);
             }
             if (value instanceof Set<?> set) {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                for (Object item : set) copy.add(isolateCopy(item, visiting));
+                for (Object item : set) copy.add(isolateCopy(item, visiting, depth + 1));
                 return Collections.unmodifiableSet(copy);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> copy = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    copy.put(isolateCopy(entry.getKey(), visiting), isolateCopy(entry.getValue(), visiting));
+                    copy.put(isolateCopy(entry.getKey(), visiting, depth + 1), isolateCopy(entry.getValue(), visiting, depth + 1));
                 }
                 return Collections.unmodifiableMap(copy);
             }
@@ -705,7 +724,7 @@ public final class ActorRuntime implements AutoCloseable {
                 int length = Array.getLength(value);
                 List<Object> copy = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
-                    copy.add(isolateCopy(Array.get(value, i), visiting));
+                    copy.add(isolateCopy(Array.get(value, i), visiting, depth + 1));
                 }
                 return Collections.unmodifiableList(copy);
             }
@@ -715,7 +734,7 @@ public final class ActorRuntime implements AutoCloseable {
                     throw new IllegalArgumentException(
                             "Sendable.freezeForSend() must not return the mutable source object");
                 }
-                return isolateCopy(frozen, visiting);
+                return isolateCopy(frozen, visiting, depth + 1);
             }
             throw new IllegalArgumentException("value of type " + value.getClass().getName()
                     + " is not Sendable; mutable host objects cannot cross actor boundaries");
@@ -729,10 +748,14 @@ public final class ActorRuntime implements AutoCloseable {
      * not a promise about HotSpot/Graal object layout.
      */
     private static long estimateFrozenBytes(Object value) {
-        return estimateFrozenBytes(value, new IdentityHashMap<>());
+        return estimateFrozenBytes(value, new IdentityHashMap<>(), 0);
     }
 
-    private static long estimateFrozenBytes(Object value, IdentityHashMap<Object, Boolean> seen) {
+    private static long estimateFrozenBytes(
+            Object value,
+            IdentityHashMap<Object, Boolean> seen,
+            int depth) {
+        requireGraphDepth(depth);
         if (value == null) return 8L;
         if (value instanceof Boolean || value instanceof Byte || value instanceof Short
                 || value instanceof Character || value instanceof Integer || value instanceof Float) return 16L;
@@ -744,26 +767,26 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
-        if (value instanceof Shared<?> shared) return estimateFrozenBytes(shared.value(), seen);
+        if (value instanceof Shared<?> shared) return estimateFrozenBytes(shared.value(), seen, depth + 1);
 
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
-            for (Object item : list) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen));
+            for (Object item : list) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
             return bytes;
         }
         if (value instanceof Set<?> set) {
             bytes = Math.addExact(bytes, 16L * set.size());
-            for (Object item : set) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen));
+            for (Object item : set) bytes = Math.addExact(bytes, estimateFrozenBytes(item, seen, depth + 1));
             return bytes;
         }
         if (value instanceof Map<?, ?> map) {
             bytes = Math.addExact(bytes, 32L * map.size());
             for (Map.Entry<?, ?> entry : map.entrySet()) {
-                bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getKey(), seen));
-                bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getValue(), seen));
+                bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getKey(), seen, depth + 1));
+                bytes = Math.addExact(bytes, estimateFrozenBytes(entry.getValue(), seen, depth + 1));
             }
             return bytes;
         }
@@ -771,7 +794,7 @@ public final class ActorRuntime implements AutoCloseable {
             int length = Array.getLength(value);
             bytes = Math.addExact(bytes, 8L * length);
             for (int i = 0; i < length; i++) {
-                bytes = Math.addExact(bytes, estimateFrozenBytes(Array.get(value, i), seen));
+                bytes = Math.addExact(bytes, estimateFrozenBytes(Array.get(value, i), seen, depth + 1));
             }
             return bytes;
         }
