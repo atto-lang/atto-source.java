@@ -41,6 +41,10 @@ process.gc();
 `actor.gc()`:
 
 - is legal only during a live actor mailbox turn;
+- must be called directly; the `actor.gc` capability cannot be extracted as a
+  first-class function value;
+- is not inherited by escaping lambdas/closures merely because they were
+  created during an actor turn;
 - requests collection for that actor domain only;
 - never falls back to `System.gc()` on the JVM;
 - works for private and shared actors, but only actor-owned state belongs to the
