@@ -137,9 +137,11 @@ match [200, "ok", "cached"] {
 }
 ```
 
-Patterns may be nested. String, boolean, integer, floating-point, imaginary, and negative numeric literals may be used as value tests. Captures exist only inside their arm.
+Patterns may be nested. String, boolean, integer, floating-point, imaginary, and negative numeric/imaginary literals may be used as value tests. Captures exist only inside their arm. Duplicate capture names in one pattern are rejected, and arms after an irrefutable wildcard/capture pattern are rejected as unreachable.
 
 A `match` with no matching arm raises a runtime error. This keeps expected failures in ordinary tagged values while preserving the "let it crash" path for unexpected shapes or states. Language/runtime exceptions remain separate and can still be handled with `try ... catch` when recovery from an exception is intentional.
+
+Borrowed values cannot currently be stored inside tuple/list/object aggregates. Oreslang rejects those constructions until aggregate lifetime tracking can preserve and transfer borrow leases soundly; direct borrows and borrowed parameters remain supported.
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
