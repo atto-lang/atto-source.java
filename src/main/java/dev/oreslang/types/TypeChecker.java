@@ -394,6 +394,43 @@ public final class TypeChecker {
             checkBlock(attempted.finallyBody(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.ReceiveLoopStmt loop) {
+            if (awaitContext != AwaitContext.ACTOR) {
+                throw new IllegalArgumentException(loop.mode() == Ast.ReceiveLoopMode.BLOCKING
+                        ? "'receive loop' is only legal inside an actor"
+                        : "'try_receive loop' is only legal inside an actor");
+            }
+            if (loop.bindingType() == null) {
+                throw new IllegalArgumentException(
+                        "receive-loop message type must be explicit until the actor Protocol<M> type is wired into source lowering");
+            }
+            Env loopEnv = new Env(env);
+            loopEnv.define(loop.bindingName(), resolve(loop.bindingType(), generics, self), Ast.BindingKind.VAL);
+            checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.SelectStmt select) {
+            if (awaitContext != AwaitContext.ACTOR) {
+                throw new IllegalArgumentException("'select' is currently actor-only; async-task channel select lowering is not implemented yet");
+            }
+            for (Ast.SelectCase branch : select.cases()) {
+                Type operationType = typeOf(branch.operation(), env, generics, self);
+                Env caseEnv = new Env(env);
+                if (branch.bindingName() != null) {
+                    if (branch.operation().kind() != Ast.ChannelOpKind.RECEIVE) {
+                        throw new IllegalArgumentException("only receive select cases may bind a value");
+                    }
+                    Type bindingType = branch.bindingType() == null
+                            ? operationType
+                            : resolve(branch.bindingType(), generics, self);
+                    requireAssignable(operationType, bindingType, "select receive binding");
+                    caseEnv.define(branch.bindingName(), bindingType, Ast.BindingKind.VAL);
+                }
+                checkBlock(branch.body(), caseEnv, generics, expectedReturn, self);
+            }
+            checkBlock(select.defaultBody(), env, generics, expectedReturn, self);
+            return;
+        }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
             Type element = iterableElementType(iterable);
@@ -663,6 +700,43 @@ public final class TypeChecker {
                 }
             }
             return nominal;
+        }
+        if (expr instanceof Ast.ChannelExpr channel) {
+            Type capacity = typeOf(channel.capacity(), env, generics, self);
+            requireAssignable(capacity, Primitive.INT, "channel capacity");
+            return new Named("Channel", List.of(resolve(channel.elementType(), generics, self)));
+        }
+        if (expr instanceof Ast.ChannelOpExpr operation) {
+            if (operation.channel() == null) {
+                if (awaitContext != AwaitContext.ACTOR) {
+                    throw new IllegalArgumentException(operation.kind().name().toLowerCase()
+                            + "() without a channel refers to the actor mailbox and is only legal inside an actor");
+                }
+                return operation.kind() == Ast.ChannelOpKind.TRY_RECEIVE
+                        ? new Named("Option", List.of(Unknown.INSTANCE))
+                        : Unknown.INSTANCE;
+            }
+
+            Type channelType = typeOf(operation.channel(), env, generics, self);
+            if (!(channelType instanceof Named named)
+                    || !named.name().equals("Channel")
+                    || named.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        operation.kind().name().toLowerCase() + " requires Channel<T>, got " + channelType);
+            }
+            Type elementType = named.arguments().getFirst();
+
+            if (operation.kind() == Ast.ChannelOpKind.SEND || operation.kind() == Ast.ChannelOpKind.TRY_SEND) {
+                Type valueType = typeOf(operation.value(), env, generics, self);
+                requireAssignable(valueType, elementType, "channel send value");
+                return operation.kind() == Ast.ChannelOpKind.SEND
+                        ? Primitive.VOID
+                        : new Named("SendResult", List.of());
+            }
+
+            return operation.kind() == Ast.ChannelOpKind.RECEIVE
+                    ? elementType
+                    : new Named("Option", List.of(elementType));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (awaitContext == AwaitContext.NONE) {
@@ -1300,6 +1374,14 @@ public final class TypeChecker {
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
             for (Ast.Stmt nested : s.catchBody()) collectCalls(nested, module, out);
             for (Ast.Stmt nested : s.finallyBody()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.ReceiveLoopStmt s) {
+            for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.SelectStmt s) {
+            for (Ast.SelectCase branch : s.cases()) {
+                collectCalls(branch.operation(), module, out);
+                for (Ast.Stmt nested : branch.body()) collectCalls(nested, module, out);
+            }
+            for (Ast.Stmt nested : s.defaultBody()) collectCalls(nested, module, out);
         } else if (stmt instanceof Ast.ForOfStmt s) {
             collectCalls(s.iterable(), module, out);
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
@@ -1327,6 +1409,11 @@ public final class TypeChecker {
         else if (expr instanceof Ast.IndexExpr e) { collectCalls(e.receiver(), module, out); collectCalls(e.index(), module, out); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) collectCalls(arg, module, out);
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
+        else if (expr instanceof Ast.ChannelExpr e) collectCalls(e.capacity(), module, out);
+        else if (expr instanceof Ast.ChannelOpExpr e) {
+            if (e.channel() != null) collectCalls(e.channel(), module, out);
+            if (e.value() != null) collectCalls(e.value(), module, out);
+        }
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField f : e.fields()) collectCalls(f.value(), module, out);
