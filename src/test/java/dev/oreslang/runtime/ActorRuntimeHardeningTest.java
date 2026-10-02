@@ -1,0 +1,221 @@
+package dev.oreslang.runtime;
+
+import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class ActorRuntimeHardeningTest {
+
+    @Test
+    void runtimeScopedCapabilitiesCannotCrossTenantBoundaries() {
+        try (ActorRuntime left = new ActorRuntime(); ActorRuntime right = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> leftRef = left.spawn(() -> (message, context) -> { });
+            ActorRuntime.ActorRef<Object> rightWatcher = right.spawn(() -> (message, context) -> { });
+            ActorRuntime.ActorRef<Map<String, Object>> rightSink =
+                    right.spawn(() -> (message, context) -> { });
+
+            assertEquals(ActorRuntime.SendResult.FOREIGN_RUNTIME, right.trySend(leftRef, "wrong-runtime"));
+            assertThrows(SecurityException.class, () -> right.send(leftRef, "wrong-runtime"));
+            assertThrows(SecurityException.class,
+                    () -> rightSink.send(Map.<String, Object>of("ref", leftRef)));
+            assertThrows(SecurityException.class, () -> ActorRuntime.freeze(leftRef));
+            assertThrows(SecurityException.class, () -> right.monitor(rightWatcher, leftRef));
+
+            ActorRuntime.Shared<List<Integer>> foreignShared = left.shareReadonly(List.of(1, 2, 3));
+            assertThrows(SecurityException.class,
+                    () -> rightSink.send(Map.<String, Object>of("shared", foreignShared)));
+        }
+    }
+
+    @Test
+    void typedProtocolRejectsMalformedMessagesBeforeMailboxAdmission() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            ActorRuntime.Protocol<String> protocol = new ActorRuntime.Protocol<>(
+                    "commands",
+                    value -> value instanceof String text && text.startsWith("cmd:"));
+
+            ActorRuntime.ActorRef<String> ref = runtime.spawn(protocol, () -> (message, context) -> received.countDown());
+
+            assertEquals(ActorRuntime.SendResult.PROTOCOL_MISMATCH, ref.trySend("bad"));
+            assertEquals(ActorRuntime.SendResult.SENT, ref.trySend("cmd:ping"));
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void actorOwnedStateMayCarryOnlySameRuntimeCapabilities() {
+        try (ActorRuntime left = new ActorRuntime(); ActorRuntime right = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> local = left.spawn(() -> (message, context) -> { });
+            ActorRuntime.ActorRef<String> foreign = right.spawn(() -> (message, context) -> { });
+
+            Object frozen = left.freezeForActorState(Map.of("child", local));
+            assertTrue(frozen instanceof Map<?, ?>);
+            assertSame(local, ((Map<?, ?>) frozen).get("child"));
+
+            assertThrows(SecurityException.class,
+                    () -> left.freezeForActorState(Map.of("child", foreign)));
+        }
+    }
+
+    @Test
+    void malformedTypedMessageIsRejectedBeforeSendableProjectionRuns() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicInteger projections = new AtomicInteger();
+            ActorRuntime.Sendable expensive = (freezer, readOnlyShared) -> {
+                projections.incrementAndGet();
+                return "cmd:projected";
+            };
+
+            ActorRuntime.ActorRef<String> ref = runtime.spawn(
+                    ActorRuntime.Protocol.ofClass("strings", String.class),
+                    () -> (message, context) -> { });
+
+            @SuppressWarnings({"rawtypes", "unchecked"})
+            ActorRuntime.SendResult result = runtime.trySend((ActorRuntime.ActorRef) ref, expensive);
+
+            assertEquals(ActorRuntime.SendResult.PROTOCOL_MISMATCH, result);
+            assertEquals(0, projections.get());
+        }
+    }
+
+    @Test
+    void typedMonitorWatcherMustAdmitDownMessages() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<String> watcher = runtime.spawn(
+                    ActorRuntime.Protocol.ofClass("strings", String.class),
+                    () -> (message, context) -> { });
+            ActorRuntime.ActorRef<String> target = runtime.spawn(
+                    ActorRuntime.Protocol.ofClass("strings", String.class),
+                    () -> (message, context) -> { });
+
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> runtime.monitor(watcher, target));
+            assertTrue(error.getMessage().contains("DOWN"));
+        }
+    }
+
+    @Test
+    void askUsesMessagePassingAndAOneSlotReplyActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.Protocol<Map<String, Object>> requestProtocol =
+                    new ActorRuntime.Protocol<>("query", value -> value instanceof Map<?, ?>);
+
+            ActorRuntime.ActorRef<Map<String, Object>> target =
+                    runtime.spawn(requestProtocol, () -> (message, context) -> {
+                        @SuppressWarnings("unchecked")
+                        ActorRuntime.ActorRef<String> reply =
+                                (ActorRuntime.ActorRef<String>) message.get("reply");
+                        reply.send("pong:" + message.get("payload"));
+                    });
+
+            String response = runtime.<Map<String, Object>, String>ask(
+                            target,
+                            reply -> Map.<String, Object>of("payload", "ping", "reply", reply),
+                            ActorRuntime.Protocol.ofClass("reply", String.class),
+                            Duration.ofSeconds(2))
+                    .toCompletableFuture()
+                    .get(2, TimeUnit.SECONDS);
+
+            assertEquals("pong:ping", response);
+        }
+    }
+
+    @Test
+    void gracefulStopCannotBeDefeatedByAFullMailbox() throws Exception {
+        IsolatePolicy parent = IsolatePolicy.developer();
+        IsolatePolicy tinyMailbox = new IsolatePolicy(
+                parent.capabilities(),
+                16L * 1024L * 1024L,
+                1,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(parent)) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicInteger seen = new AtomicInteger();
+
+            ActorRuntime.ActorRef<String> ref = runtime.spawn(
+                    tinyMailbox,
+                    ActorRuntime.Protocol.ofClass("commands", String.class),
+                    () -> (message, context) -> {
+                        entered.countDown();
+                        release.await(2, TimeUnit.SECONDS);
+                        seen.incrementAndGet();
+                    });
+
+            ref.send("running");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            ref.send("queued");
+
+            assertTrue(runtime.stop(ref));
+            assertNotEquals(ActorRuntime.SendResult.SENT, ref.trySend("must-not-enter"));
+            release.countDown();
+
+            assertTrue(runtime.join(ref, Duration.ofSeconds(2)));
+            assertEquals(2, seen.get());
+            assertEquals(ActorRuntime.ActorState.STOPPED, runtime.snapshot(ref).state());
+        }
+    }
+
+    @Test
+    void cyclicMessagesAreRejectedDuringSizePreflightNotByStackOverflow() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> ref = runtime.spawn(() -> (message, context) -> { });
+            ArrayList<Object> cyclic = new ArrayList<>();
+            cyclic.add(cyclic);
+
+            IllegalArgumentException error =
+                    assertThrows(IllegalArgumentException.class, () -> ref.send(cyclic));
+            assertTrue(error.getMessage().contains("cyclic"));
+        }
+    }
+
+    @Test
+    void actorWallTimeIsEnforcedAtCompilerSchedulerSafepoints() {
+        IsolatePolicy parent = IsolatePolicy.developer();
+        IsolatePolicy shortBudget = new IsolatePolicy(
+                parent.capabilities(),
+                16L * 1024L * 1024L,
+                8,
+                Duration.ofMillis(50));
+
+        try (ActorRuntime runtime = new ActorRuntime(parent)) {
+            ActorRuntime.ActorRef<String> ref = runtime.spawn(
+                    shortBudget,
+                    ActorRuntime.Protocol.ofClass("loop", String.class),
+                    () -> (message, context) -> {
+                        while (true) context.runtime().schedulerSafepoint();
+                    });
+
+            ref.send("go");
+            assertTrue(runtime.join(ref, Duration.ofSeconds(2)));
+
+            ActorRuntime.ActorSnapshot snapshot = runtime.snapshot(ref);
+            assertEquals(ActorRuntime.ActorState.FAILED, snapshot.state());
+            assertNotNull(snapshot.failure());
+            assertTrue(snapshot.failure().type().contains("CancellationException"));
+        }
+    }
+
+    @Test
+    void frozenMapRejectsKeyCollisionsIntroducedBySendableProjection() {
+        ActorRuntime.Sendable left = (freezer, readOnlyShared) -> "same-key";
+        ActorRuntime.Sendable right = (freezer, readOnlyShared) -> "same-key";
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(Map.of(left, 1, right, 2)));
+
+        assertTrue(error.getMessage().contains("same frozen key"));
+    }
+}

@@ -352,6 +352,11 @@ actor.send(counter_ref, "tick");
 
 `ActorRef<T>` values are PID-like immutable/copyable handles with a statically checked mailbox type. `actor.spawn(handler)` infers `T` from the handler's first parameter; `actor.send(ref, value)` rejects values that are not assignable to `T`. A `Shared<T>` handle is accepted where `T` is expected because the runtime sends the immutable backing value. Sending is non-consuming: the sender retains its own value while the runtime freezes/copies the transport representation.
 
+Actor/monitor/shared handles are runtime/isolate-scoped capabilities. A foreign tenant's handle is rejected even when its opaque id is well-formed. Compiler lowering can attach typed `Protocol<M>` admission metadata to actor references, while explicit dynamic interoperability uses a dynamic protocol.
+
+The mailbox primitive is FIFO dequeue rather than Erlang-style selective receive scanning. Backpressure is explicit: `trySend` reports admission failure and fail-fast `send` never grows an unbounded queue. Request/reply is implemented with a temporary one-slot reply actor through `ask`, not shared mutable promise state. Typed monitor watchers must admit the runtime `DOWN` message shape; monitor registration fails closed otherwise. See [ACTOR_MODEL.md](ACTOR_MODEL.md).
+
+
 Stateful handlers are checked as `(Message, State) -> State`; their initial state must match `State`. Inline actor lambdas must be `nlex` and explicitly type the message parameter. Their state parameter may infer from the supplied initial state. Named `fnc` handlers remain the simplest actor entrypoint.
 
 Literal singleton names are compile-unit contracts: after `actor.singleton("cache", handler)` fixes a handler signature, another use of the literal name `"cache"` with an incompatible actor contract is rejected. Dynamic singleton names are still checked at the ordinary actor/message boundaries.
