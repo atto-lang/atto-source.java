@@ -330,7 +330,7 @@ final class MutexLanguageTest {
                   end
                 end
                 define module app
-                  fnc consume(any value) => void { return; }
+                  fnc consume<T>(T value) => void { return; }
                   fnc bad() => void {
                     val mutex = Mutex.new(new Counter());
                     val guard = mutex.lock();
