@@ -215,6 +215,51 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void actorCanRecoverPoisonedSharedMutexWithoutBlocking() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var shared = OresMutex.shared(new int[]{0});
+            CountDownLatch poisoned = new CountDownLatch(1);
+            CountDownLatch recovered = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var poisoner = runtime.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+                try {
+                    var guard = mutex.lockAsync().join();
+                    guard.value()[0] = 17;
+                    guard.fail();
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                } finally {
+                    poisoned.countDown();
+                }
+            });
+
+            poisoner.send(shared);
+            assertTrue(poisoned.await(2, TimeUnit.SECONDS));
+            assertTrue(shared.isPoisoned());
+
+            var repairer = runtime.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+                try {
+                    mutex.recover(value -> {
+                        value[0] = 0;
+                        return null;
+                    });
+                } catch (Throwable problem) {
+                    failure.compareAndSet(null, problem);
+                } finally {
+                    recovered.countDown();
+                }
+            });
+
+            repairer.send(shared);
+            assertTrue(recovered.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get());
+            assertFalse(shared.isPoisoned());
+            assertEquals(0, shared.withLock(value -> value[0]));
+        }
+    }
+
+    @Test
     void actorUsesAsyncAcquisitionForSharedMutex() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch done = new CountDownLatch(1);
