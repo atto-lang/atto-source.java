@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -33,6 +34,7 @@ public final class OwnershipChecker {
     private Ast.ModuleDecl activeModule;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final ArrayDeque<Map<String, Ast.ClassDecl>> localClassScopes = new ArrayDeque<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
 
@@ -156,9 +158,25 @@ public final class OwnershipChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
+        pushLocalClassScope(body);
         Scope scope = new Scope(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
-        scope.close();
+        try {
+            for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
+        } finally {
+            scope.close();
+            localClassScopes.pop();
+        }
+    }
+
+    private void pushLocalClassScope(List<Ast.Stmt> body) {
+        LinkedHashMap<String, Ast.ClassDecl> local = new LinkedHashMap<>();
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.TypeDeclStmt typeDecl
+                    && typeDecl.declaration() instanceof Ast.ClassDecl klass) {
+                local.put(klass.name(), klass);
+            }
+        }
+        localClassScopes.push(local);
     }
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
@@ -741,6 +759,12 @@ public final class OwnershipChecker {
     }
 
     private Ast.ClassDecl findClass(String name) {
+        if (!name.contains(".")) {
+            for (Map<String, Ast.ClassDecl> scope : localClassScopes) {
+                Ast.ClassDecl local = scope.get(name);
+                if (local != null) return local;
+            }
+        }
         if (ambiguousClasses.contains(name)) return null;
         return classes.get(name);
     }
