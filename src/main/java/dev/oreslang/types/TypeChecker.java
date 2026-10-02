@@ -4,6 +4,8 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
+import dev.oreslang.types.Types.GpuArrayType;
+import dev.oreslang.types.Types.GpuStreamType;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
@@ -39,6 +41,7 @@ public final class TypeChecker {
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private int gpuCallableDepth;
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
@@ -188,7 +191,12 @@ public final class TypeChecker {
         Type returns = resolve(fn.returnType(), generics, null);
         if (fn.gpu()) requireGpuTransferType(returns, true,
                 "return type of gpu " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "'");
-        checkBlock(fn.body(), env, generics, returns, null);
+        if (fn.gpu()) gpuCallableDepth++;
+        try {
+            checkBlock(fn.body(), env, generics, returns, null);
+        } finally {
+            if (fn.gpu()) gpuCallableDepth--;
+        }
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
         }
@@ -214,6 +222,14 @@ public final class TypeChecker {
         }
         if (type instanceof ListType list) {
             requireGpuTransferType(list.element(), false, where + " element");
+            return;
+        }
+        if (type instanceof GpuArrayType array) {
+            requireGpuTransferType(array.element(), false, where + " element");
+            return;
+        }
+        if (type instanceof GpuStreamType stream) {
+            requireGpuTransferType(stream.element(), false, where + " element");
             return;
         }
         if (type instanceof Tuple tuple) {
