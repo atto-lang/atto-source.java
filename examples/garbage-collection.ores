@@ -1,0 +1,36 @@
+// Oreslang memory is ownership-first. Ordinary values are reclaimed by
+// lexical/actor lifetimes; GC is a fallback for VM/reflection/runtime-managed
+// objects and should never be required for correctness.
+
+actor PrivateCache {
+  let int hits = 0;
+
+  pub fnc compact() => void {
+    // Private actor-local request. This never escalates to process.gc().
+    actor.gc();
+    return;
+  }
+end
+
+shared actor SharedIndex {
+  let int generations = 0;
+
+  pub fnc compact() => void {
+    // Still scoped to this actor's owned state. Explicit Shared/SyncCell state
+    // is outside the actor-local collection domain.
+    actor.gc();
+    return;
+  }
+end
+
+pub routine main() => void {
+  val temporary = arr["owned", "lexical", "data"];
+  stdio.println(temporary[0]);
+
+  // Developer/trusted-host policy only. This is an explicit whole-process VM
+  // hint and is capability-gated; strict FaaS/private actors cannot invoke it.
+  process.gc();
+
+  stdio.println("gc-ok");
+  return;
+}
