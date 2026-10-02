@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.GpuKernelCompiler;
 import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import org.graalvm.polyglot.Context;
@@ -143,6 +144,129 @@ final class GpuExecutionTest {
                         """));
 
         assertTrue(failure.getMessage().contains("explicit GPU-transferable type"));
+    }
+
+    @Test
+    void compilerActuallyEmitsOpenClForNamedGpuFunctions() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module math
+                  gpu fnc add(i32 a, i32 b) => i32 {
+                    let i32 sum = a + b;
+                    return sum;
+                  }
+                end
+                """);
+
+        GpuKernelCompiler.GpuProgram gpu = compilation.gpuProgram();
+        assertTrue(gpu.hasKernels());
+        assertEquals(GpuKernelCompiler.BACKEND, gpu.backend());
+        assertEquals(1, gpu.kernels().size());
+
+        GpuKernelCompiler.GpuKernel kernel = gpu.kernels().getFirst();
+        assertEquals("add", kernel.sourceName());
+        assertEquals(GpuKernelCompiler.ExecutionShape.SINGLE_WORK_ITEM, kernel.executionShape());
+        assertEquals("i32", kernel.resultType());
+        assertTrue(gpu.source().contains("static inline int ores_dev_math_add_a2"));
+        assertTrue(gpu.source().contains("__kernel void ores_kernel_math_add_a2"));
+        assertTrue(gpu.source().contains("__global int* restrict __ores_out"));
+        assertTrue(gpu.source().contains("__ores_out[0] = ores_dev_math_add_a2(a, b)"));
+    }
+
+    @Test
+    void compilerAutoParallelizesCanonicalTopLevelBufferLoops() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module math
+                  gpu fnc scale(Array<f32> mut xs, i64 n, f32 factor) => void {
+                    for (let i64 i = 0; i < n; i = i + 1) {
+                      xs[i] = xs[i] * factor;
+                    }
+                    return;
+                  }
+                end
+                """);
+
+        GpuKernelCompiler.GpuKernel kernel = compilation.gpuProgram().kernels().getFirst();
+        assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, kernel.executionShape());
+        assertEquals("n", kernel.launchExtentExpression());
+        assertTrue(compilation.gpuProgram().source().contains("__global float* restrict xs"));
+        assertTrue(compilation.gpuProgram().source().contains("get_global_id(0)"));
+        assertTrue(compilation.gpuProgram().source().contains("xs[i] = (xs[i] * factor)"));
+    }
+
+    @Test
+    void gpuParallelListOfLowersToIndependentConcurrentKernelEntries() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module app
+                  fnc main() => void {
+                    const funcs = gpu parallel List.of(
+                      || -> { return; },
+                      || -> { return; },
+                      || -> { return; }
+                    );
+                    return;
+                  }
+                end
+                """);
+
+        var kernels = compilation.gpuProgram().kernels();
+        assertEquals(3, kernels.size());
+        assertTrue(kernels.stream().allMatch(k -> k.kind() == GpuKernelCompiler.KernelKind.LAMBDA));
+        assertTrue(kernels.stream().allMatch(k -> k.mode() == Ast.GpuMode.PARALLEL));
+        assertNotNull(kernels.getFirst().batchId());
+        assertTrue(kernels.stream().allMatch(k -> kernels.getFirst().batchId().equals(k.batchId())));
+        assertEquals(3, kernels.stream().map(GpuKernelCompiler.GpuKernel::kernelSymbol).distinct().count());
+    }
+
+    @Test
+    void gpuAbiRejectsArrayReturnsAndRecursiveDeviceCallGraphs() {
+        IllegalArgumentException arrayReturn = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        define module math
+                          gpu fnc bad(Array<f32> xs) => Array<f32> {
+                            return xs;
+                          }
+                        end
+                        """));
+        assertTrue(arrayReturn.getMessage().contains("must return a scalar or void"));
+
+        IllegalArgumentException recursion = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        define module math
+                          gpu fnc recurse(i32 x) => i32 {
+                            if x <= 0; do
+                              return 0;
+                            fi
+                            return recurse(x - 1);
+                          }
+                        end
+                        """));
+        assertTrue(recursion.getMessage().contains("recursive GPU call graph"));
+    }
+
+    @Test
+    void acceptedGpuCodeRejectsHostOnlyAggregatesBeforeLowering() {
+        IllegalArgumentException listLiteral = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        define module math
+                          gpu fnc bad(i32 x) => i32 {
+                            val ys = [x, x + 1];
+                            return x;
+                          }
+                        end
+                        """));
+        assertTrue(listLiteral.getMessage().contains("cannot allocate list/array literals"));
+
+        IllegalArgumentException forOf = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        define module math
+                          gpu fnc bad(Array<i32> xs) => void {
+                            for (val x of xs) {
+                              return;
+                            }
+                          }
+                        end
+                        """));
+        assertTrue(forOf.getMessage().contains("for-of is not supported inside GPU code"));
     }
 
     @Test
