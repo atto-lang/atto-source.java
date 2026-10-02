@@ -430,8 +430,11 @@ public final class OwnershipChecker {
                             return new ValueInfo(new Ast.TypeRef("Future", List.of(guard), false), ValueKind.MOVE_ONLY, null);
                         }
                         if ((member.member().equals("with_lock") || member.member().equals("recover"))
-                                && call.arguments().size() == 1
-                                && call.arguments().getFirst() instanceof Ast.LambdaExpr lambda) {
+                                && call.arguments().size() == 1) {
+                            if (!(call.arguments().getFirst() instanceof Ast.LambdaExpr lambda)) {
+                                throw error(member.member()
+                                        + " requires an inline lambda so protected mutex state remains lexical");
+                            }
                             if (member.member().equals("recover") && !receiverType.name().equals("SharedMutex")) {
                                 throw error("recover is only available on SharedMutex<T>");
                             }
