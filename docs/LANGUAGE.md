@@ -515,6 +515,14 @@ as `import fnc {main} from "./app.ores";` remains legal because it references an
 lifecycle callable rather than declaring a new one. Wildcard aliases and non-function
 imports may not bind `main` or `init`.
 
+`init` has a stricter lifecycle contract than an ordinary callable: it takes no
+parameters or generics, returns `void`, is synchronous, and is invoked exactly once by startup.
+All reachable modules/files are loaded and linked before any init hook executes. If initialization
+fails unrecovered, `main` is never entered.
+
+Import cycles do not prevent this load phase. For a cycle such as `a.ores <-> b.ores`,
+both source units are linked first; only then does deterministic init traversal begin.
+
 Neither lifecycle callable may be an actor:
 
 ```ores
