@@ -211,7 +211,7 @@ final class ParserTest {
                         }
                         """)));
         assertTrue(failure.getMessage().contains("ownership-phi")
-                        || failure.getMessage().contains("Copy/Shared-safe"),
+                        || failure.getMessage().contains("require Copy"),
                 failure::getMessage);
     }
 
