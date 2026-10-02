@@ -132,7 +132,9 @@ public final class IncrementalCompiler {
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
         if (decl instanceof Ast.FunctionDecl fn) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
-            abi.append(fn.kind()).append(" pub ").append(fn.name());
+            abi.append(fn.kind()).append(" pub ");
+            if (Ast.hasGpuPlacement(fn.annotations())) abi.append("gpu ");
+            abi.append(fn.name());
             appendGenerics(abi, fn.genericParameters());
             appendParams(abi, fn.parameters());
             abi.append("=>").append(typeRef(fn.returnType())).append('\n');
@@ -153,8 +155,9 @@ public final class IncrementalCompiler {
             }
             for (Ast.MethodDecl method : klass.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
-                abi.append(method.isStatic() ? " static-fnc " : " method ")
-                        .append(method.name());
+                abi.append(method.isStatic() ? " static-fnc " : " method ");
+                if (Ast.hasGpuPlacement(method.annotations())) abi.append("gpu ");
+                abi.append(method.name());
                 appendGenerics(abi, method.genericParameters());
                 appendParams(abi, method.parameters());
                 abi.append("=>").append(typeRef(method.returnType())).append('\n');
