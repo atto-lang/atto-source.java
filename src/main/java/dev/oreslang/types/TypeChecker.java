@@ -720,32 +720,37 @@ public final class TypeChecker {
 
         for (Ast.MethodDecl method : klass.methods()) {
             activeTraitOwner = method.compositionOwner();
-            Set<String> generics = new HashSet<>(classGenerics);
-            for (String generic : method.genericParameters()) {
-                if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
-            }
-
-            if (method.explicitReceiverType() != null) {
-                Ast.TypeRef receiverRef = method.explicitReceiverType();
-                boolean namesEnclosingClass = receiverRef.name().equals(klass.name()) || receiverRef.name().equals(qualifiedClassName(klass)) || receiverRef.name().equals("self");
-                if (!namesEnclosingClass) {
-                    Type receiver = resolve(receiverRef, generics, self);
-                    requireAssignable(self, receiver, "explicit self receiver in " + klass.name() + "." + method.name());
+            pushLocalTypeScope(method.body());
+            try {
+                Set<String> generics = new HashSet<>(classGenerics);
+                for (String generic : method.genericParameters()) {
+                    if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
                 }
-            }
 
-            Type callableSelf = method.isStatic() ? null : self;
-            Env env = new Env(classModuleEnv);
-            if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            Type returns = resolve(method.returnType(), generics, callableSelf);
-            validateSingletonTransportStatements(method.body(), module);
-            checkBlock(method.body(), env, generics, returns, callableSelf);
-            if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
-                String label = method.isStatic() ? "static function" : "method";
-                throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
+                if (method.explicitReceiverType() != null) {
+                    Ast.TypeRef receiverRef = method.explicitReceiverType();
+                    boolean namesEnclosingClass = receiverRef.name().equals(klass.name()) || receiverRef.name().equals(qualifiedClassName(klass)) || receiverRef.name().equals("self");
+                    if (!namesEnclosingClass) {
+                        Type receiver = resolve(receiverRef, generics, self);
+                        requireAssignable(self, receiver, "explicit self receiver in " + klass.name() + "." + method.name());
+                    }
+                }
+
+                Type callableSelf = method.isStatic() ? null : self;
+                Env env = new Env(classModuleEnv);
+                if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
+                for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                Type returns = resolve(method.returnType(), generics, callableSelf);
+                validateSingletonTransportStatements(method.body(), module);
+                checkBlock(method.body(), env, generics, returns, callableSelf);
+                if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
+                    String label = method.isStatic() ? "static function" : "method";
+                    throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
+                }
+            } finally {
+                popLocalTypeScope();
+                activeTraitOwner = null;
             }
-            activeTraitOwner = null;
         }
 
         Set<String> implemented = new HashSet<>();
