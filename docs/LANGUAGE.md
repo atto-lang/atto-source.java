@@ -85,12 +85,20 @@ fnc fixed() => [int, bool, string] {
   return [3, true, "yes"];
 }
 
+fnc fixedJvmStyle() => [int, bool, string] {
+  return List.of(3, true, "yes");
+}
+
 fnc named() => {foo: int, bar: string} {
   return obj{foo: 5, bar: "x"};
 }
+
+fnc namedJvmStyle() => {foo: int, bar: string} {
+  return Map.of("foo", 5, "bar", "x");
+}
 ```
 
-The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a JVM `List`. A record type names required members; extra members remain compatible with the structural type system.
+The `type` marker inside `Array<type intOrBoolOrString>` is accepted as an explicit alias marker; `Array<intOrBoolOrString>` is equivalent. A finite tuple type records exact arity and the type of each position even though the interpreter represents the value with a fixed-size JVM `List`. `List.of(...)` is accepted as the explicit finite positional constructor. A record type names required members; extra members remain compatible with the structural type system. `Map.of(...)` is accepted as a structural-record constructor when keys are compile-time strings.
 
 ## Bindings
 
@@ -129,7 +137,7 @@ A bare `_` is a discard pattern: it consumes that position without declaring a v
 
 `_` is not readable after the destructure because no lexical binding is created for it. A destructured `const` is an immutable runtime binding; unlike a standalone `const x = ...` declaration, the aggregate being destructured does not need to be a compile-time constant.
 
-Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. Function-parameter destructuring is intentionally not part of this syntax yet.
+Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type, including constant-index reads/writes; a dynamic-index write must be valid for every possible slot. Object destructuring requires a record/map-like value and every requested key must exist. At runtime, declared tuple, record, union, and array result shapes are revalidated so imported, interop, or otherwise statically unknown values cannot bypass the return contract. Function-parameter destructuring is intentionally not part of this syntax yet.
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
@@ -205,8 +213,14 @@ fnc result() => [int, bool, string] {
   return [3, true, "yes"];
 }
 
+fnc resultJvmStyle() => [int, bool, string] {
+  return List.of(3, true, "yes");
+}
+
 const [num, ok, answer] = result();
 ```
+
+Bare `[...]` remains a normal homogeneous list expression unless a finite tuple type provides the expected return/binding context. Parenthesized tuple literals and `List.of(...)` are finite positional values directly.
 
 ## Structural typing and interfaces
 
