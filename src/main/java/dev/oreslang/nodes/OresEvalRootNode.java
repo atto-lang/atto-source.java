@@ -13,6 +13,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -648,7 +649,10 @@ public final class OresEvalRootNode extends RootNode {
                 Invokable handler = actorHandler(args.getFirst());
                 boolean stateful = args.size() == 2;
                 Object initialState = stateful ? actorOwnedInitialState(args.get(1)) : null;
-                ActorRuntime.ActorRef<Object> ref = context.actors().spawn(
+                long initialStateBytes = stateful ? estimateActorStateBytes(initialState) : 0L;
+                ActorRuntime.ActorRef<Object> ref = context.actors().spawnOwned(
+                        context.isolatePolicy(),
+                        initialStateBytes,
                         () -> statefulBehavior(handler, stateful, initialState));
                 return new GuestActorRef(ref);
             }
@@ -664,8 +668,11 @@ public final class OresEvalRootNode extends RootNode {
                 Invokable handler = actorHandler(args.get(1));
                 boolean stateful = args.size() == 3;
                 Object initialState = stateful ? actorOwnedInitialState(args.get(2)) : null;
-                ActorRuntime.ActorRef<Object> ref = context.actors().spawnSingleton(
-                        name, () -> statefulBehavior(handler, stateful, initialState));
+                long initialStateBytes = stateful ? estimateActorStateBytes(initialState) : 0L;
+                ActorRuntime.ActorRef<Object> ref = context.actors().spawnSingletonOwned(
+                        name,
+                        initialStateBytes,
+                        () -> statefulBehavior(handler, stateful, initialState));
                 return new GuestActorRef(ref);
             }
 
@@ -678,8 +685,13 @@ public final class OresEvalRootNode extends RootNode {
 
                     @Override
                     public void onMessage(Object message, ActorRuntime.ActorContext<Object> actorContext) {
-                        if (stateful) state = handler.call(List.of(message, state));
-                        else handler.call(List.of(message));
+                        if (stateful) {
+                            Object nextState = handler.call(List.of(message, state));
+                            actorContext.replaceOwnedStateBytes(estimateActorStateBytes(nextState));
+                            state = nextState;
+                        } else {
+                            handler.call(List.of(message));
+                        }
                     }
                 };
             }
@@ -687,6 +699,91 @@ public final class OresEvalRootNode extends RootNode {
             private Object actorOwnedInitialState(Object value) {
                 if (value instanceof ActorRuntime.Shared<?> shared) return shared.value();
                 return ActorRuntime.freeze(value);
+            }
+
+            private long estimateActorStateBytes(Object value) {
+                return estimateActorStateBytes(value, new IdentityHashMap<>(), 0);
+            }
+
+            private long estimateActorStateBytes(
+                    Object value,
+                    IdentityHashMap<Object, Boolean> seen,
+                    int depth) {
+                if (depth > 256) return Long.MAX_VALUE;
+                if (value == null) return 8L;
+                if (value instanceof String || value instanceof Number || value instanceof Boolean
+                        || value instanceof Character || value instanceof Enum<?> || value instanceof java.util.UUID
+                        || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.MonitorRef
+                        || value instanceof ActorRuntime.Shared<?> || value instanceof ActorRuntime.ActorRef<?>
+                        || value instanceof GuestActorRef || value instanceof GuestMonitorRef
+                        || value instanceof Complex) {
+                    return ActorRuntime.estimatedFrozenBytes(value);
+                }
+                if (seen.put(value, Boolean.TRUE) != null) return 16L;
+
+                long total = 32L;
+                if (value instanceof OresObject object) {
+                    total = 64L;
+                    for (Map.Entry<String, Object> field : object.fields.entrySet()) {
+                        total = safeActorStateAdd(total, ActorRuntime.estimatedFrozenBytes(field.getKey()));
+                        total = safeActorStateAdd(
+                                total,
+                                estimateActorStateBytes(field.getValue(), seen, depth + 1));
+                    }
+                    return total;
+                }
+                if (value instanceof OptionValue option) {
+                    return safeActorStateAdd(
+                            24L,
+                            estimateActorStateBytes(option.value(), seen, depth + 1));
+                }
+                if (value instanceof List<?> list) {
+                    total = 24L;
+                    for (Object item : list) {
+                        total = safeActorStateAdd(
+                                total,
+                                estimateActorStateBytes(item, seen, depth + 1));
+                    }
+                    return total;
+                }
+                if (value instanceof Set<?> set) {
+                    total = 48L;
+                    for (Object item : set) {
+                        total = safeActorStateAdd(
+                                total,
+                                estimateActorStateBytes(item, seen, depth + 1));
+                    }
+                    return total;
+                }
+                if (value instanceof Map<?, ?> map) {
+                    total = 64L;
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        total = safeActorStateAdd(
+                                total,
+                                estimateActorStateBytes(entry.getKey(), seen, depth + 1));
+                        total = safeActorStateAdd(
+                                total,
+                                estimateActorStateBytes(entry.getValue(), seen, depth + 1));
+                    }
+                    return total;
+                }
+                if (value instanceof Object[] array) {
+                    total = 24L;
+                    for (Object item : array) {
+                        total = safeActorStateAdd(
+                                total,
+                                estimateActorStateBytes(item, seen, depth + 1));
+                    }
+                    return total;
+                }
+                return ActorRuntime.estimatedFrozenBytes(value);
+            }
+
+            private long safeActorStateAdd(long left, long right) {
+                if (left == Long.MAX_VALUE || right == Long.MAX_VALUE || right > Long.MAX_VALUE - left) {
+                    return Long.MAX_VALUE;
+                }
+                return left + right;
             }
 
             private Object send(List<Object> args) {
