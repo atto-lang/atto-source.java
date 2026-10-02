@@ -15,6 +15,43 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class MutexLanguageTest {
     @Test
+    void declaredSharedMutexTypesMustAlsoBeSharedSafe() {
+        var unsafe = Parser.parse("""
+                define module app
+                  fnc bad(SharedMutex<Mutex<int>> value) => void {
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException unsafeError = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(unsafe));
+        assertTrue(unsafeError.getMessage().contains("concrete shared-safe type"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc good(SharedMutex<int> value) => void {
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void unconstrainedGenericSharedMutexTypesAreRejectedConservatively() {
+        var program = Parser.parse("""
+                define module app
+                  fnc bad<T>(SharedMutex<T> value) => void {
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("concrete shared-safe type"));
+    }
+
+    @Test
     void sharedMutexRejectsActorLocalMutexValues() {
         var program = Parser.parse("""
                 define module app
