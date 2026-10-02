@@ -67,19 +67,21 @@ public final class OwnershipChecker {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(klass);
+                else if (decl instanceof Ast.ClassDecl klass) checkClass(module, klass);
             }
         }
     }
 
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
-        Scope scope = new Scope(null);
-        if (module.singleton()) seedSingletonModuleState(module, scope);
+        Scope moduleScope = new Scope(null);
+        if (module.singleton()) seedSingletonModuleState(module, moduleScope);
+        Scope scope = new Scope(moduleScope);
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
         }
         checkBlock(fn.body(), scope, fn.returnType());
         scope.close();
+        moduleScope.close();
     }
 
     private void seedSingletonModuleState(Ast.ModuleDecl module, Scope scope) {
@@ -103,9 +105,11 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
-    private void checkClass(Ast.ClassDecl klass) {
+    private void checkClass(Ast.ModuleDecl module, Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
-            Scope scope = new Scope(null);
+            Scope moduleScope = new Scope(null);
+            if (module.singleton()) seedSingletonModuleState(module, moduleScope);
+            Scope scope = new Scope(moduleScope);
             if (!method.isStatic()) {
                 // Receiver is immutable unless a future explicit "mut self"
                 // syntax is introduced. Methods can still mutate through an
@@ -115,6 +119,7 @@ public final class OwnershipChecker {
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             checkBlock(method.body(), scope, method.returnType());
             scope.close();
+            moduleScope.close();
         }
     }
 
