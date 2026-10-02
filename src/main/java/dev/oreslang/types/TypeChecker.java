@@ -165,6 +165,7 @@ public final class TypeChecker {
 
     private void validate(Ast.Program program) {
         validateLoopControl(program);
+        validateActorStop(program);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
@@ -282,6 +283,120 @@ public final class TypeChecker {
         } else if (expr instanceof Ast.ActorExpr e) {
             // An actor behavior is also a callable boundary.
             validateLoopControlBlock(e.behavior().blockBody(), 0);
+        }
+    }
+
+    private void validateActorStop(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    validateActorStopBlock(fn.body(), isActorCallable(fn));
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        validateActorStopBlock(method.body(), false);
+                    }
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        if (field.initializer() != null) validateActorStopExpr(field.initializer(), false);
+                    }
+                } else if (decl instanceof Ast.FieldDecl field && field.initializer() != null) {
+                    validateActorStopExpr(field.initializer(), false);
+                }
+            }
+        }
+    }
+
+    private void validateActorStopBlock(List<Ast.Stmt> body, boolean actorContext) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.StopStmt) {
+                if (!actorContext) {
+                    throw new IllegalArgumentException(
+                            "'stop' is only valid inside an actor body; use return for an ordinary callable");
+                }
+                continue;
+            }
+            if (stmt instanceof Ast.BindingStmt binding) {
+                validateActorStopExpr(binding.initializer(), actorContext);
+            } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                validateActorStopExpr(destructure.initializer(), actorContext);
+            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
+                validateActorStopExpr(ret.value(), actorContext);
+            } else if (stmt instanceof Ast.ExprStmt expression) {
+                validateActorStopExpr(expression.expression(), actorContext);
+            } else if (stmt instanceof Ast.DeferStmt defer) {
+                validateActorStopHandler(defer.expression(), actorContext);
+            } else if (stmt instanceof Ast.RecoverStmt recover) {
+                validateActorStopHandler(recover.handler(), actorContext);
+            } else if (stmt instanceof Ast.PanicStmt panic) {
+                validateActorStopExpr(panic.value(), actorContext);
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    validateActorStopExpr(branch.condition(), actorContext);
+                    validateActorStopBlock(branch.body(), actorContext);
+                }
+                validateActorStopBlock(conditional.elseBody(), actorContext);
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                validateActorStopBlock(attempted.body(), actorContext);
+                validateActorStopBlock(attempted.catchBody(), actorContext);
+                validateActorStopBlock(attempted.finallyBody(), actorContext);
+            } else if (stmt instanceof Ast.ForOfStmt loop) {
+                validateActorStopExpr(loop.iterable(), actorContext);
+                validateActorStopBlock(loop.body(), actorContext);
+            } else if (stmt instanceof Ast.ForStmt loop) {
+                if (loop.initializer() != null) validateActorStopBlock(List.of(loop.initializer()), actorContext);
+                if (loop.condition() != null) validateActorStopExpr(loop.condition(), actorContext);
+                if (loop.update() != null) validateActorStopExpr(loop.update(), actorContext);
+                validateActorStopBlock(loop.body(), actorContext);
+            }
+        }
+    }
+
+    private void validateActorStopHandler(Ast.Expr expr, boolean actorContext) {
+        if (expr instanceof Ast.LambdaExpr lambda) {
+            // recover/defer handlers are registered on and execute within the
+            // same callable/actor frame, so they inherit actor-stop authority.
+            validateActorStopBlock(lambda.blockBody(), actorContext);
+            return;
+        }
+        validateActorStopExpr(expr, actorContext);
+    }
+
+    private void validateActorStopExpr(Ast.Expr expr, boolean actorContext) {
+        if (expr instanceof Ast.BinaryExpr e) {
+            validateActorStopExpr(e.left(), actorContext);
+            validateActorStopExpr(e.right(), actorContext);
+        } else if (expr instanceof Ast.UnaryExpr e) {
+            validateActorStopExpr(e.operand(), actorContext);
+        } else if (expr instanceof Ast.AssignExpr e) {
+            validateActorStopExpr(e.target(), actorContext);
+            validateActorStopExpr(e.value(), actorContext);
+        } else if (expr instanceof Ast.ConditionalExpr e) {
+            validateActorStopExpr(e.condition(), actorContext);
+            validateActorStopExpr(e.whenTrue(), actorContext);
+            validateActorStopExpr(e.whenFalse(), actorContext);
+        } else if (expr instanceof Ast.CallExpr e) {
+            validateActorStopExpr(e.callee(), actorContext);
+            for (Ast.Expr argument : e.arguments()) validateActorStopExpr(argument, actorContext);
+        } else if (expr instanceof Ast.MemberExpr e) {
+            validateActorStopExpr(e.receiver(), actorContext);
+        } else if (expr instanceof Ast.IndexExpr e) {
+            validateActorStopExpr(e.receiver(), actorContext);
+            validateActorStopExpr(e.index(), actorContext);
+        } else if (expr instanceof Ast.NewExpr e) {
+            for (Ast.Expr argument : e.arguments()) validateActorStopExpr(argument, actorContext);
+        } else if (expr instanceof Ast.AwaitExpr e) {
+            validateActorStopExpr(e.expression(), actorContext);
+        } else if (expr instanceof Ast.ListExpr e) {
+            for (Ast.Expr item : e.elements()) validateActorStopExpr(item, actorContext);
+        } else if (expr instanceof Ast.TupleExpr e) {
+            for (Ast.Expr item : e.elements()) validateActorStopExpr(item, actorContext);
+        } else if (expr instanceof Ast.ObjectExpr e) {
+            for (Ast.ObjectField field : e.fields()) validateActorStopExpr(field.value(), actorContext);
+        } else if (expr instanceof Ast.ActorExpr e) {
+            validateActorStopBlock(e.behavior().blockBody(), true);
+        } else if (expr instanceof Ast.LambdaExpr e) {
+            // Ordinary lambdas are independent callable values and may escape
+            // the actor; they do not inherit actor-stop authority.
+            validateActorStopBlock(e.blockBody(), false);
         }
     }
 
@@ -1486,7 +1601,7 @@ public final class TypeChecker {
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.ReturnStmt || stmt instanceof Ast.PanicStmt) return true;
+            if (stmt instanceof Ast.ReturnStmt || stmt instanceof Ast.PanicStmt || stmt instanceof Ast.StopStmt) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
                         && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
