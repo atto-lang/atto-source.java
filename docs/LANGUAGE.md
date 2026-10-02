@@ -253,6 +253,92 @@ is a control-flow boundary, so it cannot break or continue a loop owned by its c
 creator. `finally` executes before a pending `break` or `continue` resumes. Callable-scoped
 `defer` is unaffected: breaking or continuing a loop does not drain the defer stack.
 
+## Actors, panic, and recover
+
+`actor` creates a first-class mailbox actor. The default spelling uses the shared-runtime
+backend; `actor isolate` requests the stronger isolation backend contract.
+
+```ores
+val worker = actor |String msg| -> {
+  stdio.println(msg);
+};
+
+val isolated = actor isolate |String msg| -> {
+  stdio.println(msg);
+};
+
+worker.send("hello");
+worker.stop();
+worker.join();
+```
+
+An actor behavior accepts exactly one mailbox message parameter and returns `void`. Actor
+handles expose `send(message)`, `stop()`, `join()`, `alive`, `failed`, and `kind`.
+
+Actor failure is fail-stop and isolated from the caller: an uncaught panic/exception terminates
+that actor without unwinding the spawning function, killing sibling actors, or terminating the
+main process. `join()` waits for termination but deliberately does not rethrow actor failure;
+supervisors can inspect `failed` and choose an explicit restart/escalation policy.
+
+A shared actor may take ownership of mutable/non-Copy captures. The outer binding becomes moved,
+so ordinary code cannot keep a writable alias. An `actor isolate` is stricter: the current
+checker permits only immutable Copy captures. Mutable, borrowed, or move-only outer values must
+cross the mailbox boundary instead.
+
+The current Java interpreter gives both actor kinds independent mailbox/thread lifecycles and
+failure containment. `actor isolate` is also an explicit backend contract for stronger
+Graal/native-isolate memory separation; physical address-space separation is a host/backend
+mapping and is not faked by the interpreter.
+
+### `panic`
+
+`panic value;` starts exceptional unwind. A panic may carry any ordinary Oreslang value:
+
+```ores
+panic "database unavailable";
+```
+
+If a panic reaches an actor boundary unrecovered, only that actor dies.
+
+### `recover`
+
+`recover` is callable-scoped and may appear in any function, routine, method, lambda, or actor
+behavior. It evaluates its operand immediately. The result must be an arity-1 callable that
+accepts the pending failure value.
+
+```ores
+fnc load() => int {
+  recover |err| -> {
+    stdio.println(err);
+    return 0;
+  };
+
+  return risky_load();
+}
+```
+
+Recovery happens only if a failure is escaping that callable. Deferred cleanup runs first, then
+registered recover handlers run in LIFO order. If a handler returns normally, the failure is
+consumed and the handler's result becomes the callable result. For a `void` callable the
+handler returns `void`.
+
+A recover handler may re-panic:
+
+```ores
+recover |err| -> {
+  log(err);
+  panic err;
+};
+```
+
+Re-panicking continues unwind to the next older recover handler, then to the caller if no handler
+consumes it. This lets a caller's `try/catch` observe the re-panic. Conversely, a recover handler
+inside a callee runs before a higher-up caller `try/catch` sees the failure.
+
+A lexical `try/catch` inside the *same* callable still handles a failure before callable-level
+recovery, because the callable has not begun unwinding yet. Scheduler/runtime cancellation is
+non-recoverable and cannot be swallowed by either `recover` or guest `catch`.
+
 ## Exceptions and defer
 
 Both structured exceptions and lexical `defer` are supported:
