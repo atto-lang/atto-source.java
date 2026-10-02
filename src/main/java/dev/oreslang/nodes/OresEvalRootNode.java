@@ -305,6 +305,12 @@ public final class OresEvalRootNode extends RootNode {
                     if (receiver instanceof BuiltinCollectionValue collection) {
                         return invokeBuiltinCollection(collection, methodCall.member(), args);
                     }
+                    if (receiver instanceof List<?> list) {
+                        return invokeRawList(list, methodCall.member(), args);
+                    }
+                    if (receiver instanceof Map<?, ?> map) {
+                        return invokeRawMap(map, methodCall.member(), args);
+                    }
                     if (receiver instanceof ClassFacade klass) {
                         return invokeStaticFunction(klass.klass(), methodCall.member(), args);
                     }
@@ -339,13 +345,16 @@ public final class OresEvalRootNode extends RootNode {
                 if (isBuiltinListName(typeName)) {
                     List<Object> values = typeName.equals("LinkedList") ? new java.util.LinkedList<>() : new ArrayList<>();
                     for (Ast.Expr argument : created.arguments()) values.add(eval(argument, env));
-                    return BuiltinCollectionValue.list(typeName, values, anonymousMethods(created.methods()));
+                    Map<String,Ast.MethodDecl> overrides = anonymousMethods(created.methods());
+                    return overrides.isEmpty() ? values : BuiltinCollectionValue.list(typeName, values, overrides);
                 }
                 if (isBuiltinMapName(typeName)) {
-                    Map<Object,Object> values = typeName.equals("HashMap") ? new HashMap<>() : new LinkedHashMap<>();
-                    BuiltinCollectionValue result = BuiltinCollectionValue.map(typeName, values, anonymousMethods(created.methods()));
-                    for (Ast.ObjectField entry : created.entries()) result.putMapValue(entry.name(), eval(entry.value(), env));
-                    return result;
+                    Map<Object,Object> values = typeName.equals("HashMap")
+                            ? new HashMap<>()
+                            : typeName.equals("JsonMap") ? new JsonMapValue() : new LinkedHashMap<>();
+                    for (Ast.ObjectField entry : created.entries()) values.put(entry.name(), eval(entry.value(), env));
+                    Map<String,Ast.MethodDecl> overrides = anonymousMethods(created.methods());
+                    return overrides.isEmpty() ? values : BuiltinCollectionValue.map(typeName, values, overrides);
                 }
                 if (typeName.equals("Object")) {
                     LinkedHashMap<Object,Object> result = new LinkedHashMap<>();
@@ -381,7 +390,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
-                return BuiltinCollectionValue.list("List", result, Map.of());
+                return result;
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
@@ -450,9 +459,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (collection.map != null && collection.map.containsKey(name)) return collection.map.get(name);
                 return (Invokable) args -> invokeBuiltinCollection(collection, name, args);
             }
+            if (receiver instanceof List<?> list) {
+                return (Invokable) args -> invokeRawList(list, name, args);
+            }
             if (receiver instanceof Map<?, ?> map) {
-                if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
-                return map.get(name);
+                if (map.containsKey(name)) return map.get(name);
+                return (Invokable) args -> invokeRawMap(map, name, args);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
         }
@@ -462,6 +474,45 @@ public final class OresEvalRootNode extends RootNode {
             if (method == null) method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
             return callMethod(receiver, method, args);
+        }
+
+        private Object invokeRawList(List<?> receiver, String name, List<Object> args) {
+            @SuppressWarnings("unchecked") List<Object> list = (List<Object>) receiver;
+            return switch (name) {
+                case "get" -> { requireArity(args, 1, name); yield list.get(integerIndex(args.getFirst())); }
+                case "set" -> { requireArity(args, 2, name); list.set(integerIndex(args.get(0)), args.get(1)); yield null; }
+                case "add", "push" -> { requireArity(args, 1, name); list.add(args.getFirst()); yield null; }
+                case "remove_at" -> { requireArity(args, 1, name); yield list.remove(integerIndex(args.getFirst())); }
+                case "size", "length" -> { requireArity(args, 0, name); yield (long) list.size(); }
+                default -> throw new IllegalArgumentException("unknown builtin list method " + name);
+            };
+        }
+
+        private Object invokeRawMap(Map<?, ?> receiver, String name, List<Object> args) {
+            @SuppressWarnings("unchecked") Map<Object,Object> map = (Map<Object,Object>) receiver;
+            return switch (name) {
+                case "get", "find" -> {
+                    requireArity(args, 1, name);
+                    Object key = args.getFirst();
+                    yield map.containsKey(key) ? new OptionValue(true, map.get(key)) : new OptionValue(false, null);
+                }
+                case "put" -> {
+                    requireArity(args, 2, name);
+                    map.put(args.get(0), args.get(1));
+                    yield null;
+                }
+                case "remove" -> {
+                    requireArity(args, 1, name);
+                    Object key = args.getFirst();
+                    if (!map.containsKey(key)) yield new OptionValue(false, null);
+                    yield new OptionValue(true, map.remove(key));
+                }
+                case "contains_key" -> { requireArity(args, 1, name); yield map.containsKey(args.getFirst()); }
+                case "size" -> { requireArity(args, 0, name); yield (long) map.size(); }
+                case "keys" -> { requireArity(args, 0, name); yield new ArrayList<>(map.keySet()); }
+                case "values" -> { requireArity(args, 0, name); yield new ArrayList<>(map.values()); }
+                default -> throw new IllegalArgumentException("unknown builtin map method " + name);
+            };
         }
 
         private Object invokeBuiltinCollection(BuiltinCollectionValue receiver, String name, List<Object> args) {
@@ -798,6 +849,20 @@ public final class OresEvalRootNode extends RootNode {
             this.klass=klass; this.fields=fields; this.overrides=overrides;
         }
         @Override public String toString(){return klass.name()+fields;}
+    }
+
+    private static final class JsonMapValue extends LinkedHashMap<Object,Object> {
+        @Override public Object put(Object key, Object value) {
+            if (!(key instanceof String)) throw new IllegalArgumentException("JsonMap keys must be strings");
+            if (!BuiltinCollectionValue.jsonCompatible(value, new java.util.IdentityHashMap<>(), 0)) {
+                throw new IllegalArgumentException("JsonMap values must be JSON-compatible");
+            }
+            return super.put(key, value);
+        }
+
+        @Override public void putAll(Map<?,?> values) {
+            for (Map.Entry<?,?> entry : values.entrySet()) put(entry.getKey(), entry.getValue());
+        }
     }
 
     private static final class BuiltinCollectionValue {
