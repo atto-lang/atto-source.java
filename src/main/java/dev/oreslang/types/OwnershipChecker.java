@@ -335,7 +335,14 @@ public final class OwnershipChecker {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
-        if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
+        if (expr instanceof Ast.AwaitExpr awaited) {
+            ValueInfo future = checkExpr(awaited.expression(), scope, true);
+            if (future.type != null && future.type.name().equals("Future") && future.type.arguments().size() == 1) {
+                Ast.TypeRef result = future.type.arguments().getFirst();
+                return new ValueInfo(result, kindOfType(result), null);
+            }
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
             return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
@@ -361,7 +368,12 @@ public final class OwnershipChecker {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
                 checkArguments(call.arguments(), fn.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null);
+                Ast.TypeRef result = fn.actorKind() != Ast.ActorKind.NONE
+                        ? new Ast.TypeRef("ActorHandle", List.of(fn.returnType()), false)
+                        : fn.async()
+                                ? new Ast.TypeRef("Future", List.of(fn.returnType()), false)
+                                : fn.returnType();
+                return new ValueInfo(result, kindOfType(result), null);
             }
         }
 
@@ -371,7 +383,10 @@ public final class OwnershipChecker {
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (method != null) {
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
-                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                Ast.TypeRef result = method.async()
+                        ? new Ast.TypeRef("Future", List.of(method.returnType()), false)
+                        : method.returnType();
+                return new ValueInfo(result, kindOfType(result), null);
             }
         }
 
@@ -800,7 +815,8 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void" -> true;
+                    "bool","Bool","string","String","void",
+                    "ActorId","ActorKind","ActorStatus","ActorHandle" -> true;
             default -> false;
         };
     }
