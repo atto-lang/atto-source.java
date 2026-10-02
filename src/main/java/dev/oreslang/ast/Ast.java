@@ -37,6 +37,9 @@ public final class Ast {
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
+    public enum ContractKind { REQUIRES, ENSURES, DECREASES }
+
+    public record ContractClause(ContractKind kind, Expr expression) { }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -79,16 +82,22 @@ public final class Ast {
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
+            List<ContractClause> contracts,
             List<Stmt> body) implements Decl {
         public FunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
+            contracts = List.copyOf(contracts);
             body = List.copyOf(body);
+        }
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, genericParameters, parameters, returnType, annotations, List.of(), body);
         }
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, genericParameters, parameters, returnType, annotations, List.of(), body);
         }
     }
 
@@ -162,12 +171,20 @@ public final class Ast {
             List<Param> parameters,
             TypeRef returnType,
             List<Annotation> annotations,
+            List<ContractClause> contracts,
             List<Stmt> body) {
         public MethodDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
+            contracts = List.copyOf(contracts);
             body = List.copyOf(body);
+        }
+        public MethodDecl(String name, Visibility visibility, boolean isStatic, boolean isAbstract, boolean async,
+                          TypeRef explicitReceiverType, List<String> genericParameters, List<Param> parameters,
+                          TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, explicitReceiverType, genericParameters, parameters,
+                    returnType, annotations, List.of(), body);
         }
         public int arity() { return parameters.size(); }
     }
@@ -179,7 +196,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
-            IfStmt, TryStmt, ForOfStmt, ForStmt { }
+            AssertStmt, AssumeStmt, InvariantStmt, IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) { }
@@ -191,6 +208,9 @@ public final class Ast {
     public record ReturnStmt(Expr value) implements Stmt { }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
+    public record AssertStmt(Expr condition) implements Stmt { }
+    public record AssumeStmt(Expr condition) implements Stmt { }
+    public record InvariantStmt(Expr condition) implements Stmt { }
 
     public record IfBranch(Expr condition, List<Stmt> body) {
         public IfBranch { body = List.copyOf(body); }
@@ -220,7 +240,8 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr,
+            MatchExpr, OldExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -263,4 +284,33 @@ public final class Ast {
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
         }
     }
+
+    public sealed interface Pattern permits WildcardPattern, BindingPattern, LiteralPattern, ConstructorPattern,
+            TuplePattern, ListPattern, ObjectPattern, OrPattern { }
+
+    public record WildcardPattern() implements Pattern { }
+    public record BindingPattern(String name) implements Pattern { }
+    public record LiteralPattern(Object value) implements Pattern { }
+    public record ConstructorPattern(String name, List<Pattern> arguments) implements Pattern {
+        public ConstructorPattern { arguments = List.copyOf(arguments); }
+    }
+    public record TuplePattern(List<Pattern> elements) implements Pattern {
+        public TuplePattern { elements = List.copyOf(elements); }
+    }
+    public record ListPattern(List<Pattern> elements) implements Pattern {
+        public ListPattern { elements = List.copyOf(elements); }
+    }
+    public record ObjectPatternField(String name, Pattern pattern) { }
+    public record ObjectPattern(List<ObjectPatternField> fields) implements Pattern {
+        public ObjectPattern { fields = List.copyOf(fields); }
+    }
+    public record OrPattern(List<Pattern> alternatives) implements Pattern {
+        public OrPattern { alternatives = List.copyOf(alternatives); }
+    }
+
+    public record MatchArm(Pattern pattern, Expr guard, Expr value) { }
+    public record MatchExpr(Expr subject, List<MatchArm> arms) implements Expr {
+        public MatchExpr { arms = List.copyOf(arms); }
+    }
+    public record OldExpr(Expr expression) implements Expr { }
 }
