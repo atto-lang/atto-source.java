@@ -85,6 +85,60 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void logicalActorHeapTracksPersistentStateSeparatelyFromMailbox() throws Exception {
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            CountDownLatch updated = new CountDownLatch(1);
+            ActorRuntime.ActorRef<Object> actor = runtime.spawnOwned(
+                    policy,
+                    1024L,
+                    () -> (message, context) -> {
+                        context.replaceOwnedStateBytes(4096L);
+                        updated.countDown();
+                    });
+
+            assertEquals(1024L, runtime.snapshot(actor).ownedStateBytes());
+            runtime.send(actor, "update");
+            assertTrue(updated.await(2, TimeUnit.SECONDS));
+            assertEquals(4096L, runtime.snapshot(actor).ownedStateBytes());
+
+            assertTrue(runtime.stop(actor));
+            assertTrue(runtime.join(actor, Duration.ofSeconds(2)));
+            assertEquals(0L, runtime.snapshot(actor).ownedStateBytes());
+        }
+    }
+
+    @Test
+    void mailboxAndPersistentStateShareTheActorHeapBudget() {
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            ActorRuntime.ActorRef<Object> actor = runtime.spawnOwned(
+                    policy,
+                    15L * 1024L * 1024L,
+                    () -> (message, context) -> { });
+
+            String message = "x".repeat(600_000);
+            IllegalStateException error = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.send(actor, message));
+
+            assertTrue(error.getMessage().contains("mailbox memory"));
+            assertEquals(15L * 1024L * 1024L, runtime.snapshot(actor).ownedStateBytes());
+            assertEquals(0L, runtime.snapshot(actor).mailboxBytes());
+        }
+    }
+
+    @Test
     void oversizedMessagesAreRejectedBeforeMailboxAdmission() {
         IsolatePolicy policy = new IsolatePolicy(
                 IsolatePolicy.developer().capabilities(),
