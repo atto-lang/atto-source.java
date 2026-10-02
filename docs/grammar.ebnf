@@ -65,7 +65,8 @@ method_decl     = { annotation } visibility { callable_modifier } method_name [ 
                   method_head return_spec ( block | stmt_terminator ) ;
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
-explicit_receiver = "self" type_ref ;
+explicit_receiver = "self" [ type_ref ]
+                  | "mut" "self" [ type_ref ] ;
 
 static_function_decl
                 = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
@@ -91,9 +92,11 @@ annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
-param           = type_ref [ "mut" ] IDENT
-                | "@Structural" type_ref [ "mut" ] IDENT
-                | IDENT "structural" type_ref [ "mut" ] ;
+param           = type_ref IDENT
+                | "mut" type_ref IDENT
+                | CONTEXTUAL_TAKE type_ref IDENT
+                | "@Structural" type_ref IDENT
+                | IDENT "structural" type_ref ;
 
 binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
@@ -137,8 +140,7 @@ equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
-unary           = [ "!" | "-" | "+" | "await" ] postfix
-                | "&" [ "mut" ] unary ;
+unary           = [ "!" | "-" | "+" | "await" ] postfix ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." IDENT ;
@@ -158,7 +160,10 @@ primary         = literal
 
 lambda          = pipe_lambda | typed_legacy_lambda ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
-lambda_param    = IDENT | type_ref IDENT ;
+lambda_param    = IDENT
+                | type_ref IDENT
+                | "mut" type_ref IDENT
+                | CONTEXTUAL_TAKE type_ref IDENT ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" block ;
 
@@ -171,16 +176,13 @@ object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
 
-type_ref        = borrow_type
-                | named_type
+type_ref        = named_type
                 | function_type
                 | grouped_type
                 | STRING_LITERAL
                 | "self"
                 | "void"
                 | "null" ;
-
-borrow_type     = "&" [ "mut" ] type_ref ;
 named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
 function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "->" type_ref
                 | "(" [ function_type_params ] ")" "->" type_ref ;
@@ -261,14 +263,23 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
-   - "structural" is contextual in parameter position, not globally reserved.
-   - self is an immutable receiver borrow and cannot be rebound.
-   - Parameters are immutable by default. Type "mut" name grants mutation of an
-     owned parameter inside the callee, e.g. Bar mut b.
-   - &T is a shared immutable borrow. &mut T is an exclusive mutable borrow.
-   - Non-Copy values move through by-value bindings, arguments, and returns.
+   - "structural" and "take" are contextual in parameter position, not globally reserved.
+   - self is an immutable receiver borrow by default and cannot be rebound.
+     "mut self" is the exclusive mutable receiver form.
+   - Parameters are immutable bindings. Type name is a temporary read borrow;
+     "mut Type name" is an exclusive temporary mutable borrow; contextual
+     "take Type name" transfers ownership to the callee.
+   - Oreslang exposes no pointer/reference borrow syntax: "&T", "&mut T",
+     unary "&value", and dereference "*value" are not language forms. STAR is
+     multiplication only.
+   - borrow(value), take(value), copy(value), and share(value) are compiler
+     intrinsics expressed as ordinary call syntax rather than pointer operators.
+   - Non-Copy values move only at explicit ownership-transfer sites such as
+     take parameters/intrinsics, owning bindings/captures, and returns.
    - Structural parameters are read-only borrowed views and do not consume the
      passed value.
+   - Parameter ownership mode is part of interface/trait compatibility and the
+     compiler ABI digest.
    - A local borrow cannot escape the lifetime of its owner.
    - Closures use lexical scoping. Mutable/non-Copy captures transfer ownership
      into the closure environment; borrowed values cannot be captured.
