@@ -104,7 +104,7 @@ When the private-arena/`isoactor` runtime is stacked with this work, isolated ac
 
 The current reference runtime uses a one-permit JVM semaphore for `SharedMutex<T>`. Java semaphore release/acquire provides the required memory-ordering edge and, unlike a thread-owned `ReentrantLock`, allows an asynchronously acquired guard to be resumed and released by the actor execution context.
 
-Actor transport is independently hardened from mutex synchronization. Ordinary messages are recursively frozen with cycle detection and hard depth/node/byte budgets (256 levels, 100,000 nodes, 16 MiB estimated frozen size). Read-only shared wrappers are runtime-constructed and revalidated on every boundary. `ActorRef` capabilities may cross only inside their owning `ActorRuntime`; a wrapper cannot be used to smuggle a foreign actor reference into another runtime. Arbitrary host-controlled `Sendable` callbacks are not part of the transport boundary. Runtime-owned capabilities have explicit cases, while ordinary message graphs are recursively frozen/copied and validated.
+Actor transport is independently hardened from mutex synchronization. Ordinary messages are recursively frozen with cycle detection and hard depth/node/byte budgets (256 levels, 100,000 nodes, 16 MiB estimated frozen size). Read-only shared wrappers are runtime-constructed and revalidated on every boundary. `ActorRef` capabilities may cross only inside their owning `ActorRuntime`; a wrapper cannot be used to smuggle a foreign actor reference into another runtime. When an `ActorRef` is explicitly granted to an untrusted actor it is a bounded messaging capability only: untrusted code may not use it to stop another actor or synchronously wait for that actor's termination. Arbitrary host-controlled `Sendable` callbacks are not part of the transport boundary. Runtime-owned capabilities have explicit cases, while ordinary message graphs are recursively frozen/copied and validated.
 
 Compiler-generated/context-aware `BehaviorFactory` values are capture-free for both private and shared actors. This prevents a shared actor from bypassing mailbox/capability semantics by closing over an arbitrary mutable JVM object. `spawnPrivateTrusted(...)`, `spawnSharedTrusted(...)`, and trusted `Supplier` construction are host/supervisor escape hatches only; adversarial policies reject them.
 
@@ -133,7 +133,9 @@ The default sandbox limits are:
 - execution fuel: **100,000 units per mailbox turn**;
 - outbound actor-mailbox payload: **1 MiB**;
 - HTTP request body read budget: **16 MiB**;
+- HTTP request metadata budget: **64 KiB**, including an **8 KiB** path ceiling and at most **128** header lookups;
 - HTTP response body write budget: **16 MiB**;
+- HTTP response metadata budget: **128 headers / 64 KiB**;
 - isolated actor heap: **64 MiB**;
 - mailbox: **128 messages**.
 
