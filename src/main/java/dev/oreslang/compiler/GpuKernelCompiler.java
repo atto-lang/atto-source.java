@@ -67,9 +67,11 @@ public final class GpuKernelCompiler {
             String id,
             String dispatcherSymbol,
             int workItems,
-            List<String> kernelSymbols) {
+            List<String> kernelSymbols,
+            List<GpuHiddenParameter> hiddenParameters) {
         public GpuBatch {
             kernelSymbols = List.copyOf(kernelSymbols);
+            hiddenParameters = List.copyOf(hiddenParameters);
         }
 
         public boolean hasDispatcher() { return dispatcherSymbol != null; }
