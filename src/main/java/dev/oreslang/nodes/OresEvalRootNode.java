@@ -850,16 +850,18 @@ public final class OresEvalRootNode extends RootNode {
                 Object initialArgument = stateful ? args.get(1) : null;
                 long initialStateBytes = stateful ? estimateActorStateBytes(initialArgument) : 0L;
                 Object initialState = stateful ? actorOwnedInitialState(initialArgument) : null;
-                ActorRuntime.ActorRef<Object> ref = context.actors().spawnOwned(
-                        context.isolatePolicy(),
-                        initialStateBytes,
-                        actorProtocol(handler),
-                        () -> statefulBehavior(
-                                handler,
-                                stateful,
-                                initialState,
+                ActorRuntime.ActorRef<Object> ref = guestRuntimeBoundary(
+                        "actor.spawn",
+                        () -> context.actors().spawnOwned(
+                                context.isolatePolicy(),
                                 initialStateBytes,
-                                initialArgument instanceof ActorRuntime.Shared<?>));
+                                actorProtocol(handler),
+                                () -> statefulBehavior(
+                                        handler,
+                                        stateful,
+                                        initialState,
+                                        initialStateBytes,
+                                        initialArgument instanceof ActorRuntime.Shared<?>)));
                 return new GuestActorRef(ref);
             }
 
@@ -876,17 +878,19 @@ public final class OresEvalRootNode extends RootNode {
                 Object initialArgument = stateful ? args.get(2) : null;
                 long initialStateBytes = stateful ? estimateActorStateBytes(initialArgument) : 0L;
                 Object initialState = stateful ? actorOwnedInitialState(initialArgument) : null;
-                ActorRuntime.ActorRef<Object> ref = context.actors().spawnSingletonOwned(
-                        name,
-                        initialStateBytes,
-                        singletonContract(handler, stateful, initialArgument),
-                        actorProtocol(handler),
-                        () -> statefulBehavior(
-                                handler,
-                                stateful,
-                                initialState,
+                ActorRuntime.ActorRef<Object> ref = guestRuntimeBoundary(
+                        "actor.singleton",
+                        () -> context.actors().spawnSingletonOwned(
+                                name,
                                 initialStateBytes,
-                                initialArgument instanceof ActorRuntime.Shared<?>));
+                                singletonContract(handler, stateful, initialArgument),
+                                actorProtocol(handler),
+                                () -> statefulBehavior(
+                                        handler,
+                                        stateful,
+                                        initialState,
+                                        initialStateBytes,
+                                        initialArgument instanceof ActorRuntime.Shared<?>)));
                 return new GuestActorRef(ref);
             }
 
@@ -1101,26 +1105,36 @@ public final class OresEvalRootNode extends RootNode {
             private Object send(List<Object> args) {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_SEND, "actor.send");
                 requireTwo(args, "actor.send");
-                context.actors().send(actorRef(args.getFirst()), args.get(1));
-                return null;
+                return guestRuntimeBoundary("actor.send", () -> {
+                    context.actors().send(actorRef(args.getFirst()), args.get(1));
+                    return null;
+                });
             }
 
             private Object stop(List<Object> args) {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.stop");
                 requireOne(args, "actor.stop");
-                return context.actors().stop(actorRef(args.getFirst()));
+                return guestRuntimeBoundary(
+                        "actor.stop",
+                        () -> context.actors().stop(actorRef(args.getFirst())));
             }
 
             private Object join(List<Object> args) {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.join");
                 requireOne(args, "actor.join");
-                return context.actors().join(actorRef(args.getFirst()), context.isolatePolicy().maxWallTime());
+                return guestRuntimeBoundary(
+                        "actor.join",
+                        () -> context.actors().join(
+                                actorRef(args.getFirst()),
+                                context.isolatePolicy().maxWallTime()));
             }
 
             private Object status(List<Object> args) {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.status");
                 requireOne(args, "actor.status");
-                return context.actors().snapshot(actorRef(args.getFirst())).asMap();
+                return guestRuntimeBoundary(
+                        "actor.status",
+                        () -> context.actors().snapshot(actorRef(args.getFirst())).asMap());
             }
 
             private Object gc(List<Object> args) {
