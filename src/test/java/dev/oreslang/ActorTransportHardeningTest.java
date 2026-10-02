@@ -64,10 +64,12 @@ final class ActorTransportHardeningTest {
             assertTrue(attempted.await(2, java.util.concurrent.TimeUnit.SECONDS));
 
             IllegalStateException failure = null;
-            for (int i = 0; i < 100 && failure == null; i++) {
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (failure == null && System.nanoTime() - deadline < 0) {
                 try {
                     ref.send("after-failure");
-                    Thread.yield();
+                    Thread.sleep(1);
                 } catch (IllegalStateException expected) {
                     failure = expected;
                 }
