@@ -48,7 +48,7 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
-    private static final long CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(2);
+    private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -914,7 +914,12 @@ public final class ActorRuntime implements AutoCloseable {
     public <T> SyncCell<T> syncCell(T initialValue) {
         requireCallerRuntimeAffinity("create shared SyncCell values");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
+        IsolatePolicy callerPolicy = currentActorPolicy();
+        if (callerPolicy != null) {
+            callerPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
+        } else {
+            policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
+        }
         rejectPrivateActorSharedMemoryAccess("SyncCell creation");
         SyncCell<T> cell = new SyncCell<>(initialValue);
         syncCells.add(cell);
@@ -1114,13 +1119,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
         } else {
             long actorRemaining = cell.memorySlice.remainingBytes();
-            long allowed = Math.min(actorRemaining, runtimeRemaining);
             try {
-                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
+                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, actorRemaining);
             } catch (IllegalStateException tooLarge) {
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
                         tooLarge);
+            }
+            try {
+                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, runtimeRemaining);
+            } catch (IllegalStateException aggregateExceeded) {
+                throw new IllegalStateException(
+                        "private actor aggregate runtime limit exceeded for " + ref.id()
+                                + ": " + aggregateExceeded.getMessage(),
+                        aggregateExceeded);
             }
         }
 
@@ -1194,7 +1206,6 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
         requireCallerRuntimeAffinity("share readonly values");
-        rejectPrivateActorSharedMemoryAccess("shareReadonly");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         IsolatePolicy callerPolicy = currentActorPolicy();
         if (callerPolicy != null) {
@@ -1202,6 +1213,7 @@ public final class ActorRuntime implements AutoCloseable {
         } else {
             policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "shareReadonly");
         }
+        rejectPrivateActorSharedMemoryAccess("shareReadonly");
         requireOwnedSharedHandles(value, new IdentityHashMap<>(), 0);
         Object frozen = freeze(value);
         rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
@@ -1752,6 +1764,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
+        }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
 
         if (visiting.put(value, Boolean.TRUE) != null) {
