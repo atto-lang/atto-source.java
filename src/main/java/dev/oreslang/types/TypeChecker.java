@@ -1448,7 +1448,7 @@ public final class TypeChecker {
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
+                Type field = findFieldType(klass, member.member(), named, new LinkedHashSet<>());
                 if (field != null) return field;
             }
         }
