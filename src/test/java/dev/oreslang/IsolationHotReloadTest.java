@@ -95,6 +95,23 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void hotLoadStagesWithoutRunningMainUntilExplicitStart() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var generation = hot.load("staged.ores", """
+                    pub routine main() => void {
+                      val zero = 0;
+                      val boom = 1 / zero;
+                      return;
+                    }
+                    """);
+            assertFalse(generation.started());
+            assertThrows(RuntimeException.class, generation::start);
+            assertTrue(generation.closed());
+        }
+    }
+
+    @Test
     void hotReloadRequiresExplicitCapability() {
         assertThrows(SecurityException.class,
                 () -> new HotReloadManager(IsolatePolicy.strictFaas(), ExecutionProfile.serverJit()));
