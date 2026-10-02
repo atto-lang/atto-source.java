@@ -162,7 +162,8 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, generics, params,
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async,
+                modifiers.nonLexical, modifiers.explicitLexical, generics, params,
                 returnType, annotations, body);
     }
 
@@ -788,7 +789,7 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
-                String member = consume(IDENT, "expected member name after '.'").lexeme();
+                String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
@@ -797,6 +798,11 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private String consumeMemberName() {
+        if (match(IDENT, LEX, LEXICAL, NLEX)) return previous().lexeme();
+        throw error(peek(), "expected member name after '.'");
     }
 
     private Ast.Expr parsePrimary() {
