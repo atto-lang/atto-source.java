@@ -939,3 +939,25 @@ The same compiled program can target a secondary multi-threaded runtime because:
 - actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
 
 When explicit thread/task spawning is added, cross-thread transfer will require move semantics and a `Send`-equivalent capability; shared cross-thread references will additionally require a `Sync`-equivalent guarantee. Those marker traits are intentionally a future surface feature—the current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
+
+
+## Ownership, lifetimes, and garbage collection
+
+Oreslang treats ownership as the primary memory-safety and reclamation model. Primitive immutable values are copy-like; ordinary aggregate values are move-only unless explicitly represented by a safe shared wrapper. Borrows are compile-time capabilities and erase at runtime.
+
+Most borrow lifetimes are inferred lexically. A borrowed local cannot outlive its owner, closures cannot capture live borrows, and a moved value cannot be used again. Borrowed return values keep the provenance of the borrowed argument across call boundaries, so the original owner remains borrowed for the lifetime of the returned binding.
+
+When a function or method returns `&T` / `&mut T` from borrowed parameters, there may be at most one compatible borrowed parameter that can anchor the returned lifetime. If multiple borrowed parameters could be the source, compilation fails as ambiguous. Borrowing a local and returning it is rejected separately as an owner-lifetime escape. This deliberately avoids guessing. Explicit named lifetime parameters can be added later for APIs that genuinely need relationships such as “return either `a` or `b`”; ordinary code should not need lifetime annotations.
+
+Garbage collection is a fallback for runtime-owned resources, not the ownership model for ordinary Ores values. The runtime tracks things such as reflection/FFI handles, generated proxies, shared runtime wrappers, abandoned async/runtime capabilities, and actor-private memory handles when their lifetime cannot be expressed solely by lexical ownership.
+
+Two explicit maintenance calls exist:
+
+```ores
+actor.gc();    // current actor scope only; never forces a JVM-wide GC
+process.gc();  // process/runtime scope; capability-gated and may request a host-GC hint
+```
+
+Both return GC statistics including scope, reason, tracked resources before/after, reclaimed resources/bytes, and whether a host-GC hint was requested. `actor.gc()` is only valid during that actor's mailbox turn. `process.gc()` requires the `GC_CONTROL` capability so untrusted code cannot repeatedly force process-wide collection pauses.
+
+On the JVM/Graal backend, physical object storage is still ultimately reclaimed by the host collector, but Oreslang ownership and borrow checking define when guest values are logically dead and inaccessible. Correctness must never depend on a manual GC call.
