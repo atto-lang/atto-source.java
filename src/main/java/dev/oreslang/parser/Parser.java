@@ -39,6 +39,16 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (match(INIT)) {
+                if (!annotations.isEmpty()
+                        || modifiers.visibility != Ast.Visibility.PRIVATE
+                        || modifiers.async || modifiers.isStatic || modifiers.isAbstract) {
+                    throw error(previous(), "init routine does not accept annotations or modifiers");
+                }
+                rootDeclarations.add(parseInitRoutine());
+                continue;
+            }
+
             if (match(DEFINE)) {
                 boolean afterDefineAbstract = match(ABSTRACT);
                 boolean singleton = match(SINGLETON);
@@ -114,6 +124,7 @@ public final class Parser {
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations, boolean singleton) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
+        consume(AS, "module declarations require 'as' before the body");
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
@@ -123,6 +134,15 @@ public final class Parser {
     private Ast.Decl parseModuleMember() {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
+
+        if (match(INIT)) {
+            if (!annotations.isEmpty()
+                    || modifiers.visibility != Ast.Visibility.PRIVATE
+                    || modifiers.async || modifiers.isStatic || modifiers.isAbstract) {
+                throw error(previous(), "init routine does not accept annotations or modifiers");
+            }
+            return parseInitRoutine();
+        }
 
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
@@ -145,6 +165,15 @@ public final class Parser {
         return null;
     }
 
+    private Ast.InitDecl parseInitRoutine() {
+        consume(ROUTINE, "expected 'routine' after 'init'");
+        consume(LPAREN, "init routine requires '()'");
+        consume(RPAREN, "init routine cannot accept parameters");
+        consume(FAT_ARROW, "init routine requires explicit '=> void'");
+        consume(VOID, "init routine must return void");
+        return new Ast.InitDecl(parseBlock());
+    }
+
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
@@ -165,12 +194,16 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        consume(AS, "class declarations require 'as' before the body");
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
 
         while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (check(INIT)) {
+                throw error(peek(), "classes cannot declare init routine; use instance field/constructor initialization");
+            }
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
