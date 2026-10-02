@@ -103,6 +103,17 @@ arbitrary actor's Java object graph; actor-local GC is therefore a semantic
 checkpoint there, while actor termination still releases the actor's explicit
 private memory slice.
 
+Collector hooks are treated as a runtime extension boundary:
+
+- a partially failing `actorStarted` hook receives a best-effort `actorExited`
+  rollback;
+- non-fatal failures from periodic collection are suppressed so maintenance
+  cannot kill application actors;
+- non-fatal `actorExited` failures cannot prevent actor unregister, slot
+  release, waiter notification, or private-slice cleanup;
+- fatal VM/linkage/thread errors are still rethrown, but actor finalization
+  performs registry/waiter cleanup before they escape.
+
 ## Design rule
 
 Prefer, in order:
