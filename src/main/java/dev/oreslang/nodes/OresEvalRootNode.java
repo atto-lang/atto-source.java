@@ -223,9 +223,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
-                Ast.NameExpr target = (Ast.NameExpr) assignment.target();
                 Object value = eval(assignment.value(), env);
-                env.assign(target.name(), value);
+                Place target = place(assignment.target(), env);
+                if (!target.mutable()) throw new IllegalArgumentException("assignment target is immutable");
+                target.set(value);
                 return value;
             }
             if (expr instanceof Ast.ConditionalExpr conditional) {
@@ -234,7 +235,17 @@ public final class OresEvalRootNode extends RootNode {
                         : eval(conditional.whenFalse(), env);
             }
             if (expr instanceof Ast.UnaryExpr unary) {
+                if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
+                    Place borrowed = place(unary.operand(), env);
+                    boolean mutable = unary.operator().equals("&mut");
+                    if (mutable && !borrowed.mutable()) throw new IllegalArgumentException("&mut requires a mutable place");
+                    return new ReferenceValue(borrowed, mutable);
+                }
                 Object value = eval(unary.operand(), env);
+                if (unary.operator().equals("*")) {
+                    if (!(value instanceof ReferenceValue reference)) throw new IllegalArgumentException("dereference requires a borrow reference");
+                    return reference.get();
+                }
                 return switch (unary.operator()) {
                     case "!" -> !truth(value); case "+" -> value; case "-" -> negate(value);
                     default -> throw new IllegalArgumentException("unsupported unary operator " + unary.operator());
@@ -247,7 +258,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
-                    Object receiver = eval(methodCall.receiver(), env);
+                    Object receiver = dereferenceValue(eval(methodCall.receiver(), env));
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
                     if (receiver instanceof OresObject object) {
                         return invokeMethod(object, methodCall.member(), args);
@@ -322,7 +333,35 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        private Object dereferenceValue(Object value) {
+            return value instanceof ReferenceValue reference ? reference.get() : value;
+        }
+
+        private Place place(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.NameExpr name) {
+                Slot slot = env.resolveSlot(name.name());
+                if (slot == null) throw new IllegalArgumentException("unknown binding " + name.name());
+                return new SlotPlace(slot);
+            }
+            if (expr instanceof Ast.MemberExpr member) {
+                Object receiver = dereferenceValue(eval(member.receiver(), env));
+                if (!(receiver instanceof OresObject object)) {
+                    throw new IllegalArgumentException("member place requires a class instance");
+                }
+                Ast.FieldDecl field = findFieldDecl(object.klass, member.member(), new LinkedHashSet<>());
+                if (field == null) throw new IllegalArgumentException("unknown field " + object.klass.name() + "." + member.member());
+                return new FieldPlace(object, field);
+            }
+            if (expr instanceof Ast.UnaryExpr unary && unary.operator().equals("*")) {
+                Object value = eval(unary.operand(), env);
+                if (!(value instanceof ReferenceValue reference)) throw new IllegalArgumentException("dereference place requires a borrow reference");
+                return reference.place;
+            }
+            throw new IllegalArgumentException("expression is not an assignable/borrowable place");
+        }
+
         private Object member(Object receiver, String name) {
+            receiver = dereferenceValue(receiver);
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
@@ -427,6 +466,28 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        private Ast.FieldDecl findFieldDecl(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return null;
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.name().equals(name)) {
+                    seen.remove(klass);
+                    return field;
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                Ast.FieldDecl field = findFieldDecl(parent, name, seen);
+                if (field != null) {
+                    seen.remove(klass);
+                    return field;
+                }
+            }
+            seen.remove(klass);
+            return null;
         }
 
         private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> seen) {
@@ -588,6 +649,10 @@ public final class OresEvalRootNode extends RootNode {
             slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private Slot resolveSlot(String name) {
+            Slot slot = slots.get(name);
+            return slot != null ? slot : parent == null ? null : parent.resolveSlot(name);
+        }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
@@ -605,6 +670,47 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+    }
+
+    private interface Place {
+        Object get();
+        void set(Object value);
+        boolean mutable();
+    }
+
+    private static final class SlotPlace implements Place {
+        private final Slot slot;
+        private SlotPlace(Slot slot) { this.slot = slot; }
+        @Override public Object get() { return slot.value; }
+        @Override public void set(Object value) {
+            if (!mutable()) throw new IllegalArgumentException("binding is immutable");
+            slot.value = value;
+        }
+        @Override public boolean mutable() { return slot.kind == Ast.BindingKind.LET; }
+    }
+
+    private static final class FieldPlace implements Place {
+        private final OresObject object;
+        private final Ast.FieldDecl field;
+        private FieldPlace(OresObject object, Ast.FieldDecl field) { this.object = object; this.field = field; }
+        @Override public Object get() { return object.fields.get(field.name()); }
+        @Override public void set(Object value) {
+            if (!mutable()) throw new IllegalArgumentException("field " + field.name() + " is immutable");
+            object.fields.put(field.name(), value);
+        }
+        @Override public boolean mutable() { return field.bindingKind() == Ast.BindingKind.LET; }
+    }
+
+    private static final class ReferenceValue {
+        private final Place place;
+        private final boolean mutable;
+        private ReferenceValue(Place place, boolean mutable) { this.place = place; this.mutable = mutable; }
+        private Object get() { return place.get(); }
+        private void set(Object value) {
+            if (!mutable) throw new IllegalArgumentException("cannot write through immutable borrow");
+            place.set(value);
+        }
+        @Override public String toString() { return (mutable ? "&mut " : "&") + String.valueOf(get()); }
     }
 
     private static final class ReturnSignal extends RuntimeException {
