@@ -329,9 +329,13 @@ public final class OwnershipChecker {
             Map<VarState, StateSnapshot> rightExit = stateSnapshot(scope);
 
             mergeBranchState(base, List.of(leftExit, rightExit));
-            return left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
-                    ? left
-                    : new ValueInfo(left.type, ValueKind.MOVE_ONLY, null);
+            Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
+            return new ValueInfo(
+                    joinedType,
+                    left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
+                            ? ValueKind.COPY
+                            : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
@@ -382,7 +386,12 @@ public final class OwnershipChecker {
             return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
-            for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
+            for (Ast.Expr arg : created.arguments()) {
+                ValueInfo info = checkExpr(arg, scope, true);
+                if (containsMutexGuardType(info.type)) {
+                    throw error("MutexGuard cannot be stored in a constructed object");
+                }
+            }
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
@@ -430,6 +439,10 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
+            if (owned.type != null && owned.type.isBorrow()) {
+                throw error(factory.name()
+                        + ".new requires an owned value; borrowed values cannot become mutex state");
+            }
             if (containsMutexGuardType(owned.type)) {
                 throw error(factory.name() + ".new cannot hide a guard-bearing value");
             }
@@ -975,6 +988,15 @@ public final class OwnershipChecker {
         return Ast.TypeRef.inferred();
     }
 
+    private Ast.TypeRef joinConditionalType(Ast.TypeRef left, Ast.TypeRef right) {
+        if (left == null) return right == null ? Ast.TypeRef.inferred() : right;
+        if (right == null) return left;
+        if (left.equals(right)) return left;
+        if (left.name().equals("$infer$")) return right;
+        if (right.name().equals("$infer$")) return left;
+        return Ast.TypeRef.union(List.of(left, right));
+    }
+
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
         if (source == null) return Ast.TypeRef.inferred();
         if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
@@ -1016,7 +1038,8 @@ public final class OwnershipChecker {
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
-        if (type == null || type.isBorrow()) return false;
+        if (type == null) return false;
+        if (type.isBorrow()) return containsMutexGuardType(type.borrowedTarget());
         if (isMutexGuardType(type)) return true;
         for (Ast.TypeRef argument : type.arguments()) {
             if (containsMutexGuardType(argument)) return true;
