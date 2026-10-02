@@ -110,6 +110,7 @@
               <mainClass>dev.oreslang.launcher.OresMain</mainClass>
               <imageName>ores-aot</imageName>
               <buildArgs>
+                <buildArg>-Dgraalvm.locatorDisabled=true</buildArg>
                 <buildArg>-Dtruffle.TruffleRuntime=com.oracle.truffle.api.impl.DefaultTruffleRuntime</buildArg>
                 <buildArg>--no-fallback</buildArg>
               </buildArgs>
@@ -139,6 +140,7 @@
               <mainClass>dev.oreslang.launcher.OresMain</mainClass>
               <imageName>ores-hybrid</imageName>
               <buildArgs>
+                <buildArg>-Dgraalvm.locatorDisabled=true</buildArg>
                 <buildArg>--no-fallback</buildArg>
               </buildArgs>
             </configuration>
