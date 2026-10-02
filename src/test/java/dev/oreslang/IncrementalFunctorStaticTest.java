@@ -104,21 +104,23 @@ final class IncrementalFunctorStaticTest {
     @Test
     void staticClassFunctionsUseStaticFncAndDoNotReceiveSelf() throws Exception {
         String output = run("""
-                define class Counter
-                  pub val int value = 9;
+                define module model
+                  define class Counter
+                    pub val int value = 9;
 
-                  pub static fnc twice(int x) => int {
-                    return x * 2;
-                  }
+                    pub static fnc twice(int x) => int {
+                      return x * 2;
+                    }
 
-                  pub read() => int {
-                    return self.value;
-                  }
+                    pub read() => int {
+                      return self.value;
+                    }
+                  end
                 end
 
                 pub routine main() => void {
-                  val c = new Counter();
-                  stdio.stdout.write(Counter.twice(c.read()));
+                  val c = new model.Counter();
+                  stdio.stdout.write(model.Counter.twice(c.read()));
                 }
                 """);
         assertEquals("18", output);
