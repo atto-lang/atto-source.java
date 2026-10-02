@@ -1765,6 +1765,40 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void repeatedQueuedCancellationDoesNotLeakMailboxAccounting() throws Exception {
+        String key = "cancel-churn:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<AtomicInteger> handle =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Object> active = handle.call(
+                List.of(), 1, Duration.ofSeconds(3),
+                (state, ignored) -> {
+                    entered.countDown();
+                    release.await(2, TimeUnit.SECONDS);
+                    return state.incrementAndGet();
+                }).toCompletableFuture();
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+
+        for (int i = 0; i < 128; i++) {
+            CompletableFuture<Object> queued = handle.call(
+                    List.of(), 1, Duration.ofSeconds(2),
+                    (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+            assertTrue(queued.cancel(false), "queued cancellation failed at iteration " + i);
+        }
+
+        CompletableFuture<Object> replacement = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+
+        release.countDown();
+        assertEquals(1L, ((Number) active.join()).longValue());
+        assertEquals(2L, ((Number) replacement.join()).longValue());
+    }
+
+    @Test
     void cancellingRunningSingletonRequestWinsBeforeCommit() throws Exception {
         String key = "cancel-running:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<AtomicInteger> handle =
