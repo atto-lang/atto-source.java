@@ -176,6 +176,38 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void sameCodeUnitAndModuleNameRemainSeparatedByNamespace() throws Exception {
+        String namespaceA = """
+                namespace tenant_a;
+
+                define singleton module namespace_scoped_cache as
+                  let int count = 0;
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await namespace_scoped_cache.next());
+                    return;
+                  }
+                end
+                """;
+
+        String namespaceB = namespaceA.replace("namespace tenant_a;", "namespace tenant_b;");
+
+        String firstA = eval(namespaceA, "namespace-scoped.ores");
+        String firstB = eval(namespaceB, "namespace-scoped.ores");
+        String secondA = eval(namespaceA, "namespace-scoped.ores");
+
+        assertTrue(firstA.contains("1"), firstA);
+        assertTrue(firstB.contains("1"), firstB);
+        assertTrue(secondA.contains("2"), secondA);
+    }
+
+    @Test
     void hotReloadKeepsStateWhenSingletonSchemaIsStable() throws Exception {
         String firstProgram = """
                 define singleton module reload_stable_counter as
