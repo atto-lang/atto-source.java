@@ -1310,10 +1310,10 @@ final class ActorRuntimeTest {
             CountDownLatch liveReceived = new CountDownLatch(1);
             var dead = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> { });
             var live = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> liveReceived.countDown());
-            dead.stop();
 
             try (var workers = runtime.<String>group("workers")) {
                 workers.add(dead).add(live);
+                dead.stop();
                 ActorRuntime.FanoutReceipt receipt = workers.broadcast("job");
 
                 assertEquals(2, receipt.attempted());
@@ -1479,6 +1479,82 @@ final class ActorRuntimeTest {
                         () -> receiver.send(foreignGroup));
                 assertTrue(failure.getMessage().contains("different ActorRuntime"));
             }
+        }
+    }
+
+
+    @Test
+    void actorGroupRejectsAlreadyTerminatedMembership() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var dead = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> { });
+            dead.stop();
+
+            try (var workers = runtime.<String>group("workers")) {
+                assertThrows(ActorRuntime.ActorTerminatedException.class, () -> workers.add(dead));
+                assertEquals(0, workers.size());
+            }
+        }
+    }
+
+    @Test
+    void closedActorGroupCannotBeRepopulated() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> { });
+            var group = runtime.<String>group("workers");
+            group.add(ref);
+            group.close();
+
+            assertTrue(group.closed());
+            assertThrows(IllegalStateException.class, () -> group.add(ref));
+            assertThrows(IllegalStateException.class, group::members);
+            assertThrows(IllegalStateException.class, () -> group.broadcast("job"));
+        }
+    }
+
+    @Test
+    void receiveFutureCannotForgeCancelOrTimeoutMailboxDelivery() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch armed = new CountDownLatch(1);
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<String> observed = new AtomicReference<>();
+            AtomicReference<Throwable> assertionFailure = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                if (!message.equals("arm")) return;
+
+                var stage = context.receiveAsync();
+                var future = stage.toCompletableFuture();
+                try {
+                    assertThrows(UnsupportedOperationException.class, () -> future.complete("forged"));
+                    assertThrows(UnsupportedOperationException.class,
+                            () -> future.completeExceptionally(new IllegalStateException("forged")));
+                    assertThrows(UnsupportedOperationException.class, () -> future.cancel(false));
+                    assertThrows(UnsupportedOperationException.class,
+                            () -> future.orTimeout(1, TimeUnit.MILLISECONDS));
+                    assertThrows(UnsupportedOperationException.class,
+                            () -> future.completeOnTimeout("forged", 1, TimeUnit.MILLISECONDS));
+                    assertThrows(UnsupportedOperationException.class, () -> future.obtrudeValue("forged"));
+                    assertThrows(UnsupportedOperationException.class,
+                            () -> future.obtrudeException(new IllegalStateException("forged")));
+                } catch (Throwable failure) {
+                    assertionFailure.set(failure);
+                }
+
+                stage.thenAccept(next -> {
+                    observed.set(next);
+                    received.countDown();
+                });
+                armed.countDown();
+            });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+            assertNull(assertionFailure.get());
+
+            ref.send("real");
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals("real", observed.get());
+            assertTrue(ref.isAlive());
         }
     }
 
