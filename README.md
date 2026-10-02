@@ -15,6 +15,10 @@ The language is intentionally opinionated:
 - immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
 - isolates are stricter security boundaries for FaaS/mobile workloads, with host access denied and Oreslang APIs capability-gated by default;
 - JIT, AOT/interpreter, and AOT-host + guest-JIT hybrid execution profiles;
+- file-granular incremental compilation with stable code-unit/package identities and reverse-dependency invalidation;
+- flat optional file namespaces and flat modules (neither may nest);
+- class-level `static fnc` functions separated from receiver methods;
+- first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
 - multiple named modules may appear in one source file;
