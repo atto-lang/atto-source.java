@@ -43,19 +43,23 @@ final class ActorRuntimeTest {
     @Test
     void actorCarriesItsOwnStricterPolicy() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            CountDownLatch received = new CountDownLatch(1);
-            AtomicReference<IsolatePolicy> observed = new AtomicReference<>();
             IsolatePolicy strict = IsolatePolicy.strictFaas();
 
-            var ref = runtime.<String>spawnPrivate(strict, factoryContext -> (message, context) -> {
-                observed.set(context.policy());
-                received.countDown();
+            var ref = runtime.<String>spawnPrivate(strict, factoryContext -> {
+                if (factoryContext.policy().allows(IsolatePolicy.Capability.SHARED_MEMORY)) {
+                    throw new AssertionError("private actor policy retained SHARED_MEMORY");
+                }
+                if (factoryContext.policy().maxMailboxMessages() != IsolatePolicy.strictFaas().maxMailboxMessages()) {
+                    throw new AssertionError("private actor policy did not preserve mailbox limit");
+                }
+                return (message, context) -> context.self().stop();
             });
             ref.send("ping");
 
-            assertTrue(received.await(2, TimeUnit.SECONDS));
-            assertEquals(strict.capabilities(), observed.get().capabilities());
-            assertEquals(strict.maxMailboxMessages(), observed.get().maxMailboxMessages());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
+            assertFalse(ref.isAlive());
+            assertTrue(ref.failure().isEmpty());
         }
     }
 
@@ -274,7 +278,7 @@ final class ActorRuntimeTest {
             AtomicReference<ActorRuntime.ActorId> constructionOwner = new AtomicReference<>();
             AtomicReference<ActorRuntime.MemoryReservation> state = new AtomicReference<>();
 
-            var ref = runtime.<String>spawnPrivate(context -> {
+            var ref = runtime.<String>spawnPrivateTrusted(context -> {
                 var memory = context.privateMemory().orElseThrow();
                 constructionOwner.set(memory.owner());
                 state.set(memory.reserveHeap(4096));
@@ -330,7 +334,7 @@ final class ActorRuntimeTest {
             CountDownLatch firstReserved = new CountDownLatch(1);
             CountDownLatch holdFirst = new CountDownLatch(1);
 
-            var first = runtime.<String>spawnPrivate(parent, context -> {
+            var first = runtime.<String>spawnPrivateTrusted(parent, context -> {
                 var reservation = context.privateMemory().orElseThrow().reserveHeap(10L * 1024 * 1024);
                 firstReserved.countDown();
                 return (message, turn) -> {
@@ -456,7 +460,7 @@ final class ActorRuntimeTest {
             CountDownLatch reserved = new CountDownLatch(1);
             AtomicReference<ActorRuntime.MemoryReservation> reservation = new AtomicReference<>();
 
-            var ref = runtime.<String>spawnPrivate(factoryContext -> {
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> {
                 reservation.set(factoryContext.privateMemory().orElseThrow().reserveHeap(4096));
                 reserved.countDown();
                 return (message, context) -> { };
@@ -540,7 +544,7 @@ final class ActorRuntimeTest {
 
         try (ActorRuntime runtime = new ActorRuntime(parent)) {
             CountDownLatch reserved = new CountDownLatch(1);
-            var ref = runtime.<String>spawnPrivate(parent, factoryContext -> {
+            var ref = runtime.<String>spawnPrivateTrusted(parent, factoryContext -> {
                 factoryContext.privateMemory().orElseThrow().reserveHeap(10L * 1024 * 1024);
                 reserved.countDown();
                 return (message, context) -> { };
@@ -767,6 +771,98 @@ final class ActorRuntimeTest {
             assertEquals(2, runtime.actorCount());
 
             second.stop();
+        }
+    }
+
+
+    @Test
+    void safePrivateFactoryRejectsCapturedHostStateEvenInDeveloperMode() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            Object mutableHostState = new StringBuilder("host");
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> runtime.<String>spawnPrivate(factoryContext -> {
+                        mutableHostState.toString();
+                        return (message, context) -> { };
+                    }));
+            assertTrue(failure.getMessage().contains("stateless"));
+        }
+    }
+
+    @Test
+    void isolatedPrivateActorCanUseOwnerCheckedDirectMemory() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<Byte>spawnPrivate(factoryContext -> {
+                ActorRuntime.PrivateMemoryBlock block =
+                        factoryContext.privateMemory().orElseThrow().allocatePrivateBytes(64);
+                block.writeByte(0, (byte) 7);
+
+                return (message, context) -> {
+                    if (block.readByte(0) != 7) throw new AssertionError("private block lost actor state");
+                    block.writeByte(1, message);
+                    if (block.readByte(1) != message) throw new AssertionError("private block write mismatch");
+                    context.self().stop();
+                };
+            });
+
+            ref.send((byte) 42);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(5);
+            assertFalse(ref.isAlive());
+            assertTrue(ref.failure().isEmpty());
+            assertEquals(0L, runtime.privateMemoryBytes(), "actor teardown must release its private direct-memory quota");
+        }
+    }
+
+    @Test
+    void leakedPrivateDirectMemoryCannotBeReadOutsideOwnerActor() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> leaked = new AtomicReference<>();
+            CountDownLatch created = new CountDownLatch(1);
+
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> {
+                ActorRuntime.PrivateMemoryBlock block =
+                        factoryContext.privateMemory().orElseThrow().allocatePrivateBytes(8);
+                block.writeByte(0, (byte) 99);
+                leaked.set(block);
+                created.countDown();
+                return (message, context) -> { };
+            });
+
+            ref.send("initialize");
+            assertTrue(created.await(2, TimeUnit.SECONDS));
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> leaked.get().readByte(0));
+            assertTrue(failure.getMessage().contains("owning actor"));
+            ref.stop();
+            assertTrue(leaked.get().closed());
+        }
+    }
+
+    @Test
+    void privateDirectMemoryHandleCannotCrossMailboxBoundary() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicReference<ActorRuntime.PrivateMemoryBlock> block = new AtomicReference<>();
+            CountDownLatch created = new CountDownLatch(1);
+
+            var owner = runtime.<String>spawnPrivateTrusted(factoryContext -> {
+                block.set(factoryContext.privateMemory().orElseThrow().allocatePrivateBytes(8));
+                created.countDown();
+                return (message, context) -> { };
+            });
+            owner.send("initialize");
+            assertTrue(created.await(2, TimeUnit.SECONDS));
+
+            var other = runtime.<Object>spawnPrivate(() -> (message, context) -> { });
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> other.send(block.get()));
+            assertTrue(failure.getMessage().contains("not Sendable")
+                    || failure.getMessage().contains("actor boundaries"));
+
+            owner.stop();
+            other.stop();
         }
     }
 
