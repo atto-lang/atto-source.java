@@ -1046,6 +1046,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!cell.mailbox.offer(envelope)) {
                     throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
                 }
+                mailboxSlotTransferred = true;
                 admitted = true;
                 commitSharedMutexBindings(sharedMutexReservations);
             }
@@ -1055,7 +1056,6 @@ public final class ActorRuntime implements AutoCloseable {
                 envelope.close();
             }
         }
-        mailboxSlotTransferred = true;
         cell.schedule();
         } finally {
             if (!mailboxSlotTransferred) cell.releaseMailboxSlot();
