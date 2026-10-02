@@ -1013,6 +1013,9 @@ public final class ActorRuntime implements AutoCloseable {
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
 
+        /** Present only for an UNTRUSTED actor explicitly bound to one HTTP request. */
+        Optional<HttpRequestCapability> httpRequest();
+
         /** Present only for an UNTRUSTED actor explicitly bound to one HTTP response. */
         Optional<HttpResponseCapability> httpResponse();
 
@@ -1230,6 +1233,20 @@ public final class ActorRuntime implements AutoCloseable {
             UntrustedActorLimits limits,
             HttpResponseTransport responseTransport,
             BehaviorFactory<M> behaviorFactory) {
+        return spawnUntrusted(
+                policy,
+                limits,
+                null,
+                responseTransport,
+                behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnUntrusted(
+            IsolatePolicy policy,
+            UntrustedActorLimits limits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            BehaviorFactory<M> behaviorFactory) {
         requireSupervisorContext("spawn untrusted actors");
         Objects.requireNonNull(policy);
         Objects.requireNonNull(limits);
@@ -1240,6 +1257,7 @@ public final class ActorRuntime implements AutoCloseable {
                 behaviorFactory,
                 false,
                 limits,
+                requestTransport,
                 responseTransport);
     }
 
@@ -1437,7 +1455,7 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
-        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null);
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null, null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -1446,6 +1464,7 @@ public final class ActorRuntime implements AutoCloseable {
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory,
             UntrustedActorLimits untrustedLimits,
+            HttpRequestTransport requestTransport,
             HttpResponseTransport responseTransport) {
         requireCallerRuntimeAffinity("spawn actors");
         ActorCell<?> callerCell = currentActor.get();
@@ -1459,8 +1478,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (kind == ActorKind.UNTRUSTED && untrustedLimits == null) {
             throw new SecurityException("untrusted actor hard limits are required");
         }
-        if (kind != ActorKind.UNTRUSTED && (untrustedLimits != null || responseTransport != null)) {
-            throw new IllegalArgumentException("untrusted limits/HTTP capability may only be attached to UNTRUSTED actors");
+        if (kind != ActorKind.UNTRUSTED
+                && (untrustedLimits != null || requestTransport != null || responseTransport != null)) {
+            throw new IllegalArgumentException(
+                    "untrusted limits/HTTP capabilities may only be attached to UNTRUSTED actors");
         }
 
         IsolatePolicy effectivePolicy = kind.memoryIsolated()
@@ -1496,6 +1517,7 @@ public final class ActorRuntime implements AutoCloseable {
                     behaviorFactory,
                     trustedFactory,
                     untrustedLimits,
+                    requestTransport,
                     responseTransport);
                 actors.put(id, cell);
                 cell.armLifetimeLimit();
@@ -2836,6 +2858,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final UntrustedActorLimits untrustedLimits;
+        private final HttpRequestCapability httpRequest;
         private final HttpResponseCapability httpResponse;
         private final AtomicLong fuelRemaining = new AtomicLong(Long.MAX_VALUE);
         private final long createdNanos;
@@ -2859,6 +2882,7 @@ public final class ActorRuntime implements AutoCloseable {
                 BehaviorFactory<M> behaviorFactory,
                 boolean trustedFactory,
                 UntrustedActorLimits untrustedLimits,
+                HttpRequestTransport requestTransport,
                 HttpResponseTransport responseTransport) {
             this.ref = ref;
             this.kind = kind;
@@ -2880,6 +2904,12 @@ public final class ActorRuntime implements AutoCloseable {
                         ? Long.MAX_VALUE
                         : createdNanos + lifetimeNanos;
                 this.fuelRemaining.set(untrustedLimits.fuelPerTurn());
+                this.httpRequest = requestTransport == null
+                        ? null
+                        : new HttpRequestCapability(
+                                ref.id(),
+                                requestTransport,
+                                untrustedLimits.maxHttpRequestBytes());
                 this.httpResponse = responseTransport == null
                         ? null
                         : new HttpResponseCapability(
@@ -2888,6 +2918,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 untrustedLimits.maxHttpResponseBytes());
             } else {
                 this.deadlineNanos = Long.MAX_VALUE;
+                this.httpRequest = null;
                 this.httpResponse = null;
             }
         }
@@ -2989,6 +3020,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (timer != null) timer.cancel(false);
             drainMailboxReservations();
             behavior = null;
+            if (httpRequest != null) {
+                httpRequest.cancelFromRuntime(ref.terminationCause.get());
+            }
             if (httpResponse != null) {
                 httpResponse.abortFromRuntime(ref.terminationCause.get());
             }
@@ -3094,6 +3128,9 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public ActorKind kind() { return kind; }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
+                    }
+                    @Override public Optional<HttpRequestCapability> httpRequest() {
+                        return Optional.ofNullable(httpRequest);
                     }
                     @Override public Optional<HttpResponseCapability> httpResponse() {
                         return Optional.ofNullable(httpResponse);
