@@ -113,7 +113,7 @@ final class GpuKeywordTest {
             @Override
             public Object invoke(GpuRuntime.Invocation invocation) {
                 assertEquals("__root__.add", invocation.callable());
-                assertEquals("fnc", invocation.callableKind());
+                assertEquals(GpuRuntime.CallableKind.FNC, invocation.callableKind());
                 assertEquals(2L, ((Number) invocation.arguments().get(0)).longValue());
                 assertEquals(3L, ((Number) invocation.arguments().get(1)).longValue());
                 return 41L;
