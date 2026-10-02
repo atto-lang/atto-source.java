@@ -1329,6 +1329,23 @@ public final class TypeChecker {
                         }
                         return signature.result();
                     }
+
+                    Ast.InterfaceDecl iface = findInterface(named.name());
+                    if (iface != null) {
+                        Record shape = interfaceShapeForNamed(iface, named);
+                        Type candidate = shape.members().get(methodKey(member.member(), call.arguments().size()));
+                        if (!(candidate instanceof Function signature)) {
+                            throw new IllegalArgumentException("no interface method '" + member.member()
+                                    + "' with arity " + call.arguments().size() + " on " + named.name());
+                        }
+                        for (int i = 0; i < signature.parameters().size(); i++) {
+                            Type expected = signature.parameters().get(i);
+                            validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self),
+                                    expected, "interface argument " + (i + 1));
+                        }
+                        return signature.result();
+                    }
                 }
             }
             Type callee = typeOf(call.callee(), env, generics, self);
@@ -1429,6 +1446,24 @@ public final class TypeChecker {
                         return methodFunctionTypeForReceiver(method, klass, named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
+                }
+
+                Ast.InterfaceDecl iface = findInterface(named.name());
+                if (iface != null) {
+                    Record shape = interfaceShapeForNamed(iface, named);
+                    List<Function> candidates = shape.members().entrySet().stream()
+                            .filter(entry -> entry.getKey().startsWith(member.member() + "$arity"))
+                            .map(Map.Entry::getValue)
+                            .filter(Function.class::isInstance)
+                            .map(Function.class::cast)
+                            .toList();
+                    if (candidates.size() == 1) return candidates.getFirst();
+                    if (candidates.size() > 1) {
+                        throw new IllegalArgumentException("overloaded interface method '" + member.member()
+                                + "' must be called so arity can select the overload");
+                    }
+                    throw new IllegalArgumentException("unknown interface member '" + member.member()
+                            + "' on " + named.name());
                 }
             }
             return Unknown.INSTANCE;
@@ -1925,6 +1960,21 @@ public final class TypeChecker {
         for (int i = 0; i < iface.genericParameters().size(); i++) {
             substitutions.put(iface.genericParameters().get(i),
                     resolve(use.arguments().get(i), surroundingGenerics, self));
+        }
+        return (Record) substituteGenerics(raw, substitutions);
+    }
+
+    private Record interfaceShapeForNamed(Ast.InterfaceDecl iface, Named use) {
+        if (use.arguments().size() != iface.genericParameters().size()) {
+            throw new IllegalArgumentException("interface '" + iface.name() + "' expects "
+                    + iface.genericParameters().size() + " type argument(s), got " + use.arguments().size());
+        }
+        Record raw = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        if (iface.genericParameters().isEmpty()) return raw;
+
+        LinkedHashMap<String, Type> substitutions = new LinkedHashMap<>();
+        for (int i = 0; i < iface.genericParameters().size(); i++) {
+            substitutions.put(iface.genericParameters().get(i), use.arguments().get(i));
         }
         return (Record) substituteGenerics(raw, substitutions);
     }
