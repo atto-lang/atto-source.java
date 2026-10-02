@@ -153,7 +153,8 @@ public final class OresEvalRootNode extends RootNode {
             ActorModuleStateKey actorKey = new ActorModuleStateKey(
                     codeUnitId,
                     program.namespace() == null ? "<default>" : program.namespace(),
-                    module.name());
+                    module.name(),
+                    codeUnitDigest);
             Env actorState = context.actors().currentActorLocal(
                     actorKey,
                     () -> initializeOrdinaryModuleState(module));
@@ -1249,7 +1250,11 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return klass.name()+fields;}
     }
 
-    private record ActorModuleStateKey(String codeUnitId, String namespace, String moduleName) { }
+    private record ActorModuleStateKey(
+            String codeUnitId,
+            String namespace,
+            String moduleName,
+            String codeDigest) { }
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
     private record SingletonObjectProxy(Ast.ModuleDecl module, String fieldName, Ast.ClassDecl klass) { }
