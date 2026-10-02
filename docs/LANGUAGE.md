@@ -57,7 +57,7 @@ Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(
 
 ## Functions and returns
 
-Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path. An omitted return annotation is inferred from direct explicit returns. If flow-sensitive inference would require substantially more analysis, the checker deliberately uses `any` until the author adds `=> T`.
 
 ```ores
 fnc add(int a, int b) => int {
@@ -71,6 +71,64 @@ fnc answer() {
 ```
 
 `@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+
+## Pattern matching and exhaustiveness
+
+`match` is an expression and therefore can be returned, assigned, nested, or used as the target of a pipe:
+
+```ores
+fnc unwrap(Option<int> value) => int {
+  return match value {
+    Some(v) => v,
+    None => 0
+  };
+}
+
+fnc classify(bool flag) {
+  return flag |> match {
+    true => "enabled",
+    false => "disabled"
+  };
+}
+```
+
+The checker proves exhaustiveness for closed domains it understands natively, currently including `bool` and `Option<T>`. Open or unknown domains require an unguarded catch-all (`_` or a binding pattern). Guarded arms are intentionally conservative: because an arbitrary guard may be false, a guarded arm does not contribute to exhaustiveness. Unreachable/redundant unguarded arms are compile errors.
+
+Patterns support literals, bindings, `_`, constructors such as `Some(v)`/`None`, tuples, exact lists, object/structural fields, and `p1 | p2` alternatives. Or-pattern alternatives must bind the same names.
+
+When a callable declares `=> T`, every reachable match arm is independently checked as assignable to `T`. With no explicit result annotation, the match arm result types are joined; numeric and compatible named/structural results retain useful inferred types, while unresolved joins become `any`.
+
+## Forward pipe
+
+`|>` is optional composition syntax and coexists with receiver-method chaining:
+
+```ores
+val result = input
+  |> normalize()
+  |> validate(config)
+  |> persist();
+```
+
+`x |> f()` lowers to `f(x)`, and `x |> f(a, b)` lowers to `f(x, a, b)`. `x |> match { ... }` matches the piped value directly.
+
+## Native contracts and proof statements
+
+Formal-method constructs are part of the Oreslang grammar and AST rather than annotations in another language:
+
+```ores
+fnc identity(int x) => int
+  requires x >= 0;
+  ensures result >= 0;
+  decreases x;
+{
+  assert x >= 0;
+  assume true;
+  invariant true;
+  return x;
+}
+```
+
+The initial verifier type-checks proof obligations, rejects statically false `assert`/`invariant`/`ensures` clauses, checks `decreases` as integral, exposes the result as `result` in postconditions, and integrates match exhaustiveness into the same static pass. `old(expr)` is represented natively for pre-state reasoning. This is a conservative built-in verification foundation; arbitrary SMT-backed discharge is a later verifier layer and is not claimed by this version.
 
 ## Bindings
 
