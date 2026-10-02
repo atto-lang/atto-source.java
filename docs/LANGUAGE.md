@@ -274,6 +274,8 @@ CPU code may call a GPU callable; that call is the explicit CPU-to-GPU dispatch 
 
 GPU device access is capability-gated. An isolate must be created with the explicit `GPU` capability before a GPU callable can be admitted or dispatched. The strict FaaS policy does not grant GPU access by default. Embedding hosts install an accelerator implementation through the exported `dev.oreslang.gpu.GpuRuntime.Backend` SPI; the reference frontend therefore does not hard-code CUDA, SPIR-V, Metal, or another vendor backend.
 
+The CPU/GPU boundary is an ownership boundary. Arguments are recursively copied/frozen into GPU-transfer values before a backend receives them; raw actor references, class instances, and unknown mutable host objects are rejected. Backend results are validated through the same transfer contract and then re-materialized as guest-owned values. A backend therefore cannot mutate an actor-owned list or smuggle an arbitrary host object back into Oreslang.
+
 Class instance methods and `static fnc` members are not GPU entrypoints in v0.7; `gpu` is currently restricted to top-level/module `fnc` and `routine` declarations.
 
 ## Actors
