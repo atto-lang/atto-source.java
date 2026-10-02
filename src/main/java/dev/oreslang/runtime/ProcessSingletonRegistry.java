@@ -251,7 +251,12 @@ public final class ProcessSingletonRegistry {
                 if (cell.mailbox.remove(request)) cell.releaseQueuedSlot();
             }, timeoutMillis, TimeUnit.MILLISECONDS);
             request.timeoutTask(timeoutTask);
-            reply.whenComplete((ignored, failure) -> request.cancelTimeoutTask());
+            reply.whenComplete((ignored, failure) -> {
+                request.cancelTimeoutTask();
+                if (reply.isCancelled() && request.cancelQueued()) {
+                    if (cell.mailbox.remove(request)) cell.releaseQueuedSlot();
+                }
+            });
             return reply;
         }
 
@@ -303,6 +308,10 @@ public final class ProcessSingletonRegistry {
 
         private void finish() {
             phase.compareAndSet(RUNNING, DONE);
+        }
+
+        private boolean cancelQueued() {
+            return phase.compareAndSet(QUEUED, DONE);
         }
 
         private void failBeforeRun(Throwable failure) {
