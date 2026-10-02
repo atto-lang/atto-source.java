@@ -245,4 +245,65 @@ final class ChannelRuntimeTest {
         assertEquals("real", selected.join().receivedValue());
     }
 
+
+    @Test
+    void runtimeBoundsChannelCapacityAndSelectWidth() {
+        ChannelRuntime runtime = new ChannelRuntime(new ChannelRuntime.Limits(2, 2, 4));
+
+        assertEquals(2, runtime.limits().maxChannelCapacity());
+        assertDoesNotThrow(() -> runtime.channel(2));
+        assertThrows(IllegalArgumentException.class, () -> runtime.channel(3));
+
+        var a = runtime.<String>channel(0);
+        var b = runtime.<String>channel(0);
+        var c = runtime.<String>channel(0);
+
+        assertThrows(IllegalArgumentException.class, () -> runtime.select(
+                List.of(
+                        new ChannelRuntime.ReceiveCase<>(a),
+                        new ChannelRuntime.ReceiveCase<>(b),
+                        new ChannelRuntime.ReceiveCase<>(c)),
+                false,
+                0));
+        assertEquals(0, a.waitingReceivers());
+        assertEquals(0, b.waitingReceivers());
+        assertEquals(0, c.waitingReceivers());
+    }
+
+    @Test
+    void waiterLimitAppliesToBothSendersAndReceivers() {
+        ChannelRuntime runtime = new ChannelRuntime(new ChannelRuntime.Limits(1, 4, 1));
+
+        var sendChannel = runtime.<String>channel(0);
+        CompletableFuture<Void> firstSend = sendChannel.send("one").toCompletableFuture();
+        assertEquals(1, sendChannel.waitingSenders());
+        assertThrows(IllegalStateException.class, () -> sendChannel.send("two"));
+        assertEquals(1, sendChannel.waitingSenders());
+        assertTrue(firstSend.cancel(false));
+
+        var receiveChannel = runtime.<String>channel(0);
+        CompletableFuture<String> firstReceive = receiveChannel.receive().toCompletableFuture();
+        assertEquals(1, receiveChannel.waitingReceivers());
+        assertThrows(IllegalStateException.class, receiveChannel::receive);
+        assertEquals(1, receiveChannel.waitingReceivers());
+        assertTrue(firstReceive.cancel(false));
+    }
+
+    @Test
+    void selectWaiterLimitFailureRollsBackEveryRegistration() {
+        ChannelRuntime runtime = new ChannelRuntime(new ChannelRuntime.Limits(1, 4, 1));
+        var channel = runtime.<String>channel(0);
+
+        assertThrows(IllegalStateException.class, () -> runtime.select(
+                List.of(
+                        new ChannelRuntime.ReceiveCase<>(channel),
+                        new ChannelRuntime.ReceiveCase<>(channel)),
+                false,
+                0));
+
+        assertEquals(0, channel.waitingReceivers(),
+                "select capacity admission must be atomic across all cases");
+        assertEquals(0, channel.waitingSenders());
+    }
+
 }
