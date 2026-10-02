@@ -540,6 +540,14 @@ public final class Parser {
             consumeStatementTerminator("defer statement should end with ';'");
             return new Ast.DeferStmt(expression);
         }
+        if (match(BREAK)) {
+            consumeStatementTerminator("break statement should end with ';'");
+            return new Ast.BreakStmt();
+        }
+        if (match(CONTINUE)) {
+            consumeStatementTerminator("continue statement should end with ';'");
+            return new Ast.ContinueStmt();
+        }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
         if (match(FOR)) return parseFor();
