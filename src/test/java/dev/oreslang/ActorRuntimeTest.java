@@ -1558,4 +1558,51 @@ final class ActorRuntimeTest {
         }
     }
 
+
+    @Test
+    void processGcIsCapabilityGated() {
+        try (ActorRuntime strict = new ActorRuntime(IsolatePolicy.strictFaas())) {
+            assertThrows(SecurityException.class, strict::collectProcessGarbage);
+        }
+
+        try (ActorRuntime developer = new ActorRuntime(IsolatePolicy.developer())) {
+            assertDoesNotThrow(developer::collectProcessGarbage);
+        }
+    }
+
+    @Test
+    void actorGcIsScopedToAnActiveActorTurn() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            assertThrows(IllegalStateException.class, runtime::collectCurrentActorGarbage);
+
+            CountDownLatch collected = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorId> actorId = new AtomicReference<>();
+            AtomicReference<Long> cleaned = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                actorId.set(ActorRuntime.currentActorId());
+                cleaned.set(context.runtime().collectCurrentActorGarbage().cleaned());
+                collected.countDown();
+                context.self().stop();
+            });
+
+            ref.send("gc");
+            assertTrue(collected.await(2, TimeUnit.SECONDS));
+            assertEquals(ref.id(), actorId.get());
+            assertNotNull(cleaned.get());
+        }
+    }
+
+    @Test
+    void runtimeCloseReleasesLiveSharedHandleAccounting() {
+        ActorRuntime runtime = new ActorRuntime();
+        runtime.shareReadonly(List.of("kept", "alive"));
+        assertTrue(runtime.sharedMemoryBytes() > 0L);
+
+        runtime.close();
+
+        assertEquals(0L, runtime.sharedMemoryBytes());
+        assertEquals(0L, runtime.garbageCollectorStats().tracked());
+    }
+
 }
