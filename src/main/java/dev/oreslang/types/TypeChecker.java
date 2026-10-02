@@ -469,7 +469,8 @@ public final class TypeChecker {
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = typeOf(member.receiver(), env, generics, self);
+                Type rawReceiver = typeOf(member.receiver(), env, generics, self);
+                Type receiver = dereference(rawReceiver);
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
@@ -489,6 +490,9 @@ public final class TypeChecker {
                     if (klass != null) {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
+                        if (method.mutableReceiver() && !isMutablePlace(member.receiver(), env, generics, self)) {
+                            throw new IllegalArgumentException("method '" + member.member() + "' requires a mutable receiver");
+                        }
                         Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
                         methodGenerics.addAll(method.genericParameters());
                         for (int i = 0; i < call.arguments().size(); i++) {
@@ -518,7 +522,7 @@ public final class TypeChecker {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
-            Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type receiver = dereference(typeOf(member.receiver(), env, generics, self));
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
@@ -776,6 +780,54 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) fields.put(field.name(), field);
         stack.remove(klass);
         return List.copyOf(fields.values());
+    }
+
+    private Type dereference(Type type) {
+        return type instanceof Reference reference ? reference.target() : type;
+    }
+
+    private boolean isMutablePlace(Ast.Expr expr, Env env, Set<String> generics, Type self) {
+        if (expr instanceof Ast.NameExpr name) {
+            Env.Binding binding = env.lookup(name.name());
+            if (binding == null) return false;
+            if (binding.type() instanceof Reference reference) return reference.mutable();
+            return binding.kind() == Ast.BindingKind.LET;
+        }
+        if (expr instanceof Ast.UnaryExpr unary && unary.operator().equals("*")) {
+            Type ref = typeOf(unary.operand(), env, generics, self);
+            return ref instanceof Reference reference && reference.mutable();
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            Type receiver = dereference(typeOf(member.receiver(), env, generics, self));
+            if (!(receiver instanceof Named named)) return false;
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) return false;
+            Ast.FieldDecl field = findFieldDecl(klass, member.member(), new LinkedHashSet<>());
+            return field != null && field.bindingKind() == Ast.BindingKind.LET
+                    && isMutablePlace(member.receiver(), env, generics, self);
+        }
+        return false;
+    }
+
+    private Ast.FieldDecl findFieldDecl(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.name().equals(name)) {
+                seen.remove(klass);
+                return field;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.FieldDecl field = findFieldDecl(parent, name, seen);
+            if (field != null) {
+                seen.remove(klass);
+                return field;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private Type findFieldType(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
