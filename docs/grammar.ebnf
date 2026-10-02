@@ -137,7 +137,8 @@ local_type_decl = [ "define" ] "struct" IDENT [ generic_params ]
                   ( "{" { struct_member } "}" | "as" { struct_member } "end" )
                 | [ "define" ] "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  interface_body ;
+                  interface_body
+                | "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
