@@ -175,6 +175,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        java.util.Objects.requireNonNull(policy, "policy");
+        java.util.Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         requireWithinCeiling(policy);
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id);
