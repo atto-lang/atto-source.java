@@ -1035,6 +1035,10 @@ public final class TypeChecker {
                 actorMessageType(typeOf(arguments.getFirst(), env, generics, self), "actor.status target");
                 yield actorStatusType();
             }
+            case "gc" -> {
+                requireBuiltinArity("actor.gc", arguments, 0);
+                yield gcResultType();
+            }
             case "monitor" -> {
                 if (arguments.size() != 1 && arguments.size() != 2) {
                     throw new IllegalArgumentException("actor.monitor expects target or target, watcher");
@@ -1174,15 +1178,7 @@ public final class TypeChecker {
         return switch (member) {
             case "gc" -> {
                 requireBuiltinArity("process.gc", arguments, 0);
-                yield new Record(Map.of(
-                        "scope", Primitive.STRING,
-                        "semantic_policy", Primitive.STRING,
-                        "backing_collector", Primitive.STRING,
-                        "host_gc_hint_enabled", Primitive.BOOL,
-                        "host_gc_hint_executed", Primitive.BOOL,
-                        "used_bytes_before", Primitive.INT,
-                        "used_bytes_after", Primitive.INT,
-                        "elapsed_nanos", Primitive.INT));
+                yield gcResultType();
             }
             case "share_readonly" -> {
                 requireBuiltinArity("process.share_readonly", arguments, 1);
@@ -1266,6 +1262,16 @@ public final class TypeChecker {
                 "reason", Primitive.STRING,
                 "monitor_id", Primitive.STRING,
                 "actor_id", Primitive.STRING));
+    }
+
+    private Record gcResultType() {
+        return new Record(Map.of(
+                "scope", Primitive.STRING,
+                "semantic_policy", Primitive.STRING,
+                "backing_collector", Primitive.STRING,
+                "host_gc_hint_enabled", Primitive.BOOL,
+                "host_gc_hint_executed", Primitive.BOOL,
+                "actor_local_physical_collection", Primitive.BOOL));
     }
 
     private Record actorStatusType() {
