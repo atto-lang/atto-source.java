@@ -991,6 +991,54 @@ final class MutexRuntimeTest {
 
 
     @Test
+    void nestedSharedMutexesBindToTheSameRuntimeTransactionally() throws Exception {
+        record Box(OresMutex.Shared<int[]> inner) implements OresMutex.SharedState {
+            @Override public Iterable<?> sharedStateChildren() { return List.of(inner); }
+        }
+
+        var inner = OresMutex.shared(new int[]{3});
+        var outer = OresMutex.shared(new Box(inner));
+
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(1);
+            var first = runtimeA.<OresMutex.Shared<Box>>spawnShared(
+                    () -> (message, context) -> delivered.countDown());
+            first.send(outer);
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+
+            var foreign = runtimeB.<OresMutex.Shared<int[]>>spawnShared(
+                    () -> (message, context) -> { });
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> foreign.send(inner));
+            assertTrue(error.getMessage().contains("ActorRuntime"));
+        }
+    }
+
+    @Test
+    void cyclicRuntimeSharedStateIsRejectedAtTransportBoundary() {
+        final class CyclicBox implements OresMutex.SharedState {
+            private Object child;
+            @Override public Iterable<?> sharedStateChildren() { return List.of(child); }
+        }
+
+        CyclicBox box = new CyclicBox();
+        box.child = box;
+        var shared = OresMutex.shared(box);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var receiver = runtime.<OresMutex.Shared<CyclicBox>>spawnShared(
+                    () -> (message, context) -> { });
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(shared));
+            assertTrue(error.getMessage().contains("cyclic SharedMutex payload"));
+        }
+    }
+
+
+    @Test
     void asyncTimedLockTimesOutAndReleasesItsDomainReservation() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var guard = mutex.lock();
