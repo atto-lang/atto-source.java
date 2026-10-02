@@ -1130,6 +1130,10 @@ public final class TypeChecker {
         }
 
         Type messageType = handler.parameters().getFirst();
+        if (messageType instanceof Named namedMessage && namedMessage.name().equals("Shared")) {
+            throw new IllegalArgumentException(
+                    api + " mailbox type must be T, not Shared<T>; Shared<T> is a send-time transport handle");
+        }
         if (stateful) {
             Type stateType = handler.parameters().get(1);
             Type initialType = unwrapShared(typeOfWithExpected(
