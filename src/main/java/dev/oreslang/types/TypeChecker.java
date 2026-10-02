@@ -242,25 +242,41 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
                             + "' requires an explicit type so process-lifetime state has a stable hot-reload schema");
                 }
-                if (field.visibility() == Ast.Visibility.PUBLIC) {
-                    throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
-                            + "' cannot be public; expose actor-safe accessor functions instead");
-                }
                 if (containsTypeAlias(field.type())) {
                     throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
                             + "' cannot use type aliases in process-lifetime state; spell the stable storage type explicitly");
                 }
-                Type stateType = resolve(field.type(), Set.of(), null);
-                if (!isProcessStableStateType(stateType)) {
+
+                Ast.ClassDecl proxyClass = singletonProxyClass(field);
+                boolean exportedProxy = field.visibility() == Ast.Visibility.PUBLIC && proxyClass != null;
+                if (field.visibility() == Ast.Visibility.PUBLIC && !exportedProxy) {
                     throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
-                            + "' uses process-unstable state type " + field.type()
-                            + "; use scalars, Option<T>, or Array/List<T> of stable values");
+                            + "' cannot be public unless it is an immutable class-instance proxy");
                 }
-                if (field.initializer() == null
-                        || !isPureSingletonInitializer(field.initializer(), initializedFields)) {
-                    throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
-                            + "' requires a context-free initializer; singleton initialization cannot call functions,"
-                            + " access capabilities, await work, construct classes, or mutate state");
+
+                if (exportedProxy) {
+                    if (field.bindingKind() == Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException("exported singleton object '" + module.name() + "." + field.name()
+                                + "' must use val or const so the process-wide capability cannot be rebound");
+                    }
+                    validateSingletonProxyClass(module, field, proxyClass);
+                    if (!isPureSingletonProxyInitializer(field.initializer(), proxyClass, initializedFields)) {
+                        throw new IllegalArgumentException("exported singleton object '" + module.name() + "." + field.name()
+                                + "' must be initialized with a context-free 'new " + proxyClass.name() + "(...)'");
+                    }
+                } else {
+                    Type stateType = resolve(field.type(), Set.of(), null);
+                    if (!isProcessStableStateType(stateType)) {
+                        throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
+                                + "' uses process-unstable state type " + field.type()
+                                + "; use scalars, Option<T>, or Array/List<T> of stable values");
+                    }
+                    if (field.initializer() == null
+                            || !isPureSingletonInitializer(field.initializer(), initializedFields)) {
+                        throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
+                                + "' requires a context-free initializer; singleton initialization cannot call functions,"
+                                + " access capabilities, await work, construct arbitrary classes, or mutate state");
+                    }
                 }
                 initializedFields.add(field.name());
             }
@@ -296,6 +312,69 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
                             + "' result is not statically Sendable: " + fn.returnType());
                 }
+            }
+        }
+    }
+
+    private Ast.ClassDecl singletonProxyClass(Ast.FieldDecl field) {
+        if (field.type() == null || !field.type().arguments().isEmpty()) return null;
+        return findClass(field.type().name());
+    }
+
+    private boolean isPureSingletonProxyInitializer(
+            Ast.Expr initializer,
+            Ast.ClassDecl klass,
+            Set<String> initializedFields) {
+        if (!(initializer instanceof Ast.NewExpr created)) return false;
+        Ast.ClassDecl createdClass = findClass(created.type().name());
+        if (createdClass != klass) return false;
+        if (created.arguments().stream().anyMatch(arg -> !isPureSingletonInitializer(arg, initializedFields))) {
+            return false;
+        }
+        for (Ast.FieldDecl classField : effectiveFields(klass, new LinkedHashSet<>())) {
+            if (classField.type() == null) return false;
+            Type fieldType = resolve(classField.type(), Set.copyOf(klass.genericParameters()), nominalClassType(klass));
+            if (!isProcessStableStateType(fieldType)) return false;
+            if (classField.initializer() != null
+                    && !isPureSingletonInitializer(classField.initializer(), Set.of())) return false;
+        }
+        return true;
+    }
+
+    private void validateSingletonProxyClass(
+            Ast.ModuleDecl owner,
+            Ast.FieldDecl exportedField,
+            Ast.ClassDecl klass) {
+        if (!klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException("exported singleton object '" + owner.name() + "." + exportedField.name()
+                    + "' cannot use a generic class until proxy Send constraints are explicit");
+        }
+
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) continue;
+            if (method.async()) {
+                throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
+                        + "' cannot be async; mailbox transport already returns Future<T>");
+            }
+            if (!method.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
+                        + "' cannot be generic until proxy Send constraints are explicit");
+            }
+            for (Ast.Param param : method.parameters()) {
+                if (param.mutable() || param.structural()) {
+                    throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
+                            + "' cannot use mut or structural transported parameters");
+                }
+                Type parameter = resolveParam(param, Set.of(), nominalClassType(klass));
+                if (!isActorSendableType(parameter, false)) {
+                    throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
+                            + "' parameter '" + param.name() + "' is not statically Sendable");
+                }
+            }
+            Type result = resolve(method.returnType(), Set.of(), nominalClassType(klass));
+            if (!isActorSendableType(result, true)) {
+                throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
+                        + "' result is not statically Sendable");
             }
         }
     }
