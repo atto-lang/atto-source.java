@@ -376,7 +376,7 @@ The two modifiers select different runtime execution domains:
 
 `actor` and `isoactor` are mutually exclusive and cannot be repeated. They are not valid on classes, class methods, interfaces, type aliases, or bindings. Because both words are reserved, declarations such as `val int actor = 1` and `val int isoactor = 1` are invalid.
 
-The one-shot call boundary is synchronous in the current source semantics so the declared return type remains unchanged. An `async actor fnc` surface can later make that boundary explicitly nonblocking without changing what `actor` or `isoactor` mean.
+The one-shot call boundary is synchronous in the current source semantics so the declared return type remains unchanged. Combining `async` with `actor` or `isoactor` is rejected for now rather than silently pretending to be asynchronous. A future `async actor fnc` surface can make that boundary explicitly nonblocking without changing what `actor` or `isoactor` mean.
 
 For `isoactor`, the private arena is the allocation domain exposed to arena-aware Oreslang value lowering. As with the underlying private-actor runtime, the current Java reference interpreter still keeps runtime control metadata and some interpreter representation objects on the managed JVM heap; source-level mutable state may not be shared across the actor boundary merely because those host objects exist.
 
