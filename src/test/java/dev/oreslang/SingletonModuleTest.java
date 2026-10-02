@@ -861,4 +861,45 @@ final class SingletonModuleTest {
         }
         return output.toString(StandardCharsets.UTF_8);
     }
+    @Test
+    void processEffectValidationInspectsCallableLocalStructBodies() {
+        IllegalArgumentException hiddenMethod = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module hidden_local_struct_effect as
+                          pub fnc value() => int {
+                            struct Local {
+                              pub context() => String {
+                                return process.context_id;
+                              }
+                            }
+                            return 1;
+                          }
+                        end
+                        """)));
+
+        assertTrue(hiddenMethod.getMessage().contains("ambient caller capability 'process'"));
+        assertTrue(hiddenMethod.getMessage().contains("process-singleton code"));
+    }
+
+    @Test
+    void processEffectValidationInspectsStructLiteralFieldValues() {
+        IllegalArgumentException hiddenLiteral = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module hidden_struct_literal_effect as
+                          pub fnc value() => String {
+                            struct Local {
+                              value: String;
+                            }
+                            val local = Local { value = process.context_id };
+                            return local.value;
+                          }
+                        end
+                        """)));
+
+        assertTrue(hiddenLiteral.getMessage().contains("ambient caller capability 'process'"));
+        assertTrue(hiddenLiteral.getMessage().contains("process-singleton code"));
+    }
+
 }
