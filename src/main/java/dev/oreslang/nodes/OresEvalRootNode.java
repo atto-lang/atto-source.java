@@ -181,10 +181,8 @@ public final class OresEvalRootNode extends RootNode {
 
         private String singletonKey(Ast.ModuleDecl module) {
             String namespace = program.namespace();
-            String packageIdentity = namespace == null || namespace.isBlank()
-                    ? codeUnitId
-                    : namespace;
-            return "ores:" + packageIdentity + ":" + module.name();
+            String namespaceIdentity = namespace == null || namespace.isBlank() ? "<default>" : namespace;
+            return "ores:" + codeUnitId + ":" + namespaceIdentity + ":" + module.name();
         }
 
         private Ast.ModuleDecl ownerModule(Ast.FunctionDecl fn) {
