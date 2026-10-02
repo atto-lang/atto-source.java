@@ -707,6 +707,12 @@ public final class TypeChecker {
             return new Named("Channel", List.of(resolve(channel.elementType(), generics, self)));
         }
         if (expr instanceof Ast.ChannelOpExpr operation) {
+            if ((operation.kind() == Ast.ChannelOpKind.SEND || operation.kind() == Ast.ChannelOpKind.RECEIVE)
+                    && awaitContext == AwaitContext.NONE) {
+                throw new IllegalArgumentException(
+                        operation.kind().name().toLowerCase()
+                                + " is a suspending channel operation and is only legal inside async/actor execution");
+            }
             if (operation.channel() == null) {
                 if (awaitContext != AwaitContext.ACTOR) {
                     throw new IllegalArgumentException(operation.kind().name().toLowerCase()
