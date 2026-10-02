@@ -1,7 +1,15 @@
 package dev.oreslang.gpu;
 
+import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -14,6 +22,21 @@ public final class GpuRuntime {
     private static final AtomicReference<Backend> PROCESS_BACKEND = new AtomicReference<>();
 
     public enum CallableKind { FNC, ROUTINE }
+
+    /** Marker used by private guest-runtime values that have a safe GPU wire form. */
+    public interface Transferable {
+        Object freezeForGpu();
+    }
+
+    /** Stable public representation for Oreslang complex scalar values. */
+    public record ComplexValue(double real, double imaginary) { }
+
+    /** Stable public representation for Oreslang Option values. */
+    public record OptionValue(boolean present, Object value) {
+        public OptionValue {
+            if (!present && value != null) throw new IllegalArgumentException("None cannot carry a value");
+        }
+    }
 
     public interface Backend {
         String name();
@@ -32,7 +55,7 @@ public final class GpuRuntime {
         public Invocation {
             Objects.requireNonNull(callable, "callable");
             Objects.requireNonNull(callableKind, "callableKind");
-            arguments = List.copyOf(arguments);
+            arguments = freezeArguments(arguments);
         }
     }
 
@@ -65,13 +88,64 @@ public final class GpuRuntime {
                     + "' cannot execute gpu callable '" + callable + "'");
         }
         try {
-            return backend.invoke(invocation);
+            return freezeValue(backend.invoke(invocation));
         } catch (GpuException failure) {
             throw failure;
         } catch (RuntimeException failure) {
             throw new GpuExecutionException("GPU backend '" + backend.name()
                     + "' failed while executing '" + callable + "'", failure);
         }
+    }
+
+    private static List<?> freezeArguments(List<?> arguments) {
+        ArrayList<Object> frozen = new ArrayList<>(arguments.size());
+        for (Object argument : arguments) frozen.add(freezeValue(argument));
+        return List.copyOf(frozen);
+    }
+
+    private static Object freezeValue(Object value) {
+        if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+                || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
+                || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ComplexValue) {
+            return value;
+        }
+        if (value instanceof OptionValue option) {
+            return option.present()
+                    ? new OptionValue(true, freezeValue(option.value()))
+                    : new OptionValue(false, null);
+        }
+        if (value instanceof Transferable transferable) {
+            Object transferred = transferable.freezeForGpu();
+            if (transferred == value) {
+                throw new GpuTransferException("GPU transferable values must produce a distinct wire representation");
+            }
+            return freezeValue(transferred);
+        }
+        if (value instanceof List<?> list) {
+            ArrayList<Object> frozen = new ArrayList<>(list.size());
+            for (Object item : list) frozen.add(freezeValue(item));
+            return List.copyOf(frozen);
+        }
+        if (value instanceof Set<?> set) {
+            return set.stream().map(GpuRuntime::freezeValue)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        }
+        if (value instanceof Map<?, ?> map) {
+            LinkedHashMap<Object, Object> frozen = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                frozen.put(freezeValue(entry.getKey()), freezeValue(entry.getValue()));
+            }
+            return Map.copyOf(frozen);
+        }
+        if (value.getClass().isArray()) {
+            int length = Array.getLength(value);
+            ArrayList<Object> frozen = new ArrayList<>(length);
+            for (int i = 0; i < length; i++) frozen.add(freezeValue(Array.get(value, i)));
+            return List.copyOf(frozen);
+        }
+        throw new GpuTransferException("value of type " + value.getClass().getName()
+                + " cannot cross the Oreslang GPU boundary");
     }
 
     public static class GpuException extends RuntimeException {
@@ -89,5 +163,9 @@ public final class GpuRuntime {
 
     public static final class GpuExecutionException extends GpuException {
         public GpuExecutionException(String message, Throwable cause) { super(message, cause); }
+    }
+
+    public static final class GpuTransferException extends GpuException {
+        public GpuTransferException(String message) { super(message); }
     }
 }
