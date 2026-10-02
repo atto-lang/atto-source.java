@@ -1,10 +1,12 @@
 package dev.oreslang.runtime;
 
+import java.io.IOException;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -21,8 +23,11 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -50,6 +55,10 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    public static final Duration HARD_MAX_UNTRUSTED_LIFETIME = Duration.ofSeconds(300);
+    private static final long DEFAULT_UNTRUSTED_FUEL_PER_TURN = 100_000L;
+    private static final long DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES = 1024L * 1024L;
+    private static final long DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES = 16L * 1024L * 1024L;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -97,28 +106,108 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Thread.currentThread() : current.executionDomain();
     }
 
-    public enum ActorKind { PRIVATE, SHARED }
+    public enum ActorKind {
+        PRIVATE,
+        SHARED,
+        UNTRUSTED;
+
+        public boolean memoryIsolated() {
+            return this != SHARED;
+        }
+
+        public boolean untrusted() {
+            return this == UNTRUSTED;
+        }
+    }
 
     public record DispatcherConfig(
             int privateParallelism,
             int sharedParallelism,
+            int untrustedParallelism,
             int throughput,
             int maxActors) {
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
             if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
+            if (untrustedParallelism <= 0) throw new IllegalArgumentException("untrustedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
         }
 
+        /** Backward-compatible constructor: untrusted work gets its own pool sized like private work. */
+        public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput, int maxActors) {
+            this(privateParallelism, sharedParallelism, privateParallelism, throughput, maxActors);
+        }
+
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
-            this(privateParallelism, sharedParallelism, throughput, 16_384);
+            this(privateParallelism, sharedParallelism, privateParallelism, throughput, 16_384);
         }
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, 64, 16_384);
+            return new DispatcherConfig(cpus, cpus, Math.max(1, cpus / 2), 64, 16_384);
         }
+    }
+
+    /**
+     * Hard sandbox limits for one untrusted actor. The 300 second lifetime is
+     * an absolute ceiling, not a hint, and mailbox return data is deliberately
+     * much smaller than direct HTTP streaming data.
+     */
+    public record UntrustedActorLimits(
+            Duration maxLifetime,
+            long fuelPerTurn,
+            long maxMailboxReturnBytes,
+            long maxHttpResponseBytes) {
+        public UntrustedActorLimits {
+            Objects.requireNonNull(maxLifetime, "maxLifetime");
+            if (maxLifetime.isZero() || maxLifetime.isNegative()) {
+                throw new IllegalArgumentException("untrusted actor maxLifetime must be positive");
+            }
+            if (maxLifetime.compareTo(HARD_MAX_UNTRUSTED_LIFETIME) > 0) {
+                throw new IllegalArgumentException(
+                        "untrusted actor maxLifetime cannot exceed " + HARD_MAX_UNTRUSTED_LIFETIME.toSeconds() + " seconds");
+            }
+            if (fuelPerTurn <= 0) throw new IllegalArgumentException("untrusted actor fuelPerTurn must be positive");
+            if (maxMailboxReturnBytes <= 0) throw new IllegalArgumentException("maxMailboxReturnBytes must be positive");
+            if (maxHttpResponseBytes <= 0) throw new IllegalArgumentException("maxHttpResponseBytes must be positive");
+        }
+
+        public static UntrustedActorLimits defaults() {
+            return new UntrustedActorLimits(
+                    HARD_MAX_UNTRUSTED_LIFETIME,
+                    DEFAULT_UNTRUSTED_FUEL_PER_TURN,
+                    DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES,
+                    DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES);
+        }
+    }
+
+    public static final class ActorBudgetExceededException extends RuntimeException {
+        public ActorBudgetExceededException(String message) { super(message); }
+    }
+
+    public static final class ActorLifetimeExceededException extends RuntimeException {
+        public ActorLifetimeExceededException(String message) { super(message); }
+    }
+
+    public static final class HttpResponseLimitExceededException extends RuntimeException {
+        public HttpResponseLimitExceededException(String message) { super(message); }
+    }
+
+    /**
+     * Host-provided adapter for exactly one HTTP response stream. Implementors
+     * may write to a SocketChannel/event-loop stream directly; the untrusted
+     * actor never receives a raw file descriptor or general NETWORK authority.
+     *
+     * Implementations must be non-blocking or otherwise scheduler-aware.
+     */
+    public interface HttpResponseTransport {
+        default void status(int statusCode) throws IOException { }
+        default void header(String name, String value) throws IOException { }
+        int write(ByteBuffer source) throws IOException;
+        default void flush() throws IOException { }
+        default void complete() throws IOException { }
+        default void abort(Throwable cause) { }
     }
 
     public record ActorId(UUID value) {
@@ -188,6 +277,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
+    private final ExecutorService untrustedDispatcher;
+    private final ScheduledExecutorService untrustedWatchdog;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
@@ -229,6 +320,12 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherConfig.sharedParallelism(),
                 dispatcherConfig.maxActors(),
                 "ores-shared-actor-dispatcher-");
+        this.untrustedDispatcher = newDispatcher(
+                dispatcherConfig.untrustedParallelism(),
+                dispatcherConfig.maxActors(),
+                "ores-untrusted-actor-dispatcher-");
+        this.untrustedWatchdog = Executors.newSingleThreadScheduledExecutor(
+                namedFactory("ores-untrusted-watchdog-"));
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
