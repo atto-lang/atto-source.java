@@ -103,19 +103,35 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
-    void compiledUnitsCanStageDirectlyAsHotReloadGenerations() {
+    void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
-        var build = compiler.compile(Map.of("worker.ores", """
-                pub routine main() => void { return; }
-                """));
-        var unit = build.units().get("worker.ores");
+        var build = compiler.compile(Map.of(
+                "worker.ores", "pub routine main() => void { return; }",
+                "helper.ores", "pub fnc help() => int { return 1; }"));
+        var worker = build.units().get("worker.ores");
+        var helper = build.units().get("helper.ores");
 
         try (HotReloadManager hot = new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
-            var generation = hot.load(unit);
-            assertEquals("worker.ores", generation.codeUnitId());
-            assertEquals(unit.sourceDigest(), generation.sha256());
-            assertFalse(generation.started());
+            var workerGeneration = hot.load(worker);
+            var helperGeneration = hot.load(helper);
+            assertEquals("worker.ores", workerGeneration.codeUnitId());
+            assertEquals(worker.sourceDigest(), workerGeneration.sha256());
+            assertSame(workerGeneration, hot.active("worker.ores"));
+            assertSame(helperGeneration, hot.active("helper.ores"));
+            assertEquals(2, hot.activeGenerations().size());
+            assertFalse(workerGeneration.started());
+            assertFalse(helperGeneration.started());
         }
+    }
+
+    @Test
+    void unresolvedRelativeImportsFailIncrementalCompilation() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        assertThrows(IllegalArgumentException.class, () -> compiler.compile(Map.of(
+                "app.ores", """
+                        import fnc {missing} from "./missing.ores";
+                        pub routine main() => void { return; }
+                        """)));
     }
 
     @Test
