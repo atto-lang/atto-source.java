@@ -26,7 +26,7 @@ public final class TraitComposer {
         return new Composer(program).compose();
     }
 
-    private record TraitBinding(String module, Ast.TraitDecl declaration) { }
+    private record TraitBinding(String module, Ast.TraitDecl declaration, String identity) { }
     private record FieldEntry(Ast.FieldDecl field, String origin) { }
     private record MethodEntry(Ast.MethodDecl method, String origin) { }
 
@@ -42,6 +42,9 @@ public final class TraitComposer {
         private final Map<String, TraitBinding> unqualifiedTraits = new LinkedHashMap<>();
         private final Set<String> ambiguousTraits = new HashSet<>();
         private final Map<String, Material> materialCache = new HashMap<>();
+        private final ArrayDeque<Map<String, TraitBinding>> localTraitScopes = new ArrayDeque<>();
+        private final IdentityHashMap<Ast.TraitDecl, String> localTraitIdentities = new IdentityHashMap<>();
+        private int nextLocalTraitIdentity = 1;
 
         private Composer(Ast.Program program) {
             this.program = program;
@@ -307,8 +310,59 @@ public final class TraitComposer {
         }
 
         private boolean isTraitReference(String moduleName, String name) {
+            if (!name.contains(".")) {
+                for (Map<String, TraitBinding> scope : localTraitScopes) {
+                    if (scope.containsKey(name)) return true;
+                }
+            }
             return qualifiedTraits.containsKey(name)
                     || qualifiedTraits.containsKey(moduleName + "." + name);
+        }
+
+        private void pushLocalTraitScope(String moduleName, List<Ast.Stmt> statements) {
+            LinkedHashMap<String, TraitBinding> traits = new LinkedHashMap<>();
+            LinkedHashMap<String, String> names = new LinkedHashMap<>();
+
+            for (Ast.Stmt stmt : statements) {
+                if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
+
+                String name = null;
+                String kind = null;
+                if (local.declaration() instanceof Ast.ClassDecl klass) {
+                    name = klass.name();
+                    kind = klass.isStruct() ? "struct" : "class";
+                } else if (local.declaration() instanceof Ast.InterfaceDecl iface) {
+                    name = iface.name();
+                    kind = "interface";
+                } else if (local.declaration() instanceof Ast.TraitDecl trait) {
+                    name = trait.name();
+                    kind = "trait";
+                } else if (local.declaration() instanceof Ast.TypeAliasDecl alias) {
+                    name = alias.name();
+                    kind = "type alias";
+                }
+
+                if (name == null) continue;
+                String previous = names.putIfAbsent(name, kind);
+                if (previous != null) {
+                    throw new IllegalArgumentException(
+                            "callable-local type name '" + name + "' is declared as both "
+                                    + previous + " and " + kind + " in the same lexical block");
+                }
+
+                if (local.declaration() instanceof Ast.TraitDecl trait) {
+                    String identity = localTraitIdentities.computeIfAbsent(
+                            trait,
+                            ignored -> moduleName + ".$localTrait$"
+                                    + (nextLocalTraitIdentity++) + "." + trait.name());
+                    traits.put(trait.name(), new TraitBinding(moduleName, trait, identity));
+                }
+            }
+            localTraitScopes.push(traits);
+        }
+
+        private void popLocalTraitScope() {
+            localTraitScopes.pop();
         }
 
         private Set<String> withGenerics(Set<String> base, List<String> additions) {
@@ -403,8 +457,6 @@ public final class TraitComposer {
                         generics.addAll(function.genericParameters());
                         validateParams(moduleName, function.parameters(), generics, "interface function " + iface.name() + "." + function.name());
                         validateTypeRef(moduleName, function.returnType(), generics, "interface function return " + iface.name() + "." + function.name());
-                    } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                        validateTypeRef(moduleName, field.type(), interfaceGenerics, "interface data requirement " + iface.name() + "." + field.name());
                     }
                 }
             } else if (declaration instanceof Ast.TypeAliasDecl alias) {
@@ -416,7 +468,13 @@ public final class TraitComposer {
                 String moduleName,
                 List<Ast.Stmt> statements,
                 Set<String> generics) {
+            pushLocalTraitScope(moduleName, statements);
+            try {
             for (Ast.Stmt statement : statements) {
+                if (statement instanceof Ast.TypeDeclStmt local) {
+                    validateNoTraitRuntimeTypes(moduleName, local.declaration());
+                    continue;
+                }
                 if (statement instanceof Ast.BindingStmt binding) {
                     validateTypeRef(moduleName, binding.declaredType(), generics, "binding " + binding.name());
                     validateNoTraitRuntimeTypes(moduleName, binding.initializer(), generics);
@@ -447,6 +505,9 @@ public final class TraitComposer {
                     if (loop.update() != null) validateNoTraitRuntimeTypes(moduleName, loop.update(), generics);
                     validateNoTraitRuntimeTypes(moduleName, loop.body(), generics);
                 }
+            }
+            } finally {
+                popLocalTraitScope();
             }
         }
 
@@ -557,7 +618,13 @@ public final class TraitComposer {
         }
 
         private void validateNoTraitInstantiation(String moduleName, List<Ast.Stmt> statements) {
+            pushLocalTraitScope(moduleName, statements);
+            try {
             for (Ast.Stmt statement : statements) {
+                if (statement instanceof Ast.TypeDeclStmt local) {
+                    validateNoTraitInstantiation(moduleName, local.declaration());
+                    continue;
+                }
                 if (statement instanceof Ast.BindingStmt binding) {
                     validateNoTraitInstantiation(moduleName, binding.initializer());
                 } else if (statement instanceof Ast.DestructureStmt destructure) {
@@ -587,6 +654,9 @@ public final class TraitComposer {
                     if (loop.update() != null) validateNoTraitInstantiation(moduleName, loop.update());
                     validateNoTraitInstantiation(moduleName, loop.body());
                 }
+            }
+            } finally {
+                popLocalTraitScope();
             }
         }
 
@@ -633,6 +703,11 @@ public final class TraitComposer {
         }
 
         private boolean isTraitName(String moduleName, String name) {
+            if (!name.contains(".")) {
+                for (Map<String, TraitBinding> scope : localTraitScopes) {
+                    if (scope.containsKey(name)) return true;
+                }
+            }
             if (qualifiedTraits.containsKey(moduleName + "." + name)) return true;
             return name.contains(".") && qualifiedTraits.containsKey(name);
         }
@@ -654,8 +729,8 @@ public final class TraitComposer {
                                         + "' collides with an existing class/interface/type alias in the same type namespace");
                     }
 
-                    TraitBinding binding = new TraitBinding(module.name(), trait);
                     String qualified = module.name() + "." + trait.name();
+                    TraitBinding binding = new TraitBinding(module.name(), trait, qualified);
                     if (qualifiedTraits.putIfAbsent(qualified, binding) != null) {
                         throw new IllegalArgumentException("duplicate trait '" + qualified + "'");
                     }
@@ -827,9 +902,20 @@ public final class TraitComposer {
         }
 
         private List<Ast.Stmt> composeStatements(String moduleName, List<Ast.Stmt> statements) {
-            List<Ast.Stmt> result = new ArrayList<>(statements.size());
-            for (Ast.Stmt stmt : statements) result.add(composeStatement(moduleName, stmt));
-            return List.copyOf(result);
+            pushLocalTraitScope(moduleName, statements);
+            try {
+                List<Ast.Stmt> result = new ArrayList<>(statements.size());
+                for (Ast.Stmt stmt : statements) {
+                    if (stmt instanceof Ast.TypeDeclStmt local
+                            && local.declaration() instanceof Ast.TraitDecl) {
+                        continue; // traits are compile-time-only composition declarations
+                    }
+                    result.add(composeStatement(moduleName, stmt));
+                }
+                return List.copyOf(result);
+            } finally {
+                popLocalTraitScope();
+            }
         }
 
         private Ast.Stmt composeStatement(String moduleName, Ast.Stmt stmt) {
@@ -1066,7 +1152,7 @@ public final class TraitComposer {
                         raw.bindingKind(),
                         substitute(raw.type(), substitutions),
                         substitute(raw.initializer(), substitutions),
-                        binding.declaration().name());
+                        binding.identity());
 
                 mergeField(
                         material,
@@ -1191,6 +1277,13 @@ public final class TraitComposer {
         }
 
         private TraitBinding resolveTrait(String hostModule, String name) {
+            if (!name.contains(".")) {
+                for (Map<String, TraitBinding> scope : localTraitScopes) {
+                    TraitBinding lexical = scope.get(name);
+                    if (lexical != null) return lexical;
+                }
+            }
+
             TraitBinding local = qualifiedTraits.get(hostModule + "." + name);
             if (local != null) return local;
 
@@ -1259,9 +1352,7 @@ public final class TraitComposer {
                 TraitBinding binding,
                 Map<String, Ast.TypeRef> substitutions) {
             StringBuilder key =
-                    new StringBuilder(binding.module())
-                            .append('.')
-                            .append(binding.declaration().name())
+                    new StringBuilder(binding.identity())
                             .append('<');
             for (String parameter : binding.declaration().genericParameters()) {
                 key.append(parameter)
