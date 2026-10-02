@@ -75,6 +75,8 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        validateBorrowReturnSignature(
+                fn.name(), fn.parameters(), fn.returnType(), false, fn.actorKind() != Ast.ActorKind.NONE);
         Scope scope = new Scope(null);
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -91,6 +93,12 @@ public final class OwnershipChecker {
 
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
+            validateBorrowReturnSignature(
+                    klass.name() + "." + method.name(),
+                    method.parameters(),
+                    method.returnType(),
+                    !method.isStatic(),
+                    klass.actorKind() != Ast.ActorKind.NONE);
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -163,26 +171,25 @@ public final class OwnershipChecker {
                 if (mutexCriticalSectionDepth > 0) {
                     throw error("with_lock/recover critical-section callbacks cannot return a value");
                 }
-                if (ret.value() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-                    VarState owner = borrowOwner(unary.operand(), scope);
-                    if (owner.origin == Origin.LOCAL) {
-                        throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
-                    }
-                    if (isActorConfinedBorrow(owner)) {
-                        throw error("actor self cannot escape its mailbox turn as a returned borrow");
-                    }
-                }
                 ValueInfo returned = checkExpr(ret.value(), scope, true);
-                if ((returned.kind == ValueKind.IMM_BORROW || returned.kind == ValueKind.MUT_BORROW)
-                        && returned.borrowSource != null) {
-                    if (returned.borrowSource.origin == Origin.LOCAL
-                            || returned.borrowSource.origin == Origin.CAPTURE) {
-                        throw error("cannot return a borrow derived from local value '"
-                                + returned.borrowSource.debugName
-                                + "'; inferred lifetime ends before the caller can use it");
+                if (returned.kind == ValueKind.IMM_BORROW || returned.kind == ValueKind.MUT_BORROW) {
+                    VarState lifetime = returned.lifetimeSource;
+                    if (lifetime == null) {
+                        throw error("cannot prove the lifetime of returned borrow; "
+                                + "an explicit lifetime relation is required");
                     }
-                    if (isActorConfinedBorrow(returned.borrowSource)) {
+                    if (isActorConfinedBorrow(lifetime)) {
                         throw error("actor-confined borrows cannot escape their mailbox turn");
+                    }
+                    if (lifetime.origin == Origin.LOCAL || lifetime.origin == Origin.CAPTURE) {
+                        throw error("cannot return a borrow derived from local value '"
+                                + lifetime.debugName
+                                + "'; inferred lifetime ends here and borrowed value would outlive its owner");
+                    }
+                    if (lifetime.origin == Origin.PARAM && !lifetime.type.isBorrow()) {
+                        throw error("cannot return a borrow of owned by-value parameter '"
+                                + lifetime.debugName
+                                + "'; the callee owns that parameter and its inferred lifetime ends on return");
                     }
                 }
                 if (containsMutexGuardType(returned.type)) {
@@ -508,7 +515,11 @@ public final class OwnershipChecker {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
                 checkArguments(call.arguments(), fn.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null);
+                VarState lifetime = fn.returnType().isBorrow()
+                        ? inferBorrowResultFromArguments(
+                                call.arguments(), fn.parameters(), scope, "function " + fn.name())
+                        : null;
+                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null, lifetime);
             }
         }
 
@@ -585,7 +596,11 @@ public final class OwnershipChecker {
                     throw error("method '" + klass.name() + "." + method.name()
                             + "' cannot return move-only state through a mutex guard/critical-section borrow");
                 }
-                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                VarState lifetime = method.returnType().isBorrow()
+                        ? inferMethodBorrowResult(
+                                member, call.arguments(), method, scope, klass.name() + "." + method.name())
+                        : null;
+                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null, lifetime);
             }
         }
 
@@ -647,6 +662,119 @@ public final class OwnershipChecker {
                 throw error(callable + " argument " + (i + 1) + " cannot consume a guard-bearing value");
             }
         }
+    }
+
+    private void validateBorrowReturnSignature(
+            String callable,
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType,
+            boolean hasReceiver,
+            boolean actorCallable) {
+        if (!returnType.isBorrow()) return;
+        if (actorCallable) {
+            throw error("actor callable '" + callable
+                    + "' cannot return a borrow across a mailbox boundary");
+        }
+
+        int lifetimeSources = hasReceiver ? 1 : 0;
+        for (Ast.Param parameter : parameters) {
+            if (parameter.type().isBorrow()) lifetimeSources++;
+        }
+        if (lifetimeSources == 0) {
+            throw error("borrow-returning callable '" + callable
+                    + "' has no caller-owned borrow/receiver lifetime to attach the result to");
+        }
+        if (lifetimeSources > 1) {
+            throw error("borrow-returning callable '" + callable
+                    + "' has multiple possible input lifetimes; named lifetime annotations are required "
+                    + "for this signature and are intentionally not implicit");
+        }
+    }
+
+    private VarState inferBorrowResultFromArguments(
+            List<Ast.Expr> arguments,
+            List<Ast.Param> parameters,
+            Scope scope,
+            String callable) {
+        int sourceIndex = -1;
+        for (int i = 0; i < parameters.size(); i++) {
+            if (!parameters.get(i).type().isBorrow()) continue;
+            if (sourceIndex >= 0) {
+                throw error(callable + " has an ambiguous borrowed return lifetime");
+            }
+            sourceIndex = i;
+        }
+        if (sourceIndex < 0 || sourceIndex >= arguments.size()) {
+            throw error(callable + " returns a borrow without a provable input lifetime");
+        }
+        return borrowArgumentLifetime(arguments.get(sourceIndex), scope, callable);
+    }
+
+    private VarState inferMethodBorrowResult(
+            Ast.MemberExpr member,
+            List<Ast.Expr> arguments,
+            Ast.MethodDecl method,
+            Scope scope,
+            String callable) {
+        int borrowedParameter = -1;
+        for (int i = 0; i < method.parameters().size(); i++) {
+            if (!method.parameters().get(i).type().isBorrow()) continue;
+            if (borrowedParameter >= 0) {
+                throw error(callable + " has an ambiguous borrowed return lifetime");
+            }
+            borrowedParameter = i;
+        }
+
+        if (!method.isStatic()) {
+            if (borrowedParameter >= 0) {
+                throw error(callable + " has both receiver and parameter lifetimes; named lifetime annotation required");
+            }
+            return receiverLifetime(member.receiver(), scope, callable);
+        }
+        if (borrowedParameter < 0 || borrowedParameter >= arguments.size()) {
+            throw error(callable + " returns a borrow without a provable input lifetime");
+        }
+        return borrowArgumentLifetime(arguments.get(borrowedParameter), scope, callable);
+    }
+
+    private VarState receiverLifetime(Ast.Expr receiver, Scope scope, String callable) {
+        if (receiver instanceof Ast.NameExpr name) {
+            VarState state = requireState(scope, name.name());
+            requireUsable(state, name.name(), false);
+            return normalizedLifetimeSource(state);
+        }
+        if (receiver instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            return normalizedLifetimeSource(borrowOwner(unary.operand(), scope));
+        }
+        throw error("borrow-returning method '" + callable
+                + "' requires a named receiver so its lifetime can be proven");
+    }
+
+    private VarState borrowArgumentLifetime(Ast.Expr argument, Scope scope, String callable) {
+        if (argument instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            return normalizedLifetimeSource(borrowOwner(unary.operand(), scope));
+        }
+        if (argument instanceof Ast.NameExpr name) {
+            VarState state = requireState(scope, name.name());
+            requireUsable(state, name.name(), false);
+            if (state.kind != ValueKind.IMM_BORROW && state.kind != ValueKind.MUT_BORROW) {
+                throw error(callable + " borrowed return lifetime must originate from a borrowed argument");
+            }
+            return normalizedLifetimeSource(state);
+        }
+        throw error(callable + " borrowed return lifetime requires an explicit named borrow");
+    }
+
+    private VarState normalizedLifetimeSource(VarState state) {
+        if (state.lifetimeSource != null && state.lifetimeSource != state) {
+            return normalizedLifetimeSource(state.lifetimeSource);
+        }
+        if (state.borrowSource != null && state.borrowSource != state) {
+            return normalizedLifetimeSource(state.borrowSource);
+        }
+        return state;
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
