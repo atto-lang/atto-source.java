@@ -12,6 +12,7 @@ import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -109,6 +110,36 @@ final class SingletonModuleTest {
 
         String first = eval(program, "singleton-shared-unit.ores");
         String second = eval(program, "singleton-shared-unit.ores");
+
+        assertTrue(first.contains("1"), first);
+        assertTrue(second.contains("2"), second);
+    }
+
+    @Test
+    void normalizedFilePathAliasesShareOneProcessSingletonIdentity() throws Exception {
+        String program = """
+                define singleton module canonical_path_counter as
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await canonical_path_counter.next());
+                    return;
+                  }
+                end
+                """;
+
+        URI aliased = URI.create("file:///tmp/oreslang-canonical/a/../unit.ores");
+        URI normalized = URI.create("file:///tmp/oreslang-canonical/unit.ores");
+
+        String first = evalWithUri(program, aliased);
+        String second = evalWithUri(program, normalized);
 
         assertTrue(first.contains("1"), first);
         assertTrue(second.contains("2"), second);
@@ -2123,6 +2154,22 @@ final class SingletonModuleTest {
                 .build();
 
         try (Context context = policy.restrictedContextBuilder(ExecutionProfile.serverJit())
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
+
+    private String evalWithUri(String program, URI uri) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, uri.getPath())
+                .uri(uri)
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
                 .out(output)
                 .build()) {
             context.eval(source);
