@@ -9,6 +9,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresTrace;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -117,12 +118,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokeFunctionBody(Ast.FunctionDecl fn, List<?> args) {
-            Env env = new Env(null);
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            try (OresTrace.Scope ignored = OresTrace.enter(
+                    fn.kind().name().toLowerCase(),
+                    fn.name(),
+                    hasNoStackTrace(fn.annotations()))) {
+                Env env = new Env(null);
+                for (int i = 0; i < fn.parameters().size(); i++) {
+                    Ast.Param param = fn.parameters().get(i);
+                    env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+                return executeCallableBody(fn.body(), env);
             }
-            return executeCallableBody(fn.body(), env);
+        }
+
+        private boolean hasNoStackTrace(List<Ast.Annotation> annotations) {
+            return annotations.stream().anyMatch(annotation -> annotation.name().equals("NoStackTrace"));
         }
 
         private boolean isActorCallable(Ast.FunctionDecl fn) {
@@ -136,13 +146,18 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
-            Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
-                Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            try (OresTrace.Scope ignored = OresTrace.enter(
+                    method.isStatic() ? "static-fnc" : "method",
+                    method.name(),
+                    hasNoStackTrace(method.annotations()))) {
+                Env env = new Env(null);
+                if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
+                for (int i = 0; i < method.parameters().size(); i++) {
+                    Ast.Param param = method.parameters().get(i);
+                    env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+                return executeCallableBody(method.body(), env);
             }
-            return executeCallableBody(method.body(), env);
         }
 
         private Object executeCallableBody(List<Ast.Stmt> body, Env env) {
@@ -155,7 +170,7 @@ public final class OresEvalRootNode extends RootNode {
             } catch (ReturnSignal signal) {
                 result = signal.value;
             } catch (RuntimeException failure) {
-                bodyFailure = failure;
+                bodyFailure = isNonRecoverable(failure) ? failure : OresTrace.attach(failure);
             }
 
             RuntimeException deferFailure = drainDeferred(frame);
@@ -208,6 +223,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object failureValue(RuntimeException failure) {
             if (failure instanceof PanicSignal panic) return panic.value;
             if (failure instanceof ThrowSignal thrown) return thrown.value;
+            if (failure instanceof OresTrace.TracedRuntimeException traced) return traced.failure();
             return failure;
         }
 
@@ -313,9 +329,10 @@ public final class OresEvalRootNode extends RootNode {
                         throw signal;
                     } catch (RuntimeException failure) {
                         if (isNonRecoverable(failure) || failure instanceof PanicSignal) throw failure;
+                        RuntimeException traced = OresTrace.attach(failure);
                         Env catchEnv = new Env(env);
-                        catchEnv.define(tried.errorName(), failureValue(failure), Ast.BindingKind.VAL);
-                        handledFailures.push(failure);
+                        catchEnv.define(tried.errorName(), failureValue(traced), Ast.BindingKind.VAL);
+                        handledFailures.push(traced);
                         try {
                             executeBlock(tried.catchBody(), catchEnv, frame);
                         } finally {
@@ -533,24 +550,28 @@ public final class OresEvalRootNode extends RootNode {
                         : ActorRuntime.ActorKind.SHARED;
 
                 return context.actors().spawn(kind, () -> (message, actorContext) -> {
-                    Env local = new Env(captured);
-                    local.define("self", actorContext.self(), Ast.BindingKind.VAL);
-                    local.define(messageParam.name(), message,
-                            messageParam.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-                    executeCallableBody(behavior.blockBody(), local);
+                    try (OresTrace.Scope ignored = OresTrace.enter("actor", "behavior", false)) {
+                        Env local = new Env(captured);
+                        local.define("self", actorContext.self(), Ast.BindingKind.VAL);
+                        local.define(messageParam.name(), message,
+                                messageParam.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        executeCallableBody(behavior.blockBody(), local);
+                    }
                 });
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 Env captured = env.snapshot();
                 return (Invokable) args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
-                    Env local = new Env(captured);
-                    for (int i = 0; i < lambda.parameters().size(); i++) {
-                        Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                    try (OresTrace.Scope ignored = OresTrace.enter("lambda", "<lambda>", false)) {
+                        Env local = new Env(captured);
+                        for (int i = 0; i < lambda.parameters().size(); i++) {
+                            Ast.Param param = lambda.parameters().get(i);
+                            local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        }
+                        if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
+                        return executeCallableBody(lambda.blockBody(), local);
                     }
-                    if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    return executeCallableBody(lambda.blockBody(), local);
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
@@ -604,6 +625,7 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "alive" -> actor.isAlive();
                     case "failed" -> actor.failed();
+                    case "failure_trace", "failureTrace" -> actor.failureTrace();
                     case "kind" -> actor.kind().name().toLowerCase();
                     default -> throw new IllegalArgumentException("unknown ActorTask member " + name);
                 };
@@ -629,6 +651,7 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "alive" -> actor.isAlive();
                     case "failed" -> actor.failed();
+                    case "failure_trace", "failureTrace" -> actor.failureTrace();
                     case "kind" -> actor.kind().name().toLowerCase();
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
@@ -920,20 +943,44 @@ public final class OresEvalRootNode extends RootNode {
         private ContinueSignal() { super(null, null, false, false); }
     }
 
-    private static final class PanicSignal extends RuntimeException {
+    private static final class PanicSignal extends RuntimeException implements OresTrace.Carrier {
         private final Object value;
+        private final OresTrace.Snapshot trace;
+
         private PanicSignal(Object value) {
-            super("panic: " + String.valueOf(value), null, true, false);
-            this.value = value;
+            this(value, OresTrace.snapshot());
         }
+
+        private PanicSignal(Object value, OresTrace.Snapshot trace) {
+            super(failureMessage("panic", value, trace), null, true, false);
+            this.value = value;
+            this.trace = trace;
+        }
+
+        @Override public OresTrace.Snapshot oresTrace() { return trace; }
     }
 
-    private static final class ThrowSignal extends RuntimeException {
+    private static final class ThrowSignal extends RuntimeException implements OresTrace.Carrier {
         private final Object value;
+        private final OresTrace.Snapshot trace;
+
         private ThrowSignal(Object value) {
-            super("throw: " + String.valueOf(value), null, true, false);
-            this.value = value;
+            this(value, OresTrace.snapshot());
         }
+
+        private ThrowSignal(Object value, OresTrace.Snapshot trace) {
+            super(failureMessage("throw", value, trace), null, true, false);
+            this.value = value;
+            this.trace = trace;
+        }
+
+        @Override public OresTrace.Snapshot oresTrace() { return trace; }
+    }
+
+    private static String failureMessage(String kind, Object value, OresTrace.Snapshot trace) {
+        String rendered = OresTrace.format(trace);
+        String base = kind + ": " + String.valueOf(value);
+        return rendered.isEmpty() ? base : base + "\n" + rendered;
     }
 
     private record Complex(double real, double imaginary) {
