@@ -138,6 +138,28 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void typedArrayPatternsProjectCopyElementOwnership() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc make_values() => Array<int> {
+                  return arr[3, 4];
+                }
+
+                fnc decode() => int {
+                  match make_values() {
+                    [first, second] => {
+                      stdio.println(first);
+                      stdio.println(first);
+                      return first + second;
+                    }
+                    _ => {
+                      return 0;
+                    }
+                  }
+                }
+                """)));
+    }
+
+    @Test
     void useAfterMoveIsRejected() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
