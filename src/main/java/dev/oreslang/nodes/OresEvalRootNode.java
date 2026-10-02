@@ -6,6 +6,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 
@@ -106,7 +107,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) {
+                return signal.value;
+            } finally {
+                env.release();
+            }
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -120,7 +125,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) {
+                return signal.value;
+            } finally {
+                env.release();
+            }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -129,7 +138,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
             } finally {
-                while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                try {
+                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                } finally {
+                    env.release();
+                }
             }
         }
 
@@ -205,6 +218,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("actor")) return new ActorFacade();
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -219,7 +233,7 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.ClassDecl klass = findClass(name.name());
                 if (klass != null) return new ClassFacade(klass);
                 Ast.FunctionDecl fn = findFunction(name.name());
-                if (fn != null) return (Invokable) args -> callFunction(fn, args);
+                if (fn != null) return new NamedFunctionValue(fn);
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
@@ -336,17 +350,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
-                return (Invokable) args -> {
-                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
-                    Env local = new Env(captured, nonLexical);
-                    for (int i = 0; i < lambda.parameters().size(); i++) {
-                        Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-                    }
-                    if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    try { executeBlock(lambda.blockBody(), local); return null; }
-                    catch (ReturnSignal signal) { return signal.value; }
-                };
+                return new LambdaValue(lambda, captured, nonLexical);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
@@ -372,9 +376,23 @@ public final class OresEvalRootNode extends RootNode {
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
+                    case "gc" -> (Invokable) process::gc;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
+            if (receiver instanceof ActorFacade actor) {
+                return switch (name) {
+                    case "spawn" -> (Invokable) actor::spawn;
+                    case "singleton" -> (Invokable) actor::singleton;
+                    case "send" -> (Invokable) actor::send;
+                    case "stop" -> (Invokable) actor::stop;
+                    case "join" -> (Invokable) actor::join;
+                    case "status" -> (Invokable) actor::status;
+                    case "self" -> actor.self();
+                    default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof GuestActorRef ref && name.equals("id")) return ref.delegate().id().toString();
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
@@ -419,7 +437,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return signal.value; }
+            } catch (ReturnSignal signal) {
+                return signal.value;
+            } finally {
+                env.release();
+            }
         }
 
         /**
@@ -448,7 +470,7 @@ public final class OresEvalRootNode extends RootNode {
                     return new ClassFacade(klass);
                 }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    return (Invokable) args -> callFunction(fn, args);
+                    return new NamedFunctionValue(fn);
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
@@ -532,6 +554,148 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(result.values());
         }
 
+        private final class NamedFunctionValue implements Invokable {
+            private final Ast.FunctionDecl function;
+
+            private NamedFunctionValue(Ast.FunctionDecl function) {
+                this.function = function;
+            }
+
+            @Override
+            public Object call(List<Object> arguments) {
+                return callFunction(function, arguments);
+            }
+
+            @Override
+            public boolean actorEntrySafe() {
+                return true;
+            }
+        }
+
+        private final class LambdaValue implements Invokable {
+            private final Ast.LambdaExpr lambda;
+            private final Env captured;
+            private final boolean nonLexical;
+
+            private LambdaValue(Ast.LambdaExpr lambda, Env captured, boolean nonLexical) {
+                this.lambda = lambda;
+                this.captured = captured;
+                this.nonLexical = nonLexical;
+            }
+
+            @Override
+            public Object call(List<Object> arguments) {
+                if (arguments.size() != lambda.parameters().size()) {
+                    throw new IllegalArgumentException("lambda arity mismatch");
+                }
+                Env local = new Env(captured, nonLexical);
+                for (int i = 0; i < lambda.parameters().size(); i++) {
+                    Ast.Param param = lambda.parameters().get(i);
+                    local.define(param.name(), arguments.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+                try {
+                    if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
+                    executeBlock(lambda.blockBody(), local);
+                    return null;
+                } catch (ReturnSignal signal) {
+                    return signal.value;
+                } finally {
+                    local.release();
+                }
+            }
+
+            @Override
+            public boolean actorEntrySafe() {
+                return nonLexical;
+            }
+        }
+
+        private final class ActorFacade {
+            private Object spawn(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_SPAWN, "actor.spawn");
+                requireOne(args, "actor.spawn");
+                Invokable handler = actorHandler(args.getFirst());
+                ActorRuntime.ActorRef<Object> ref = context.actors().spawn(
+                        () -> (message, actorContext) -> handler.call(List.of(message)));
+                return new GuestActorRef(ref);
+            }
+
+            private Object singleton(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_SPAWN, "actor.singleton");
+                requireTwo(args, "actor.singleton");
+                if (!(args.getFirst() instanceof String name)) {
+                    throw new IllegalArgumentException("actor.singleton first argument must be a string name");
+                }
+                Invokable handler = actorHandler(args.get(1));
+                ActorRuntime.ActorRef<Object> ref = context.actors().spawnSingleton(
+                        name, () -> (message, actorContext) -> handler.call(List.of(message)));
+                return new GuestActorRef(ref);
+            }
+
+            private Object send(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_SEND, "actor.send");
+                requireTwo(args, "actor.send");
+                context.actors().send(actorRef(args.getFirst()), args.get(1));
+                return null;
+            }
+
+            private Object stop(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.stop");
+                requireOne(args, "actor.stop");
+                return context.actors().stop(actorRef(args.getFirst()));
+            }
+
+            private Object join(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.join");
+                requireOne(args, "actor.join");
+                return context.actors().join(actorRef(args.getFirst()), context.isolatePolicy().maxWallTime());
+            }
+
+            private Object status(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.status");
+                requireOne(args, "actor.status");
+                return context.actors().snapshot(actorRef(args.getFirst())).asMap();
+            }
+
+            private Object self() {
+                context.requireCapability(IsolatePolicy.Capability.ACTOR_SEND, "actor.self");
+                ActorRuntime.ActorRef<Object> ref = context.actors().<Object>currentActorRef()
+                        .orElseThrow(() -> new IllegalStateException("actor.self is only available while handling an actor message"));
+                return new GuestActorRef(ref);
+            }
+
+            private Invokable actorHandler(Object value) {
+                if (!(value instanceof Invokable invokable)) {
+                    throw new IllegalArgumentException("actor entrypoint must be a named function or nlex lambda");
+                }
+                if (!invokable.actorEntrySafe()) {
+                    throw new IllegalArgumentException("actor lambda entrypoints must be nlex so actor heaps cannot capture caller-local mutable state");
+                }
+                return invokable;
+            }
+
+            @SuppressWarnings("unchecked")
+            private ActorRuntime.ActorRef<Object> actorRef(Object value) {
+                if (value instanceof GuestActorRef ref) return ref.delegate();
+                if (value instanceof ActorRuntime.ActorRef<?> ref) {
+                    return (ActorRuntime.ActorRef<Object>) ref;
+                }
+                throw new IllegalArgumentException("expected ActorRef");
+            }
+        }
+
+        private record GuestActorRef(ActorRuntime.ActorRef<Object> delegate) implements ActorRuntime.Sendable {
+            @Override
+            public Object freezeForSend() {
+                return delegate;
+            }
+
+            @Override
+            public String toString() {
+                return delegate.toString();
+            }
+        }
+
         private List<?> iterableValues(Object value) {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
@@ -598,7 +762,11 @@ public final class OresEvalRootNode extends RootNode {
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
 
-    @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
+    @FunctionalInterface
+    private interface Invokable {
+        Object call(List<Object> arguments);
+        default boolean actorEntrySafe() { return false; }
+    }
 
     private static final class Env {
         private static final Object MISSING = new Object();
@@ -635,8 +803,15 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Env snapshot() {
             Env cp = new Env(parent == null ? null : parent.snapshot(), descendantsNonLexical);
-            cp.slots.putAll(slots);
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                Slot slot = entry.getValue();
+                cp.slots.put(entry.getKey(), new Slot(slot.value, slot.kind));
+            }
             return cp;
+        }
+        private void release() {
+            for (Slot slot : slots.values()) slot.value = MISSING;
+            slots.clear();
         }
     }
 
@@ -682,6 +857,9 @@ public final class OresEvalRootNode extends RootNode {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+        private Object gc(List<Object> args){context.requireCapability(IsolatePolicy.Capability.GC_CONTROL,"process.gc");requireZero(args,"process.gc");return context.gc().collect();}
     }
+    private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
+    private static void requireTwo(List<Object> args,String name){if(args.size()!=2)throw new IllegalArgumentException(name+" expects two arguments");}
 }
