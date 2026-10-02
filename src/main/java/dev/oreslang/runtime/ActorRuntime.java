@@ -257,6 +257,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private void awaitDescendantsTermination(ActorId parentId) {
+        Set<ActorId> snapshot = children.get(parentId);
+        if (snapshot == null || snapshot.isEmpty()) return;
+        for (ActorId childId : List.copyOf(snapshot)) {
+            ActorCell<?> child = actors.get(childId);
+            if (child != null) child.ref.join();
+        }
+    }
+
     private void unlinkChild(ActorRef<?> ref) {
         ActorId parentId = ref.parentId();
         if (parentId != null) {
@@ -380,8 +389,10 @@ public final class ActorRuntime implements AutoCloseable {
                     if (stopRequested.get() && mailbox.isEmpty()) return;
                 }
             } catch (StopActorSignal stopped) {
-                // `stop;` is immediate clean actor termination. Queued mailbox
-                // work is abandoned and the actor is not marked failed.
+                // The current actor exits immediately after its own unwind, but
+                // descendants were asked to stop gracefully. Do not publish this
+                // parent's termination until those child actors have drained.
+                awaitDescendantsTermination(ref.id());
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } catch (CancellationException cancellation) {
