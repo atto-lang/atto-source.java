@@ -731,7 +731,7 @@ public final class TypeChecker {
                 requireAssignable(valueType, elementType, "channel send value");
                 return operation.kind() == Ast.ChannelOpKind.SEND
                         ? Primitive.VOID
-                        : new Named("SendResult", List.of());
+                        : new Named("TrySendResult", List.of(elementType));
             }
 
             return operation.kind() == Ast.ChannelOpKind.RECEIVE
