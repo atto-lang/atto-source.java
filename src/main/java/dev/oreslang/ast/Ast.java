@@ -160,7 +160,12 @@ public final class Ast {
             Visibility visibility,
             BindingKind bindingKind,
             TypeRef type,
-            Expr initializer) implements Decl { }
+            boolean isStatic,
+            Expr initializer) implements Decl {
+        public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type, Expr initializer) {
+            this(name, visibility, bindingKind, type, false, initializer);
+        }
+    }
 
     public record MethodDecl(
             String name,
