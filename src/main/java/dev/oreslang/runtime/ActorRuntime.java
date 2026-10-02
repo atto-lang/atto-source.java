@@ -410,7 +410,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId || value instanceof MonitorRef) {
             return value;
         }
         if (value instanceof Shared<?> shared) return shared;
@@ -475,7 +475,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte) return 16L;
         if (value instanceof Character || value instanceof Short) return 16L;
         if (value instanceof Integer || value instanceof Float) return 16L;
-        if (value instanceof Long || value instanceof Double || value instanceof UUID || value instanceof ActorId) return 32L;
+        if (value instanceof Long || value instanceof Double || value instanceof UUID || value instanceof ActorId || value instanceof MonitorRef) return 32L;
         if (value instanceof BigInteger integer) return safeAdd(32L, integer.bitLength() / 8L + 1L);
         if (value instanceof BigDecimal decimal) return safeAdd(48L, estimatedFrozenBytes(decimal.unscaledValue(), depth + 1));
         if (value instanceof Enum<?>) return 24L;
