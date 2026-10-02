@@ -30,6 +30,9 @@ import java.util.Set;
  * - moving an outer value from a repeating loop is rejected conservatively.
  */
 public final class OwnershipChecker {
+    private record ResolvedMethod(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.MethodDecl method) { }
+    private record ResolvedField(Ast.ClassDecl owner, Ast.TypeRef ownerType, Ast.FieldDecl field) { }
+    private record CallSignature(List<Ast.Param> parameters, Ast.TypeRef result) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
@@ -253,10 +256,11 @@ public final class OwnershipChecker {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
 
+        ValueKind storedKind = binding.declaredType() == null ? value.kind : kindOfType(storedType);
         VarState state = new VarState(
                 storedType,
                 binding.kind() == Ast.BindingKind.LET,
-                value.kind,
+                storedKind,
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         scope.define(binding.name(), state);
@@ -324,15 +328,19 @@ public final class OwnershipChecker {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
                     requireUsable(receiverState, receiverName.name(), false);
-                    Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
+                    Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+                    Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
                     if (klass != null) {
-                        Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
-                        if (field != null) {
-                            if (!isCopyType(field.type())) {
-                                throw error("cannot extract move-only field '" + klass.name() + "." + member.member()
+                        ResolvedField target = findFieldTarget(klass, concreteReceiver, member.member(), new LinkedHashSet<>());
+                        if (target != null) {
+                            Ast.TypeRef fieldType = substituteType(
+                                    target.field().type(),
+                                    genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
+                            if (!isCopyType(fieldType)) {
+                                throw error("cannot extract move-only field '" + target.owner().name() + "." + member.member()
                                         + "' from protected mutex state; operate on it inside with_lock or replace the field as a whole");
                             }
-                            return new ValueInfo(field.type(), ValueKind.COPY, null);
+                            return new ValueInfo(fieldType, ValueKind.COPY, null);
                         }
                         if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())) {
                             throw error("cannot extract a bound method from protected mutex state; invoke it directly while the guard is live");
@@ -410,8 +418,11 @@ public final class OwnershipChecker {
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
-                checkArguments(call.arguments(), fn.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null);
+                CallSignature signature = specializeCall(
+                        fn.genericParameters(), fn.genericParameters(),
+                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
+                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
             }
         }
 
@@ -474,21 +485,31 @@ public final class OwnershipChecker {
                 }
             }
             checkExpr(member.receiver(), scope, false);
-            Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
-            Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
-            if (method != null) {
+            Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+            Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
+            ResolvedMethod target = klass == null ? null
+                    : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
+            if (target != null) {
+                Ast.MethodDecl method = target.method();
                 boolean protectedReceiver = false;
                 if (member.receiver() instanceof Ast.NameExpr receiverName) {
                     VarState receiverState = scope.lookup(receiverName.name());
                     protectedReceiver = receiverState != null && isScopedMutexReceiver(receiverState);
                 }
-                checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
-                if (protectedReceiver && !isCopyType(method.returnType())
-                        && !method.returnType().name().equals("void")) {
-                    throw error("method '" + klass.name() + "." + method.name()
+                Map<String, Ast.TypeRef> ownerBindings = genericBindings(
+                        target.owner().genericParameters(), target.ownerType().arguments());
+                List<String> allGenerics = new ArrayList<>(target.owner().genericParameters());
+                allGenerics.addAll(method.genericParameters());
+                CallSignature signature = specializeCall(
+                        allGenerics, method.genericParameters(),
+                        method.parameters(), method.returnType(), call, scope, ownerBindings);
+                checkArguments(call.arguments(), signature.parameters(), scope, "method " + method.name());
+                if (protectedReceiver && !isCopyType(signature.result())
+                        && !signature.result().name().equals("void")) {
+                    throw error("method '" + target.owner().name() + "." + method.name()
                             + "' cannot return move-only state through a mutex guard/critical-section borrow");
                 }
-                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
             }
         }
 
@@ -746,7 +767,7 @@ public final class OwnershipChecker {
         }
     }
 
-    private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
+    private Ast.TypeRef receiverType(Ast.Expr receiver, Scope scope) {
         Ast.TypeRef type = null;
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
@@ -755,7 +776,155 @@ public final class OwnershipChecker {
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         if (isMutexGuardType(type)) type = type.arguments().getFirst();
-        return findClass(type.name());
+        return type;
+    }
+
+    private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
+        Ast.TypeRef type = receiverType(receiver, scope);
+        return type == null ? null : findClass(type.name());
+    }
+
+    private Map<String, Ast.TypeRef> genericBindings(List<String> names, List<Ast.TypeRef> arguments) {
+        Map<String, Ast.TypeRef> result = new HashMap<>();
+        if (names.size() != arguments.size()) return result;
+        for (int i = 0; i < names.size(); i++) result.put(names.get(i), arguments.get(i));
+        return result;
+    }
+
+    private Ast.TypeRef substituteType(Ast.TypeRef type, Map<String, Ast.TypeRef> bindings) {
+        if (type == null) return null;
+        if (type.isBorrow()) {
+            return Ast.TypeRef.borrowed(substituteType(type.borrowedTarget(), bindings), type.mutableBorrow());
+        }
+        Ast.TypeRef replacement = bindings.get(type.name());
+        if (replacement != null && type.arguments().isEmpty() && !type.inferArguments()) return replacement;
+        return new Ast.TypeRef(
+                type.name(),
+                type.arguments().stream().map(arg -> substituteType(arg, bindings)).toList(),
+                type.inferArguments());
+    }
+
+    private Ast.TypeRef concreteParentType(Ast.TypeRef parentRef, Ast.ClassDecl child, Ast.TypeRef childType) {
+        return substituteType(parentRef, genericBindings(child.genericParameters(), childType.arguments()));
+    }
+
+    private ResolvedField findFieldTarget(
+            Ast.ClassDecl klass, Ast.TypeRef concreteType, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.name().equals(name)) {
+                seen.remove(klass);
+                return new ResolvedField(klass, concreteType, field);
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = findClass(parentRef.name());
+            if (parent == null) continue;
+            Ast.TypeRef parentType = concreteParentType(parentRef, klass, concreteType);
+            ResolvedField found = findFieldTarget(parent, parentType, name, seen);
+            if (found != null) {
+                seen.remove(klass);
+                return found;
+            }
+        }
+        seen.remove(klass);
+        return null;
+    }
+
+    private ResolvedMethod findMethodTarget(
+            Ast.ClassDecl klass, Ast.TypeRef concreteType, String name, int arity, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+                seen.remove(klass);
+                return new ResolvedMethod(klass, concreteType, method);
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = findClass(parentRef.name());
+            if (parent == null) continue;
+            Ast.TypeRef parentType = concreteParentType(parentRef, klass, concreteType);
+            ResolvedMethod found = findMethodTarget(parent, parentType, name, arity, seen);
+            if (found != null) {
+                seen.remove(klass);
+                return found;
+            }
+        }
+        seen.remove(klass);
+        return null;
+    }
+
+    private Ast.TypeRef syntacticType(Ast.Expr expr, Scope scope) {
+        if (expr instanceof Ast.LiteralExpr literal) return inferLiteralType(literal.value());
+        if (expr instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            return state == null ? Ast.TypeRef.inferred() : state.type;
+        }
+        if (expr instanceof Ast.NewExpr created) return created.type();
+        if (expr instanceof Ast.UnaryExpr unary) {
+            Ast.TypeRef operand = syntacticType(unary.operand(), scope);
+            if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
+                return Ast.TypeRef.borrowed(operand, unary.operator().equals("&mut"));
+            }
+            return operand;
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            return Ast.TypeRef.tupleType(tuple.elements().stream().map(item -> syntacticType(item, scope)).toList());
+        }
+        if (expr instanceof Ast.ListExpr list && !list.elements().isEmpty()) {
+            return new Ast.TypeRef("Array", List.of(syntacticType(list.elements().getFirst(), scope)), false);
+        }
+        return Ast.TypeRef.inferred();
+    }
+
+    private void inferGenericBindings(
+            Ast.TypeRef pattern,
+            Ast.TypeRef actual,
+            Set<String> genericNames,
+            Map<String, Ast.TypeRef> bindings,
+            Set<String> fixed) {
+        if (pattern == null || actual == null || actual.name().equals("$infer$")) return;
+        if (genericNames.contains(pattern.name()) && pattern.arguments().isEmpty() && !pattern.inferArguments()) {
+            if (!fixed.contains(pattern.name())) bindings.putIfAbsent(pattern.name(), actual);
+            return;
+        }
+        if (pattern.isBorrow() && actual.isBorrow()) {
+            inferGenericBindings(pattern.borrowedTarget(), actual.borrowedTarget(), genericNames, bindings, fixed);
+            return;
+        }
+        if (pattern.name().equals(actual.name()) && pattern.arguments().size() == actual.arguments().size()) {
+            for (int i = 0; i < pattern.arguments().size(); i++) {
+                inferGenericBindings(pattern.arguments().get(i), actual.arguments().get(i), genericNames, bindings, fixed);
+            }
+        }
+    }
+
+    private CallSignature specializeCall(
+            List<String> allGenericNames,
+            List<String> explicitGenericNames,
+            List<Ast.Param> parameters,
+            Ast.TypeRef result,
+            Ast.CallExpr call,
+            Scope scope,
+            Map<String, Ast.TypeRef> initialBindings) {
+        Map<String, Ast.TypeRef> bindings = new HashMap<>(initialBindings);
+        Set<String> fixed = new HashSet<>(initialBindings.keySet());
+        if (!call.typeArguments().isEmpty() && call.typeArguments().size() == explicitGenericNames.size()) {
+            for (int i = 0; i < explicitGenericNames.size(); i++) {
+                bindings.put(explicitGenericNames.get(i), call.typeArguments().get(i));
+                fixed.add(explicitGenericNames.get(i));
+            }
+        }
+        for (int i = 0; i < Math.min(parameters.size(), call.arguments().size()); i++) {
+            inferGenericBindings(parameters.get(i).type(), syntacticType(call.arguments().get(i), scope),
+                    Set.copyOf(allGenericNames), bindings, fixed);
+        }
+        List<Ast.Param> specialized = parameters.stream()
+                .map(param -> new Ast.Param(
+                        substituteType(param.type(), bindings),
+                        param.name(), param.structural(), param.mutable()))
+                .toList();
+        return new CallSignature(specialized, substituteType(result, bindings));
     }
 
     private Ast.FieldDecl findField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
