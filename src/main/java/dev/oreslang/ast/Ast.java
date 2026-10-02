@@ -274,10 +274,41 @@ public final class Ast {
     }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
-    public record DestructureBinding(BindingKind kind, String name) { }
 
-    public record DestructureStmt(List<DestructureBinding> bindings, Expr initializer) implements Stmt {
+    public record DestructureBinding(BindingKind kind, boolean mutable, String name) {
+        public DestructureBinding {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("destructure binding name cannot be blank");
+            }
+            if (kind == BindingKind.CONST && mutable) {
+                throw new IllegalArgumentException("destructure binding cannot be both const and mut");
+            }
+        }
+
+        public DestructureBinding(BindingKind kind, String name) {
+            this(kind, kind == BindingKind.LET, name);
+        }
+
+        public static DestructureBinding discard() {
+            return new DestructureBinding(BindingKind.VAL, false, "_");
+        }
+
+        public boolean isDiscard() {
+            return "_".equals(name);
+        }
+    }
+
+    public enum DestructureKind { SEQUENCE, OBJECT }
+
+    public record DestructureStmt(
+            DestructureKind kind,
+            List<DestructureBinding> bindings,
+            Expr initializer) implements Stmt {
         public DestructureStmt { bindings = List.copyOf(bindings); }
+
+        public DestructureStmt(List<DestructureBinding> bindings, Expr initializer) {
+            this(DestructureKind.SEQUENCE, bindings, initializer);
+        }
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
