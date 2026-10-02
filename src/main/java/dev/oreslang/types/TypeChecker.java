@@ -45,6 +45,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private boolean awaitAllowed;
+    private boolean actorRuntimeAllowed;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -188,11 +189,14 @@ public final class TypeChecker {
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
         boolean previousAwaitAllowed = awaitAllowed;
+        boolean previousActorRuntimeAllowed = actorRuntimeAllowed;
         awaitAllowed = fn.async() || fn.actorKind() != Ast.ActorKind.NONE;
+        actorRuntimeAllowed = fn.actorKind() != Ast.ActorKind.NONE;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
             awaitAllowed = previousAwaitAllowed;
+            actorRuntimeAllowed = previousActorRuntimeAllowed;
         }
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
@@ -274,11 +278,14 @@ public final class TypeChecker {
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
             boolean previousAwaitAllowed = awaitAllowed;
+            boolean previousActorRuntimeAllowed = actorRuntimeAllowed;
             awaitAllowed = method.async() || klass.actorKind() != Ast.ActorKind.NONE;
+            actorRuntimeAllowed = klass.actorKind() != Ast.ActorKind.NONE;
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 awaitAllowed = previousAwaitAllowed;
+                actorRuntimeAllowed = previousActorRuntimeAllowed;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -613,6 +620,9 @@ public final class TypeChecker {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
+                if (!actorRuntimeAllowed) {
+                    throw new IllegalArgumentException("actor runtime APIs are available only inside actor fnc/method bodies");
+                }
                 if (member.member().equals("gc")) return new Function(List.of(), Primitive.INT);
                 throw new IllegalArgumentException("unknown actor runtime member '" + member.member() + "'");
             }
