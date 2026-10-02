@@ -142,11 +142,17 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) {
-            checkExpr(expression.expression(), scope, false);
+            ValueInfo value = checkExpr(expression.expression(), scope, false);
+            if (containsMutexGuardType(value.type)) {
+                throw error("guard-bearing values cannot be discarded; bind the result with val and release/await it");
+            }
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
-            checkExpr(defer.expression(), scope, false);
+            ValueInfo value = checkExpr(defer.expression(), scope, false);
+            if (containsMutexGuardType(value.type)) {
+                throw error("defer cannot produce a guard-bearing value");
+            }
             return;
         }
         if (stmt instanceof Ast.IfStmt conditional) {
@@ -233,8 +239,13 @@ public final class OwnershipChecker {
             return;
         }
 
+        Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
+        if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
+            throw error("guard-bearing values are linear and cannot use let; bind them once with val");
+        }
+
         VarState state = new VarState(
-                binding.declaredType() == null ? value.type : binding.declaredType(),
+                storedType,
                 binding.kind() == Ast.BindingKind.LET,
                 value.kind,
                 Origin.LOCAL);
@@ -266,7 +277,11 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
-            return checkExpr(assignment.value(), scope, true);
+            ValueInfo assigned = checkExpr(assignment.value(), scope, true);
+            if (containsMutexGuardType(assigned.type)) {
+                throw error("guard-bearing values cannot be assigned or overwritten; bind them once with val");
+            }
+            return assigned;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             checkExpr(binary.left(), scope, false);
@@ -350,6 +365,9 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
+            if (containsMutexGuardType(owned.type)) {
+                throw error(factory.name() + ".new cannot hide a guard-bearing value");
+            }
             Ast.TypeRef mutexType = new Ast.TypeRef(factory.name(), List.of(owned.type), false);
             return new ValueInfo(mutexType, factory.name().equals("SharedMutex") ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
         }
@@ -420,7 +438,12 @@ public final class OwnershipChecker {
         }
 
         checkExpr(call.callee(), scope, false);
-        for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
+        for (Ast.Expr arg : call.arguments()) {
+            ValueInfo argument = checkExpr(arg, scope, true);
+            if (containsMutexGuardType(argument.type)) {
+                throw error("guard-bearing values cannot cross an arbitrary call boundary");
+            }
+        }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
@@ -456,7 +479,10 @@ public final class OwnershipChecker {
                 }
                 throw error(callable + " argument " + (i + 1) + " must be an explicit borrow");
             }
-            checkExpr(arg, scope, true);
+            ValueInfo argument = checkExpr(arg, scope, true);
+            if (containsMutexGuardType(argument.type)) {
+                throw error(callable + " argument " + (i + 1) + " cannot consume a guard-bearing value");
+            }
         }
     }
 
