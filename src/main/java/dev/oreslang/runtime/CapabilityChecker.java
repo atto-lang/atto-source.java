@@ -2,31 +2,76 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Language-level capability admission pass. This executes before guest
  * statements and complements Graal/OS isolation rather than replacing it.
+ *
+ * Restricted capabilities are checked transitively through type aliases and
+ * stored class state so a private actor cannot launder shared-memory authority
+ * behind an otherwise ordinary-looking type.
  */
 public final class CapabilityChecker {
-    private CapabilityChecker() { }
+    private final Map<String, Ast.TypeAliasDecl> aliases = new HashMap<>();
+    private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Set<String> ambiguousAliases = new HashSet<>();
+    private final Set<String> ambiguousClasses = new HashSet<>();
+
+    private CapabilityChecker(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    index(aliases, ambiguousAliases, module.name(), alias.name(), alias);
+                } else if (declaration instanceof Ast.ClassDecl klass) {
+                    index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                }
+            }
+        }
+    }
 
     public static void check(Ast.Program program, IsolatePolicy policy) {
+        new CapabilityChecker(program).checkProgram(program, policy);
+    }
+
+    private static <T> void index(
+            Map<String, T> values,
+            Set<String> ambiguous,
+            String module,
+            String name,
+            T value) {
+        values.put(module + "." + name, value);
+        T previous = values.putIfAbsent(name, value);
+        if (previous != null && previous != value) {
+            values.remove(name);
+            ambiguous.add(name);
+        }
+    }
+
+    private Ast.TypeAliasDecl findAlias(String name) {
+        return ambiguousAliases.contains(name) ? null : aliases.get(name);
+    }
+
+    private Ast.ClassDecl findClass(String name) {
+        return ambiguousClasses.contains(name) ? null : classes.get(name);
+    }
+
+    private void checkProgram(Ast.Program program, IsolatePolicy policy) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
-                    IsolatePolicy actorPolicy = fn.actorKind() == Ast.ActorKind.PRIVATE
-                            ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
-                            : policy;
+                    IsolatePolicy actorPolicy = actorPolicy(fn.actorKind(), policy);
                     if (fn.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
                     }
                     checkCallableTypes(fn.parameters(), fn.returnType(), actorPolicy);
                     checkStatements(fn.body(), actorPolicy);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
-                    IsolatePolicy actorPolicy = klass.actorKind() == Ast.ActorKind.PRIVATE
-                            ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
-                            : policy;
+                    IsolatePolicy actorPolicy = actorPolicy(klass.actorKind(), policy);
                     if (klass.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor " + klass.name());
                     }
@@ -60,7 +105,14 @@ public final class CapabilityChecker {
         }
     }
 
-    private static void checkCallableTypes(
+    private static IsolatePolicy actorPolicy(Ast.ActorKind kind, IsolatePolicy parent) {
+        if (kind != Ast.ActorKind.PRIVATE) return parent;
+        return parent.withoutCapabilities(
+                IsolatePolicy.Capability.SHARED_MEMORY,
+                IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+    }
+
+    private void checkCallableTypes(
             List<Ast.Param> parameters,
             Ast.TypeRef returnType,
             IsolatePolicy policy) {
@@ -68,15 +120,44 @@ public final class CapabilityChecker {
         checkType(returnType, policy);
     }
 
-    private static void checkType(Ast.TypeRef type, IsolatePolicy policy) {
+    private void checkType(Ast.TypeRef type, IsolatePolicy policy) {
+        checkType(type, policy, new HashSet<>());
+    }
+
+    private void checkType(Ast.TypeRef type, IsolatePolicy policy, Set<Object> visiting) {
         if (type == null) return;
+
         if (type.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex<T>");
         }
-        for (Ast.TypeRef argument : type.arguments()) checkType(argument, policy);
+        for (Ast.TypeRef argument : type.arguments()) checkType(argument, policy, visiting);
+        if (type.isBorrow()) checkType(type.borrowedTarget(), policy, visiting);
+
+        Ast.TypeAliasDecl alias = findAlias(type.name());
+        if (alias != null && visiting.add(alias)) {
+            try {
+                checkType(alias.target(), policy, visiting);
+            } finally {
+                visiting.remove(alias);
+            }
+        }
+
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass != null && visiting.add(klass)) {
+            try {
+                for (Ast.TypeRef parent : klass.parents()) checkType(parent, policy, visiting);
+                for (Ast.TypeRef iface : klass.interfaces()) checkType(iface, policy, visiting);
+                for (Ast.FieldDecl field : klass.fields()) {
+                    checkType(field.type(), policy, visiting);
+                    if (field.initializer() != null) checkExpr(field.initializer(), policy);
+                }
+            } finally {
+                visiting.remove(klass);
+            }
+        }
     }
 
-    private static void checkStatements(List<Ast.Stmt> statements, IsolatePolicy policy) {
+    private void checkStatements(List<Ast.Stmt> statements, IsolatePolicy policy) {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt s) {
                 checkType(s.declaredType(), policy);
@@ -108,7 +189,7 @@ public final class CapabilityChecker {
         }
     }
 
-    private static void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
+    private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
             require(policy, IsolatePolicy.Capability.STDOUT, "print");
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("SharedMutex")) {
@@ -136,7 +217,10 @@ public final class CapabilityChecker {
             checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
         else if (expr instanceof Ast.UnaryExpr e) checkExpr(e.operand(), policy);
-        else if (expr instanceof Ast.AssignExpr e) checkExpr(e.value(), policy);
+        else if (expr instanceof Ast.AssignExpr e) {
+            checkExpr(e.target(), policy);
+            checkExpr(e.value(), policy);
+        }
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
         else if (expr instanceof Ast.NewExpr e) {
@@ -163,6 +247,8 @@ public final class CapabilityChecker {
     }
 
     private static void require(IsolatePolicy policy, IsolatePolicy.Capability capability, String api) {
-        if (!policy.allows(capability)) throw new SecurityException("Oreslang isolate denies capability " + capability + " required by " + api);
+        if (!policy.allows(capability)) {
+            throw new SecurityException("Oreslang isolate denies capability " + capability + " required by " + api);
+        }
     }
 }
