@@ -83,6 +83,11 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.runtime();
     }
 
+    public static ActorKind currentActorKind() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.kind();
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
