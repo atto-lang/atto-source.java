@@ -116,24 +116,22 @@ Wildcard imports always require a namespace alias. This avoids silently injectin
 
 ## Module interfaces / OCaml-style module signatures
 
-Interfaces can describe the structural public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
+Interfaces are storage-free function contracts and can also describe the callable public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
 
 ```ores
 define module contracts as
-  define interface MathApi
+  define interface MathApi as
     fnc add(int a, int b) => int;
-    String name;
   end
 end
 
 @AdheresTo(contracts.MathApi)
 define module math as
   pub fnc add(int a, int b) => int { return a + b; }
-  pub val String name = "math";
 end
 ```
 
-Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(A, B)` may name more than one interface.
+Only exported (`pub`) callable members satisfy an interface contract. `@AdheresTo(A, B)` may name more than one interface. Data layout is intentionally not part of an interface; reusable stored state belongs in a trait or class.
 
 ## Functions and returns
 
@@ -198,12 +196,14 @@ find(self Box)(int key) => self {
 
 The receiver variable name is always `self`.
 
-A class may list multiple parent classes and multiple interfaces:
+A class may list multiple parent classes, satisfy multiple interfaces with `is`, and compose reusable state/behavior with `with`:
 
 ```ores
-define class Combined extends Cacheable, Serializable implements HasId, Named as
+define class Combined extends Cacheable, Serializable is HasId, Named with Metrics, RetryState as
 end
 ```
+
+`implements` and `impl` remain accepted as migration aliases for `is`; new source should use `is`.
 
 Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible types.
 
@@ -244,21 +244,70 @@ val pair = (1, "one");
 [const number, let label] = pair;
 ```
 
-## Structural typing and interfaces
+## Interfaces and stateful traits
 
-Interfaces are structural contracts. Explicit `implements` asks the compiler to prove conformance and documents intent; structural compatibility does not require nominal ancestry in every context.
+Interfaces are storage-free structural contracts. They contain function signatures only: no instance fields, no backing storage, and no object identity. A class uses `is` to ask the compiler to prove conformance.
 
 ```ores
-define interface Named
-  String name;
+define interface Named as
+  fnc name() => String;
 end
 
-define class User implements Named as
-  pub val String name;
+define class User is Named as
+  private val String first = "Ada";
+  private val String last = "Lovelace";
+
+  pub name() => String {
+    return self.first + " " + self.last;
+  }
 end
 ```
 
-Class interface satisfaction uses public members, including inherited public members.
+Stateful reuse is a separate concept: `trait`. A trait may contain initialized fields, concrete methods, and abstract method requirements. It cannot be instantiated and contributes no separate runtime object identity. Composition is explicit with `with`:
+
+```ores
+define interface CounterApi as
+  fnc bump() => int;
+end
+
+define trait Counter is CounterApi as
+  private let int count = 0;
+
+  pub bump() => int {
+    self.count = self.count + 1;
+    return self.count;
+  }
+end
+
+define class Worker with Counter as
+end
+```
+
+The compiler flattens trait storage and behavior into the host class before ownership/capability/runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes cannot reach it directly. A trait method may depend on another host method only when that dependency is declared as an abstract trait method requirement.
+
+Trait composition is intentionally strict. Two traits contributing the same field are an error. Two concrete trait methods with the same name and arity are an error unless the class declares a compatible method that explicitly resolves the conflict. There is no declaration-order or “last wins” rule.
+
+A trait can require behavior and then use that requirement:
+
+```ores
+define trait Loads as
+  pub abstract load() => int;
+
+  pub read() => int {
+    return self.load();
+  }
+end
+
+define class Store with Loads as
+  pub load() => int {
+    return 42;
+  }
+end
+```
+
+For v0, trait composition is module-local. This preserves lexical module lookup while the compiler uses flattening as the implementation strategy. Cross-module trait imports can be added later with an explicit lexical-environment contract.
+
+Class interface satisfaction uses public methods, including inherited and composed public methods.
 
 ## Option and null
 
