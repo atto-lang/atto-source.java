@@ -60,7 +60,9 @@ public final class GpuKernelCompiler {
     public record GpuLaunchPlan(
             String globalWorkItemsExpression,
             String errorSlotsExpression,
-            String resultSlotsExpression) { }
+            String resultSlotsExpression,
+            boolean clampNegativeGlobalWorkItemsToZero,
+            boolean enforceNoAliasBuffers) { }
 
     public record GpuKernel(
             String sourceName,
@@ -510,7 +512,9 @@ public final class GpuKernelCompiler {
             GpuLaunchPlan dispatcherPlan = dispatcher == null ? null : new GpuLaunchPlan(
                     Integer.toString(targets.size()),
                     Integer.toString(targets.size()),
-                    "0");
+                    "0",
+                    false,
+                    false);
             batches.add(new GpuBatch(
                     entry.getKey(),
                     BatchExecutionPolicy.CONCURRENT_KERNELS,
@@ -576,10 +580,17 @@ public final class GpuKernelCompiler {
         List<GpuParameter> parameters = target.parameters.stream()
                 .map(param -> metadataParameter(param, target.module)).toList();
         String globalWorkItems = launchExtent == null ? "1" : launchExtent;
+        boolean clampNegativeExtent = parallelLoop != null
+                && launchExtentNeedsClamp(target, parallelLoop.bound);
+        boolean enforceNoAlias = target.parameters.stream()
+                .map(param -> resolveAlias(param.type(), target.module))
+                .anyMatch(this::isBuffer);
         GpuLaunchPlan launchPlan = new GpuLaunchPlan(
                 globalWorkItems,
                 globalWorkItems,
-                isVoid(resultType) ? "0" : "1");
+                isVoid(resultType) ? "0" : "1",
+                clampNegativeExtent,
+                enforceNoAlias);
         GpuKernel meta = new GpuKernel(
                 target.sourceName,
                 target.helperSymbol,
@@ -648,6 +659,16 @@ public final class GpuKernelCompiler {
             return Long.toString(n);
         }
         return null;
+    }
+
+    private boolean launchExtentNeedsClamp(Target target, Ast.Expr bound) {
+        if (!(bound instanceof Ast.NameExpr name)) return false;
+        for (Ast.Param param : target.parameters) {
+            if (!param.name().equals(name.name())) continue;
+            Ast.TypeRef type = resolveAlias(param.type(), target.module);
+            return isSignedInteger(type);
+        }
+        return false;
     }
 
     private boolean parallelBoundSafe(Ast.Expr expr, Set<String> mutableBuffers) {
@@ -1311,7 +1332,9 @@ public final class GpuKernelCompiler {
                     .append(kernel.launchExtentExpression() == null ? "" : kernel.launchExtentExpression()).append('|')
                     .append(kernel.launchPlan().globalWorkItemsExpression()).append('|')
                     .append(kernel.launchPlan().errorSlotsExpression()).append('|')
-                    .append(kernel.launchPlan().resultSlotsExpression())
+                    .append(kernel.launchPlan().resultSlotsExpression()).append('|')
+                    .append(kernel.launchPlan().clampNegativeGlobalWorkItemsToZero()).append('|')
+                    .append(kernel.launchPlan().enforceNoAliasBuffers())
                     .append('\n');
             for (GpuParameter param : kernel.parameters()) {
                 out.append(" param=").append(param.name()).append('|')
@@ -1337,7 +1360,9 @@ public final class GpuKernelCompiler {
             if (batch.fallbackDispatcherLaunchPlan() != null) {
                 out.append(batch.fallbackDispatcherLaunchPlan().globalWorkItemsExpression()).append('|')
                         .append(batch.fallbackDispatcherLaunchPlan().errorSlotsExpression()).append('|')
-                        .append(batch.fallbackDispatcherLaunchPlan().resultSlotsExpression());
+                        .append(batch.fallbackDispatcherLaunchPlan().resultSlotsExpression()).append('|')
+                        .append(batch.fallbackDispatcherLaunchPlan().clampNegativeGlobalWorkItemsToZero()).append('|')
+                        .append(batch.fallbackDispatcherLaunchPlan().enforceNoAliasBuffers());
             }
             out.append('\n');
             for (GpuHiddenParameter hidden : batch.hiddenParameters()) {
