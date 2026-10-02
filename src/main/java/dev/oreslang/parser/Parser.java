@@ -65,6 +65,11 @@ public final class Parser {
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
+                if (match(STRUCT)) {
+                    if (afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                    rootDeclarations.add(parseStruct(modifiers.visibility));
+                    continue;
+                }
                 if (match(TRAIT)) {
                     rootDeclarations.add(parseTrait());
                     continue;
@@ -73,7 +78,7 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, trait, or interface after 'define'");
+                throw error(previous(), "expected module, class, struct, trait, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -151,12 +156,16 @@ public final class Parser {
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
+            if (match(STRUCT)) {
+                if (afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                return parseStruct(modifiers.visibility);
+            }
             if (match(TRAIT)) {
                 if (afterDefineAbstract) throw error(previous(), "traits express requirements with abstract members, not 'abstract trait'");
                 return parseTrait();
             }
             if (match(INTERFACE)) return parseInterface(modifiers.visibility);
-            throw error(previous(), "expected class, trait, or interface after 'define'");
+            throw error(previous(), "expected class, struct, trait, or interface after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -167,6 +176,7 @@ public final class Parser {
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        if (match(STRUCT)) return parseStruct(modifiers.visibility);
         if (match(TRAIT)) return parseTrait();
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
@@ -231,6 +241,26 @@ public final class Parser {
         }
         consume(END, "expected 'end' to close class " + name);
         return new Ast.ClassDecl(name, isAbstract, generics, parents, interfaces, traits, fields, methods);
+    }
+
+    private Ast.StructDecl parseStruct(Ast.Visibility visibility) {
+        String name = consume(IDENT, "expected struct name").lexeme();
+        List<String> generics = parseGenericParameters();
+        boolean braceStyle = match(LBRACE);
+        if (!braceStyle) consume(AS, "struct declarations require 'as' before the body");
+        Token.Type terminator = braceStyle ? RBRACE : END;
+
+        List<Ast.StructField> fields = new ArrayList<>();
+        while (!check(terminator) && !check(EOF)) {
+            String fieldName = consume(IDENT, "expected struct field name").lexeme();
+            consume(COLON, "expected ':' after struct field name");
+            Ast.TypeRef fieldType = parseTypeRef();
+            fields.add(new Ast.StructField(fieldName, fieldType));
+            consumeStructFieldTerminator(terminator);
+        }
+
+        consume(terminator, braceStyle ? "expected '}' to close struct " + name : "expected 'end' to close struct " + name);
+        return new Ast.StructDecl(name, visibility, generics, fields);
     }
 
     private Ast.TraitDecl parseTrait() {
@@ -593,6 +623,13 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        if (match(STRUCT)) return parseStruct(Ast.Visibility.PRIVATE);
+        if (match(INTERFACE)) return parseInterface(Ast.Visibility.PRIVATE);
+        if (match(DEFINE)) {
+            if (match(STRUCT)) return parseStruct(Ast.Visibility.PRIVATE);
+            if (match(INTERFACE)) return parseInterface(Ast.Visibility.PRIVATE);
+            throw error(previous(), "callable-local 'define' only supports struct or interface type declarations");
+        }
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
         if (match(RETURN)) {
@@ -956,6 +993,14 @@ public final class Parser {
         List<Ast.Expr> args = new ArrayList<>();
         do args.add(parseExpression()); while (match(COMMA));
         return args;
+    }
+
+    private void consumeStructFieldTerminator(Token.Type structuralTerminator) {
+        if (match(SEMICOLON, COMMA) || check(structuralTerminator)) return;
+        // Newlines are intentionally not tokens. A following `name: Type`
+        // pair is therefore an unambiguous structural boundary.
+        if (check(IDENT) && checkNext(COLON)) return;
+        throw error(peek(), "struct fields must be separated by ';', ',', or an unambiguous next field");
     }
 
     private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
