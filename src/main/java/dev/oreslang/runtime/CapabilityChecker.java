@@ -68,7 +68,10 @@ public final class CapabilityChecker {
                 if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
                 if (path.equals("actor.spawn") || path.equals("actor.singleton")) require(policy, IsolatePolicy.Capability.ACTOR_SPAWN, path);
                 if (path.equals("actor.send") || path.equals("actor.self")) require(policy, IsolatePolicy.Capability.ACTOR_SEND, path);
-                if (path.equals("actor.stop") || path.equals("actor.join") || path.equals("actor.status")) require(policy, IsolatePolicy.Capability.ACTOR_CONTROL, path);
+                if (path.equals("actor.stop") || path.equals("actor.join") || path.equals("actor.status")
+                        || path.equals("actor.monitor") || path.equals("actor.demonitor")) {
+                    require(policy, IsolatePolicy.Capability.ACTOR_CONTROL, path);
+                }
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
