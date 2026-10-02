@@ -509,8 +509,11 @@ define module worker
 end
 ```
 
-A file/module binding, type, class, interface, or unqualified import may not occupy
-`main` or `init`, because doing so would shadow a lifecycle entrypoint name.
+A file/module binding, type, class, or interface may not occupy `main` or `init`,
+because doing so would shadow a lifecycle entrypoint name. A named function import such
+as `import fnc {main} from "./app.ores";` remains legal because it references an existing
+lifecycle callable rather than declaring a new one. Wildcard aliases and non-function
+imports may not bind `main` or `init`.
 
 Neither lifecycle callable may be an actor:
 
