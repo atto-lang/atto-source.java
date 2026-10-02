@@ -11,6 +11,9 @@
 7. Hot reload never requires loading executable native libraries.
 8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
 9. `self` cannot be rebound.
+10. A `singleton module` has exactly one actor-owned state cell per OS process, not per Graal context/isolate.
+11. Importers/callers receive only a proxy/handle; mutable singleton state never leaves the singleton actor.
+12. Singleton call arguments and results pass the normal sendability/freezing boundary, and singleton calls are request/reply operations.
 
 ## Deployment matrix
 
@@ -42,3 +45,12 @@ The strict production direction is:
 ## Receiver implementation
 
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
+
+
+## Process-wide singleton modules
+
+`define singleton module name` is implemented by the process singleton registry. The registry is static process-lifetime runtime state, independent of any one `OresContext`. The first access creates one virtual-thread actor with a serial mailbox and initializes the module bindings on that actor. Later contexts and isolates resolve the same canonical module key to the same actor identity.
+
+Public functions are exposed through a typed module proxy. A call such as `await config.read()` enqueues a request to the singleton actor and waits for its reply. Calls made by singleton code to another function in the same singleton module are direct calls against the already-owned state environment, so self-calls do not enqueue to the same mailbox and cannot deadlock.
+
+Singleton fields are always actor-private. They may be `const`, `val`, or mutable `let`, but cannot be `pub`; callers must use exported functions. Borrows and function/closure values are rejected in public singleton signatures, and the runtime freezes arguments/results to prevent writable aliases from crossing the actor boundary.
