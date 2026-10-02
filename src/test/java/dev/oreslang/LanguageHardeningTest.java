@@ -243,4 +243,49 @@ final class LanguageHardeningTest {
                 end
                 """)));
     }
+    @Test
+    void structsAreNominalValueTypesAndCanSatisfyInterfaces() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                interface Named {
+                  String name;
+                }
+
+                struct User is Named {
+                  pub String name;
+                  int id = 7;
+                }
+
+                fnc make_user() => User {
+                  return User { name = "Ada" };
+                }
+
+                fnc anonymous_x() => int {
+                  return struct { x = 42 }.x;
+                }
+                """)));
+    }
+
+    @Test
+    void structsRejectNewClassInheritanceAndInvalidFields() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                struct Point { int x; int y; }
+                fnc bad() => Point { return new Point(); }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                struct Point { int x; int y; }
+                define class Bad extends Point
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                struct Point { int x; int y; }
+                fnc bad() => Point { return Point { x = 1, nope = 2 }; }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                struct Point { int x; int y; }
+                fnc bad() => Point { return Point { x = 1 }; }
+                """)));
+    }
 }
