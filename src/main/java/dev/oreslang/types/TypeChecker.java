@@ -379,13 +379,42 @@ public final class TypeChecker {
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
-            Ast.NameExpr name = (Ast.NameExpr) assignment.target();
-            Env.Binding binding = env.lookup(name.name());
-            if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
-            if (binding.kind() != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + binding.kind().name().toLowerCase() + " binding '" + name.name() + "'");
             Type value = typeOf(assignment.value(), env, generics, self);
-            requireAssignable(value, binding.type(), "assignment to " + name.name());
-            return binding.type();
+            if (assignment.target() instanceof Ast.NameExpr name) {
+                Env.Binding binding = env.lookup(name.name());
+                if (binding == null) throw new IllegalArgumentException("cannot assign unknown name '" + name.name() + "'");
+                if (binding.kind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException("cannot reassign immutable binding '" + name.name() + "'; declare it with let or mark the parameter mut");
+                }
+                requireAssignable(value, binding.type(), "assignment to " + name.name());
+                return binding.type();
+            }
+            if (assignment.target() instanceof Ast.MemberExpr member) {
+                Type receiver = dereference(typeOf(member.receiver(), env, generics, self));
+                if (!(receiver instanceof Named named)) throw new IllegalArgumentException("member assignment requires a class receiver");
+                Ast.ClassDecl klass = findClass(named.name());
+                if (klass == null) throw new IllegalArgumentException("member assignment requires a known class receiver");
+                Ast.FieldDecl field = findFieldDecl(klass, member.member(), new LinkedHashSet<>());
+                if (field == null) throw new IllegalArgumentException("unknown field '" + member.member() + "' on " + named.name());
+                if (field.bindingKind() != Ast.BindingKind.LET) {
+                    throw new IllegalArgumentException("field '" + member.member() + "' is immutable; mutable fields must be declared with let");
+                }
+                if (!isMutablePlace(member.receiver(), env, generics, self)) {
+                    throw new IllegalArgumentException("cannot mutate field '" + member.member() + "' through an immutable owner/borrow");
+                }
+                Type expected = resolve(field.type(), Set.copyOf(klass.genericParameters()), receiver);
+                requireAssignable(value, expected, "assignment to field " + member.member());
+                return expected;
+            }
+            if (assignment.target() instanceof Ast.UnaryExpr deref && deref.operator().equals("*")) {
+                Type reference = typeOf(deref.operand(), env, generics, self);
+                if (!(reference instanceof Reference ref) || !ref.mutable()) {
+                    throw new IllegalArgumentException("assignment through dereference requires &mut");
+                }
+                requireAssignable(value, ref.target(), "assignment through &mut");
+                return ref.target();
+            }
+            throw new IllegalArgumentException("unsupported mutable assignment place");
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             requireAssignable(typeOf(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
@@ -395,6 +424,17 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
+            if (unary.operator().equals("&")) return new Reference(operand, false);
+            if (unary.operator().equals("&mut")) {
+                if (!isMutablePlace(unary.operand(), env, generics, self)) {
+                    throw new IllegalArgumentException("&mut requires a mutable place");
+                }
+                return new Reference(operand, true);
+            }
+            if (unary.operator().equals("*")) {
+                if (!(operand instanceof Reference ref)) throw new IllegalArgumentException("dereference requires a borrow reference");
+                return ref.target();
+            }
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
