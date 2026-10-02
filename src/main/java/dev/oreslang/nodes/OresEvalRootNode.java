@@ -6,6 +6,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresRuntimeException;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -1231,32 +1232,38 @@ public final class OresEvalRootNode extends RootNode {
                         try {
                             yield Math.addExact(x, y);
                         } catch (ArithmeticException overflow) {
-                            throw new ArithmeticException("Oreslang integer overflow for " + x + " + " + y);
+                            throw new OresRuntimeException(
+                                    "Oreslang integer overflow for " + x + " + " + y,
+                                    overflow);
                         }
                     }
                     case '-' -> {
                         try {
                             yield Math.subtractExact(x, y);
                         } catch (ArithmeticException overflow) {
-                            throw new ArithmeticException("Oreslang integer overflow for " + x + " - " + y);
+                            throw new OresRuntimeException(
+                                    "Oreslang integer overflow for " + x + " - " + y,
+                                    overflow);
                         }
                     }
                     case '*' -> {
                         try {
                             yield Math.multiplyExact(x, y);
                         } catch (ArithmeticException overflow) {
-                            throw new ArithmeticException("Oreslang integer overflow for " + x + " * " + y);
+                            throw new OresRuntimeException(
+                                    "Oreslang integer overflow for " + x + " * " + y,
+                                    overflow);
                         }
                     }
                     case '/' -> {
-                        if (y == 0L) throw new ArithmeticException("Oreslang integer division by zero");
+                        if (y == 0L) throw new OresRuntimeException("Oreslang integer division by zero");
                         if (x == Long.MIN_VALUE && y == -1L) {
-                            throw new ArithmeticException("Oreslang integer overflow for " + x + " / " + y);
+                            throw new OresRuntimeException("Oreslang integer overflow for " + x + " / " + y);
                         }
                         yield x / y;
                     }
                     case '%' -> {
-                        if (y == 0L) throw new ArithmeticException("Oreslang integer remainder by zero");
+                        if (y == 0L) throw new OresRuntimeException("Oreslang integer remainder by zero");
                         yield x % y;
                     }
                     default -> throw new IllegalArgumentException("bad numeric operator");
@@ -1273,8 +1280,9 @@ public final class OresEvalRootNode extends RootNode {
                 try {
                     return Math.negateExact(integer);
                 } catch (ArithmeticException overflow) {
-                    throw new ArithmeticException(
-                            "Oreslang integer overflow for unary - on " + integer);
+                    throw new OresRuntimeException(
+                            "Oreslang integer overflow for unary - on " + integer,
+                            overflow);
                 }
             }
             if (value instanceof Number number) return -number.doubleValue();
