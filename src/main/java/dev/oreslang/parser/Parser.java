@@ -445,6 +445,18 @@ public final class Parser {
     private Ast.TypeRef parseTypeRef() {
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
+        if (match(TYPEOF)) {
+            consume(FNC, "typeof function types use 'typeof fnc(...) -> ReturnType'");
+            return parseFunctionTypeSignature();
+        }
+
+        if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
+        if (match(LPAREN)) {
+            Ast.TypeRef grouped = parseTypeRef();
+            consume(RPAREN, "expected ')' after grouped type");
+            return grouped;
+        }
+
         String name;
         if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
@@ -461,6 +473,35 @@ public final class Parser {
             }
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private Ast.TypeRef parseFunctionTypeSignature() {
+        consume(LPAREN, "expected '(' in function type");
+        List<Ast.TypeRef> params = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do {
+                Ast.TypeRef paramType = parseTypeRef();
+                if (check(IDENT)) advance(); // optional documentation-only parameter name
+                params.add(paramType);
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after function type parameters");
+        consume(ARROW, "function types use the slim arrow '->'");
+        Ast.TypeRef result = parseTypeRef();
+        return Ast.TypeRef.functionType(params, result);
+    }
+
+    private boolean looksLikeFunctionType() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
     }
 
     private String parseQualifiedName() {
@@ -748,6 +789,7 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after arr literal");
             return new Ast.ListExpr(items);
         }
+        if (check(PIPE)) return parsePipeLambda();
         if (check(LPAREN) && looksLikeLambda()) return parseLambda();
         if (match(LPAREN)) {
             Ast.Expr first = parseExpression();
@@ -790,8 +832,29 @@ public final class Parser {
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        if (check(LBRACE)) return new Ast.LambdaExpr(params, null, parseBlock());
-        return new Ast.LambdaExpr(params, parseExpression(), null);
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private Ast.LambdaExpr parsePipeLambda() {
+        consume(PIPE, "expected '|'");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(PIPE)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    params.add(new Ast.Param(type, name));
+                }
+            } while (match(COMMA));
+        }
+        consume(PIPE, "expected closing '|' after lambda parameters");
+        consume(ARROW, "lambdas use the slim arrow '->'");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
     }
 
     private boolean looksLikeLambda() {
