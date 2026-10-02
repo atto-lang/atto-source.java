@@ -785,16 +785,18 @@ public final class TypeChecker {
             }
         }
 
-        Set<String> implemented = new HashSet<>();
-        for (Ast.TypeRef interfaceRef : klass.interfaces()) {
-            if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
-            Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
-            if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        Set<String> satisfied = new HashSet<>();
+        for (Ast.TypeRef contractRef : klass.interfaces()) {
+            if (!satisfied.add(contractRef.name())) {
+                throw new IllegalArgumentException("duplicate satisfied contract '" + contractRef.name()
+                        + "' on " + klass.name());
+            }
+            Record expected = contractShape(contractRef, classGenerics, self);
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
-                        + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+                        + "' does not satisfy contract '" + contractRef.name()
+                        + "': expected " + expected + " but got " + actual);
             }
         }
     }
@@ -1189,6 +1191,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException("indexing requires an array/list or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
+            Ast.TraitDecl trait = findTrait(created.type().name());
+            if (trait != null) {
+                throw new IllegalArgumentException("trait '" + trait.name()
+                        + "' is a capability/composition type and cannot be instantiated with new");
+            }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
             if (klass.isStruct()) throw new IllegalArgumentException("struct '" + klass.name() + "' is a value type; initialize it with " + klass.name() + " { ... }, not new");
@@ -1902,10 +1909,12 @@ public final class TypeChecker {
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
         if (!param.structural()) return resolve(param.type(), generics, self);
         Ast.InterfaceDecl iface = findInterface(param.type().name());
-        if (iface != null) return interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        if (iface != null) return instantiateInterfaceShape(param.type(), generics, self);
+        Ast.TraitDecl trait = findTrait(param.type().name());
+        if (trait != null) return instantiateTraitShape(param.type(), generics, self, new LinkedHashSet<>());
         Ast.ClassDecl klass = findClass(param.type().name());
         if (klass != null) return publicClassShape(klass, new LinkedHashSet<>());
-        throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
+        throw new IllegalArgumentException("@Structural requires a known class, struct, interface, or trait type, got '" + param.type().name() + "'");
     }
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
