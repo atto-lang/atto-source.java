@@ -323,10 +323,14 @@ public final class OresEvalRootNode extends RootNode {
                 Object index = eval(indexed.index(), env);
                 if (receiver instanceof BuiltinCollectionValue collection) {
                     if (collection.list != null) return collection.list.get(integerIndex(index));
+                    if (!collection.map.containsKey(index)) throw new IllegalArgumentException("map key not found: " + index);
                     return collection.map.get(index);
                 }
                 if (receiver instanceof List<?> list) return list.get(integerIndex(index));
-                if (receiver instanceof Map<?, ?> map) return map.get(index);
+                if (receiver instanceof Map<?, ?> map) {
+                    if (!map.containsKey(index)) throw new IllegalArgumentException("map key not found: " + index);
+                    return map.get(index);
+                }
                 if (receiver instanceof Object[] array) return array[integerIndex(index)];
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
@@ -377,7 +381,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
-                return result;
+                return BuiltinCollectionValue.list("List", result, Map.of());
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
@@ -723,7 +727,12 @@ public final class OresEvalRootNode extends RootNode {
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
+        private List<?> asSequence(Object value) {
+            if (value instanceof BuiltinCollectionValue c && c.list != null) return c.list;
+            if (value instanceof List<?> l) return l;
+            if (value instanceof Object[] a) return List.of(a);
+            throw new IllegalArgumentException("value is not destructurable");
+        }
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
 
