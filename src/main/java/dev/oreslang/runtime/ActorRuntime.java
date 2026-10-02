@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.reflect.Array;
+import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -13,11 +14,17 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinWorkerThread;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CancellationException;
 import java.util.function.Supplier;
+import jdk.management.VirtualThreadSchedulerMXBean;
 
 /**
  * Host-side actor substrate used by the first interpreter.
@@ -29,10 +36,66 @@ import java.util.function.Supplier;
  */
 public final class ActorRuntime implements AutoCloseable {
     /**
+     * JVM-level actor scheduling policy.
+     *
+     * PRIVATE_ARENA actors are one virtual Thread per actor. Their virtual
+     * threads are multiplexed by the JDK carrier scheduler, whose target
+     * parallelism is kept between privateCarrierMin and privateCarrierMax.
+     *
+     * SHARED_HEAP actors do not own Threads. Their serial mailbox turns are
+     * multiplexed over a distinct ForkJoinPool whose target parallelism is
+     * kept between sharedPoolMin and sharedPoolMax.
+     */
+    public record SchedulerConfig(
+            int privateCarrierMin,
+            int privateCarrierMax,
+            int sharedPoolMin,
+            int sharedPoolMax) {
+
+        public SchedulerConfig {
+            if (privateCarrierMin < 1 || privateCarrierMax < privateCarrierMin) {
+                throw new IllegalArgumentException("invalid private actor carrier bounds");
+            }
+            if (sharedPoolMin < 1 || sharedPoolMax < sharedPoolMin) {
+                throw new IllegalArgumentException("invalid shared actor pool bounds");
+            }
+        }
+
+        public static SchedulerConfig defaults() {
+            return new SchedulerConfig(
+                    intProperty("ores.actor.private.carriers.min", 20),
+                    intProperty("ores.actor.private.carriers.max", 40),
+                    intProperty("ores.actor.shared.pool.min", 10),
+                    intProperty("ores.actor.shared.pool.max", 20));
+        }
+
+        private static int intProperty(String name, int fallback) {
+            String raw = System.getProperty(name);
+            if (raw == null || raw.isBlank()) return fallback;
+            try {
+                return Integer.parseInt(raw);
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException(name + " must be an integer", invalid);
+            }
+        }
+    }
+
+    public record SchedulerSnapshot(
+            int privateCarrierTarget,
+            int privateCarrierPoolSize,
+            long privateQueuedVirtualThreads,
+            int sharedTargetParallelism,
+            int sharedPoolSize,
+            long sharedQueuedTasks) { }
+
+    private static final ProcessActorSchedulers PROCESS_SCHEDULERS =
+            new ProcessActorSchedulers(SchedulerConfig.defaults());
+
+    /**
      * Actor-local allocation policy inside one tenant Graal isolate.
      *
      * SHARED_HEAP keeps ordinary actor objects on the tenant isolate's managed Java heap.
-     * PRIVATE_ARENA gives the actor thread-confined native memory segments and
+     * PRIVATE_ARENA gives the actor virtual-Thread-confined native memory segments and
      * a growing bump allocator. arenaBytes is the initial committed capacity;
      * more segments are committed on demand up to the actor and tenant limits.
      * Actor language/runtime objects only live there when their representation
@@ -74,7 +137,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Actor-scoped memory service. PRIVATE_ARENA implementations are confined
-     * to the actor's own virtual Thread and are closed when that actor exits.
+     * to the actor's dedicated virtual Thread and are closed when that actor exits.
      */
     public interface ActorMemory extends AutoCloseable {
         MemoryMode mode();
@@ -110,6 +173,14 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    public static SchedulerConfig schedulerConfig() {
+        return PROCESS_SCHEDULERS.config;
+    }
+
+    public static SchedulerSnapshot schedulerSnapshot() {
+        return PROCESS_SCHEDULERS.snapshot();
+    }
 
     /** Native memory currently committed by PRIVATE_ARENA actors in this tenant runtime. */
     public long privateArenaReservedBytes() { return privateArenaReservedBytes.get(); }
@@ -228,6 +299,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
+        cell.messageAvailable();
     }
 
     /**
@@ -332,10 +404,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Segmented native heap owned by exactly one actor Thread.
+     * Segmented native heap owned by exactly one actor virtual Thread.
      *
-     * The Arena itself stays confined to that actor. We commit an initial
-     * segment, then geometrically grow with additional segments when needed.
+     * The Arena itself stays confined to that actor virtual Thread identity.\n     * Carrier-thread migration does not change that owner identity. We commit an initial\n     * segment, then geometrically grow with additional segments when needed.
      * Existing MemorySegments never move, so pointers/slices already handed to
      * the actor remain stable across growth.
      */
@@ -525,14 +596,179 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Process-wide schedulers. The JDK exposes one virtual-thread carrier
+     * scheduler per JVM, so PRIVATE_ARENA actors use that scheduler and Oreslang
+     * dynamically tunes its target parallelism. SHARED_HEAP actors use a
+     * completely separate pool.
+     */
+    private static final class ProcessActorSchedulers {
+        private static final int SCALE_STEP = 2;
+        private final SchedulerConfig config;
+        private final ForkJoinPool sharedPool;
+        private final VirtualThreadSchedulerMXBean virtualScheduler;
+        private final ScheduledThreadPoolExecutor controller;
+        private final AtomicInteger sharedWorkerSequence = new AtomicInteger();
+        private int privateIdleTicks;
+        private int sharedIdleTicks;
+
+        private ProcessActorSchedulers(SchedulerConfig config) {
+            this.config = config;
+
+            // These properties are consumed when the JDK virtual-thread
+            // scheduler is initialized. Respect an embedding host that already
+            // supplied explicit values.
+            setDefaultProperty(
+                    "jdk.virtualThreadScheduler.parallelism",
+                    Integer.toString(config.privateCarrierMin()));
+            setDefaultProperty(
+                    "jdk.virtualThreadScheduler.maxPoolSize",
+                    Integer.toString(config.privateCarrierMax()));
+
+            this.sharedPool = new ForkJoinPool(
+                    config.sharedPoolMin(),
+                    pool -> {
+                        ForkJoinWorkerThread worker =
+                                ForkJoinPool.defaultForkJoinWorkerThreadFactory.newThread(pool);
+                        worker.setName("ores-shared-actor-" + sharedWorkerSequence.incrementAndGet());
+                        return worker;
+                    },
+                    null,
+                    true,
+                    0,
+                    config.sharedPoolMax(),
+                    1,
+                    null,
+                    30L,
+                    TimeUnit.SECONDS);
+
+            VirtualThreadSchedulerMXBean scheduler = null;
+            try {
+                scheduler = ManagementFactory.getPlatformMXBean(VirtualThreadSchedulerMXBean.class);
+                if (scheduler != null) {
+                    scheduler.setParallelism(clamp(
+                            scheduler.getParallelism(),
+                            config.privateCarrierMin(),
+                            config.privateCarrierMax()));
+                }
+            } catch (UnsupportedOperationException | LinkageError unavailable) {
+                // Native-image or an alternate JVM may not expose the management
+                // bean. Startup properties still provide the configured bounds.
+            }
+            this.virtualScheduler = scheduler;
+
+            this.controller = new ScheduledThreadPoolExecutor(1, runnable -> {
+                Thread thread = Thread.ofPlatform()
+                        .daemon(true)
+                        .name("ores-actor-scheduler-controller")
+                        .unstarted(runnable);
+                return thread;
+            });
+            this.controller.setRemoveOnCancelPolicy(true);
+            this.controller.scheduleWithFixedDelay(
+                    this::rebalanceSafely,
+                    250L,
+                    250L,
+                    TimeUnit.MILLISECONDS);
+        }
+
+        private void executeShared(Runnable task) {
+            sharedPool.execute(task);
+        }
+
+        private SchedulerSnapshot snapshot() {
+            int privateTarget = virtualScheduler == null ? -1 : virtualScheduler.getParallelism();
+            int privatePoolSize = virtualScheduler == null ? -1 : virtualScheduler.getPoolSize();
+            long privateQueued = virtualScheduler == null ? -1L : virtualScheduler.getQueuedVirtualThreadCount();
+            return new SchedulerSnapshot(
+                    privateTarget,
+                    privatePoolSize,
+                    privateQueued,
+                    sharedPool.getParallelism(),
+                    sharedPool.getPoolSize(),
+                    sharedPool.getQueuedSubmissionCount() + sharedPool.getQueuedTaskCount());
+        }
+
+        private void rebalanceSafely() {
+            try {
+                rebalancePrivate();
+                rebalanceShared();
+            } catch (Throwable ignored) {
+                // Scheduling telemetry/tuning must never take down actor work.
+            }
+        }
+
+        private void rebalancePrivate() {
+            if (virtualScheduler == null) return;
+            int current = virtualScheduler.getParallelism();
+            long queued = Math.max(0L, virtualScheduler.getQueuedVirtualThreadCount());
+            int mounted = Math.max(0, virtualScheduler.getMountedVirtualThreadCount());
+
+            int desired = current;
+            if (queued > 0 && current < config.privateCarrierMax()) {
+                privateIdleTicks = 0;
+                desired = Math.min(config.privateCarrierMax(), current + SCALE_STEP);
+            } else if (queued == 0 && mounted < current / 2) {
+                privateIdleTicks++;
+                if (privateIdleTicks >= 8 && current > config.privateCarrierMin()) {
+                    desired = Math.max(config.privateCarrierMin(), current - SCALE_STEP);
+                    privateIdleTicks = 0;
+                }
+            } else {
+                privateIdleTicks = 0;
+            }
+
+            if (desired != current) virtualScheduler.setParallelism(desired);
+        }
+
+        private void rebalanceShared() {
+            int current = sharedPool.getParallelism();
+            long queued = sharedPool.getQueuedSubmissionCount() + sharedPool.getQueuedTaskCount();
+            int active = sharedPool.getActiveThreadCount();
+
+            int desired = current;
+            if (queued > current && current < config.sharedPoolMax()) {
+                sharedIdleTicks = 0;
+                desired = Math.min(config.sharedPoolMax(), current + SCALE_STEP);
+            } else if (queued == 0 && active < current / 2) {
+                sharedIdleTicks++;
+                if (sharedIdleTicks >= 8 && current > config.sharedPoolMin()) {
+                    desired = Math.max(config.sharedPoolMin(), current - SCALE_STEP);
+                    sharedIdleTicks = 0;
+                }
+            } else {
+                sharedIdleTicks = 0;
+            }
+
+            if (desired != current) sharedPool.setParallelism(desired);
+        }
+
+        private static void setDefaultProperty(String name, String value) {
+            if (System.getProperty(name) == null) {
+                System.setProperty(name, value);
+            }
+        }
+
+        private static int clamp(int value, int min, int max) {
+            return Math.max(min, Math.min(max, value));
+        }
+    }
+
     private final class ActorCell<M> {
         private static final Object STOP = new Object();
+        private static final int SHARED_TURN_MESSAGE_BUDGET = 64;
+
         private final ActorRef<M> ref;
         private final IsolatePolicy policy;
         private final MemoryPolicy memoryPolicy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
-        private volatile Thread thread;
+        private final AtomicBoolean sharedTurnScheduled = new AtomicBoolean();
+        private final AtomicBoolean stopped = new AtomicBoolean();
+
+        private volatile Thread privateActorThread;
+        private volatile Behavior<M> sharedBehavior;
+        private volatile ActorContext<M> sharedContext;
 
         private ActorCell(
                 ActorRef<M> ref,
@@ -547,21 +783,30 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void start() {
-            thread = Thread.ofVirtual().name("ores-actor-" + ref.id().value()).start(this::run);
+            if (memoryPolicy.mode() == MemoryMode.PRIVATE_ARENA) {
+                // One virtual Thread identity per private actor is deliberate:
+                // Arena.ofConfined() keys ownership to this Thread identity.
+                // The JVM may mount this virtual Thread on many different
+                // carrier platform threads without weakening confinement.
+                privateActorThread = Thread.ofVirtual()
+                        .name("ores-private-actor-" + ref.id().value())
+                        .start(this::runPrivateActor);
+            }
+        }
+
+        private void messageAvailable() {
+            if (memoryPolicy.mode() == MemoryMode.SHARED_HEAP) {
+                scheduleSharedTurn();
+            }
         }
 
         @SuppressWarnings("unchecked")
-        private void run() {
+        private void runPrivateActor() {
             try (ActorMemory memory = openActorMemory(memoryPolicy, policy)) {
-                final Behavior<M> behavior = behaviorFactory.get();
-                final ActorContext<M> context = new ActorContext<>() {
-                    @Override public ActorRef<M> self() { return ref; }
-                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
-                    @Override public IsolatePolicy policy() { return policy; }
-                    @Override public ActorMemory memory() { return memory; }
-                };
+                Behavior<M> behavior = behaviorFactory.get();
+                ActorContext<M> context = newContext(memory);
                 try {
-                    while (true) {
+                    while (!stopped.get()) {
                         Object message = mailbox.take();
                         if (message == STOP) return;
                         behavior.onMessage((M) message, context);
@@ -569,18 +814,83 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 } catch (Throwable failure) {
-                    // v0 fail-stop supervision policy. A later supervisor layer will
-                    // expose restart/escalation strategies as typed Oreslang APIs.
+                    stopped.set(true);
+                    // v0 fail-stop supervision policy. A later supervisor layer
+                    // will expose restart/escalation strategies.
                 }
             } finally {
                 actors.remove(ref.id(), this);
             }
         }
 
+        private void scheduleSharedTurn() {
+            if (stopped.get()) return;
+            if (sharedTurnScheduled.compareAndSet(false, true)) {
+                PROCESS_SCHEDULERS.executeShared(this::runSharedTurn);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private void runSharedTurn() {
+            boolean reschedule = false;
+            try {
+                Behavior<M> behavior = sharedBehavior;
+                ActorContext<M> context = sharedContext;
+                if (behavior == null) {
+                    behavior = behaviorFactory.get();
+                    context = newContext(SharedHeapMemory.INSTANCE);
+                    sharedBehavior = behavior;
+                    sharedContext = context;
+                }
+
+                int processed = 0;
+                while (processed < SHARED_TURN_MESSAGE_BUDGET) {
+                    Object message = mailbox.poll();
+                    if (message == null) break;
+                    if (message == STOP) {
+                        stopped.set(true);
+                        actors.remove(ref.id(), this);
+                        return;
+                    }
+                    behavior.onMessage((M) message, context);
+                    processed++;
+                }
+                reschedule = !mailbox.isEmpty();
+            } catch (Throwable failure) {
+                stopped.set(true);
+                actors.remove(ref.id(), this);
+                // v0 fail-stop supervision policy.
+            } finally {
+                sharedTurnScheduled.set(false);
+                if (!stopped.get() && (reschedule || !mailbox.isEmpty())) {
+                    scheduleSharedTurn();
+                }
+            }
+        }
+
+        private ActorContext<M> newContext(ActorMemory memory) {
+            return new ActorContext<>() {
+                @Override public ActorRef<M> self() { return ref; }
+                @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                @Override public IsolatePolicy policy() { return policy; }
+                @Override public ActorMemory memory() { return memory; }
+            };
+        }
+
         private void stop() {
-            mailbox.offer(STOP);
-            Thread t = thread;
-            if (t != null) t.interrupt();
+            if (stopped.get()) return;
+            if (!mailbox.offer(STOP)) {
+                stopped.set(true);
+                actors.remove(ref.id(), this);
+            }
+
+            if (memoryPolicy.mode() == MemoryMode.PRIVATE_ARENA) {
+                Thread t = privateActorThread;
+                if (t != null) t.interrupt();
+            } else {
+                scheduleSharedTurn();
+            }
         }
     }
+
 }
