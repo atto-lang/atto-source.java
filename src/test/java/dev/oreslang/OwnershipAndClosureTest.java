@@ -1147,6 +1147,106 @@ final class OwnershipAndClosureTest {
                 """)));
     }
 
+    @Test
+    void privateStructFieldWithDefaultIsHiddenFromConstructionButStillInitialized() throws Exception {
+        String output = run("""
+                struct Secret {
+                  private val int hidden = 7;
+                  pub val int visible;
+
+                  pub reveal() => int {
+                    return self.hidden;
+                  }
+                }
+
+                pub fnc main() => void {
+                  val Secret secret = Secret { visible = 3 };
+                  stdio.stdout.write(secret.visible);
+                  stdio.stdout.write(secret.reveal());
+                  return;
+                }
+                """);
+
+        assertEquals("37", output);
+    }
+
+    @Test
+    void externalStructInitializerCannotSupplyPrivateField() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Secret {
+                          private val int hidden = 7;
+                          pub val int visible;
+                        }
+
+                        fnc bad() => Secret {
+                          return Secret { hidden = 9, visible = 3 };
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("inaccessible"));
+        assertTrue(error.getMessage().contains("Secret.hidden"));
+    }
+
+    @Test
+    void contextualObjectCannotSupplyPrivateStructField() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Secret {
+                          private val int hidden = 7;
+                          pub val int visible;
+                        }
+
+                        fnc bad() => Secret {
+                          return obj{hidden: 9, visible: 3};
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("inaccessible"));
+    }
+
+    @Test
+    void requiredPrivateStructFieldCanBeInitializedByStructOwnedFactory() throws Exception {
+        String output = run("""
+                struct Token {
+                  private val int code;
+
+                  pub static fnc create() => Token {
+                    return Token { code = 7 };
+                  }
+
+                  pub reveal() => int {
+                    return self.code;
+                  }
+                }
+
+                pub fnc main() => void {
+                  val token = Token.create();
+                  stdio.stdout.write(token.reveal());
+                  return;
+                }
+                """);
+
+        assertEquals("7", output);
+    }
+
+    @Test
+    void requiredPrivateStructFieldBlocksExternalConstruction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Token {
+                          private val int code;
+                        }
+
+                        fnc bad() => Token {
+                          return Token {};
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("private struct field 'Token.code'"));
+        assertTrue(error.getMessage().contains("cannot be supplied outside"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
