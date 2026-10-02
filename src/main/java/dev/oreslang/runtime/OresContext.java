@@ -68,17 +68,18 @@ public final class OresContext implements AutoCloseable {
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
     public Map<String, Object> processDescriptor() {
-        return Map.of(
-                "context_id", contextId.toString(),
-                "runtime", "graalvm-truffle",
-                "language", "oreslang",
-                "execution_mode", executionProfile.mode().name(),
-                "platform", executionProfile.platform().name(),
-                "scheduler_safepoints", schedulerSafepoints.get(),
-                "active_actors", actors.activeActorCount(),
-                "actor_heap_backend", "logical_jvm",
-                "actor_physical_heap_isolation", false,
-                "manual_gc_requests", gc.requests());
+        return Map.ofEntries(
+                Map.entry("context_id", contextId.toString()),
+                Map.entry("runtime", "graalvm-truffle"),
+                Map.entry("language", "oreslang"),
+                Map.entry("execution_mode", executionProfile.mode().name()),
+                Map.entry("platform", executionProfile.platform().name()),
+                Map.entry("scheduler_safepoints", schedulerSafepoints.get()),
+                Map.entry("active_actors", actors.activeActorCount()),
+                Map.entry("max_actors", isolatePolicy.maxActors()),
+                Map.entry("actor_heap_backend", "logical_jvm"),
+                Map.entry("actor_physical_heap_isolation", false),
+                Map.entry("manual_gc_requests", gc.requests()));
     }
 
     @Override
