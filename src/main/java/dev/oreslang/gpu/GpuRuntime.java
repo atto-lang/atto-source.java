@@ -39,6 +39,14 @@ public final class GpuRuntime {
         }
     }
 
+    /** Backend result for collecting a stream into a concrete device array. */
+    public record CollectedArray(Object backendToken, long length) {
+        public CollectedArray {
+            Objects.requireNonNull(backendToken, "backendToken");
+            if (length < 0) throw new IllegalArgumentException("collected GpuArray length cannot be negative");
+        }
+    }
+
     public interface Backend {
         String name();
 
@@ -60,8 +68,12 @@ public final class GpuRuntime {
             return arrayBackendToken;
         }
 
-        default Object collectStream(Object streamBackendToken, long lengthHint) {
-            return streamBackendToken;
+        default CollectedArray collectStream(Object streamBackendToken, long lengthHint) {
+            if (lengthHint < 0) {
+                throw new GpuCapabilityUnavailableException("GPU backend '" + name()
+                        + "' must report a concrete length when collecting an unknown-length GpuStream");
+            }
+            return new CollectedArray(streamBackendToken, lengthHint);
         }
     }
 
@@ -192,9 +204,9 @@ public final class GpuRuntime {
 
     public ArrayHandle collect(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
-        Object token = stream.backend.collectStream(stream.backendToken, stream.lengthHint);
-        if (token == null) throw new GpuExecutionException("GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
-        return new ArrayHandle(stream.backend, token, Math.max(0, stream.lengthHint));
+        CollectedArray collected = stream.backend.collectStream(stream.backendToken, stream.lengthHint);
+        if (collected == null) throw new GpuExecutionException("GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
+        return new ArrayHandle(stream.backend, collected.backendToken(), collected.length());
     }
 
     public List<?> downloadStream(StreamHandle stream) {
