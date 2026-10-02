@@ -283,7 +283,14 @@ public final class OresMutex {
                 try {
                     permit.acquire();
                     Guard<T> guard = checkedGuardAfterAcquire(ownerDomain, enforceOwnerDomain);
-                    if (!future.complete(guard)) guard.release();
+                    if (!future.complete(guard)) {
+                        // Cancellation can win after the permit is acquired but
+                        // before the future accepts its result. This cleanup is
+                        // runtime-owned and may execute on the waiter virtual
+                        // thread, so it must not apply the guest guard's actor-
+                        // domain release check.
+                        ((SharedGuard) guard).releaseFromRuntime();
+                    }
                 } catch (InterruptedException interrupted) {
                     releaseDomain(ownerDomain);
                     Thread.currentThread().interrupt();
@@ -377,6 +384,10 @@ public final class OresMutex {
             @Override
             public void release() {
                 requireOwnerDomain();
+                releaseFromRuntime();
+            }
+
+            private void releaseFromRuntime() {
                 if (!released.compareAndSet(false, true)) return;
                 releaseDomain(ownerDomain);
                 permit.release();
