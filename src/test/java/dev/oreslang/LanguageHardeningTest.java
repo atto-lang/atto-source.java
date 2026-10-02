@@ -525,4 +525,38 @@ final class LanguageHardeningTest {
 
         assertTrue(wrong.getMessage().contains("return"));
     }
+    @Test
+    void inheritedGenericConstructorFieldsUseParentInstantiation() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Parent<T> as
+                  pub val T value;
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc explicit() => Child<int> {
+                  return new Child<int>(7);
+                }
+
+                fnc inferred() => Child<int> {
+                  return new Child<>(8);
+                }
+                """)));
+
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Parent<T> as
+                          pub val T value;
+                        end
+
+                        define class Child<T> extends Parent<T> as
+                        end
+
+                        fnc bad() => Child<int> {
+                          return new Child<int>("wrong");
+                        }
+                        """)));
+        assertTrue(wrong.getMessage().contains("constructor field value"));
+    }
 }
