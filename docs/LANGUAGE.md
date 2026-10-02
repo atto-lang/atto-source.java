@@ -115,7 +115,8 @@ const [x, y, z] = fixed();               // all const
 [const head, let middle, tail] = fixed(); // head const; middle/tail let
 
 const {foo, bar} = named();
-{const first, second} = named();
+// Equivalent per-item spelling, shown in a separate scope:
+// {const foo, const bar} = named();
 ```
 
 A bare `_` is a discard pattern: it consumes that position without declaring a variable, so it can be repeated in the same pattern or reused by later destructures.
