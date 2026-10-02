@@ -52,11 +52,16 @@ public final class Parser {
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
-                if (match(INTERFACE)) {
-                    rootDeclarations.add(parseInterface(modifiers.visibility));
+                if (match(STRUCT)) {
+                    if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                    rootDeclarations.add(parseStruct(false));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                if (match(INTERFACE)) {
+                    rootDeclarations.add(parseInterface(modifiers.visibility, false));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, struct, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -124,8 +129,12 @@ public final class Parser {
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
-            if (match(INTERFACE)) return parseInterface(modifiers.visibility);
-            throw error(previous(), "expected class or interface after 'define'");
+            if (match(STRUCT)) {
+                if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                return parseStruct(false);
+            }
+            if (match(INTERFACE)) return parseInterface(modifiers.visibility, false);
+            throw error(previous(), "expected class, struct, or interface after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -136,7 +145,11 @@ public final class Parser {
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
-        if (match(INTERFACE)) return parseInterface(modifiers.visibility);
+        if (match(INTERFACE)) return parseInterface(modifiers.visibility, true);
+        if (match(STRUCT)) {
+            if (modifiers.isAbstract) throw error(previous(), "structs cannot be abstract");
+            return parseStruct(true);
+        }
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
         return null;
@@ -161,7 +174,7 @@ public final class Parser {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL, IS) ? parseTypeRefList() : List.of();
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
 
@@ -185,12 +198,70 @@ public final class Parser {
         return new Ast.ClassDecl(name, isAbstract, generics, parents, interfaces, fields, methods);
     }
 
-    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
+    private Ast.ClassDecl parseStruct(boolean compactStyle) {
+        String name = consume(IDENT, "expected struct name").lexeme();
+        List<String> generics = parseGenericParameters();
+        if (match(EXTENDS)) throw error(previous(), "structs are value types and cannot extend classes");
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL, IS) ? parseTypeRefList() : List.of();
+
+        if (compactStyle) consume(LBRACE, "compact struct declarations require '{'");
+        else consume(AS, "long struct declarations use 'define struct Name as ... end'");
+        Token.Type terminator = compactStyle ? RBRACE : END;
+
+        List<Ast.FieldDecl> fields = new ArrayList<>();
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+        while (!check(terminator) && !check(EOF)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
+            Modifiers mods = parseModifiers();
+
+            if (isBindingKind(peek().type()) || looksLikeStructField()) {
+                if (mods.isStatic) throw error(peek(), "struct fields cannot be static");
+                fields.add(isBindingKind(peek().type())
+                        ? parseField(mods.visibility)
+                        : parseImplicitValStructField(mods.visibility));
+                continue;
+            }
+
+            if (mods.isStatic) {
+                consume(FNC, "static struct functions must be declared with 'static fnc'");
+                if (mods.isAbstract) throw error(previous(), "static struct functions cannot be abstract");
+            } else if (check(FNC)) {
+                throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for type-level functions");
+            }
+            if (mods.isAbstract) throw error(peek(), "struct methods cannot be abstract");
+            methods.add(parseMethod(annotations, mods));
+        }
+        consume(terminator, compactStyle ? "expected '}' to close struct " + name : "expected 'end' to close struct " + name);
+        return new Ast.ClassDecl(name, Ast.AggregateKind.STRUCT, false, generics, List.of(), interfaces, fields, methods);
+    }
+
+    private boolean looksLikeStructField() {
+        int saved = current;
+        try {
+            parseTypeRef();
+            return check(IDENT);
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        } finally {
+            current = saved;
+        }
+    }
+
+    private Ast.FieldDecl parseImplicitValStructField(Ast.Visibility visibility) {
+        Ast.TypeRef type = parseTypeRef();
+        String name = consume(IDENT, "expected struct field name").lexeme();
+        Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        consumeStatementTerminator("struct field declaration should end with ';'");
+        return new Ast.FieldDecl(name, visibility, Ast.BindingKind.VAL, type, initializer);
+    }
+
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility, boolean compactStyle) {
         String name = consume(IDENT, "expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
-        boolean braceStyle = match(LBRACE);
-        Token.Type terminator = braceStyle ? RBRACE : END;
+        if (compactStyle) consume(LBRACE, "compact interface declarations require '{'");
+        else match(AS); // canonical long form is: define interface Name as ... end
+        Token.Type terminator = compactStyle ? RBRACE : END;
 
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
@@ -225,7 +296,7 @@ public final class Parser {
             members.add(new Ast.InterfaceFieldDecl(fieldName, type));
         }
 
-        consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
+        consume(terminator, compactStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
         return new Ast.InterfaceDecl(name, visibility, generics, parents, members);
     }
 
@@ -789,6 +860,11 @@ public final class Parser {
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
+        if (match(STRUCT)) return parseStructInitializer(null);
+        if (check(IDENT) && looksLikeNamedStructInitializer()) {
+            Ast.TypeRef type = parseTypeRef();
+            return parseStructInitializer(type);
+        }
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
@@ -824,6 +900,32 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    private boolean looksLikeNamedStructInitializer() {
+        int saved = current;
+        try {
+            parseTypeRef();
+            return check(LBRACE);
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        } finally {
+            current = saved;
+        }
+    }
+
+    private Ast.StructInitExpr parseStructInitializer(Ast.TypeRef type) {
+        consume(LBRACE, type == null ? "expected '{' after struct" : "expected '{' after struct type");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                String name = consume(IDENT, "expected struct field name").lexeme();
+                if (!match(EQUAL, COLON)) throw error(peek(), "expected '=' or ':' after struct field name");
+                fields.add(new Ast.ObjectField(name, parseExpression()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after struct initializer");
+        return new Ast.StructInitExpr(type, fields);
     }
 
     private Ast.ObjectExpr parseObjectLiteral() {
