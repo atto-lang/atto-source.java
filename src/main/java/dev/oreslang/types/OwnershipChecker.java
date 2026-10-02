@@ -32,8 +32,10 @@ import java.util.Set;
 public final class OwnershipChecker {
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -50,6 +52,7 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
             }
         }
     }
@@ -118,15 +121,15 @@ public final class OwnershipChecker {
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
             for (int i = 0; i < destructure.bindings().size(); i++) {
                 Ast.DestructureBinding binding = destructure.bindings().get(i);
-                if (binding.isDiscard()) continue;
-                Ast.TypeRef bindingType = destructureBindingType(destructure, source.type, i, binding.name());
-                ValueKind bindingKind = bindingType.name().equals("$infer$")
+                if (binding.discard()) continue;
+                Ast.TypeRef itemType = destructuredType(destructure, binding, i, source.type);
+                ValueKind itemKind = itemType.name().equals("$infer$")
                         ? (source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY)
-                        : kindOfType(bindingType);
+                        : kindOfType(itemType);
                 scope.define(binding.name(), new VarState(
-                        bindingType,
+                        itemType,
                         binding.kind() == Ast.BindingKind.LET,
-                        bindingKind,
+                        itemKind,
                         Origin.LOCAL));
             }
             return;
@@ -309,26 +312,57 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
-            for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
-            return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
+            List<Ast.TypeRef> elementTypes = new ArrayList<>();
+            for (Ast.Expr item : list.elements()) elementTypes.add(checkExpr(item, scope, true).type);
+            Ast.TypeRef elementType = joinOwnershipTypes(elementTypes);
+            return new ValueInfo(new Ast.TypeRef("Array", List.of(elementType), false), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            boolean copy = true;
+            List<Ast.TypeRef> elementTypes = new ArrayList<>();
             for (Ast.Expr item : tuple.elements()) {
                 ValueInfo info = checkExpr(item, scope, true);
-                copy &= info.kind == ValueKind.COPY;
+                elementTypes.add(info.type);
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(Ast.TypeRef.tuple(elementTypes), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
-            for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
-            return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
+            Map<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            for (Ast.ObjectField field : object.fields()) {
+                members.put(field.name(), checkExpr(field.value(), scope, true).type);
+            }
+            return new ValueInfo(Ast.TypeRef.record(members), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr builtin
+                && builtin.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("List")
+                && builtin.member().equals("of")) {
+            List<Ast.TypeRef> itemTypes = new ArrayList<>();
+            for (Ast.Expr argument : call.arguments()) {
+                ValueInfo info = checkExpr(argument, scope, true);
+                itemTypes.add(info.type);
+            }
+            return new ValueInfo(Ast.TypeRef.tuple(itemTypes), ValueKind.MOVE_ONLY, null);
+        }
+        if (call.callee() instanceof Ast.MemberExpr builtin
+                && builtin.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Map")
+                && builtin.member().equals("of")) {
+            Map<String, Ast.TypeRef> members = new LinkedHashMap<>();
+            for (int i = 0; i < call.arguments().size(); i += 2) {
+                Ast.Expr keyExpr = call.arguments().get(i);
+                checkExpr(keyExpr, scope, false);
+                ValueInfo value = checkExpr(call.arguments().get(i + 1), scope, true);
+                if (keyExpr instanceof Ast.LiteralExpr literal && literal.value() instanceof String key) {
+                    members.put(key, value.type);
+                }
+            }
+            return new ValueInfo(Ast.TypeRef.record(members), ValueKind.MOVE_ONLY, null);
+        }
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
@@ -338,6 +372,13 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace) {
+                Ast.FunctionDecl qualified = findFunction(namespace.name() + "." + member.member());
+                if (qualified != null) {
+                    checkArguments(call.arguments(), qualified.parameters(), scope, "function " + namespace.name() + "." + qualified.name());
+                    return new ValueInfo(qualified.returnType(), kindOfType(qualified.returnType()), null);
+                }
+            }
             checkExpr(member.receiver(), scope, false);
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
@@ -515,7 +556,7 @@ public final class OwnershipChecker {
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 scanExpr(destructure.initializer(), blockLocals, outer, recursiveBinding, captures, false);
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
-                    if (!binding.isDiscard()) blockLocals.add(binding.name());
+                    if (!binding.discard()) blockLocals.add(binding.name());
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
@@ -647,6 +688,11 @@ public final class OwnershipChecker {
         return classes.get(name);
     }
 
+    private Ast.TypeAliasDecl findTypeAlias(String name) {
+        if (ambiguousTypeAliases.contains(name)) return null;
+        return typeAliases.get(name);
+    }
+
     private void requireUsable(VarState state, String name, boolean write) {
         if (state.moved) throw error("use of moved value '" + name + "'");
         if (write) {
@@ -714,35 +760,86 @@ public final class OwnershipChecker {
         }
     }
 
-    private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
-        if (source == null) return Ast.TypeRef.inferred();
-        if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
-            if (source.isTupleType() && index < source.arguments().size()) return source.arguments().get(index);
-            if ((source.name().equals("Array") || source.name().equals("List")) && source.arguments().size() == 1) {
-                return source.arguments().getFirst();
-            }
-        } else if (source.isRecordType()) {
-            Ast.TypeRef member = source.recordMembers().get(name);
-            if (member != null) return member;
-        }
-        return Ast.TypeRef.inferred();
-    }
-
     private ValueKind kindOfType(Ast.TypeRef type) {
         if (type == null) return ValueKind.MOVE_ONLY;
         if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
-    private boolean isCopyType(Ast.TypeRef type) {
-        if (type == null || type.isBorrow()) return false;
-        if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
+    private boolean isCopyType(Ast.TypeRef original) {
+        if (original == null || original.isBorrow()) return false;
+        Ast.TypeRef type = expandAliasType(original);
+        if (type.isStringLiteral()) return true;
+        if (type.isUnion()) {
+            return !type.arguments().isEmpty() && type.arguments().stream().allMatch(this::isCopyType);
+        }
+        if (type.isTuple() || type.isRecord()) return false;
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void" -> true;
             default -> false;
         };
+    }
+
+    private Ast.TypeRef destructuredType(
+            Ast.DestructureStmt destructure,
+            Ast.DestructureBinding binding,
+            int index,
+            Ast.TypeRef sourceType) {
+        Ast.TypeRef source = expandAliasType(sourceType);
+        if (destructure.kind() == Ast.DestructureKind.ARRAY) {
+            if (source.isTuple() && index < source.arguments().size()) {
+                return expandAliasType(source.arguments().get(index));
+            }
+            if ((source.name().equals("Array") || source.name().equals("List")) && source.arguments().size() == 1) {
+                return expandAliasType(source.arguments().getFirst());
+            }
+        } else if (source.isRecord()) {
+            Ast.TypeRef member = source.recordMembers().get(binding.name());
+            if (member != null) return expandAliasType(member);
+        }
+        return Ast.TypeRef.inferred();
+    }
+
+    private Ast.TypeRef joinOwnershipTypes(List<Ast.TypeRef> types) {
+        if (types.isEmpty()) return Ast.TypeRef.inferred();
+        Ast.TypeRef first = types.getFirst();
+        if (types.stream().allMatch(first::equals)) return first;
+        return Ast.TypeRef.union(types);
+    }
+
+    private Ast.TypeRef expandAliasType(Ast.TypeRef type) {
+        return expandAliasType(type, new LinkedHashSet<>());
+    }
+
+    private Ast.TypeRef expandAliasType(Ast.TypeRef type, Set<Ast.TypeAliasDecl> stack) {
+        if (type == null) return Ast.TypeRef.inferred();
+        Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+        if (alias != null && alias.genericParameters().size() == type.arguments().size()) {
+            if (!stack.add(alias)) return type; // TypeChecker reports cycles before ownership runs.
+            Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+            for (int i = 0; i < alias.genericParameters().size(); i++) {
+                substitutions.put(alias.genericParameters().get(i), type.arguments().get(i));
+            }
+            Ast.TypeRef expanded = expandAliasType(substituteAliasType(alias.target(), substitutions), stack);
+            stack.remove(alias);
+            return expanded;
+        }
+        if (type.arguments().isEmpty()) return type;
+        return new Ast.TypeRef(
+                type.name(),
+                type.arguments().stream().map(arg -> expandAliasType(arg, stack)).toList(),
+                type.inferArguments());
+    }
+
+    private Ast.TypeRef substituteAliasType(Ast.TypeRef type, Map<String, Ast.TypeRef> substitutions) {
+        Ast.TypeRef replacement = substitutions.get(type.name());
+        if (replacement != null && type.arguments().isEmpty() && !type.inferArguments()) return replacement;
+        return new Ast.TypeRef(
+                type.name(),
+                type.arguments().stream().map(arg -> substituteAliasType(arg, substitutions)).toList(),
+                type.inferArguments());
     }
 
     private Ast.TypeRef inferLiteralType(Object value) {
