@@ -91,8 +91,9 @@ public final class Parser {
         } else {
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
+            else if (match(STRUCT)) kind = Ast.ImportKind.STRUCT;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
-            else throw error(peek(), "expected module, class, fnc, or * after import");
+            else throw error(peek(), "expected module, class, struct, fnc, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
