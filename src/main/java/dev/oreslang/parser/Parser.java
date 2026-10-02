@@ -269,7 +269,13 @@ public final class Parser {
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
             parseAnnotations();
-            parseModifiers();
+            Modifiers memberModifiers = parseModifiers();
+            if (memberModifiers.shared) {
+                throw error(previous(), "'shared' is not valid on an interface method");
+            }
+            if (memberModifiers.isStatic) {
+                throw error(previous(), "'static' is not valid on an interface method");
+            }
 
             if (match(FNC)) {
                 String memberName = consume(IDENT, "expected interface function name").lexeme();
@@ -279,7 +285,7 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after interface parameters");
                 Ast.TypeRef returns = match(FAT_ARROW) ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
-                members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
+                members.add(new Ast.InterfaceFunctionDecl(memberName, memberModifiers.async, memberGenerics, params, returns));
                 continue;
             }
 
