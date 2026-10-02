@@ -8,6 +8,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 
@@ -188,9 +189,12 @@ public final class OresMutex {
      * isolate boundaries.
      */
     public static final class Shared<T> implements Lock<T>, ActorRuntime.Sendable {
+        private static final int MAX_ASYNC_WAITERS = 8_192;
+
         private final T value;
         private final Semaphore permit = new Semaphore(1, true);
         private final AtomicBoolean poisoned = new AtomicBoolean();
+        private final AtomicInteger asyncWaiters = new AtomicInteger();
         private final Set<Object> activeDomains = ConcurrentHashMap.newKeySet();
 
         private Shared(T value) {
@@ -218,6 +222,29 @@ public final class OresMutex {
 
         private void releaseDomain(Object domain) {
             if (domain != null) activeDomains.remove(domain);
+        }
+
+        private int asyncWaiterLimit() {
+            IsolatePolicy policy = ActorRuntime.currentActorPolicy();
+            return policy == null
+                    ? MAX_ASYNC_WAITERS
+                    : Math.min(MAX_ASYNC_WAITERS, policy.maxMailboxMessages());
+        }
+
+        private boolean reserveAsyncWaiter(int limit) {
+            while (true) {
+                int current = asyncWaiters.get();
+                if (current >= limit) return false;
+                if (asyncWaiters.compareAndSet(current, current + 1)) return true;
+            }
+        }
+
+        private void releaseAsyncWaiter() {
+            int remaining = asyncWaiters.decrementAndGet();
+            if (remaining < 0) {
+                asyncWaiters.incrementAndGet();
+                throw new IllegalStateException("SharedMutex async waiter accounting underflow");
+            }
         }
 
         private Guard<T> checkedGuardAfterAcquire(Object ownerDomain, boolean enforceOwnerDomain) {
@@ -277,32 +304,56 @@ public final class OresMutex {
         @Override
         public CompletableFuture<Guard<T>> lockAsync() {
             Object ownerDomain = reserveDomain(false);
+            int waiterLimit = asyncWaiterLimit();
+            if (!reserveAsyncWaiter(waiterLimit)) {
+                releaseDomain(ownerDomain);
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "SharedMutex async waiter limit exceeded: " + waiterLimit));
+            }
+
             boolean enforceOwnerDomain = ActorRuntime.inActorExecution();
             CompletableFuture<Guard<T>> future = new CompletableFuture<>();
-            Thread waiter = Thread.ofVirtual().name("ores-shared-mutex-waiter").unstarted(() -> {
-                try {
-                    permit.acquire();
-                    Guard<T> guard = checkedGuardAfterAcquire(ownerDomain, enforceOwnerDomain);
-                    if (!future.complete(guard)) {
-                        // Cancellation can win after the permit is acquired but
-                        // before the future accepts its result. This cleanup is
-                        // runtime-owned and may execute on the waiter virtual
-                        // thread, so it must not apply the guest guard's actor-
-                        // domain release check.
-                        ((SharedGuard) guard).releaseFromRuntime();
+            final Thread waiter;
+            try {
+                waiter = Thread.ofVirtual().name("ores-shared-mutex-waiter").unstarted(() -> {
+                    try {
+                        permit.acquire();
+                        Guard<T> guard = checkedGuardAfterAcquire(ownerDomain, enforceOwnerDomain);
+                        if (!future.complete(guard)) {
+                            // Cancellation can win after the permit is acquired but
+                            // before the future accepts its result. This cleanup is
+                            // runtime-owned and may execute on the waiter virtual
+                            // thread, so it must not apply the guest guard's actor-
+                            // domain release check.
+                            ((SharedGuard) guard).releaseFromRuntime();
+                        }
+                    } catch (InterruptedException interrupted) {
+                        releaseDomain(ownerDomain);
+                        Thread.currentThread().interrupt();
+                        future.completeExceptionally(
+                                new java.util.concurrent.CancellationException(
+                                        "SharedMutex async wait cancelled"));
+                    } catch (Throwable failure) {
+                        future.completeExceptionally(failure);
                     }
-                } catch (InterruptedException interrupted) {
-                    releaseDomain(ownerDomain);
-                    Thread.currentThread().interrupt();
-                    future.completeExceptionally(new java.util.concurrent.CancellationException("SharedMutex async wait cancelled"));
-                } catch (Throwable failure) {
-                    future.completeExceptionally(failure);
-                }
-            });
+                });
+            } catch (Throwable startupFailure) {
+                releaseDomain(ownerDomain);
+                releaseAsyncWaiter();
+                return CompletableFuture.failedFuture(startupFailure);
+            }
+
             future.whenComplete((ignored, failure) -> {
+                releaseAsyncWaiter();
                 if (future.isCancelled()) waiter.interrupt();
             });
-            waiter.start();
+
+            try {
+                waiter.start();
+            } catch (Throwable startupFailure) {
+                releaseDomain(ownerDomain);
+                future.completeExceptionally(startupFailure);
+            }
             return future;
         }
 
