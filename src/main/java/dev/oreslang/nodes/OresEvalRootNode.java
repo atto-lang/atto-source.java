@@ -12,6 +12,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -47,6 +48,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.Program program;
         private final OresContext context;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+        private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
@@ -62,8 +64,10 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.ModuleDecl module : program.modules()) {
                 modules.put(module.name(), module);
                 for (Ast.Decl decl : module.declarations()) {
-                    if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
-                    else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                    if (decl instanceof Ast.FunctionDecl fn) {
+                        index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                        functionOwners.put(fn, module.name());
+                    } else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 }
             }
         }
@@ -97,6 +101,10 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != fn.parameters().size()) {
                 if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
                 else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
+            }
+            if (fn.gpu()) {
+                String module = functionOwners.getOrDefault(fn, "__root__");
+                return context.gpu().dispatch(program, module + "." + fn.name(), fn, args);
             }
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
