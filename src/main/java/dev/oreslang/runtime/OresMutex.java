@@ -99,7 +99,7 @@ public final class OresMutex {
         }
 
         private void requireOwnerDomain() {
-            if (ActorRuntime.currentExecutionDomain() != ownerDomain) {
+            if (!Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
                 throw new WrongMutexDomainException(
                         "Mutex<T> is actor/private-domain state and cannot be accessed from another actor/execution domain; use SharedMutex<T>");
             }
@@ -417,7 +417,8 @@ public final class OresMutex {
             }
 
             private void requireOwnerDomain() {
-                if (enforceOwnerDomain && ActorRuntime.currentExecutionDomain() != ownerDomain) {
+                if (enforceOwnerDomain
+                        && !Objects.equals(ActorRuntime.currentExecutionDomain(), ownerDomain)) {
                     throw new WrongMutexDomainException(
                             "SharedMutex guard belongs to another actor/execution domain");
                 }
