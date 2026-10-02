@@ -59,7 +59,7 @@ Method code is stored once per class declaration. Direct calls dispatch to that 
 
 Non-adversarial contexts may therefore execute independent cooperative actor turns concurrently. Strict/adversarial contexts currently serialize guest actor turns with a fair context-level lock even though the shared, private, and untrusted dispatcher queues remain separate.
 
-An **untrusted** actor is never admitted merely because it has its own JVM thread pool. A Java carrier cannot safely preempt arbitrary hostile code. `spawnUntrusted(...)` therefore fails closed unless the host `TurnExecutor` advertises a hard containment boundary. The standard adversarial `OresContext` qualifies because it is created through Graal `SandboxPolicy.UNTRUSTED` with `spawnIsolate(true)`, hard CPU/heap limits, and a one-guest-thread ceiling. A developer/non-adversarial context does not qualify.
+An **untrusted** actor is never admitted merely because it has its own JVM thread pool. A Java carrier cannot safely preempt arbitrary hostile code. `spawnUntrusted(...)` therefore fails closed unless the host `TurnExecutor` advertises a **per-actor** hard containment boundary. The current interpreter `OresContext` intentionally does not advertise that capability: even a whole-context Graal `SandboxPolicy.UNTRUSTED` boundary can contain the process while still allowing one hostile actor to consume the shared context CPU budget. The untrusted dispatcher is ready as a scheduling bulkhead, but source execution remains gated until untrusted turns are mapped to per-actor Graal/native isolates.
 
 The guest `THREAD_CREATE` capability is separate from host/runtime dispatcher scheduling. Denying guest-created threads is never bypassed merely because the runtime owns carrier pools.
 
@@ -119,7 +119,7 @@ Oreslang deliberately uses three bulkheaded executors:
 
 A per-actor atomic scheduling gate ensures only one drain task for that actor is active. Ready actors enter bounded FIFO queues, and one scheduled actor drains at most `throughput` mailbox deliveries before it clears its gate and, if still runnable, re-enters at the tail. Manual pull receives consume that same budget. Thread identity is never actor identity, and a hot mailbox cannot create multiple simultaneous ready tasks for one actor.
 
-The global actor ceiling also bounds scheduler queue growth: at most one queued/running task exists per actor per dispatcher. `ActorGroup` membership does not create a scheduler lane or priority class, so placing an actor in many groups cannot multiply its scheduler weight. Large group fan-out yields at throughput-sized intervals and every target still enters through the target actor's ordinary bounded mailbox.
+The global actor ceiling also bounds scheduler queue growth: at most one queued/running task exists per actor per dispatcher. `ActorGroup` membership does not create a scheduler lane or priority class, so placing an actor in many groups cannot multiply its scheduler weight. Every target still enters through the target actor's ordinary bounded mailbox. Because `broadcast()` is synchronous, an actor-originated broadcast is capped at one `throughput`-sized fan-out quantum; larger synchronous broadcasts fail closed instead of holding a carrier for an unbounded group walk.
 
 This is cooperative fairness, not magic preemption. Shared/private actor handlers must return, suspend through nonblocking `await`/receive lowering, or reach compiler-injected scheduler safepoints. Potentially hostile code belongs in the untrusted domain, where hard host containment supplies the enforcement a JVM executor cannot.
 
@@ -139,7 +139,7 @@ Await context is checked statically as well as at runtime: ordinary functions/me
 
 `ActorGroup<T>` is a same-runtime deduplicated set of actor refs. Categories are metadata, not a global registry, and one actor may belong to many groups without receiving extra scheduler priority. Fan-out snapshots membership and reuses the normal validation, isolation-copy/shared-handle, quota, and bounded-mailbox admission path. It is not an atomic multi-actor transaction: the receipt distinguishes delivered, terminated, and rejected targets. Dead actors are pruned both when termination is finalized and when a fan-out observes termination. Cross-runtime groups require an explicit bridge.
 
-Large fan-outs cooperatively yield after each dispatcher-throughput-sized chunk so one group operation cannot hold a cooperative actor turn indefinitely merely by iterating a huge membership list.
+A host/supervisor may synchronously fan out to a larger group because that work does not occupy an actor carrier. Inside an actor turn, synchronous fan-out larger than the configured throughput budget is rejected. A future continuation-based `broadcastAsync` can chunk larger actor-originated fan-outs without weakening this fairness invariant.
 
 Erlang-style selective-receive queue scans are not a scheduler primitive; classify traffic with typed messages, separate actors/mailboxes, or explicit groups.
 
