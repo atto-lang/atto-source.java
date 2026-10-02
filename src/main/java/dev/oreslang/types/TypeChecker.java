@@ -1490,6 +1490,13 @@ public final class TypeChecker {
                     bindings,
                     callableLabel + " argument " + (i + 1));
         }
+        for (String generic : methodGenerics) {
+            if (!bindings.containsKey(generic)) {
+                throw new IllegalArgumentException(
+                        callableLabel + " cannot infer generic '" + generic
+                                + "' from the supplied arguments");
+            }
+        }
         return Map.copyOf(bindings);
     }
 
