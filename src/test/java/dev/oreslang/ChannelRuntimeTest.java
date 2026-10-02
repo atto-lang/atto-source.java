@@ -204,4 +204,45 @@ final class ChannelRuntimeTest {
                 false,
                 0));
     }
+
+    @Test
+    void hostCannotForgePendingChannelCompletion() {
+        ChannelRuntime runtime = new ChannelRuntime();
+        var channel = runtime.<String>channel(0);
+
+        CompletableFuture<String> receive = channel.receive().toCompletableFuture();
+        assertThrows(UnsupportedOperationException.class, () -> receive.complete("forged"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> receive.completeExceptionally(new IllegalStateException("forged")));
+        assertThrows(UnsupportedOperationException.class,
+                () -> receive.completeAsync(() -> "forged"));
+        assertThrows(UnsupportedOperationException.class,
+                () -> receive.completeOnTimeout("forged", 1, TimeUnit.MILLISECONDS));
+        assertThrows(UnsupportedOperationException.class,
+                () -> receive.orTimeout(1, TimeUnit.MILLISECONDS));
+        assertFalse(receive.isDone());
+
+        var sent = channel.trySend("real");
+        assertTrue(sent.sent());
+        assertEquals("real", receive.join());
+    }
+
+    @Test
+    void hostCannotForgePendingSelectCompletion() {
+        ChannelRuntime runtime = new ChannelRuntime();
+        var channel = runtime.<String>channel(0);
+
+        CompletableFuture<ChannelRuntime.SelectResult> selected = runtime.select(
+                List.of(new ChannelRuntime.ReceiveCase<>(channel)),
+                false,
+                0).toCompletableFuture();
+
+        assertThrows(UnsupportedOperationException.class,
+                () -> selected.complete(ChannelRuntime.SelectResult.defaultResult()));
+        assertFalse(selected.isDone());
+
+        assertTrue(channel.trySend("real").sent());
+        assertEquals("real", selected.join().receivedValue());
+    }
+
 }
