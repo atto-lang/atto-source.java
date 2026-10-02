@@ -1001,6 +1001,7 @@ public final class Parser {
         if (check(AT) || check(PUB) || check(PRIVATE) || check(STATIC)
                 || check(CONSTRUCTOR) || check(FNC) || check(ROUTINE) || check(DEFINE)
                 || check(INIT) || check(TYPE) || check(INTERFACE) || check(LBRACKET)
+                || (check(IDENT) && checkNext(LPAREN))
                 || isFieldDeclarationStart()) return;
         throw error(peek(), "expected ';' or the next class/module member");
     }
