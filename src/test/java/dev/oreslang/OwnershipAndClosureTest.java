@@ -198,6 +198,54 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void aliasedBorrowOfLocalCannotEscapeFunction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad() => &Bar {
+                          let Bar b = new Bar();
+                          val &Bar read = &b;
+                          return read;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("outlive its owner"));
+    }
+
+    @Test
+    void aggregateBorrowsAreRejectedUntilTheirLifetimesAreTracked() {
+        IllegalArgumentException tupleError = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                        end
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val pair = (&b, 1);
+                          stdio.println(pair[1]);
+                          return;
+                        }
+                        """)));
+        assertTrue(tupleError.getMessage().contains("borrows inside tuple"));
+
+        IllegalArgumentException listError = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                        end
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val values = [&b];
+                          stdio.println(values[0]);
+                          return;
+                        }
+                        """)));
+        assertTrue(listError.getMessage().contains("borrows inside list"));
+    }
+
+    @Test
     void borrowedParameterCanBeReturned() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Bar
