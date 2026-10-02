@@ -285,4 +285,67 @@ final class PrivateActorIsolationTest {
             assertTrue(sharedRef.awaitTermination(2, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void privateActorCannotEscalateBySpawningSharedChild() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnPrivate(factoryContext -> (message, context) -> {
+                try {
+                    context.runtime().spawnShared(
+                            childContext -> (childMessage, childTurn) -> { });
+                    throw new AssertionError("private actor spawned shared child");
+                } catch (SecurityException expected) {
+                    if (!expected.getMessage().contains("SHARED_MEMORY")) throw expected;
+                }
+                context.self().stop();
+            });
+
+            parent.send("check");
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void privateChildInheritsParentStrippedCapabilities() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnPrivate(factoryContext -> (message, context) -> {
+                ActorRuntime.ActorRef<String> child = context.runtime().spawnPrivate(childContext -> {
+                    if (childContext.policy().allows(IsolatePolicy.Capability.SHARED_MEMORY)) {
+                        throw new AssertionError("private child regained SHARED_MEMORY");
+                    }
+                    if (childContext.policy().allows(IsolatePolicy.Capability.ACTOR_SHARE_READONLY)) {
+                        throw new AssertionError("private child regained ACTOR_SHARE_READONLY");
+                    }
+                    return (childMessage, childTurn) -> childTurn.self().stop();
+                });
+                child.send("run");
+                context.self().stop();
+            });
+
+            parent.send("run");
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void actorCodeCannotUseTrustedHostConstructionEscapeHatches() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var parent = runtime.<String>spawnPrivate(factoryContext -> (message, context) -> {
+                assertThrows(SecurityException.class, () ->
+                        context.runtime().spawnPrivateTrusted(
+                                childContext -> (childMessage, childTurn) -> { }));
+                assertThrows(SecurityException.class, () ->
+                        context.runtime().spawnPrivate(
+                                () -> (childMessage, childTurn) -> { }));
+                context.self().stop();
+            });
+
+            parent.send("check");
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+
 }
