@@ -601,7 +601,7 @@ public final class TypeChecker {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
             Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
             for (int i = 1; i < list.elements().size(); i++) {
-                element = commonType(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
             }
             return new ListType(element);
         }
@@ -720,11 +720,18 @@ public final class TypeChecker {
         return type instanceof StringLiteral ? Primitive.STRING : type;
     }
 
-    private Type commonType(Type a, Type b) {
+    private Type collectionElementJoin(Type a, Type b) {
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
         return Types.unionOf(a, b);
+    }
+
+    private Type commonType(Type a, Type b) {
+        if (assignable(b, a) && assignable(a, b)) return a;
+        if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
+        if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
+        return Unknown.INSTANCE;
     }
 
     private Type numericJoin(Type left, Type right, String op) {
