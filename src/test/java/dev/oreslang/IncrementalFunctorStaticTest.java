@@ -1,6 +1,9 @@
 package dev.oreslang;
 
 import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.HotReloadManager;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -80,6 +83,22 @@ final class IncrementalFunctorStaticTest {
         assertTrue(third.rebuilt("math.ores"));
         assertTrue(third.rebuilt("app.ores"));
         assertTrue(third.reused("unrelated.ores"));
+    }
+
+    @Test
+    void compiledUnitsCanStageDirectlyAsHotReloadGenerations() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        var build = compiler.compile(Map.of("worker.ores", """
+                pub routine main() => void { return; }
+                """));
+        var unit = build.units().get("worker.ores");
+
+        try (HotReloadManager hot = new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            var generation = hot.load(unit);
+            assertEquals("worker.ores", generation.codeUnitId());
+            assertEquals(unit.sourceDigest(), generation.sha256());
+            assertFalse(generation.started());
+        }
     }
 
     @Test
