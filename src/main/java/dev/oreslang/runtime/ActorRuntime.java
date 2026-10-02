@@ -316,7 +316,10 @@ public final class ActorRuntime implements AutoCloseable {
     public <M> ActorRef<M> spawn(
             MemoryPolicy memoryPolicy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
-        return spawn(policyCeiling, memoryPolicy, behaviorFactory);
+        return spawn(
+                policyForMemoryMode(policyCeiling, memoryPolicy.mode()),
+                memoryPolicy,
+                behaviorFactory);
     }
 
     public <M> ActorRef<M> spawn(
@@ -433,8 +436,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private IsolatePolicy policyForMemoryMode(IsolatePolicy source, MemoryMode mode) {
         if (mode == MemoryMode.SHARED_HEAP) return source;
-        java.util.Set<IsolatePolicy.Capability> caps =
-                java.util.EnumSet.copyOf(source.capabilities());
+        java.util.EnumSet<IsolatePolicy.Capability> caps =
+                java.util.EnumSet.noneOf(IsolatePolicy.Capability.class);
+        caps.addAll(source.capabilities());
         caps.remove(IsolatePolicy.Capability.SHARED_MEMORY);
         caps.remove(IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
         return new IsolatePolicy(
