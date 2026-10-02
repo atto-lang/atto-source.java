@@ -988,7 +988,28 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
         ActorCell<?> cell = actors.get(ref.id());
-        if (cell != null) cell.stop();
+        if (cell == null) return;
+
+        cell.stop();
+
+        // A host/supervisor stop is a synchronization point: once it returns,
+        // private actor memory and actor-count quota have been reclaimed. A
+        // self-stop from inside the actor turn cannot wait for itself; endTurn()
+        // finalizes it immediately after the current turn unwinds.
+        if (currentActor.get() == cell) return;
+
+        try {
+            cell.awaitFinalized(CLOSE_WAIT_NANOS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "interrupted while waiting for actor " + ref.id() + " to finalize",
+                    interrupted);
+        }
+        if (!cell.finalized()) {
+            throw new IllegalStateException(
+                    "actor " + ref.id() + " did not finalize within the stop deadline");
+        }
     }
 
     private ActorTerminatedException terminated(ActorRef<?> ref) {
