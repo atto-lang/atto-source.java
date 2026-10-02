@@ -219,7 +219,9 @@ public final class ProcessSingletonRegistry {
         }
 
         private boolean retryableInitializationFailure() {
-            return terminalFailure != null && !initialized;
+            return terminalFailure != null
+                    && !initialized
+                    && !(terminalFailure instanceof VirtualMachineError);
         }
 
         private void ensureStarted() {
