@@ -160,6 +160,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Env state = new Env(null);
+            actorModuleStates.put(module.name(), state);
             try {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FieldDecl field) {
@@ -171,8 +172,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Ast.InitDecl init = findInit(module);
                 if (init != null) executeInitializer(init, state);
-                actorModuleStates.put(module.name(), state);
                 return state;
+            } catch (RuntimeException | Error failure) {
+                actorModuleStates.remove(module.name(), state);
+                throw failure;
             } finally {
                 actorModuleInitializing.remove(module.name());
             }
