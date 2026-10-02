@@ -129,11 +129,13 @@ public final class GpuKernelCompiler {
     }
 
     private void putNamed(String qualified, String shortName, Target target) {
-        namedByQualifiedName.put(qualified, target);
-        Target previous = namedByShortName.putIfAbsent(shortName, target);
+        String qualifiedKey = callKey(qualified, target.parameters.size());
+        String shortKey = callKey(shortName, target.parameters.size());
+        namedByQualifiedName.put(qualifiedKey, target);
+        Target previous = namedByShortName.putIfAbsent(shortKey, target);
         if (previous != null && previous != target) {
-            ambiguousNamed.add(shortName);
-            namedByShortName.remove(shortName);
+            ambiguousNamed.add(shortKey);
+            namedByShortName.remove(shortKey);
         }
     }
 
@@ -358,7 +360,7 @@ public final class GpuKernelCompiler {
             Ast.TypeRef result = resolvedResult(target);
             out.append("static inline ").append(cScalar(result)).append(' ')
                     .append(target.helperSymbol).append('(')
-                    .append(parameterList(target.parameters)).append(");\n");
+                    .append(parameterList(target.parameters, target.module)).append(");\n");
         }
         if (!namedTargets.isEmpty()) out.append('\n');
 
@@ -383,8 +385,8 @@ public final class GpuKernelCompiler {
     private void emitHelper(StringBuilder out, Target target, Ast.TypeRef resultType) {
         out.append("static inline ").append(cScalar(resultType)).append(' ')
                 .append(target.helperSymbol).append('(')
-                .append(parameterList(target.parameters)).append(") {\n");
-        LoweringEnv env = parameterEnv(target.parameters);
+                .append(parameterList(target.parameters, target.module)).append(") {\n");
+        LoweringEnv env = parameterEnv(target.parameters, target.module);
         emitStatements(out, target.module, target.body, env, "  ");
         out.append("}\n\n");
     }
@@ -394,7 +396,7 @@ public final class GpuKernelCompiler {
         ExecutionShape shape = parallelLoop == null ? ExecutionShape.SINGLE_WORK_ITEM : ExecutionShape.DATA_PARALLEL_1D;
 
         out.append("__kernel void ").append(target.kernelSymbol).append('(');
-        String params = parameterList(target.parameters);
+        String params = parameterList(target.parameters, target.module);
         out.append(params);
         if (!isVoid(resultType)) {
             if (!params.isEmpty()) out.append(", ");
@@ -404,7 +406,7 @@ public final class GpuKernelCompiler {
 
         String launchExtent = null;
         if (parallelLoop != null) {
-            LoweringEnv env = parameterEnv(target.parameters);
+            LoweringEnv env = parameterEnv(target.parameters, target.module);
             Ast.BindingStmt initializer = (Ast.BindingStmt) parallelLoop.loop.initializer();
             Ast.TypeRef inductionType = initializer.declaredType() == null ? Ast.TypeRef.simple("i64") : resolveAlias(initializer.declaredType(), target.module);
             env.define(initializer.name(), inductionType);
@@ -426,7 +428,8 @@ public final class GpuKernelCompiler {
         }
         out.append("}\n\n");
 
-        List<GpuParameter> parameters = target.parameters.stream().map(this::metadataParameter).toList();
+        List<GpuParameter> parameters = target.parameters.stream()
+                .map(param -> metadataParameter(param, target.module)).toList();
         GpuKernel meta = new GpuKernel(
                 target.sourceName,
                 target.helperSymbol,
@@ -597,12 +600,12 @@ public final class GpuKernelCompiler {
     }
 
     private Ast.TypeRef inferLambdaResult(Target target) {
-        LoweringEnv env = parameterEnv(target.parameters);
+        LoweringEnv env = parameterEnv(target.parameters, target.module);
         ArrayList<Ast.TypeRef> returns = new ArrayList<>();
         collectReturnTypes(target.module, target.body, env, returns);
         if (returns.isEmpty()) return Ast.TypeRef.simple("void");
         Ast.TypeRef result = returns.getFirst();
-        for (int i = 1; i < returns.size(); i++) result = joinTypes(result, returns.get(i));
+        for (int i = 1; i < returns.size(); i++) result = joinTypes(target.module, result, returns.get(i));
         result = resolveAlias(result, target.module);
         if (isBuffer(result) || result.isTupleType()) {
             throw new IllegalArgumentException("GPU lambdas must return a scalar or void; write buffer results through mutable parameters");
@@ -657,11 +660,11 @@ public final class GpuKernelCompiler {
             if (Set.of(",", "|", "==", "!=", "<", "<=", ">", ">=").contains(binary.operator())) {
                 return Ast.TypeRef.simple("bool");
             }
-            return joinTypes(inferExprType(module, binary.left(), env), inferExprType(module, binary.right(), env));
+            return joinTypes(module, inferExprType(module, binary.left(), env), inferExprType(module, binary.right(), env));
         }
         if (expr instanceof Ast.AssignExpr assignment) return inferExprType(module, assignment.value(), env);
         if (expr instanceof Ast.ConditionalExpr conditional) {
-            return joinTypes(inferExprType(module, conditional.whenTrue(), env), inferExprType(module, conditional.whenFalse(), env));
+            return joinTypes(module, inferExprType(module, conditional.whenTrue(), env), inferExprType(module, conditional.whenFalse(), env));
         }
         if (expr instanceof Ast.IndexExpr indexed) {
             Ast.TypeRef receiver = resolveAlias(inferExprType(module, indexed.receiver(), env), module);
@@ -676,10 +679,10 @@ public final class GpuKernelCompiler {
         throw new IllegalArgumentException("GPU lowering cannot infer expression type for " + expr.getClass().getSimpleName());
     }
 
-    private Ast.TypeRef joinTypes(Ast.TypeRef a, Ast.TypeRef b) {
-        a = resolveAlias(a, null);
-        b = resolveAlias(b, null);
-        if (sameType(a, b)) return a;
+    private Ast.TypeRef joinTypes(String module, Ast.TypeRef a, Ast.TypeRef b) {
+        a = resolveAlias(a, module);
+        b = resolveAlias(b, module);
+        if (sameType(module, a, b)) return a;
         if (isNumericScalar(a) && isNumericScalar(b)) {
             int rankA = numericRank(a), rankB = numericRank(b);
             return rankA >= rankB ? a : b;
@@ -706,58 +709,63 @@ public final class GpuKernelCompiler {
     }
 
     private Target resolveCallTarget(String module, Ast.CallExpr call) {
+        int arity = call.arguments().size();
         if (call.callee() instanceof Ast.NameExpr name) {
-            Target local = namedByQualifiedName.get(module + "." + name.name());
+            Target local = namedByQualifiedName.get(callKey(module + "." + name.name(), arity));
             if (local != null) return local;
-            if (!ambiguousNamed.contains(name.name())) return namedByShortName.get(name.name());
+            String shortKey = callKey(name.name(), arity);
+            if (!ambiguousNamed.contains(shortKey)) return namedByShortName.get(shortKey);
             return null;
         }
         if (call.callee() instanceof Ast.MemberExpr member && member.receiver() instanceof Ast.NameExpr owner) {
-            Target moduleFunction = namedByQualifiedName.get(owner.name() + "." + member.member());
+            Target moduleFunction = namedByQualifiedName.get(callKey(owner.name() + "." + member.member(), arity));
             if (moduleFunction != null) return moduleFunction;
 
             String classShort = owner.name() + "." + member.member();
-            Target localStatic = namedByQualifiedName.get(module + "." + classShort);
-            if (localStatic != null && localStatic.parameters.size() == call.arguments().size()) return localStatic;
-            if (!ambiguousNamed.contains(classShort)) {
-                Target global = namedByShortName.get(classShort);
-                if (global != null && global.parameters.size() == call.arguments().size()) return global;
-            }
+            Target localStatic = namedByQualifiedName.get(callKey(module + "." + classShort, arity));
+            if (localStatic != null) return localStatic;
+            String shortKey = callKey(classShort, arity);
+            if (!ambiguousNamed.contains(shortKey)) return namedByShortName.get(shortKey);
         }
         return null;
     }
 
-    private String parameterList(List<Ast.Param> parameters) {
-        return String.join(", ", parameters.stream().map(this::cParameter).toList());
+    private static String callKey(String name, int arity) {
+        return name + "#" + arity;
+    }
+
+    private String parameterList(List<Ast.Param> parameters, String module) {
+        return String.join(", ", parameters.stream().map(param -> cParameter(param, module)).toList());
     }
 
     private String argumentNames(List<Ast.Param> parameters) {
         return String.join(", ", parameters.stream().map(param -> sanitize(param.name())).toList());
     }
 
-    private String cParameter(Ast.Param param) {
-        Ast.TypeRef type = resolveAlias(param.type(), null);
+    private String cParameter(Ast.Param param, String module) {
+        Ast.TypeRef type = resolveAlias(param.type(), module);
         if (isBuffer(type)) {
-            Ast.TypeRef element = resolveAlias(type.arguments().getFirst(), null);
+            Ast.TypeRef element = resolveAlias(type.arguments().getFirst(), module);
             return "__global " + (param.mutable() ? "" : "const ") + cScalar(element)
                     + "* restrict " + sanitize(param.name());
         }
         return cScalar(type) + " " + sanitize(param.name());
     }
 
-    private GpuParameter metadataParameter(Ast.Param param) {
-        Ast.TypeRef type = resolveAlias(param.type(), null);
+    private GpuParameter metadataParameter(Ast.Param param, String module) {
+        Ast.TypeRef type = resolveAlias(param.type(), module);
+        String declaration = cParameter(param, module);
         return new GpuParameter(
                 param.name(),
                 oresType(type),
-                cParameter(param).substring(0, cParameter(param).lastIndexOf(' ')),
+                declaration.substring(0, declaration.lastIndexOf(' ')),
                 isBuffer(type),
                 param.mutable());
     }
 
-    private LoweringEnv parameterEnv(List<Ast.Param> parameters) {
+    private LoweringEnv parameterEnv(List<Ast.Param> parameters, String module) {
         LoweringEnv env = new LoweringEnv(null);
-        for (Ast.Param param : parameters) env.define(param.name(), resolveAlias(param.type(), null));
+        for (Ast.Param param : parameters) env.define(param.name(), resolveAlias(param.type(), module));
         return env;
     }
 
@@ -823,8 +831,8 @@ public final class GpuKernelCompiler {
         return type;
     }
 
-    private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
-        return oresType(resolveAlias(a, null)).equals(oresType(resolveAlias(b, null)));
+    private boolean sameType(String module, Ast.TypeRef a, Ast.TypeRef b) {
+        return oresType(resolveAlias(a, module)).equals(oresType(resolveAlias(b, module)));
     }
 
     private String oresType(Ast.TypeRef type) {
