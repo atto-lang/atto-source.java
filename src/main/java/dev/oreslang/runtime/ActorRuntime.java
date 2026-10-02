@@ -275,7 +275,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("sendable graph exceeds maximum freeze node count " + MAX_FREEZE_NODES);
         }
 
-        if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+        if (value == null) {
+            throw new IllegalArgumentException("null is not Sendable; use Option<T> instead");
+        }
+
+        if (value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
@@ -312,7 +316,11 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    frozen.put(freeze(entry.getKey(), state, depth + 1), freeze(entry.getValue(), state, depth + 1));
+                    Object frozenKey = freeze(entry.getKey(), state, depth + 1);
+                    Object frozenValue = freeze(entry.getValue(), state, depth + 1);
+                    if (frozen.putIfAbsent(frozenKey, frozenValue) != null) {
+                        throw new IllegalArgumentException("distinct map keys collapse to the same frozen key");
+                    }
                 }
                 return Map.copyOf(frozen);
             } finally {
