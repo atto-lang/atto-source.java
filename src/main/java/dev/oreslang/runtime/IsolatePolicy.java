@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import dev.oreslang.OresLanguage;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.EnvironmentAccess;
+import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotAccess;
 import org.graalvm.polyglot.SandboxPolicy;
@@ -98,12 +99,23 @@ public record IsolatePolicy(
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile) {
+        return restrictedContextBuilder(profile, null);
+    }
+
+    /**
+     * Builds a restricted Oreslang context inside an explicitly supplied
+     * tenant Engine. Multiple contexts using the same isolated Engine share
+     * that tenant isolate heap, GC and JIT domain.
+     */
+    public Context.Builder restrictedContextBuilder(ExecutionProfile profile, Engine engine) {
         HostAccess hostAccess = adversarial
                 ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
                 : HostAccess.NONE;
 
-        Context.Builder builder = Context.newBuilder(OresLanguage.ID)
-                .allowHostAccess(hostAccess)
+        Context.Builder builder = Context.newBuilder(OresLanguage.ID);
+        if (engine != null) builder.engine(engine);
+
+        builder.allowHostAccess(hostAccess)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
                 .allowEnvironmentAccess(EnvironmentAccess.NONE)
                 .allowNativeAccess(false)
@@ -117,8 +129,8 @@ public record IsolatePolicy(
         /*
          * Graal's engine.IsolateLibrary option is experimental in 25.x. Opt in
          * only when the embedding process explicitly supplies a polyglot
-         * isolate library; ordinary strict/adversarial contexts remain on the
-         * non-experimental builder path.
+         * isolate library; ordinary contexts remain on the non-experimental
+         * builder path.
          */
         if (System.getProperty("polyglot.engine.IsolateLibrary") != null) {
             builder.allowExperimentalOptions(true);
@@ -128,8 +140,6 @@ public record IsolatePolicy(
             long guestHeap = Math.max(8L * 1024 * 1024, maxHeapBytes * 3 / 4);
             long maxOutput = allows(Capability.STDOUT) ? 1024L * 1024 : 0L;
             builder.sandbox(SandboxPolicy.UNTRUSTED)
-                    .spawnIsolate(true)
-                    .option("engine.MaxIsolateMemory", bytes(maxHeapBytes))
                     .option("sandbox.MaxHeapMemory", bytes(guestHeap))
                     .option("sandbox.MaxCPUTime", duration(maxWallTime))
                     .option("sandbox.MaxASTDepth", "256")
@@ -138,7 +148,26 @@ public record IsolatePolicy(
                     .option("sandbox.MaxErrorStreamSize", "64KB");
         }
 
+        // With an implicit engine this policy owns the isolate decision.
+        // With an explicit tenant engine the engine already owns that boundary.
+        if (engine == null && adversarial) {
+            builder.spawnIsolate(true)
+                    .option("engine.MaxIsolateMemory", bytes(maxHeapBytes));
+        }
+
         return builder;
+    }
+
+    /**
+     * One of these should be created per customer/tenant security domain.
+     * Contexts and Oreslang actors created beneath it remain inside the same
+     * physical Graal isolate unless the host deliberately creates another
+     * tenant engine.
+     */
+    public Engine.Builder isolatedEngineBuilder() {
+        return Engine.newBuilder(OresLanguage.ID)
+                .spawnIsolate(true)
+                .option("engine.MaxIsolateMemory", bytes(maxHeapBytes));
     }
 
     public boolean allows(Capability capability) {
