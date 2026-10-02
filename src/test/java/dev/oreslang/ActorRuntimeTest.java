@@ -15,6 +15,32 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
     @Test
+    void actorCannotInvokeClosureCapturedForeignActorRef() throws Exception {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            CountDownLatch targetReceived = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var target = runtimeA.<String>spawn(() -> (message, context) -> targetReceived.countDown());
+            var foreignCaller = runtimeB.<String>spawn(() -> (message, context) -> {
+                try {
+                    target.send("cross-runtime");
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            foreignCaller.send("go");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, failure.get());
+            assertEquals(1L, targetReceived.getCount());
+        }
+    }
+
+    @Test
     void freezesMessagesBeforeDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
