@@ -1,4 +1,4 @@
-# Oreslang language design (v0.4)
+# Oreslang language design (v0.5)
 
 Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
@@ -313,7 +313,9 @@ The static checker rejects direct or indirect call cycles that contain a routine
 Lambdas may recurse when their binding supplies an explicit function type so the closure's own signature is available while its body is checked:
 
 ```ores
-let Fnc<int, int> fact = (int n) -> n == 0 ? 1 : n * fact(n - 1);
+let Fnc<int, int> fact = |int n| -> {
+  return n == 0 ? 1 : n * fact(n - 1);
+};
 ```
 
 ## Semicolons
@@ -468,9 +470,10 @@ Actor cells may receive a policy stricter than their parent runtime. Their mailb
 1. source arrives as data;
 2. syntax/type/capability checks run;
 3. a fresh restricted guest context is created;
-4. the new generation is evaluated and atomically becomes active;
-5. the previous generation may remain alive while requests/actors drain;
-6. the supervisor explicitly retires it.
+4. the validated generation is staged and atomically becomes active without executing guest code;
+5. the supervisor explicitly starts the generation when its actor/request boundary is ready;
+6. the previous generation may remain alive while requests/actors drain;
+7. the supervisor explicitly retires it.
 
 Each generation receives a monotonically increasing id and SHA-256 source digest.
 
@@ -539,3 +542,130 @@ val Fnc<int> callback = box.get;
 ```
 
 Oreslang creates a small bound-method value containing only the receiver plus method identity. The underlying method definition remains shared by every instance. Calling `callback()` always uses the original `box`; there is no JavaScript-style dynamic `this` rebinding.
+
+
+## Incremental compilation and code units
+
+Oreslang's canonical compiler output is **decomposable**. A monolithic native executable is a packaging choice, not the semantic compilation unit.
+
+Each source file is a separately versioned **code unit**:
+
+- source digest;
+- checked AST / future serialized Ores IR;
+- explicit import dependencies;
+- package identity;
+- zero or more flat modules;
+- optional flat source namespace.
+
+With no explicit namespace, the file/code-unit identity is its default package identity. An explicit namespace is written once at the top of the file:
+
+```ores
+namespace payments;
+
+import fnc {authorize} from "./auth.ores";
+
+pub fnc charge() => void {
+  return;
+}
+```
+
+Namespaces are flat. `namespace company.payments;` is illegal. Modules are also flat: a module name is one identifier and a module may not contain another module.
+
+The incremental compiler currently uses conservative dependency invalidation:
+
+1. hash every source unit;
+2. mark changed/new units dirty;
+3. build the reverse import graph;
+4. mark the transitive reverse-dependency closure dirty;
+5. typecheck/rebuild only dirty units;
+6. reuse the previous compiled unit object for everything else.
+
+This is safe before ABI hashing exists. A later optimization may add a public-interface digest so implementation-only edits do not invalidate dependents.
+
+Actors and isolates consume versioned code-unit generations. A hot reload therefore does **not** require rebuilding or replacing every actor: changed units receive new generations, unchanged units can remain shared, and supervisors migrate actors/requests according to policy.
+
+A deployment may still aggregate many code units into one Native Image for startup/distribution reasons. That aggregate is never the only compiler artifact and must not erase per-unit identities or dependency metadata.
+
+## Static class functions
+
+Instance methods continue to omit `fnc`:
+
+```ores
+define class Counter
+  read() => int {
+    return self.value;
+  }
+end
+```
+
+Class-level functions are not methods. They are declared with the explicit `static fnc` form:
+
+```ores
+define class Counter
+  pub static fnc twice(int value) => int {
+    return value * 2;
+  }
+end
+
+val doubled = Counter.twice(21);
+```
+
+A static class function:
+
+- is resolved through the class namespace;
+- has no implicit or explicit `self`;
+- cannot be invoked through an instance;
+- may be extracted as a function value from the class namespace;
+- has one shared definition, just like any other named function.
+
+Static data fields are intentionally not part of v0.5 yet; `static` on a class binding is rejected rather than silently acquiring Java-like global mutable state semantics.
+
+## Function types, functors, and arrows
+
+The arrows have distinct jobs:
+
+- `=>` declares the return type of a **named callable**.
+- `->` forms a **function type** or **lambda**.
+
+Function aliases can use `typeof fnc`:
+
+```ores
+type F = typeof fnc() -> int;
+type Predicate = typeof fnc(bool value) -> bool;
+```
+
+The shorter inline function type is also valid:
+
+```ores
+fnc sink() => ((bool foo) -> void) {
+  return |foo| -> {
+    stdio.println(foo);
+    return;
+  };
+}
+```
+
+Parameter names inside function types are documentation-only; structural function compatibility is determined by parameter/result types.
+
+The canonical lambda syntax is pipe-delimited and block-only:
+
+```ores
+fnc find(bool found) => F {
+  return || -> {
+    return found ? 5 : 6;
+  };
+}
+
+fnc callback() => ((bool foo) -> void) {
+  return |foo| -> {
+    stdio.println(foo);
+    return;
+  };
+}
+```
+
+Lambda parameters may be inferred from a contextual function type (`|foo|`) or typed explicitly (`|bool foo|`).
+
+There are no expression-body lambdas. Every lambda has braces. When the contextual result type is non-void, every control-flow path must contain an explicit `return <value>;`. Void lambdas may use `return;`.
+
+This means higher-order functions and functors do not introduce a second return convention: named functions, methods, static functions, and anonymous functions all use the same explicit `return` statement semantics.
