@@ -56,4 +56,39 @@ final class PolyglotFeatureTest {
         assertTrue(text.contains("7"));
         assertTrue(text.contains("ores"));
     }
+    @Test
+    void executesInheritedGenericConstructorFields() throws Exception {
+        String program = """
+                define class Parent<T> as
+                  pub val T value;
+
+                  pub get() => T {
+                    return self.value;
+                  }
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                pub fnc main() => void {
+                  val child = new Child<>(7);
+                  stdio.stdout.write(child.get());
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "generic-inheritance.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("7"));
+    }
 }
