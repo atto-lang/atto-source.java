@@ -221,13 +221,13 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() != null) {
-                if (ret.value() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-                    VarState owner = borrowOwner(unary.operand(), scope);
-                    if (owner.origin == Origin.LOCAL) {
-                        throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
-                    }
+                ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if ((returned.kind == ValueKind.IMM_BORROW || returned.kind == ValueKind.MUT_BORROW)
+                        && returned.borrowSource != null
+                        && !borrowMayEscape(returned.borrowSource)) {
+                    throw error("cannot return a borrow of owned value '" + returned.borrowSource.debugName
+                            + "'; borrowed value would outlive its owner");
                 }
-                checkExpr(ret.value(), scope, true);
             }
             return;
         }
@@ -638,6 +638,15 @@ public final class OwnershipChecker {
         } else if (owner.mutableBorrowed) {
             throw error("cannot immutably borrow '" + owner.debugName + "' while a mutable borrow is active");
         }
+    }
+
+    private boolean borrowMayEscape(VarState source) {
+        if (source.origin == Origin.MODULE) return true;
+        if (source.origin == Origin.PARAM) {
+            return source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
+                    || (source.type != null && source.type.isBorrow());
+        }
+        return false;
     }
 
     private void beginPersistentBorrow(VarState owner, boolean mutable) {
