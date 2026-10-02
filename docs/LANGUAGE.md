@@ -280,7 +280,18 @@ shared actor Account {
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
 - no lock is required around ordinary actor-owned fields, including fields of a shared actor.
 
-Private actors do not accept explicitly shared mutable memory. Their messages are isolation-copied/frozen at the runtime boundary. Shared actors may additionally receive:
+Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
+
+The slice has two simultaneous limits:
+
+- a per-actor limit from that actor's `IsolatePolicy.maxHeapBytes()`;
+- an aggregate private-actor memory budget from the parent runtime policy.
+
+This prevents many private actors from multiplying the parent's memory ceiling. Destroying the actor closes its slice and releases its accounting.
+
+The JVM backend's slice is a language/runtime ownership and accounting boundary, not a separate Java GC heap. When physical heap separation is required for adversarial tenant code, the same private-actor semantics must be backed by a separate Graal polyglot/native isolate.
+
+Shared actors may additionally receive:
 
 1. deeply immutable `Shared<T>` values; and
 2. explicit synchronized shared cells.
