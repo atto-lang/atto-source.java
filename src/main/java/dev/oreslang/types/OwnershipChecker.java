@@ -890,6 +890,21 @@ public final class OwnershipChecker {
             Ast.TypeRef source,
             int index,
             String name) {
+        Ast.Expr initializer = destructure.initializer();
+
+        if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+            if (initializer instanceof Ast.TupleExpr tuple && index < tuple.elements().size()) {
+                return inferFieldType(tuple.elements().get(index));
+            }
+            if (initializer instanceof Ast.ListExpr list && index < list.elements().size()) {
+                return inferFieldType(list.elements().get(index));
+            }
+        } else if (initializer instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (field.name().equals(name)) return inferFieldType(field.value());
+            }
+        }
+
         if (source == null) return Ast.TypeRef.inferred();
         if (source.isBorrow()) source = source.borrowedTarget();
 
