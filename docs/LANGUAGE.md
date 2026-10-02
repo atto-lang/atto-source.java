@@ -278,6 +278,56 @@ The CPU/GPU boundary is an ownership boundary. Arguments are recursively copied/
 
 Known GPU signatures are checked statically as well. Numeric/decimal/complex/bool/string scalars, arrays/lists, tuples, and `Option<T>` composed from transferable values are accepted. Borrows, class/structural objects, class namespaces, and callable values are rejected at compile time. Generic and inferred signature positions remain legal so GPU callables still participate in Oreslang inference; their concrete runtime values must pass the same transfer validator before dispatch.
 
+### Core GPU containers: `GpuArray<T>` and `GpuStream<T>`
+
+Oreslang's core prelude contains two GPU-resident resource types. They are compiler/runtime built-ins rather than ordinary user classes, so they cannot be instantiated with `new`.
+
+`GpuArray<T>` is a GPU-resident random-access buffer. `GpuStream<T>` is a GPU-resident sequential stream. Their elements are **not processed by CPU guest code**. Indexing, indexed mutation, and `for-of` consumption are accepted only while type-checking a `gpu fnc`/`gpu routine`; the ordinary CPU evaluator also rejects those operations defensively.
+
+Explicit host/device transitions are named:
+
+```ores
+pub routine prepare() => void {
+  val Array<int> host = arr[1, 2, 3, 4];
+
+  // Explicit CPU -> GPU copy.
+  val GpuArray<int> device = GpuArray.from_cpu(host);
+
+  // Still GPU-resident; creating/collecting the stream does not iterate on CPU.
+  val GpuStream<int> stream = device.stream();
+  val GpuArray<int> collected = stream.collect();
+
+  // Explicit GPU -> CPU copy/synchronization.
+  val Array<int> copied = collected.copy_to_cpu();
+  return;
+}
+```
+
+The equivalent static stream constructor is `GpuStream.from_array(device)`. `GpuArray.length()` exposes buffer metadata without exposing elements.
+
+GPU kernels consume these resources directly:
+
+```ores
+gpu fnc sum(GpuStream<int> values) => int {
+  let int total = 0;
+  for (val value of values) {
+    total = total + value;
+  }
+  return total;
+}
+
+gpu fnc increment(GpuArray<int> values) => void {
+  for (let i = 0; i < values.length(); i = i + 1) {
+    values[i] = values[i] + 1;
+  }
+  return;
+}
+```
+
+The current conservative GPU verifier permits GPU-side indexing/iteration but may reject method-style operations inside a GPU body until they receive dedicated lowering. CPU-side code must use `copy_to_cpu()` before indexing or iterating. `GpuStream` is never indexable.
+
+Device handles are bound to the backend that created them. Passing a `GpuArray` or `GpuStream` to a different installed backend fails rather than copying or falling back implicitly. Core GPU container APIs require the `GPU` isolate capability at admission and runtime.
+
 Class instance methods and `static fnc` members are not GPU entrypoints in v0.7; `gpu` is currently restricted to top-level/module `fnc` and `routine` declarations.
 
 ## Actors
@@ -292,7 +342,7 @@ Actors may run inside an isolate. Actor semantics never weaken isolate policy.
 
 ## Built-in globals
 
-`process` is an Oreslang runtime descriptor/capability facade, not unrestricted OS process access. `stdio` is capability-scoped standard IO. `print(value)` is shorthand for the output facade.
+`process` is an Oreslang runtime descriptor/capability facade, not unrestricted OS process access. `stdio` is capability-scoped standard IO. `print(value)` is shorthand for the output facade. `GpuArray` and `GpuStream` are implicit core GPU type namespaces exposed without imports.
 
 ## Compiler pipeline
 
