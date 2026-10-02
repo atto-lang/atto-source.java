@@ -405,6 +405,10 @@ public final class OwnershipChecker {
                 && factoryCall.member().equals("new")
                 && call.arguments().size() == 1) {
             ValueInfo owned = checkExpr(call.arguments().getFirst(), scope, true);
+            if (owned.type != null && owned.type.isBorrow()) {
+                throw error(factory.name()
+                        + ".new requires an owned value; borrowed values cannot become mutex state");
+            }
             if (containsMutexGuardType(owned.type)) {
                 throw error(factory.name() + ".new cannot hide a guard-bearing value");
             }
