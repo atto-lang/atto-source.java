@@ -29,7 +29,11 @@ public record IsolatePolicy(
         STDIN,
         STDOUT,
         PROCESS_INFO,
+        ACTOR_SPAWN,
+        ACTOR_SEND,
+        ACTOR_CONTROL,
         ACTOR_SHARE_READONLY,
+        GC_CONTROL,
         NETWORK,
         FILESYSTEM_READ,
         FILESYSTEM_WRITE,
@@ -69,7 +73,8 @@ public record IsolatePolicy(
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
                 Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO,
-                        Capability.ACTOR_SHARE_READONLY, Capability.HOT_CODE_LOAD),
+                        Capability.ACTOR_SPAWN, Capability.ACTOR_SEND, Capability.ACTOR_CONTROL,
+                        Capability.ACTOR_SHARE_READONLY, Capability.GC_CONTROL, Capability.HOT_CODE_LOAD),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 
