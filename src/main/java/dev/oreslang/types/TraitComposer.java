@@ -318,6 +318,8 @@ public final class TraitComposer {
         }
 
         private Ast.Program compose() {
+            validateNoTraitInstantiation();
+            validateNoTraitRuntimeTypes();
             List<Ast.ModuleDecl> modules = new ArrayList<>();
             for (Ast.ModuleDecl module : program.modules()) {
                 List<Ast.Decl> declarations = new ArrayList<>();
@@ -346,10 +348,311 @@ public final class TraitComposer {
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
 
-        private void indexTraits() {
+        private void validateNoTraitRuntimeTypes() {
             for (Ast.ModuleDecl module : program.modules()) {
                 for (Ast.Decl declaration : module.declarations()) {
+                    validateNoTraitRuntimeTypes(module.name(), declaration);
+                }
+            }
+        }
+
+        private void validateNoTraitRuntimeTypes(String moduleName, Ast.Decl declaration) {
+            if (declaration instanceof Ast.FunctionDecl function) {
+                Set<String> generics = Set.copyOf(function.genericParameters());
+                validateParams(moduleName, function.parameters(), generics, "function " + function.name());
+                validateTypeRef(moduleName, function.returnType(), generics, "function return " + function.name());
+                validateNoTraitRuntimeTypes(moduleName, function.body(), generics);
+            } else if (declaration instanceof Ast.InitDecl init) {
+                validateNoTraitRuntimeTypes(moduleName, init.body(), Set.of());
+            } else if (declaration instanceof Ast.FieldDecl field) {
+                validateTypeRef(moduleName, field.type(), Set.of(), "module field " + field.name());
+                if (field.initializer() != null) validateNoTraitRuntimeTypes(moduleName, field.initializer(), Set.of());
+            } else if (declaration instanceof Ast.ClassDecl klass) {
+                Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+                for (Ast.FieldDecl field : klass.fields()) {
+                    validateTypeRef(moduleName, field.type(), classGenerics, "class field " + klass.name() + "." + field.name());
+                    if (field.initializer() != null) validateNoTraitRuntimeTypes(moduleName, field.initializer(), classGenerics);
+                }
+                for (Ast.MethodDecl method : klass.methods()) {
+                    Set<String> generics = new LinkedHashSet<>(classGenerics);
+                    generics.addAll(method.genericParameters());
+                    validateTypeRef(moduleName, method.explicitReceiverType(), generics, "method receiver " + klass.name() + "." + method.name());
+                    validateParams(moduleName, method.parameters(), generics, "method " + klass.name() + "." + method.name());
+                    validateTypeRef(moduleName, method.returnType(), generics, "method return " + klass.name() + "." + method.name());
+                    validateNoTraitRuntimeTypes(moduleName, method.body(), generics);
+                }
+            } else if (declaration instanceof Ast.TraitDecl trait) {
+                Set<String> traitGenerics = Set.copyOf(trait.genericParameters());
+                for (Ast.FieldDecl field : trait.fields()) {
+                    validateTypeRef(moduleName, field.type(), traitGenerics, "trait field " + trait.name() + "." + field.name());
+                    if (field.initializer() != null) validateNoTraitRuntimeTypes(moduleName, field.initializer(), traitGenerics);
+                }
+                for (Ast.MethodDecl method : trait.methods()) {
+                    Set<String> generics = new LinkedHashSet<>(traitGenerics);
+                    generics.addAll(method.genericParameters());
+                    validateTypeRef(moduleName, method.explicitReceiverType(), generics, "trait receiver " + trait.name() + "." + method.name());
+                    validateParams(moduleName, method.parameters(), generics, "trait method " + trait.name() + "." + method.name());
+                    validateTypeRef(moduleName, method.returnType(), generics, "trait method return " + trait.name() + "." + method.name());
+                    validateNoTraitRuntimeTypes(moduleName, method.body(), generics);
+                }
+            } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                Set<String> interfaceGenerics = Set.copyOf(iface.genericParameters());
+                for (Ast.InterfaceMember member : iface.members()) {
+                    if (member instanceof Ast.InterfaceFunctionDecl function) {
+                        Set<String> generics = new LinkedHashSet<>(interfaceGenerics);
+                        generics.addAll(function.genericParameters());
+                        validateParams(moduleName, function.parameters(), generics, "interface function " + iface.name() + "." + function.name());
+                        validateTypeRef(moduleName, function.returnType(), generics, "interface function return " + iface.name() + "." + function.name());
+                    } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                        validateTypeRef(moduleName, field.type(), interfaceGenerics, "interface data requirement " + iface.name() + "." + field.name());
+                    }
+                }
+            } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                validateTypeRef(moduleName, alias.target(), Set.copyOf(alias.genericParameters()), "type alias " + alias.name());
+            }
+        }
+
+        private void validateNoTraitRuntimeTypes(
+                String moduleName,
+                List<Ast.Stmt> statements,
+                Set<String> generics) {
+            for (Ast.Stmt statement : statements) {
+                if (statement instanceof Ast.BindingStmt binding) {
+                    validateTypeRef(moduleName, binding.declaredType(), generics, "binding " + binding.name());
+                    validateNoTraitRuntimeTypes(moduleName, binding.initializer(), generics);
+                } else if (statement instanceof Ast.DestructureStmt destructure) {
+                    validateNoTraitRuntimeTypes(moduleName, destructure.initializer(), generics);
+                } else if (statement instanceof Ast.ReturnStmt returned && returned.value() != null) {
+                    validateNoTraitRuntimeTypes(moduleName, returned.value(), generics);
+                } else if (statement instanceof Ast.ExprStmt expression) {
+                    validateNoTraitRuntimeTypes(moduleName, expression.expression(), generics);
+                } else if (statement instanceof Ast.DeferStmt deferred) {
+                    validateNoTraitRuntimeTypes(moduleName, deferred.expression(), generics);
+                } else if (statement instanceof Ast.IfStmt conditional) {
+                    for (Ast.IfBranch branch : conditional.branches()) {
+                        validateNoTraitRuntimeTypes(moduleName, branch.condition(), generics);
+                        validateNoTraitRuntimeTypes(moduleName, branch.body(), generics);
+                    }
+                    validateNoTraitRuntimeTypes(moduleName, conditional.elseBody(), generics);
+                } else if (statement instanceof Ast.TryStmt attempted) {
+                    validateNoTraitRuntimeTypes(moduleName, attempted.body(), generics);
+                    validateNoTraitRuntimeTypes(moduleName, attempted.catchBody(), generics);
+                    validateNoTraitRuntimeTypes(moduleName, attempted.finallyBody(), generics);
+                } else if (statement instanceof Ast.ForOfStmt loop) {
+                    validateNoTraitRuntimeTypes(moduleName, loop.iterable(), generics);
+                    validateNoTraitRuntimeTypes(moduleName, loop.body(), generics);
+                } else if (statement instanceof Ast.ForStmt loop) {
+                    if (loop.initializer() != null) validateNoTraitRuntimeTypes(moduleName, List.of(loop.initializer()), generics);
+                    if (loop.condition() != null) validateNoTraitRuntimeTypes(moduleName, loop.condition(), generics);
+                    if (loop.update() != null) validateNoTraitRuntimeTypes(moduleName, loop.update(), generics);
+                    validateNoTraitRuntimeTypes(moduleName, loop.body(), generics);
+                }
+            }
+        }
+
+        private void validateNoTraitRuntimeTypes(
+                String moduleName,
+                Ast.Expr expression,
+                Set<String> generics) {
+            if (expression instanceof Ast.NewExpr created) {
+                validateTypeRef(moduleName, created.type(), generics, "constructor type");
+                for (Ast.Expr argument : created.arguments()) validateNoTraitRuntimeTypes(moduleName, argument, generics);
+            } else if (expression instanceof Ast.MemberExpr member) {
+                validateNoTraitRuntimeTypes(moduleName, member.receiver(), generics);
+            } else if (expression instanceof Ast.CallExpr call) {
+                validateNoTraitRuntimeTypes(moduleName, call.callee(), generics);
+                for (Ast.Expr argument : call.arguments()) validateNoTraitRuntimeTypes(moduleName, argument, generics);
+            } else if (expression instanceof Ast.BinaryExpr binary) {
+                validateNoTraitRuntimeTypes(moduleName, binary.left(), generics);
+                validateNoTraitRuntimeTypes(moduleName, binary.right(), generics);
+            } else if (expression instanceof Ast.UnaryExpr unary) {
+                validateNoTraitRuntimeTypes(moduleName, unary.operand(), generics);
+            } else if (expression instanceof Ast.AssignExpr assignment) {
+                validateNoTraitRuntimeTypes(moduleName, assignment.target(), generics);
+                validateNoTraitRuntimeTypes(moduleName, assignment.value(), generics);
+            } else if (expression instanceof Ast.ConditionalExpr conditional) {
+                validateNoTraitRuntimeTypes(moduleName, conditional.condition(), generics);
+                validateNoTraitRuntimeTypes(moduleName, conditional.whenTrue(), generics);
+                validateNoTraitRuntimeTypes(moduleName, conditional.whenFalse(), generics);
+            } else if (expression instanceof Ast.IndexExpr indexed) {
+                validateNoTraitRuntimeTypes(moduleName, indexed.receiver(), generics);
+                validateNoTraitRuntimeTypes(moduleName, indexed.index(), generics);
+            } else if (expression instanceof Ast.AwaitExpr awaited) {
+                validateNoTraitRuntimeTypes(moduleName, awaited.expression(), generics);
+            } else if (expression instanceof Ast.ListExpr list) {
+                for (Ast.Expr item : list.elements()) validateNoTraitRuntimeTypes(moduleName, item, generics);
+            } else if (expression instanceof Ast.TupleExpr tuple) {
+                for (Ast.Expr item : tuple.elements()) validateNoTraitRuntimeTypes(moduleName, item, generics);
+            } else if (expression instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField field : object.fields()) validateNoTraitRuntimeTypes(moduleName, field.value(), generics);
+            } else if (expression instanceof Ast.LambdaExpr lambda) {
+                for (Ast.Param parameter : lambda.parameters()) {
+                    validateTypeRef(moduleName, parameter.type(), generics, "lambda parameter " + parameter.name());
+                }
+                if (lambda.expressionBody() != null) validateNoTraitRuntimeTypes(moduleName, lambda.expressionBody(), generics);
+                if (lambda.blockBody() != null) validateNoTraitRuntimeTypes(moduleName, lambda.blockBody(), generics);
+            }
+        }
+
+        private void validateParams(
+                String moduleName,
+                List<Ast.Param> parameters,
+                Set<String> generics,
+                String where) {
+            for (Ast.Param parameter : parameters) {
+                validateTypeRef(moduleName, parameter.type(), generics, where + " parameter " + parameter.name());
+            }
+        }
+
+        private void validateTypeRef(
+                String moduleName,
+                Ast.TypeRef type,
+                Set<String> generics,
+                String where) {
+            if (type == null) return;
+            if (type.isBorrow()) {
+                validateTypeRef(moduleName, type.borrowedTarget(), generics, where);
+                return;
+            }
+            if (!generics.contains(type.name()) && isTraitName(moduleName, type.name())) {
+                throw new IllegalArgumentException(
+                        "trait '" + type.name() + "' cannot be used as a runtime type in " + where
+                                + "; traits are composition units only—use an interface for contracts or a class for values");
+            }
+            for (Ast.TypeRef argument : type.arguments()) {
+                validateTypeRef(moduleName, argument, generics, where);
+            }
+        }
+
+        private void validateNoTraitInstantiation() {
+            for (Ast.ModuleDecl module : program.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    validateNoTraitInstantiation(module.name(), declaration);
+                }
+            }
+        }
+
+        private void validateNoTraitInstantiation(String moduleName, Ast.Decl declaration) {
+            if (declaration instanceof Ast.FunctionDecl function) {
+                validateNoTraitInstantiation(moduleName, function.body());
+            } else if (declaration instanceof Ast.InitDecl init) {
+                validateNoTraitInstantiation(moduleName, init.body());
+            } else if (declaration instanceof Ast.FieldDecl field) {
+                if (field.initializer() != null) validateNoTraitInstantiation(moduleName, field.initializer());
+            } else if (declaration instanceof Ast.ClassDecl klass) {
+                for (Ast.FieldDecl field : klass.fields()) {
+                    if (field.initializer() != null) validateNoTraitInstantiation(moduleName, field.initializer());
+                }
+                for (Ast.MethodDecl method : klass.methods()) {
+                    validateNoTraitInstantiation(moduleName, method.body());
+                }
+            } else if (declaration instanceof Ast.TraitDecl trait) {
+                for (Ast.FieldDecl field : trait.fields()) {
+                    if (field.initializer() != null) validateNoTraitInstantiation(moduleName, field.initializer());
+                }
+                for (Ast.MethodDecl method : trait.methods()) {
+                    validateNoTraitInstantiation(moduleName, method.body());
+                }
+            }
+        }
+
+        private void validateNoTraitInstantiation(String moduleName, List<Ast.Stmt> statements) {
+            for (Ast.Stmt statement : statements) {
+                if (statement instanceof Ast.BindingStmt binding) {
+                    validateNoTraitInstantiation(moduleName, binding.initializer());
+                } else if (statement instanceof Ast.DestructureStmt destructure) {
+                    validateNoTraitInstantiation(moduleName, destructure.initializer());
+                } else if (statement instanceof Ast.ReturnStmt returned && returned.value() != null) {
+                    validateNoTraitInstantiation(moduleName, returned.value());
+                } else if (statement instanceof Ast.ExprStmt expression) {
+                    validateNoTraitInstantiation(moduleName, expression.expression());
+                } else if (statement instanceof Ast.DeferStmt deferred) {
+                    validateNoTraitInstantiation(moduleName, deferred.expression());
+                } else if (statement instanceof Ast.IfStmt conditional) {
+                    for (Ast.IfBranch branch : conditional.branches()) {
+                        validateNoTraitInstantiation(moduleName, branch.condition());
+                        validateNoTraitInstantiation(moduleName, branch.body());
+                    }
+                    validateNoTraitInstantiation(moduleName, conditional.elseBody());
+                } else if (statement instanceof Ast.TryStmt attempted) {
+                    validateNoTraitInstantiation(moduleName, attempted.body());
+                    validateNoTraitInstantiation(moduleName, attempted.catchBody());
+                    validateNoTraitInstantiation(moduleName, attempted.finallyBody());
+                } else if (statement instanceof Ast.ForOfStmt loop) {
+                    validateNoTraitInstantiation(moduleName, loop.iterable());
+                    validateNoTraitInstantiation(moduleName, loop.body());
+                } else if (statement instanceof Ast.ForStmt loop) {
+                    if (loop.initializer() != null) validateNoTraitInstantiation(moduleName, List.of(loop.initializer()));
+                    if (loop.condition() != null) validateNoTraitInstantiation(moduleName, loop.condition());
+                    if (loop.update() != null) validateNoTraitInstantiation(moduleName, loop.update());
+                    validateNoTraitInstantiation(moduleName, loop.body());
+                }
+            }
+        }
+
+        private void validateNoTraitInstantiation(String moduleName, Ast.Expr expression) {
+            if (expression instanceof Ast.NewExpr created) {
+                if (isTraitName(moduleName, created.type().name())) {
+                    throw new IllegalArgumentException(
+                            "trait '" + created.type().name()
+                                    + "' cannot be instantiated; compose it into a class with 'with'");
+                }
+                for (Ast.Expr argument : created.arguments()) validateNoTraitInstantiation(moduleName, argument);
+            } else if (expression instanceof Ast.MemberExpr member) {
+                validateNoTraitInstantiation(moduleName, member.receiver());
+            } else if (expression instanceof Ast.CallExpr call) {
+                validateNoTraitInstantiation(moduleName, call.callee());
+                for (Ast.Expr argument : call.arguments()) validateNoTraitInstantiation(moduleName, argument);
+            } else if (expression instanceof Ast.BinaryExpr binary) {
+                validateNoTraitInstantiation(moduleName, binary.left());
+                validateNoTraitInstantiation(moduleName, binary.right());
+            } else if (expression instanceof Ast.UnaryExpr unary) {
+                validateNoTraitInstantiation(moduleName, unary.operand());
+            } else if (expression instanceof Ast.AssignExpr assignment) {
+                validateNoTraitInstantiation(moduleName, assignment.target());
+                validateNoTraitInstantiation(moduleName, assignment.value());
+            } else if (expression instanceof Ast.ConditionalExpr conditional) {
+                validateNoTraitInstantiation(moduleName, conditional.condition());
+                validateNoTraitInstantiation(moduleName, conditional.whenTrue());
+                validateNoTraitInstantiation(moduleName, conditional.whenFalse());
+            } else if (expression instanceof Ast.IndexExpr indexed) {
+                validateNoTraitInstantiation(moduleName, indexed.receiver());
+                validateNoTraitInstantiation(moduleName, indexed.index());
+            } else if (expression instanceof Ast.AwaitExpr awaited) {
+                validateNoTraitInstantiation(moduleName, awaited.expression());
+            } else if (expression instanceof Ast.ListExpr list) {
+                for (Ast.Expr item : list.elements()) validateNoTraitInstantiation(moduleName, item);
+            } else if (expression instanceof Ast.TupleExpr tuple) {
+                for (Ast.Expr item : tuple.elements()) validateNoTraitInstantiation(moduleName, item);
+            } else if (expression instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField field : object.fields()) validateNoTraitInstantiation(moduleName, field.value());
+            } else if (expression instanceof Ast.LambdaExpr lambda) {
+                if (lambda.expressionBody() != null) validateNoTraitInstantiation(moduleName, lambda.expressionBody());
+                if (lambda.blockBody() != null) validateNoTraitInstantiation(moduleName, lambda.blockBody());
+            }
+        }
+
+        private boolean isTraitName(String moduleName, String name) {
+            if (qualifiedTraits.containsKey(moduleName + "." + name)) return true;
+            return name.contains(".") && qualifiedTraits.containsKey(name);
+        }
+
+        private void indexTraits() {
+            for (Ast.ModuleDecl module : program.modules()) {
+                Set<String> occupiedTypeNames = new HashSet<>();
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.ClassDecl klass) occupiedTypeNames.add(klass.name());
+                    else if (declaration instanceof Ast.InterfaceDecl iface) occupiedTypeNames.add(iface.name());
+                    else if (declaration instanceof Ast.TypeAliasDecl alias) occupiedTypeNames.add(alias.name());
+                }
+
+                for (Ast.Decl declaration : module.declarations()) {
                     if (!(declaration instanceof Ast.TraitDecl trait)) continue;
+                    if (occupiedTypeNames.contains(trait.name())) {
+                        throw new IllegalArgumentException(
+                                "trait '" + module.name() + "." + trait.name()
+                                        + "' collides with an existing class/interface/type alias in the same type namespace");
+                    }
 
                     TraitBinding binding = new TraitBinding(module.name(), trait);
                     String qualified = module.name() + "." + trait.name();
@@ -421,6 +724,13 @@ public final class TraitComposer {
 
                 if (local != null) {
                     for (MethodEntry candidate : candidates) {
+                        if (candidate.method().visibility() == Ast.Visibility.PRIVATE) {
+                            throw new IllegalArgumentException(
+                                    "class '" + klass.name() + "' method '" + key
+                                            + "' collides with trait-private method from "
+                                            + candidate.origin()
+                                            + "; private trait helpers cannot be overridden");
+                        }
                         requireCompatible(
                                 local,
                                 candidate.method(),
@@ -755,7 +1065,7 @@ public final class TraitComposer {
                         raw.visibility(),
                         raw.bindingKind(),
                         substitute(raw.type(), substitutions),
-                        raw.initializer(),
+                        substitute(raw.initializer(), substitutions),
                         binding.declaration().name());
 
                 mergeField(
@@ -775,6 +1085,12 @@ public final class TraitComposer {
 
             LinkedHashMap<String, Ast.MethodDecl> ownMethods = new LinkedHashMap<>();
             for (Ast.MethodDecl raw : binding.declaration().methods()) {
+                if (raw.isAbstract() && raw.visibility() == Ast.Visibility.PRIVATE) {
+                    throw new IllegalArgumentException(
+                            "trait '" + binding.declaration().name() + "' has private abstract method '"
+                                    + raw.name()
+                                    + "'; abstract trait requirements must be public so a host class can satisfy them");
+                }
                 validateTraitSelfAccess(binding.declaration().name(), raw.body(), lexicalFields, lexicalMethods);
                 Ast.MethodDecl method = withCompositionOwner(
                         substitute(raw, substitutions),
@@ -799,6 +1115,14 @@ public final class TraitComposer {
 
                 if (override != null) {
                     for (MethodEntry candidate : inherited) {
+                        if (candidate.method().visibility() == Ast.Visibility.PRIVATE) {
+                            throw new IllegalArgumentException(
+                                    "trait '" + binding.declaration().name()
+                                            + "' method '" + key
+                                            + "' collides with private method inherited from "
+                                            + candidate.origin()
+                                            + "; private nested-trait helpers are lexical and cannot be overridden");
+                        }
                         requireCompatible(
                                 override,
                                 candidate.method(),
@@ -964,6 +1288,167 @@ public final class TraitComposer {
                     type.inferArguments());
         }
 
+        private List<Ast.Stmt> substituteStatements(
+                List<Ast.Stmt> statements,
+                Map<String, Ast.TypeRef> substitutions) {
+            return statements.stream()
+                    .map(statement -> substitute(statement, substitutions))
+                    .toList();
+        }
+
+        private Ast.Stmt substitute(
+                Ast.Stmt statement,
+                Map<String, Ast.TypeRef> substitutions) {
+            if (statement == null) return null;
+            if (statement instanceof Ast.BindingStmt binding) {
+                return new Ast.BindingStmt(
+                        binding.kind(),
+                        substitute(binding.declaredType(), substitutions),
+                        binding.name(),
+                        substitute(binding.initializer(), substitutions));
+            }
+            if (statement instanceof Ast.DestructureStmt destructure) {
+                return new Ast.DestructureStmt(
+                        destructure.bindings(),
+                        substitute(destructure.initializer(), substitutions));
+            }
+            if (statement instanceof Ast.ReturnStmt returned) {
+                return new Ast.ReturnStmt(
+                        returned.value() == null ? null : substitute(returned.value(), substitutions));
+            }
+            if (statement instanceof Ast.ExprStmt expression) {
+                return new Ast.ExprStmt(substitute(expression.expression(), substitutions));
+            }
+            if (statement instanceof Ast.DeferStmt deferred) {
+                return new Ast.DeferStmt(substitute(deferred.expression(), substitutions));
+            }
+            if (statement instanceof Ast.IfStmt conditional) {
+                List<Ast.IfBranch> branches = conditional.branches().stream()
+                        .map(branch -> new Ast.IfBranch(
+                                substitute(branch.condition(), substitutions),
+                                substituteStatements(branch.body(), substitutions)))
+                        .toList();
+                return new Ast.IfStmt(
+                        branches,
+                        substituteStatements(conditional.elseBody(), substitutions));
+            }
+            if (statement instanceof Ast.TryStmt attempted) {
+                return new Ast.TryStmt(
+                        substituteStatements(attempted.body(), substitutions),
+                        attempted.errorName(),
+                        substituteStatements(attempted.catchBody(), substitutions),
+                        substituteStatements(attempted.finallyBody(), substitutions));
+            }
+            if (statement instanceof Ast.ForOfStmt loop) {
+                return new Ast.ForOfStmt(
+                        loop.bindingKind(),
+                        loop.bindingName(),
+                        substitute(loop.iterable(), substitutions),
+                        substituteStatements(loop.body(), substitutions));
+            }
+            Ast.ForStmt loop = (Ast.ForStmt) statement;
+            return new Ast.ForStmt(
+                    substitute(loop.initializer(), substitutions),
+                    loop.condition() == null ? null : substitute(loop.condition(), substitutions),
+                    loop.update() == null ? null : substitute(loop.update(), substitutions),
+                    substituteStatements(loop.body(), substitutions));
+        }
+
+        private Ast.Expr substitute(
+                Ast.Expr expression,
+                Map<String, Ast.TypeRef> substitutions) {
+            if (expression == null) return null;
+            if (expression instanceof Ast.LiteralExpr || expression instanceof Ast.NameExpr) {
+                return expression;
+            }
+            if (expression instanceof Ast.BinaryExpr binary) {
+                return new Ast.BinaryExpr(
+                        binary.operator(),
+                        substitute(binary.left(), substitutions),
+                        substitute(binary.right(), substitutions));
+            }
+            if (expression instanceof Ast.UnaryExpr unary) {
+                return new Ast.UnaryExpr(
+                        unary.operator(),
+                        substitute(unary.operand(), substitutions));
+            }
+            if (expression instanceof Ast.AssignExpr assignment) {
+                return new Ast.AssignExpr(
+                        substitute(assignment.target(), substitutions),
+                        substitute(assignment.value(), substitutions));
+            }
+            if (expression instanceof Ast.ConditionalExpr conditional) {
+                return new Ast.ConditionalExpr(
+                        substitute(conditional.condition(), substitutions),
+                        substitute(conditional.whenTrue(), substitutions),
+                        substitute(conditional.whenFalse(), substitutions));
+            }
+            if (expression instanceof Ast.CallExpr call) {
+                return new Ast.CallExpr(
+                        substitute(call.callee(), substitutions),
+                        call.arguments().stream()
+                                .map(argument -> substitute(argument, substitutions))
+                                .toList());
+            }
+            if (expression instanceof Ast.MemberExpr member) {
+                return new Ast.MemberExpr(
+                        substitute(member.receiver(), substitutions),
+                        member.member());
+            }
+            if (expression instanceof Ast.IndexExpr indexed) {
+                return new Ast.IndexExpr(
+                        substitute(indexed.receiver(), substitutions),
+                        substitute(indexed.index(), substitutions));
+            }
+            if (expression instanceof Ast.NewExpr created) {
+                return new Ast.NewExpr(
+                        substitute(created.type(), substitutions),
+                        created.arguments().stream()
+                                .map(argument -> substitute(argument, substitutions))
+                                .toList());
+            }
+            if (expression instanceof Ast.AwaitExpr awaited) {
+                return new Ast.AwaitExpr(
+                        substitute(awaited.expression(), substitutions));
+            }
+            if (expression instanceof Ast.ListExpr list) {
+                return new Ast.ListExpr(
+                        list.elements().stream()
+                                .map(item -> substitute(item, substitutions))
+                                .toList());
+            }
+            if (expression instanceof Ast.TupleExpr tuple) {
+                return new Ast.TupleExpr(
+                        tuple.elements().stream()
+                                .map(item -> substitute(item, substitutions))
+                                .toList());
+            }
+            if (expression instanceof Ast.ObjectExpr object) {
+                return new Ast.ObjectExpr(
+                        object.fields().stream()
+                                .map(field -> new Ast.ObjectField(
+                                        field.name(),
+                                        substitute(field.value(), substitutions)))
+                                .toList());
+            }
+            Ast.LambdaExpr lambda = (Ast.LambdaExpr) expression;
+            List<Ast.Param> parameters = lambda.parameters().stream()
+                    .map(parameter -> new Ast.Param(
+                            substitute(parameter.type(), substitutions),
+                            parameter.name(),
+                            parameter.structural(),
+                            parameter.mutable()))
+                    .toList();
+            return new Ast.LambdaExpr(
+                    parameters,
+                    lambda.expressionBody() == null
+                            ? null
+                            : substitute(lambda.expressionBody(), substitutions),
+                    lambda.blockBody() == null
+                            ? null
+                            : substituteStatements(lambda.blockBody(), substitutions));
+        }
+
         private Ast.MethodDecl substitute(
                 Ast.MethodDecl method,
                 Map<String, Ast.TypeRef> substitutions) {
@@ -1000,7 +1485,7 @@ public final class TraitComposer {
                     parameters,
                     substitute(method.returnType(), effective),
                     annotations,
-                    method.body(),
+                    substituteStatements(method.body(), effective),
                     method.compositionOwner());
         }
 
