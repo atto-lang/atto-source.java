@@ -1253,7 +1253,10 @@ public final class TypeChecker {
                     requireAssignable(right, Primitive.BOOL, "boolean operand");
                     yield Primitive.BOOL;
                 }
-                case "==", "!=" -> Primitive.BOOL;
+                case "==", "!=" -> {
+                    requireEqualityComparable(left, right);
+                    yield Primitive.BOOL;
+                }
                 case "<", "<=", ">", ">=" -> {
                     if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
                         throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
@@ -2472,6 +2475,29 @@ public final class TypeChecker {
     private String qualifiedInterfaceName(Ast.InterfaceDecl iface) {
         String owner = interfaceOwners.get(iface);
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
+    }
+
+    private void requireEqualityComparable(Type left, Type right) {
+        left = deref(left);
+        right = deref(right);
+        if (left == Unknown.INSTANCE || right == Unknown.INSTANCE) return;
+
+        Ast.ClassDecl leftClass = left instanceof Named named ? findClass(named.name()) : null;
+        Ast.ClassDecl rightClass = right instanceof Named named ? findClass(named.name()) : null;
+        boolean leftStruct = leftClass != null && leftClass.isStruct();
+        boolean rightStruct = rightClass != null && rightClass.isStruct();
+
+        if (!leftStruct && !rightStruct) return;
+        if (!(left instanceof Named leftNamed)
+                || !(right instanceof Named rightNamed)
+                || !leftStruct
+                || !rightStruct
+                || leftClass != rightClass
+                || !leftNamed.arguments().equals(rightNamed.arguments())) {
+            throw new IllegalArgumentException(
+                    "struct equality requires the same nominal struct specialization on both sides; got "
+                            + left + " and " + right);
+        }
     }
 
     private boolean assignable(Type actual, Type expected) {
