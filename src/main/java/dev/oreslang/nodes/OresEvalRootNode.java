@@ -6,6 +6,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresTuple;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 
@@ -345,7 +346,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return new TupleValue(tuple.elements().stream().map(item -> eval(item, env)).toList());
+            if (expr instanceof Ast.TupleExpr tuple) return new OresTuple(tuple.elements().stream().map(item -> eval(item, env)).toList());
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 for (Ast.ObjectField field : object.fields()) {
@@ -634,11 +635,11 @@ public final class OresEvalRootNode extends RootNode {
             List<?> values;
             if (pattern instanceof Ast.TuplePattern tuplePattern) {
                 elements = tuplePattern.elements();
-                if (!(value instanceof TupleValue tupleValue)) return false;
+                if (!(value instanceof OresTuple tupleValue)) return false;
                 values = tupleValue;
             } else if (pattern instanceof Ast.ListPattern listPattern) {
                 elements = listPattern.elements();
-                if (value instanceof TupleValue) return false;
+                if (value instanceof OresTuple) return false;
                 if (value instanceof List<?> sequence) values = sequence;
                 else if (value instanceof Object[] array) values = List.of(array);
                 else return false;
@@ -700,17 +701,6 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
-    }
-
-    private static final class TupleValue extends java.util.AbstractList<Object> {
-        private final List<Object> elements;
-        private TupleValue(List<Object> elements) { this.elements = List.copyOf(elements); }
-        @Override public Object get(int index) { return elements.get(index); }
-        @Override public int size() { return elements.size(); }
-        @Override public boolean equals(Object other) {
-            return other instanceof TupleValue tuple && elements.equals(tuple.elements);
-        }
-        @Override public int hashCode() { return elements.hashCode(); }
     }
 
     private static final class ReturnSignal extends RuntimeException {
