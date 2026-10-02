@@ -273,15 +273,47 @@ final class SingletonModuleTest {
                         """)));
         assertTrue(classBoundary.getMessage().contains("not statically Sendable"));
 
-        IllegalArgumentException mutableBoundary = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define singleton module mutable_boundary as
-                          pub fnc consume(Array<int> mut values) => void {
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(mutableBoundary.getMessage().contains("cannot accept mut parameters"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define singleton module mutable_boundary as
+                  pub fnc consume(Array<int> mut values) => void {
+                    values[0] = 2;
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void singletonTransportMaterializesOwnedMutableAggregatesOnBothSides() throws Exception {
+        String output = eval("""
+                define singleton module owned_array_transport as
+                  let Array<int> values = arr[0];
+
+                  pub routine store(Array<int> incoming) => void {
+                    values = incoming;
+                    return;
+                  }
+
+                  pub fnc bump() => Array<int> {
+                    values[0] = values[0] + 1;
+                    return values;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    await owned_array_transport.store(arr[5]);
+                    let Array<int> returned = await owned_array_transport.bump();
+                    returned[0] = returned[0] + 10;
+                    stdio.println(returned[0]);
+                    stdio.println((await owned_array_transport.bump())[0]);
+                    return;
+                  }
+                end
+                """, "singleton-owned-array-transfer.ores");
+
+        assertTrue(output.contains("16"), output);
+        assertTrue(output.contains("7"), output);
     }
 
     @Test
