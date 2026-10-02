@@ -4,11 +4,11 @@ fnc print_worker(str message) => void {
 }
 
 pub routine main() => void {
-  -- Ordinary actors own their mutable state and receive frozen/copied messages.
+  // Ordinary actors own their mutable state and receive frozen/copied messages.
   val worker = actor.spawn(print_worker);
   actor.send(worker, "actor");
 
-  -- singleton means one named actor, not one shared mutable heap object.
+  // singleton means one named actor, not one shared mutable heap object.
   val cache = actor.singleton("demo_cache", print_worker);
   actor.send(cache, ":singleton");
 
@@ -17,7 +17,7 @@ pub routine main() => void {
   actor.join(worker);
   actor.join(cache);
 
-  -- Explicit manual collection is available, but ownership/drop remains primary.
+  // Explicit manual collection is available, but ownership/drop remains primary.
   process.gc();
   return;
 }
