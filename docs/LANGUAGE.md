@@ -350,7 +350,11 @@ actor.send(counter_ref, "tick");
 actor.send(counter_ref, "tick");
 ```
 
-`ActorRef` values are PID-like immutable/copyable handles. Sending a message is non-consuming: the sender retains its own value while the runtime freezes/copies the transport representation.
+`ActorRef<T>` values are PID-like immutable/copyable handles with a statically checked mailbox type. `actor.spawn(handler)` infers `T` from the handler's first parameter; `actor.send(ref, value)` rejects values that are not assignable to `T`. A `Shared<T>` handle is accepted where `T` is expected because the runtime sends the immutable backing value. Sending is non-consuming: the sender retains its own value while the runtime freezes/copies the transport representation.
+
+Stateful handlers are checked as `(Message, State) -> State`; their initial state must match `State`. Inline actor lambdas must be `nlex` and explicitly type the message parameter. Their state parameter may infer from the supplied initial state. Named `fnc` handlers remain the simplest actor entrypoint.
+
+Literal singleton names are compile-unit contracts: after `actor.singleton("cache", handler)` fixes a handler signature, another use of the literal name `"cache"` with an incompatible actor contract is rejected. Dynamic singleton names are still checked at the ordinary actor/message boundaries.
 
 ### Monitors and supervision
 
@@ -710,6 +714,8 @@ Public inferred bindings are fingerprinted conservatively from their initializer
 This separates code-generation dirtiness from public-contract dirtiness. An implementation edit such as changing a function body from `return 42;` to `return 43;` recompiles that file without recompiling importers when the exported signature is unchanged. Until the cross-unit linker records exact public imported-symbol dependencies, ABI changes intentionally propagate transitively for correctness.
 
 Actors and isolates consume versioned code-unit generations. `HotReloadManager` tracks the active generation **per code-unit id**, so staging `worker.ores` does not replace the active `helper.ores` generation. A hot reload therefore does **not** require rebuilding or replacing every actor: changed units receive new generations, unchanged units remain active/shared, and supervisors migrate actors/requests according to policy.
+
+A generation can be pinned with a `HotReloadManager.Lease`. Retirement immediately denies new leases and removes the generation from active routing, but does not close its Truffle context until the last existing actor/request lease is released. Failed or fully drained generations remove themselves from manager retention, allowing the backing JVM/native collector to reclaim the old code generation without a global reload pause.
 
 A deployment may still aggregate many code units into one Native Image for startup/distribution reasons. That aggregate is never the only compiler artifact and must not erase per-unit identities or dependency metadata.
 
