@@ -28,8 +28,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -636,7 +636,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ExecutorService untrustedDispatcher;
-    private final ScheduledExecutorService untrustedWatchdog;
+    private final ScheduledThreadPoolExecutor untrustedWatchdog;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
@@ -682,7 +682,7 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherConfig.untrustedParallelism(),
                 dispatcherConfig.maxActors(),
                 "ores-untrusted-actor-dispatcher-");
-        this.untrustedWatchdog = Executors.newSingleThreadScheduledExecutor(
+        this.untrustedWatchdog = newUntrustedWatchdog(
                 namedFactory("ores-untrusted-watchdog-"));
     }
 
@@ -693,6 +693,11 @@ public final class ActorRuntime implements AutoCloseable {
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
+
+    /** Runtime observability: canceled deadlines are removed immediately. */
+    public int pendingUntrustedDeadlineCount() {
+        return untrustedWatchdog.getQueue().size();
+    }
 
     /**
      * Logical actor-confined memory slice for one private actor.
@@ -2991,6 +2996,14 @@ public final class ActorRuntime implements AutoCloseable {
             case SHARED -> sharedDispatcher;
             case UNTRUSTED -> untrustedDispatcher;
         };
+    }
+
+    private static ScheduledThreadPoolExecutor newUntrustedWatchdog(ThreadFactory threadFactory) {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, threadFactory);
+        executor.setRemoveOnCancelPolicy(true);
+        executor.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+        executor.setContinueExistingPeriodicTasksAfterShutdownPolicy(false);
+        return executor;
     }
 
     private static ExecutorService newDispatcher(
