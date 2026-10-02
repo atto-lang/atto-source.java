@@ -76,7 +76,9 @@ public final class OresContext implements AutoCloseable {
         Object existing = contextLocals.get(key);
         if (existing != null) return (T) existing;
         if (!initializingContextLocals.add(key)) {
-            throw new IllegalStateException("context-local initialization cycle for " + key);
+            throw new IllegalStateException("context-local initialization cycle for "
+                    + key.getClass().getSimpleName() + "#"
+                    + Integer.toUnsignedString(key.hashCode(), 16));
         }
         try {
             // ContextPolicy.EXCLUSIVE gives guest execution one owning context,
