@@ -20,6 +20,12 @@
 16. Private slices and synchronized shared cells compete for one parent actor-memory ceiling.
 17. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
 18. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
+19. Ordinary Ores values are governed by ownership/drop semantics; fallback GC is not their ownership mechanism.
+20. Fallback GC registrations are weak/phantom and their cleanup callbacks must never strongly capture the guest-visible owner.
+21. Runtime cleanup callbacks are idempotent, no-guest-code operations used only for quota/native/runtime metadata release.
+22. `actor.gc()` sweeps only the current semantic ActorId; carrier threads are never GC ownership identities.
+23. `process.gc()` requires `GC_CONTROL` and drains only already-unreachable runtime cleanup candidates; it never calls `System.gc()`.
+24. Private direct-memory fallback cleanup zeroes the detached region before releasing its reservation.
 
 ## Deployment matrix
 
@@ -142,6 +148,25 @@ Shared actors keep ordinary mutable fields actor-owned and mailbox-serialized. C
 A private actor turn cannot create, snapshot, read, update, or close synchronized shared state even if trusted host code accidentally captured a cell handle. Source admission and runtime creation both require `SHARED_MEMORY`.
 
 Actor failures are fail-stop in this layer. The actor ref retains the failure cause for diagnostics, queued reservations are drained, and later sends receive an `ActorTerminatedException` rather than silently targeting a dead mailbox.
+
+## Ownership-first reclamation and fallback GC
+
+The runtime separates **language memory lifetime** from **runtime-handle cleanup**.
+
+Ordinary guest values are not registered with a tracing collector. The ownership checker decides moves and borrows, the evaluator clears lexical roots at scope exit, and optimizing/native backends are expected to lower ownership death points to deterministic drops. On the current Truffle/JVM backend, the host VM still reclaims the physical Java object after Oreslang has made it unreachable.
+
+`RuntimeGarbageCollector` is intentionally narrower. It tracks host/runtime resources for which losing the guest handle must also release non-object-graph state: quota reservations, direct-memory blocks, shared runtime cells/wrappers, and future reflection/FFI/proxy/cache registrations. It uses phantom reachability plus cleanup records that do not retain the owner.
+
+Collection is cooperative rather than a dedicated stop-the-world thread. Scheduler safepoints, actor-turn boundaries, and handle creation periodically drain the reference queue. Manual sweeps use the same path:
+
+- `actor.gc()` drains only candidates tagged with the current `ActorId`; it is invalid outside an actor turn.
+- `process.gc()` drains all ready runtime candidates and requires `GC_CONTROL`.
+- neither API forces the JVM/native allocator to run a full heap collection.
+- runtime teardown deterministically cleans any registrations that remain, even when a host still has a stale handle.
+
+`Shared<T>`, `SyncCell<T>`, and private direct-memory handles are held in weak runtime registries. This avoids the previous shape where the runtime itself kept abandoned handles alive until teardown. Persistent private heap reservations also register an actor-scoped fallback cleanup; transient mailbox reservations stay deterministically paired with their envelopes and do not pay GC-registration cost.
+
+Fallback cleanup must never run guest destructors or arbitrary callbacks. Resource-finalization syntax/traits should lower to deterministic ownership/drop or explicit `defer`; GC is only the safety net for runtime-owned bookkeeping that cannot be expressed as an ordinary guest drop.
 
 ## Private actor memory confinement
 
