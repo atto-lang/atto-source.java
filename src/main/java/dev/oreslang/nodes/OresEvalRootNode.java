@@ -64,6 +64,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ModuleDecl, String> singletonCodeDigests = new IdentityHashMap<>();
         private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
@@ -209,25 +211,29 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private String singletonSchema(Ast.ModuleDecl module) {
-            StringBuilder schema = new StringBuilder();
-            for (Ast.Decl decl : module.declarations()) {
-                if (!(decl instanceof Ast.FieldDecl field)) continue;
-                schema.append(field.name())
-                        .append(':').append(field.bindingKind())
-                        .append(':').append(field.type())
-                        .append(';');
-            }
-            return schema.toString();
+            return singletonSchemas.computeIfAbsent(module, ignored -> {
+                StringBuilder schema = new StringBuilder();
+                for (Ast.Decl decl : module.declarations()) {
+                    if (!(decl instanceof Ast.FieldDecl field)) continue;
+                    schema.append(field.name())
+                            .append(':').append(field.bindingKind())
+                            .append(':').append(field.type())
+                            .append(';');
+                }
+                return schema.toString();
+            });
         }
 
         private String singletonCodeDigest(Ast.ModuleDecl module) {
-            try {
-                byte[] digest = MessageDigest.getInstance("SHA-256")
-                        .digest(module.toString().getBytes(StandardCharsets.UTF_8));
-                return HexFormat.of().formatHex(digest);
-            } catch (Exception impossible) {
-                throw new IllegalStateException(impossible);
-            }
+            return singletonCodeDigests.computeIfAbsent(module, ignored -> {
+                try {
+                    byte[] digest = MessageDigest.getInstance("SHA-256")
+                            .digest(module.toString().getBytes(StandardCharsets.UTF_8));
+                    return HexFormat.of().formatHex(digest);
+                } catch (Exception impossible) {
+                    throw new IllegalStateException(impossible);
+                }
+            });
         }
 
         private void authorizeSingletonCodeGeneration(SingletonState state, Ast.ModuleDecl module) {
