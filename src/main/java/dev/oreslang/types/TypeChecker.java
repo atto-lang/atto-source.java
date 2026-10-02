@@ -497,8 +497,8 @@ public final class TypeChecker {
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                else if (receiver instanceof Tuple) throw new IllegalArgumentException("tuple elements are immutable");
+                else throw new IllegalArgumentException("indexed assignment requires a mutable array/list");
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
