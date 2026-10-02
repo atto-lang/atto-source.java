@@ -282,7 +282,33 @@ final class LanguageHardeningTest {
                         }
                         """)));
         assertTrue(rawGeneric.getMessage().contains("expects 1 type argument"));
+
+        IllegalArgumentException unresolved = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Marker<T> {
+                          value: int;
+                        }
+
+                        fnc bad() => Marker<int> {
+                          return Marker<> { value = 7 };
+                        }
+                        """)));
+        assertTrue(unresolved.getMessage().contains("cannot infer generic 'T'"));
+
+        IllegalArgumentException conflicting = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Pair<T> {
+                          left: T;
+                          right: T;
+                        }
+
+                        fnc bad() => Pair<int> {
+                          return Pair<> { left = 7, right = "wrong" };
+                        }
+                        """)));
+        assertTrue(conflicting.getMessage().contains("incompatible types for generic 'T'"));
     }
+
     @Test
     void privateAggregateMembersAreLexicalNotReceiverBased() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
