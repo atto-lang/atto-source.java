@@ -58,6 +58,27 @@ final class PatternMatchFormalMethodsTest {
     }
 
     @Test
+    void inferredMatchReturnTypeRemainsPreciseAtCallSites() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc choose(bool flag) {
+                            return match flag {
+                              true => 1,
+                              false => 2
+                            };
+                          }
+
+                          fnc wrong(bool flag) => String {
+                            return choose(flag);
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("return value"));
+        assertTrue(error.getMessage().contains("expected STRING"));
+    }
+
+    @Test
     void rejectsNonExhaustiveBoolMatch() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
