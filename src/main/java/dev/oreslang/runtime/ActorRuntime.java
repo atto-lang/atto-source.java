@@ -301,14 +301,14 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("nested actor execution on one carrier is not allowed");
             }
             currentActor.set(this);
-            final Behavior<M> behavior = behaviorFactory.get();
-            final ActorContext<M> context = new ActorContext<>() {
-                @Override public ActorRef<M> self() { return ref; }
-                @Override public ActorRuntime runtime() { return ActorRuntime.this; }
-                @Override public IsolatePolicy policy() { return policy; }
-                @Override public void gc() { ActorRuntime.this.gcCurrentActor(); }
-            };
             try {
+                final Behavior<M> behavior = behaviorFactory.get();
+                final ActorContext<M> context = new ActorContext<>() {
+                    @Override public ActorRef<M> self() { return ref; }
+                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                    @Override public IsolatePolicy policy() { return policy; }
+                    @Override public void gc() { ActorRuntime.this.gcCurrentActor(); }
+                };
                 while (true) {
                     Object message = mailbox.take();
                     if (message == STOP) return;
