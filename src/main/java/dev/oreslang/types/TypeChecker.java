@@ -1164,61 +1164,6 @@ public final class TypeChecker {
         return null;
     }
 
-    private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
-        if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
-        LinkedHashMap<String, Ast.FieldDecl> fields = new LinkedHashMap<>();
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent != null) for (Ast.FieldDecl field : effectiveFields(parent, stack)) fields.putIfAbsent(field.name(), field);
-        }
-        for (Ast.FieldDecl field : klass.fields()) fields.put(field.name(), field);
-        stack.remove(klass);
-        return List.copyOf(fields.values());
-    }
-
-    private Type findFieldType(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
-        if (!seen.add(klass)) return null;
-        Type self = nominalClassType(klass);
-        for (Ast.FieldDecl field : klass.fields()) {
-            if (field.name().equals(name)) {
-                seen.remove(klass);
-                return resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
-            }
-        }
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent == null) continue;
-            Type result = findFieldType(parent, name, seen);
-            if (result != null) {
-                seen.remove(klass);
-                return result;
-            }
-        }
-        seen.remove(klass);
-        return null;
-    }
-
-    private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
-        if (!seen.add(klass)) return null;
-        for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
-                seen.remove(klass);
-                return method;
-            }
-        }
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent == null) continue;
-            Ast.MethodDecl candidate = findMethod(parent, name, arity, seen);
-            if (candidate != null) {
-                seen.remove(klass);
-                return candidate;
-            }
-        }
-        seen.remove(klass);
-        return null;
-    }
-
     private List<Ast.MethodDecl> findMethodsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return List.of();
         LinkedHashMap<Integer, Ast.MethodDecl> methods = new LinkedHashMap<>();
