@@ -253,6 +253,30 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void dynamicSingletonNameStillEnforcesRuntimeProtocolContract() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc strings(String message) => void {
+                  return;
+                }
+
+                fnc numbers(int message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  val String registry_name = "dynamic_registry";
+                  val first = actor.singleton(registry_name, strings);
+                  val second = actor.singleton(registry_name, numbers);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("incompatible runtime contract")
+                || failure.getMessage().contains("singleton"));
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
