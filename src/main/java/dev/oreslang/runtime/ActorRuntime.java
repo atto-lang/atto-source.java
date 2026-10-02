@@ -743,6 +743,14 @@ public final class ActorRuntime implements AutoCloseable {
         return freezeValue(value, runtimeId, true, new IdentityHashMap<>(), 0, false, new GraphBudget());
     }
 
+    public <T> T sharedValueForActorState(Shared<T> shared) {
+        java.util.Objects.requireNonNull(shared, "shared");
+        if (!runtimeId.equals(shared.runtimeId())) {
+            throw new SecurityException("Shared value was minted by another runtime/isolate");
+        }
+        return shared.value();
+    }
+
     private Object freezeForMessage(Object value) {
         return freezeValue(value, runtimeId, true, new IdentityHashMap<>(), 0, false, new GraphBudget());
     }
