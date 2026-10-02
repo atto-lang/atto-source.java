@@ -337,6 +337,18 @@ final class LanguageHardeningTest {
                 end
                 """)));
         assertTrue(numericLiteralSubsumed.getMessage().contains("earlier pattern already covers"));
+
+        IllegalArgumentException zeroComplexSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match 0i {
+                      0 => { return; }
+                      0i => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(zeroComplexSubsumed.getMessage().contains("earlier pattern already covers"));
     }
 
     @Test
