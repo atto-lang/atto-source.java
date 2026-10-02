@@ -65,6 +65,48 @@ final class PolyglotFeatureTest {
     }
 
     @Test
+    void matchLiteralsAndTupleIdentityAreRuntimeStable() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    match -4i {
+                      -4i => {
+                        stdio.println("negative-imag");
+                      }
+                      _ => {
+                        stdio.println("bad-imag");
+                      }
+                    }
+
+                    stdio.println((1, 2) == [1, 2] ? "bad-shape" : "shape-distinct");
+                    stdio.println((1, 2) == (1, 2) ? "tuple-equal" : "bad-tuple");
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "match-runtime-hardening.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("negative-imag"));
+        assertTrue(text.contains("shape-distinct"));
+        assertTrue(text.contains("tuple-equal"));
+        assertTrue(!text.contains("bad-imag"));
+        assertTrue(!text.contains("bad-shape"));
+        assertTrue(!text.contains("bad-tuple"));
+    }
+
+    @Test
     void executesRepeatedUnderscoreDestructureDiscards() throws Exception {
         String program = """
                 define module app
