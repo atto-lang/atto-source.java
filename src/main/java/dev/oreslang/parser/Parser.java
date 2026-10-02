@@ -1034,6 +1034,13 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        // `actor` stays reserved; only the actor.gc runtime namespace is
+        // admitted as an expression, so actor cannot become a user binding or
+        // first-class ambient-authority value.
+        if (check(ACTOR) && checkNext(DOT)) {
+            advance();
+            return new Ast.NameExpr("actor");
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
