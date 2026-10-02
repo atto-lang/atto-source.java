@@ -205,6 +205,9 @@ public final class OwnershipChecker {
                         elementKind,
                         Origin.LOCAL);
                 state.borrowSource = elementBorrowSource;
+                if (elementBorrowSource != null && elementKind == ValueKind.IMM_BORROW) {
+                    beginPersistentBorrow(elementBorrowSource, false);
+                }
                 scope.define(binding.name(), state);
             }
             return;
