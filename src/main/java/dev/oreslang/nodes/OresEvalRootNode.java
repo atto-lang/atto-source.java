@@ -664,7 +664,12 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.ActorRef<Object> ref = context.actors().spawnOwned(
                         context.isolatePolicy(),
                         initialStateBytes,
-                        () -> statefulBehavior(handler, stateful, initialState));
+                        () -> statefulBehavior(
+                                handler,
+                                stateful,
+                                initialState,
+                                initialStateBytes,
+                                initialArgument instanceof ActorRuntime.Shared<?>));
                 return new GuestActorRef(ref);
             }
 
@@ -685,23 +690,40 @@ public final class OresEvalRootNode extends RootNode {
                         name,
                         initialStateBytes,
                         singletonContract(handler, stateful, initialArgument),
-                        () -> statefulBehavior(handler, stateful, initialState));
+                        () -> statefulBehavior(
+                                handler,
+                                stateful,
+                                initialState,
+                                initialStateBytes,
+                                initialArgument instanceof ActorRuntime.Shared<?>));
                 return new GuestActorRef(ref);
             }
 
             private ActorRuntime.Behavior<Object> statefulBehavior(
                     Invokable handler,
                     boolean stateful,
-                    Object initialState) {
+                    Object initialState,
+                    long initialStateBytes,
+                    boolean initialStateIsSharedBacking) {
                 return new ActorRuntime.Behavior<>() {
                     private Object state = initialState;
+                    private long stateCharge = initialStateBytes;
+                    private boolean stateIsSharedBacking = initialStateIsSharedBacking;
 
                     @Override
                     public void onMessage(Object message, ActorRuntime.ActorContext<Object> actorContext) {
                         if (stateful) {
-                            Object nextState = handler.call(List.of(message, state));
-                            actorContext.replaceOwnedStateBytes(estimateActorStateBytes(nextState));
+                            Object previousState = state;
+                            Object nextState = handler.call(List.of(message, previousState));
+                            boolean preservesSharedBacking =
+                                    stateIsSharedBacking && nextState == previousState;
+                            long nextCharge = preservesSharedBacking
+                                    ? stateCharge
+                                    : estimateActorStateBytes(nextState);
+                            actorContext.replaceOwnedStateBytes(nextCharge);
                             state = nextState;
+                            stateCharge = nextCharge;
+                            stateIsSharedBacking = preservesSharedBacking;
                         } else {
                             handler.call(List.of(message));
                         }
