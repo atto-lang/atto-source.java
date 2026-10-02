@@ -948,6 +948,49 @@ final class MutexRuntimeTest {
 
 
     @Test
+    void actorTransportRejectsHostCreatedSharedMutexWithUnsafePayload() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var receiver = runtime.<OresMutex.Shared<Object>>spawnShared(
+                    () -> (message, context) -> { });
+
+            var nestedLocal = OresMutex.shared((Object) OresMutex.local(new int[]{1}));
+            IllegalArgumentException localError = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(nestedLocal));
+            assertTrue(localError.getMessage().contains("actor-local mutex state"));
+
+            var opaque = OresMutex.shared(new Object());
+            IllegalArgumentException opaqueError = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> receiver.send(opaque));
+            assertTrue(opaqueError.getMessage().contains("opaque host value"));
+        }
+    }
+
+    @Test
+    void actorTransportAcceptsRuntimeInspectableSharedState() throws Exception {
+        record SafeBox(int value) implements OresMutex.SharedState {
+            @Override public Iterable<?> sharedStateChildren() { return List.of(value); }
+        }
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch delivered = new CountDownLatch(1);
+            var receiver = runtime.<OresMutex.Shared<SafeBox>>spawnShared(
+                    () -> (message, context) -> {
+                        var guard = message.tryLock().orElseThrow();
+                        assertEquals(7, guard.value().value());
+                        guard.release();
+                        delivered.countDown();
+                    });
+
+            var shared = OresMutex.shared(new SafeBox(7));
+            assertDoesNotThrow(() -> receiver.send(shared));
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+        }
+    }
+
+
+    @Test
     void asyncTimedLockTimesOutAndReleasesItsDomainReservation() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var guard = mutex.lock();
