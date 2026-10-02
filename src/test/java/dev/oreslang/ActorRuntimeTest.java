@@ -468,6 +468,7 @@ final class ActorRuntimeTest {
             AtomicReference<Throwable> failure = new AtomicReference<>();
             AtomicInteger maxConcurrent = new AtomicInteger();
             AtomicInteger inFlight = new AtomicInteger();
+            AtomicInteger observedValue = new AtomicInteger();
 
             var ref = runtime.<Integer>spawn(() -> (message, context) -> {
                 try {
@@ -490,6 +491,7 @@ final class ActorRuntimeTest {
                     }
                     local.withLock(value -> {
                         value[0]++;
+                        observedValue.set(value[0]);
                         return null;
                     });
                 } catch (Throwable problem) {
@@ -506,7 +508,7 @@ final class ActorRuntimeTest {
             assertNull(failure.get());
             assertEquals(1, maxConcurrent.get(),
                     "one shared actor must never execute concurrent turns");
-            assertEquals(messages, mutex.get().withLock(value -> value[0]).intValue());
+            assertEquals(messages, observedValue.get());
         }
     }
 
