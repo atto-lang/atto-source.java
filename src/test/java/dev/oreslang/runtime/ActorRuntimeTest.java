@@ -85,6 +85,27 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void oversizedMessagesAreRejectedBeforeMailboxAdmission() {
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            ActorRuntime.ActorRef<Object> actor = runtime.spawn(() -> (message, context) -> { });
+            String oversized = "x".repeat(5_000_000);
+
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> runtime.send(actor, oversized));
+
+            assertTrue(error.getMessage().contains("too large"));
+            assertEquals(0, runtime.snapshot(actor).mailboxMessages());
+        }
+    }
+
+    @Test
     void unknownMutableHostObjectsCannotCrossActorBoundary() {
         assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new Object()));
     }
