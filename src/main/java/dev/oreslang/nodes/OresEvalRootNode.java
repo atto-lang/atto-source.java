@@ -86,6 +86,7 @@ public final class OresEvalRootNode extends RootNode {
         private final String codeUnitDigest;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+        private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
@@ -93,6 +94,7 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
 
         private Evaluator(
                 Ast.Program program,
@@ -116,6 +118,8 @@ public final class OresEvalRootNode extends RootNode {
                     } else if (decl instanceof Ast.ClassDecl klass) {
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classOwners.put(klass, module.name());
+                    } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                        index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
                     }
                 }
             }
@@ -138,6 +142,13 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.ClassDecl findClass(String name) {
             if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class " + name + "; qualify it with its module");
             return classes.get(name);
+        }
+
+        private Ast.TypeAliasDecl findTypeAlias(String name) {
+            if (ambiguousTypeAliases.contains(name)) {
+                throw new IllegalArgumentException("ambiguous type alias " + name + "; qualify it with its module");
+            }
+            return typeAliases.get(name);
         }
 
         private Object execute(Object[] arguments) {
@@ -194,6 +205,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Env initializeOrdinaryModuleState(Ast.ModuleDecl module) {
             Env state = new Env(null);
+            predeclareModuleTypeAliases(module, state);
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)) continue;
                 if (field.initializer() == null) {
@@ -244,18 +256,18 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != fn.parameters().size()) {
                 throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
             }
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
-
             Ast.ModuleDecl owner = ownerModule(fn);
             predeclareLocalTypes(fn.body(), env, owner == null ? null : owner.name());
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                Object argument = coerceDeclaredValue(param.type(), args.get(i), env);
+                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) {
-                return coerceDeclaredAggregate(fn.returnType(), signal.value, env);
+                return coerceDeclaredValue(fn.returnType(), signal.value, env);
             }
         }
 
@@ -298,6 +310,7 @@ public final class OresEvalRootNode extends RootNode {
                     singletonSchema(module),
                     singletonCodeDigest(module),
                     context.codeGeneration());
+            predeclareModuleTypeAliases(module, state.fields);
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)) continue;
                 if (field.initializer() == null) {
@@ -402,17 +415,18 @@ public final class OresEvalRootNode extends RootNode {
             Env lexical = classLexicalModuleState(dispatchClass, singletonState);
             Env env = new Env(lexical, singletonState);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
-                Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
             Ast.ModuleDecl owner = ownerModule(receiver.klass);
             predeclareLocalTypes(method.body(), env, owner == null ? null : owner.name());
+            for (int i = 0; i < method.parameters().size(); i++) {
+                Ast.Param param = method.parameters().get(i);
+                Object argument = coerceDeclaredValue(param.type(), args.get(i), env);
+                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(method.body(), env);
                 return null;
             } catch (ReturnSignal signal) {
-                return coerceDeclaredAggregate(method.returnType(), signal.value, env);
+                return coerceDeclaredValue(method.returnType(), signal.value, env);
             }
         }
 
@@ -432,13 +446,13 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
-                    Object value = coerceDeclaredAggregate(
+                    Object value = coerceDeclaredValue(
                             binding.declaredType(),
                             eval(binding.initializer(), env),
                             env);
                     env.initialize(binding.name(), value);
                 } else {
-                    Object value = coerceDeclaredAggregate(
+                    Object value = coerceDeclaredValue(
                             binding.declaredType(),
                             eval(binding.initializer(), env),
                             env);
@@ -773,12 +787,20 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        private void predeclareModuleTypeAliases(Ast.ModuleDecl module, Env env) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.TypeAliasDecl alias) env.defineTypeAlias(alias.name(), alias);
+            }
+        }
+
         private void predeclareLocalTypes(List<Ast.Stmt> statements, Env env, String moduleName) {
             for (Ast.Stmt stmt : statements) {
                 if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
                 if (local.declaration() instanceof Ast.ClassDecl struct) {
                     env.defineType(struct.name(), struct);
                     if (moduleName != null) localClassOwners.putIfAbsent(struct, moduleName);
+                } else if (local.declaration() instanceof Ast.TypeAliasDecl alias) {
+                    env.defineTypeAlias(alias.name(), alias);
                 }
             }
         }
@@ -787,6 +809,83 @@ public final class OresEvalRootNode extends RootNode {
             if (type == null) return null;
             Ast.ClassDecl local = env.lookupType(type.name());
             return local != null ? local : findClass(type.name());
+        }
+
+        private Object coerceDeclaredValue(Ast.TypeRef declaredType, Object value, Env env) {
+            if (declaredType == null) return value;
+
+            Ast.TypeRef resolvedType = resolveRuntimeTypeAlias(declaredType, env, new LinkedHashSet<>());
+            if (resolvedType != declaredType) {
+                return coerceDeclaredValue(resolvedType, value, env);
+            }
+
+            if (declaredType.name().equals("Fnc")
+                    && !declaredType.arguments().isEmpty()
+                    && value instanceof Invokable invokable) {
+                List<Ast.TypeRef> signature = declaredType.arguments();
+                List<Ast.TypeRef> parameterTypes = signature.subList(0, signature.size() - 1);
+                Ast.TypeRef returnType = signature.getLast();
+
+                return (Invokable) args -> {
+                    if (args.size() != parameterTypes.size()) {
+                        throw new IllegalArgumentException("function value expects "
+                                + parameterTypes.size() + " arguments, got " + args.size());
+                    }
+
+                    ArrayList<Object> coerced = new ArrayList<>(args.size());
+                    for (int i = 0; i < args.size(); i++) {
+                        coerced.add(coerceDeclaredValue(parameterTypes.get(i), args.get(i), env));
+                    }
+
+                    Object result = invokable.call(coerced);
+                    return coerceDeclaredValue(returnType, result, env);
+                };
+            }
+
+            return coerceDeclaredAggregate(declaredType, value, env);
+        }
+
+        private Ast.TypeRef resolveRuntimeTypeAlias(
+                Ast.TypeRef type,
+                Env env,
+                Set<Ast.TypeAliasDecl> seen) {
+            if (type == null || type.isBorrow()) return type;
+
+            Ast.TypeAliasDecl alias = env.lookupTypeAlias(type.name());
+            if (alias == null) alias = findTypeAlias(type.name());
+            if (alias == null) return type;
+            if (!seen.add(alias)) {
+                throw new IllegalStateException("type alias cycle survived static checking at " + alias.name());
+            }
+            if (type.arguments().size() != alias.genericParameters().size()) {
+                throw new IllegalStateException("type alias arity changed after static checking for " + alias.name());
+            }
+
+            Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+            for (int i = 0; i < alias.genericParameters().size(); i++) {
+                substitutions.put(alias.genericParameters().get(i), type.arguments().get(i));
+            }
+            Ast.TypeRef target = substituteRuntimeType(alias.target(), substitutions);
+            return resolveRuntimeTypeAlias(target, env, seen);
+        }
+
+        private Ast.TypeRef substituteRuntimeType(
+                Ast.TypeRef type,
+                Map<String, Ast.TypeRef> substitutions) {
+            if (type.isBorrow()) {
+                return Ast.TypeRef.borrowed(
+                        substituteRuntimeType(type.borrowedTarget(), substitutions),
+                        type.mutableBorrow());
+            }
+            Ast.TypeRef replacement = substitutions.get(type.name());
+            if (replacement != null && type.arguments().isEmpty()) return replacement;
+            if (type.arguments().isEmpty()) return type;
+            return new Ast.TypeRef(
+                    type.name(),
+                    type.arguments().stream()
+                            .map(argument -> substituteRuntimeType(argument, substitutions))
+                            .toList(),
+                    type.inferArguments());
         }
 
         private Object coerceDeclaredAggregate(Ast.TypeRef declaredType, Object value, Env env) {
@@ -951,17 +1050,18 @@ public final class OresEvalRootNode extends RootNode {
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env lexical = classLexicalModuleState(klass, singletonState);
             Env env = new Env(lexical, singletonState);
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
             Ast.ModuleDecl owner = ownerModule(klass);
             predeclareLocalTypes(fn.body(), env, owner == null ? null : owner.name());
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                Object argument = coerceDeclaredValue(param.type(), args.get(i), env);
+                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) {
-                return coerceDeclaredAggregate(fn.returnType(), signal.value, env);
+                return coerceDeclaredValue(fn.returnType(), signal.value, env);
             }
         }
 
@@ -1393,6 +1493,7 @@ public final class OresEvalRootNode extends RootNode {
         private final boolean singletonStorage;
         private final Map<String, Slot> slots = new LinkedHashMap<>();
         private final Map<String, Ast.ClassDecl> localTypes = new HashMap<>();
+        private final Map<String, Ast.TypeAliasDecl> localTypeAliases = new HashMap<>();
 
         private Env(Env parent) {
             this(parent, parent == null ? null : parent.singletonState, false);
@@ -1447,6 +1548,16 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ClassDecl type = localTypes.get(name);
             return type != null ? type : parent == null ? null : parent.lookupType(name);
         }
+        private void defineTypeAlias(String name, Ast.TypeAliasDecl alias) {
+            Ast.TypeAliasDecl previous = localTypeAliases.putIfAbsent(name, alias);
+            if (previous != null && previous != alias) {
+                throw new IllegalArgumentException("duplicate local type alias " + name);
+            }
+        }
+        private Ast.TypeAliasDecl lookupTypeAlias(String name) {
+            Ast.TypeAliasDecl alias = localTypeAliases.get(name);
+            return alias != null ? alias : parent == null ? null : parent.lookupTypeAlias(name);
+        }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
@@ -1479,6 +1590,7 @@ public final class OresEvalRootNode extends RootNode {
             Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState, singletonStorage);
             cp.slots.putAll(slots);
             cp.localTypes.putAll(localTypes);
+            cp.localTypeAliases.putAll(localTypeAliases);
             return cp;
         }
     }
