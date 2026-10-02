@@ -666,18 +666,17 @@ public final class TypeChecker {
                 return method;
             }
         }
-        Ast.MethodDecl found = null;
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
             Ast.MethodDecl candidate = findMethod(parent, name, arity, seen);
             if (candidate != null) {
-                if (found != null && found != candidate) throw new IllegalArgumentException("ambiguous inherited method '" + name + "' with arity " + arity + " on " + klass.name());
-                found = candidate;
+                seen.remove(klass);
+                return candidate;
             }
         }
         seen.remove(klass);
-        return found;
+        return null;
     }
 
     private List<Ast.MethodDecl> findMethodsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
