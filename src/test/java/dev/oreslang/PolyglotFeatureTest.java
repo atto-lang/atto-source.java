@@ -11,6 +11,60 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class PolyglotFeatureTest {
     @Test
+    void executesTaggedTupleAndFiniteListMatches() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    match ("error", "enoent") {
+                      ("ok", value) => {
+                        stdio.println(value);
+                      }
+                      ("error", "enoent") => {
+                        stdio.println("missing");
+                      }
+                      ("error", reason) => {
+                        stdio.println(reason);
+                      }
+                      _ => {
+                        stdio.println("unexpected");
+                      }
+                    }
+
+                    match [1, 2, 3] {
+                      [1, second] => {
+                        stdio.println("wrong arity");
+                      }
+                      [1, second, _] => {
+                        stdio.println(second + 40);
+                      }
+                      _ => {
+                        stdio.println("fallback");
+                      }
+                    }
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "pattern-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String text = output.toString(StandardCharsets.UTF_8);
+        assertTrue(text.contains("missing"));
+        assertTrue(text.contains("42"));
+        assertTrue(!text.contains("wrong arity"));
+    }
+
+    @Test
     void executesRepeatedUnderscoreDestructureDiscards() throws Exception {
         String program = """
                 define module app
