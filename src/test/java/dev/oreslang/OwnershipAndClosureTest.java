@@ -386,6 +386,42 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void movesOnReturningMatchAndIfBranchesDoNotPoisonSurvivingPaths() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box
+                  pub val int value = 7;
+                end
+
+                fnc consume(Box box) => void { return; }
+
+                fnc through_match(bool take, Box box) => void {
+                  match take {
+                    true => {
+                      consume(box);
+                      return;
+                    }
+                    _ => {
+                      stdio.println("continue");
+                    }
+                  }
+                  consume(box);
+                  return;
+                }
+
+                fnc through_if(bool take, Box box) => void {
+                  if take; do
+                    consume(box);
+                    return;
+                  else
+                    stdio.println("continue");
+                  fi
+                  consume(box);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void immutableFieldStaysImmutableEvenThroughMutOwner() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
