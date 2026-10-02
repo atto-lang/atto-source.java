@@ -243,6 +243,160 @@ final class CallableLocalTypeTest {
         assertEquals("42", output);
     }
 
+    @Test
+    void callableLocalTypeAliasCanAppearInSignatureWithoutLeakingItsName() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  pub fnc answer() => Answer {
+                    type Answer = int;
+                    return 42;
+                  }
+
+                  pub fnc use_it() => int {
+                    val result = answer();
+                    return result;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  fnc answer() => Answer {
+                    type Answer = int;
+                    return 42;
+                  }
+
+                  fnc misuse() => void {
+                    val Answer leaked = answer();
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void genericLocalAliasIsHoistedAndErasesToItsResolvedType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  fnc values() => Values<int> {
+                    type Values<T> = Array<T>;
+                    return arr[1, 2, 3];
+                  }
+
+                  pub fnc main() => void {
+                    val xs = values();
+                    stdio.println(xs[0]);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void genericLocalInterfaceCanEscapeAsStructuralCallableShape() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  fnc make() => View<int> {
+                    interface View<T> {
+                      fnc get() => T;
+                    }
+
+                    struct Box is View<int> {
+                      value: int;
+
+                      pub get() => int {
+                        return self.value;
+                      }
+                    }
+
+                    return Box { value = 7 };
+                  }
+
+                  pub fnc main() => void {
+                    val result = make();
+                    stdio.stdout.write(result.get());
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("7", output);
+    }
+
+    @Test
+    void genericLocalInterfaceInheritanceSubstitutesParentTypeArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  fnc make() => View<int> {
+                    interface Readable<T> {
+                      fnc get() => T;
+                    }
+
+                    interface View<T> extends Readable<T> {
+                      fnc describe() => string;
+                    }
+
+                    struct Box is View<int> {
+                      value: int;
+
+                      pub get() => int {
+                        return self.value;
+                      }
+
+                      pub describe() => string {
+                        return "box";
+                      }
+                    }
+
+                    return Box { value = 7 };
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void nestedBlocksCanShadowLocalTypesWithoutChangingTheOuterBinding() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  pub fnc main() => void {
+                    struct T {
+                      value: int;
+                    }
+
+                    if true do
+                      struct T {
+                        text: string;
+                      }
+                      val inner = T { text = "inner" };
+                      stdio.stdout.write(inner.text);
+                    fi
+
+                    val outer = T { value = 9 };
+                    stdio.stdout.write(outer.value);
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("inner9", output);
+    }
+
+    @Test
+    void localAliasCyclesAreRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          fnc bad() => A {
+                            type A = B;
+                            type B = A;
+                            return 1;
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("type alias cycle"));
+    }
+
     private static String runProgram(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callable-local-types.ores")
