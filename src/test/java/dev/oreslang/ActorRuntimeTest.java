@@ -477,4 +477,87 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void actorMessageGraphDepthIsBounded() {
+        Object nested = "leaf";
+        for (int i = 0; i < 300; i++) nested = List.of(nested);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(nested));
+        assertTrue(failure.getMessage().contains("maximum nesting depth"));
+    }
+
+    @Test
+    void sharedCellsConsumeAndReleaseRuntimeActorMemoryBudget() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            assertEquals(0L, runtime.sharedMemoryBytes());
+            var cell = runtime.syncCell("shared-state");
+            assertTrue(runtime.sharedMemoryBytes() > 0L);
+            assertEquals(runtime.sharedMemoryBytes(), runtime.actorMemoryBytes());
+
+            cell.close();
+
+            assertEquals(0L, runtime.sharedMemoryBytes());
+            assertEquals(0L, runtime.actorMemoryBytes());
+            assertTrue(cell.closed());
+            assertThrows(IllegalStateException.class, cell::snapshot);
+        }
+    }
+
+    @Test
+    void privateActorCannotAccessLeakedSyncCellHandle() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var cell = runtime.syncCell(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                try {
+                    cell.snapshot();
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            ref.send("read");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, observed.get());
+            assertTrue(observed.get().getMessage().contains("private actors cannot access synchronized shared memory"));
+        }
+    }
+
+    @Test
+    void privateAndSharedMemoryCompeteForOneParentCeiling() throws Exception {
+        IsolatePolicy parent = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024 * 1024,
+                128,
+                IsolatePolicy.developer().maxWallTime(),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(parent)) {
+            CountDownLatch reserved = new CountDownLatch(1);
+            var ref = runtime.<String>spawnPrivate(parent, factoryContext -> {
+                factoryContext.privateMemory().orElseThrow().reserveHeap(10L * 1024 * 1024);
+                reserved.countDown();
+                return (message, context) -> { };
+            });
+
+            ref.send("initialize");
+            assertTrue(reserved.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.privateMemoryBytes() >= 10L * 1024 * 1024);
+
+            String sharedTooLarge = "x".repeat(4 * 1024 * 1024);
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.syncCell(sharedTooLarge));
+            assertTrue(failure.getMessage().contains("aggregate runtime limit exceeded"));
+            assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+
 }
