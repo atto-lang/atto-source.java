@@ -879,7 +879,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","ActorRef","MonitorRef","Shared" -> true;
+                    "bool","Bool","str","string","String","void","ActorRef","MonitorRef","Shared" -> true;
             default -> false;
         };
     }
