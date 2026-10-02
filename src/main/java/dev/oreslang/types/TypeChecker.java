@@ -729,9 +729,14 @@ public final class TypeChecker {
 
                 if (method.explicitReceiverType() != null) {
                     Ast.TypeRef receiverRef = method.explicitReceiverType();
-                    boolean namesEnclosingClass = receiverRef.name().equals(klass.name()) || receiverRef.name().equals(qualifiedClassName(klass)) || receiverRef.name().equals("self");
+                    Ast.TypeRef receiverTargetRef = receiverRef.isBorrow()
+                            ? receiverRef.borrowedTarget()
+                            : receiverRef;
+                    boolean namesEnclosingClass = receiverTargetRef.name().equals(klass.name())
+                            || receiverTargetRef.name().equals(qualifiedClassName(klass))
+                            || receiverTargetRef.name().equals("self");
                     if (!namesEnclosingClass) {
-                        Type receiver = resolve(receiverRef, generics, self);
+                        Type receiver = resolve(receiverTargetRef, generics, self);
                         requireAssignable(self, receiver, "explicit self receiver in " + klass.name() + "." + method.name());
                     }
                 }
@@ -1021,6 +1026,19 @@ public final class TypeChecker {
                     }
                     Type result = resolve(method.returnType(), methodGenerics, proxy.target());
                     return new Named("Future", List.of(result));
+                }
+                if (receiver instanceof Record record) {
+                    Type candidate = record.members().get(methodKey(member.member(), call.arguments().size()));
+                    if (!(candidate instanceof Function fn)) {
+                        throw new IllegalArgumentException("no structural method '" + member.member()
+                                + "' with arity " + call.arguments().size());
+                    }
+                    for (int i = 0; i < fn.parameters().size(); i++) {
+                        validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
+                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self),
+                                fn.parameters().get(i), "structural argument " + (i + 1));
+                    }
+                    return fn.result();
                 }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
