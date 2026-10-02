@@ -75,9 +75,9 @@ public final class GcController {
         long request = actorRequests.incrementAndGet();
         actors.noteManualGcRequest();
 
-        ActorRuntime.ActorSnapshot snapshot = actors.currentActorRef()
-                .map(actors::snapshot)
+        ActorRuntime.ActorRef<?> current = actors.currentActorRef()
                 .orElseThrow(() -> new IllegalStateException("current actor is no longer registered"));
+        ActorRuntime.ActorSnapshot snapshot = actors.snapshot(current);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("request", request);
