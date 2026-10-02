@@ -404,6 +404,36 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void concreteGenericParentContractChecksTheSelectedOverrideSlot() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class Base<T>
+                    pub pick(T value) => T { return value; }
+                  end
+
+                  define class Good extends Base<int>
+                    pub pick(int value) => int { return value; }
+                  end
+                end
+                """)));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Base<T>
+                            pub pick(T value) => T { return value; }
+                          end
+
+                          define class Bad extends Base<int>
+                            pub pick(String value) => String { return value; }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("conflicting member 'pick$arity1'"));
+    }
+
+    @Test
     void sameGenericDiamondViewOfOneDeclarationIsSafe() throws Exception {
         String output = run("""
                 define module m
