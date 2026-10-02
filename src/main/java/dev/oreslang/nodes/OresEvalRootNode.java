@@ -96,7 +96,11 @@ public final class OresEvalRootNode extends RootNode {
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             if (fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalStateException("actor fnc '" + fn.name()
-                        + "' cannot execute on the caller stack; it must be lowered through ActorRuntime");
+                        + "' cannot execute on the caller stack; actor invocation must return an ActorHandle through ActorRuntime lowering");
+            }
+            if (fn.async()) {
+                throw new IllegalStateException("async fnc '" + fn.name()
+                        + "' requires task/continuation lowering and must return Future<T>; the interpreter refuses to run it synchronously");
             }
             if (args.size() != fn.parameters().size()) {
                 if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
@@ -114,6 +118,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (method.async()) {
+                throw new IllegalStateException("async method '" + method.name()
+                        + "' requires task/continuation lowering and must return Future<T>; the interpreter refuses synchronous fallback");
+            }
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -336,7 +344,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
                 if (value instanceof CompletionStage<?> stage) return stage.toCompletableFuture().join();
-                return value;
+                throw new IllegalArgumentException("await requires a Future/CompletionStage value; non-futures are never passed through");
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
@@ -427,6 +435,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
+            if (fn.async()) {
+                throw new IllegalStateException("async static function '" + klass.name() + "." + fn.name()
+                        + "' requires task/continuation lowering and must return Future<T>; the interpreter refuses synchronous fallback");
+            }
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
