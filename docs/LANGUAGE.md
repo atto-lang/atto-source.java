@@ -4,7 +4,9 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may contain multiple named modules. A normal module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+
+A process-wide singleton module is declared with `define singleton module`. It has exactly one runtime instance per OS process, implemented as a hidden actor with its own mutable state and mailbox. Every caller receives only a proxy/handle to that actor; importing or referencing the module never copies its mutable state.
 
 ```ores
 define module math
@@ -21,6 +23,29 @@ define module app
   }
 end
 ```
+
+Singleton state is actor-private, so singleton fields cannot be public. Public functions are the boundary and are asynchronous request/reply calls:
+
+```ores
+define singleton module counter
+  let int count = 0;
+
+  pub fnc next() => int {
+    count = count + 1;
+    return count;
+  }
+end
+
+define module app
+  pub fnc main() => void {
+    val int n = await counter.next();
+    stdio.println(n);
+    return;
+  }
+end
+```
+
+Arguments and results must be sendable; borrows and closure/function values cannot cross this boundary. Calls from one singleton function to another function in the same singleton are direct and keep the same actor-owned state, avoiding self-mailbox deadlocks.
 
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
@@ -255,6 +280,8 @@ try {
 ## Actors
 
 Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
+
+A `singleton module` is a language-level process service built on the same ownership rule: one actor owns the module bindings for the entire OS process, while all other actors/isolates communicate with it through generated/runtime proxies. It is not one singleton per isolate or per Graal context.
 
 ## Isolates
 
