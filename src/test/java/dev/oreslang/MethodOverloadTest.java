@@ -601,6 +601,130 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void genericMethodArgumentsMustUnifyAfterAritySelection() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class C
+                    pub same<T>(T left, T right) => T { return left; }
+                  end
+                end
+
+                fnc good() => int {
+                  val c = new m.C();
+                  return c.same(1, 2);
+                }
+                """)));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub same<T>(T left, T right) => T { return left; }
+                          end
+                        end
+
+                        fnc bad() => void {
+                          val c = new m.C();
+                          c.same(1, "wrong");
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("one consistent type"));
+    }
+
+    @Test
+    void nestedGenericMethodArgumentsMustUnifyPositionally() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub same<T>(Array<T> left, Array<T> right) => T {
+                              return left[0];
+                            }
+                          end
+                        end
+
+                        fnc bad() => void {
+                          val c = new m.C();
+                          c.same(arr[1], arr["wrong"]);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("one consistent type"));
+    }
+
+    @Test
+    void staticGenericMethodArgumentsMustAlsoUnify() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub static fnc same<T>(T left, T right) => T { return left; }
+                          end
+                        end
+
+                        fnc bad() => void {
+                          m.C.same(1, "wrong");
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("one consistent type"));
+    }
+
+    @Test
+    void genericMethodReturnTypeIsInferredFromMatchedArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define class C
+                    pub identity<T>(T value) => T { return value; }
+                  end
+                end
+
+                fnc good() => int {
+                  val c = new m.C();
+                  return c.identity(7);
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub identity<T>(T value) => T { return value; }
+                          end
+                        end
+
+                        fnc bad() => String {
+                          val c = new m.C();
+                          return c.identity(7);
+                        }
+                        """)));
+    }
+
+    @Test
+    void genericMethodMustInferEveryMethodGenericFromArguments() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub make<T>() => T { return 1; }
+                          end
+                        end
+
+                        fnc bad() => void {
+                          val c = new m.C();
+                          c.make();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot infer generic 'T'"));
+    }
+
+    @Test
     void alphaRenamedGenericOverrideIsTheSameArityContract() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module m
