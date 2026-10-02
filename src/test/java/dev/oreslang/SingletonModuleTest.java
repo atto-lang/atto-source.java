@@ -1308,6 +1308,55 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void crossSingletonCommitIsNotRolledBackByLaterCallerFailure() throws Exception {
+        String output = eval("""
+                define singleton module independent_transaction_b as
+                  let int count = 0;
+
+                  pub fnc increment() => int {
+                    count = count + 1;
+                    return count;
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define singleton module independent_transaction_a as
+                  let int count = 0;
+
+                  pub fnc call_b_then_fail() => int {
+                    val int committed = await independent_transaction_b.increment();
+                    count = count + committed;
+                    val Array<int> values = arr[1];
+                    return values[99];
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      val int ignored = await independent_transaction_a.call_b_then_fail();
+                    } catch (err) {
+                    }
+
+                    stdio.println(await independent_transaction_a.read());
+                    stdio.println(await independent_transaction_b.read());
+                    return;
+                  }
+                end
+                """, "singleton-independent-transactions.ores");
+
+        assertTrue(output.lines().anyMatch(line -> line.trim().equals("0")), output);
+        assertTrue(output.lines().anyMatch(line -> line.trim().equals("1")), output);
+    }
+
+    @Test
     void failedSingletonRequestRollsBackAllProcessStateMutation() throws Exception {
         String output = eval("""
                 define singleton module transactional_failure_guard as
