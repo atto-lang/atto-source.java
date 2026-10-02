@@ -198,7 +198,7 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
-    void jvmStyleListOfAndMapOfReturnAndDestructure() {
+    void jvmStyleListOfAndMapOfReturnAndDestructure() throws Exception {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc fixed() => [int, bool, string] {
                   return List.of(3, true, "yes");
@@ -219,6 +219,30 @@ final class ReturnedDestructuringTest {
                   return;
                 }
                 """)));
+
+        String output = run("""
+                fnc fixed() => [int, bool, string] {
+                  return List.of(3, true, "yes");
+                }
+                fnc named() => {foo: int, bar: string} {
+                  return Map.of("foo", 5, "bar", "x");
+                }
+                pub fnc main() => void {
+                  const [num, enabled, answer] = fixed();
+                  const {foo, bar} = named();
+                  stdio.println(num);
+                  stdio.println(enabled);
+                  stdio.println(answer);
+                  stdio.println(foo);
+                  stdio.println(bar);
+                  return;
+                }
+                """);
+        assertTrue(output.contains("3"));
+        assertTrue(output.contains("true"));
+        assertTrue(output.contains("yes"));
+        assertTrue(output.contains("5"));
+        assertTrue(output.contains("x"));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 fnc bad() => [int, bool] {
@@ -262,6 +286,7 @@ final class ReturnedDestructuringTest {
                   val bool enabled = values[1];
                   val string answer = values[2];
                   values[0] = 2;
+                  stdio.println(number);
                   stdio.println(number);
                   stdio.println(enabled);
                   stdio.println(answer);
