@@ -4,6 +4,8 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
+import java.lang.foreign.MemorySegment;
+import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +33,70 @@ final class ActorRuntimeTest {
             assertTrue(received.await(2, TimeUnit.SECONDS));
             assertEquals(List.of(1, 2), observed.get());
             assertThrows(UnsupportedOperationException.class, () -> ((List<Object>) observed.get()).add(9));
+        }
+    }
+
+    @Test
+    void sharedHeapIsTheDefaultActorMemoryMode() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.MemoryMode> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                observed.set(context.memory().mode());
+                received.countDown();
+            });
+            ref.send("ping");
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(ActorRuntime.MemoryMode.SHARED_HEAP, observed.get());
+        }
+    }
+
+    @Test
+    void privateArenaIsActorOwnedThreadConfinedMemory() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<MemorySegment> segment = new AtomicReference<>();
+            AtomicReference<Long> capacity = new AtomicReference<>();
+            AtomicReference<Long> used = new AtomicReference<>();
+
+            var ref = runtime.<String>spawn(
+                    ActorRuntime.MemoryPolicy.privateArena(1024 * 1024),
+                    () -> (message, context) -> {
+                        assertEquals(ActorRuntime.MemoryMode.PRIVATE_ARENA, context.memory().mode());
+                        MemorySegment local = context.memory().allocate(8, 8);
+                        local.set(ValueLayout.JAVA_LONG, 0, 42L);
+                        segment.set(local);
+                        capacity.set(context.memory().capacityBytes());
+                        used.set(context.memory().usedBytes());
+                        received.countDown();
+                    });
+
+            ref.send("allocate");
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(1024 * 1024L, capacity.get());
+            assertEquals(8L, used.get());
+
+            // The segment came from Arena.ofConfined() on the actor's virtual
+            // Thread, so a different thread cannot dereference actor memory.
+            assertThrows(WrongThreadException.class,
+                    () -> segment.get().get(ValueLayout.JAVA_LONG, 0));
+        }
+    }
+
+    @Test
+    void privateArenaCannotExceedActorPolicyCeiling() {
+        IsolatePolicy policy = new IsolatePolicy(
+                java.util.Set.of(),
+                16L * 1024 * 1024,
+                32,
+                java.time.Duration.ofSeconds(5));
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            assertThrows(SecurityException.class, () ->
+                    runtime.<String>spawn(
+                            ActorRuntime.MemoryPolicy.privateArena(17L * 1024 * 1024),
+                            () -> (message, context) -> { }));
         }
     }
 
