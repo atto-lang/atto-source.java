@@ -52,7 +52,8 @@ its ref so `self.join()` is rejected immediately; an actor can never deadlock by
 own termination.
 
 Each source actor turn receives an implicit `self` handle in addition to its one mailbox-message
-parameter.
+parameter. A mailbox delivery creates a fresh callable frame; captured actor-owned state persists,
+while defer/recovery stacks are strictly per-turn.
 
 Explicit `stop()` is graceful and ordered:
 
