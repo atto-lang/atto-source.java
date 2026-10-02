@@ -61,4 +61,56 @@ final class AwaitSupportTest {
             assertTrue(ref.isAlive());
         }
     }
+
+    @Test
+    void synchronousValuesPassThroughWithIdentity() {
+        Object value = new Object();
+        assertSame(value, AwaitSupport.await(value));
+        assertEquals(9, AwaitSupport.await(9));
+    }
+
+    @Test
+    void customAwaitablesUseTheirCompletionStage() {
+        AwaitSupport.Awaitable<String> awaitable =
+                () -> CompletableFuture.completedFuture("custom");
+        assertEquals("custom", AwaitSupport.await(awaitable));
+    }
+
+    @Test
+    void completionWrappersExposeUnderlyingRuntimeFailure() {
+        CompletableFuture<String> failed = new CompletableFuture<>();
+        IllegalStateException cause = new IllegalStateException("boom");
+        failed.completeExceptionally(cause);
+
+        IllegalStateException observed = assertThrows(
+                IllegalStateException.class,
+                () -> AwaitSupport.await(failed));
+        assertSame(cause, observed);
+    }
+
+    @Test
+    void pendingVirtualThreadAwaitFailsClosedInsideActorTurn() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch release = new CountDownLatch(1);
+            Thread virtual = Thread.startVirtualThread(() -> {
+                try {
+                    release.await();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+
+            var ref = runtime.<String>spawnPrivateTrusted(context -> (message, turn) ->
+                    AwaitSupport.await(virtual));
+            ref.send("go");
+
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            Throwable failure = ref.failure().orElseThrow();
+            assertInstanceOf(IllegalStateException.class, failure);
+            assertTrue(failure.getMessage().contains("virtual thread"));
+            release.countDown();
+            virtual.join();
+        }
+    }
+
 }
