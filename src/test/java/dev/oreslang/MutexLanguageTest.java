@@ -583,4 +583,51 @@ final class MutexLanguageTest {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
         assertTrue(error.getMessage().contains("closure cannot capture guard-bearing value"));
     }
+
+    @Test
+    void sharedMutexCapabilityAdmissionCoversSignaturesAndAliases() {
+        var signature = Parser.parse("""
+                define module app
+                  fnc pass(SharedMutex<int> value) => void {
+                    return;
+                  }
+                end
+                """);
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(signature, IsolatePolicy.strictFaas()));
+        assertDoesNotThrow(
+                () -> CapabilityChecker.check(signature, IsolatePolicy.developer()));
+
+        var alias = Parser.parse("""
+                define module app
+                  type SharedCounter = SharedMutex<int>;
+                  fnc main() => void {
+                    return;
+                  }
+                end
+                """);
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(alias, IsolatePolicy.strictFaas()));
+    }
+
+    @Test
+    void bareSharedMutexNamespaceRequiresCapabilityBeforeRebinding() {
+        var program = Parser.parse("""
+                define module app
+                  fnc main() => void {
+                    val factory = SharedMutex;
+                    return;
+                  }
+                end
+                """);
+
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertDoesNotThrow(
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
+
 }
