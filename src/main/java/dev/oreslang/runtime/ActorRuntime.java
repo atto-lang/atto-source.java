@@ -19,6 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinWorkerThread;
@@ -848,6 +849,479 @@ public final class ActorRuntime implements AutoCloseable {
         Object freezeForSend();
     }
 
+    private ActorMemory openActorMemory(
+            MemoryPolicy memoryPolicy,
+            IsolatePolicy actorPolicy) {
+        return switch (memoryPolicy.mode()) {
+            case SHARED_HEAP -> SharedHeapMemory.INSTANCE;
+            case PRIVATE_ARENA -> new ConfinedArenaMemory(
+                    memoryPolicy.arenaBytes(),
+                    actorPolicy.maxHeapBytes());
+        };
+    }
+
+    private enum SharedHeapMemory implements ActorMemory {
+        INSTANCE;
+
+        @Override public MemoryMode mode() { return MemoryMode.SHARED_HEAP; }
+        @Override public long capacityBytes() { return 0; }
+        @Override public long maxCapacityBytes() { return 0; }
+        @Override public long usedBytes() { return 0; }
+        @Override public int segmentCount() { return 0; }
+
+        @Override
+        public MemorySegment allocate(long byteSize, long byteAlignment) {
+            throw new UnsupportedOperationException(
+                    "shared-heap actors use managed values, not private MemorySegments");
+        }
+
+        @Override public void close() { }
+    }
+
+    private final class ConfinedArenaMemory implements ActorMemory {
+        private final Arena arena = Arena.ofConfined();
+        private final ArrayList<ArenaChunk> chunks = new ArrayList<>();
+        private final long initialCapacityBytes;
+        private final long maxCapacityBytes;
+        private long capacityBytes;
+        private long usedBytes;
+        private boolean closed;
+
+        private ConfinedArenaMemory(
+                long initialCapacityBytes,
+                long maxCapacityBytes) {
+            if (initialCapacityBytes <= 0) {
+                throw new IllegalArgumentException(
+                        "initial private arena capacity must be positive");
+            }
+            if (maxCapacityBytes < initialCapacityBytes) {
+                throw new IllegalArgumentException(
+                        "private arena max capacity cannot be below initial capacity");
+            }
+            this.initialCapacityBytes = initialCapacityBytes;
+            this.maxCapacityBytes = maxCapacityBytes;
+            try {
+                addChunk(initialCapacityBytes, 8);
+            } catch (Throwable failure) {
+                arena.close();
+                throw failure;
+            }
+        }
+
+        @Override public MemoryMode mode() { return MemoryMode.PRIVATE_ARENA; }
+        @Override public long capacityBytes() { return capacityBytes; }
+        @Override public long maxCapacityBytes() { return maxCapacityBytes; }
+        @Override public long usedBytes() { return usedBytes; }
+        @Override public int segmentCount() { return chunks.size(); }
+
+        @Override
+        public MemorySegment allocate(long byteSize, long byteAlignment) {
+            ensureOpen();
+            if (byteSize < 0) {
+                throw new IllegalArgumentException("byteSize must be non-negative");
+            }
+            if (byteAlignment <= 0
+                    || (byteAlignment & (byteAlignment - 1)) != 0) {
+                throw new IllegalArgumentException(
+                        "byteAlignment must be a positive power of two");
+            }
+
+            for (int i = chunks.size() - 1; i >= 0; i--) {
+                MemorySegment allocated =
+                        tryAllocate(chunks.get(i), byteSize, byteAlignment);
+                if (allocated != null) return allocated;
+            }
+
+            ArenaChunk grown = grow(byteSize, byteAlignment);
+            MemorySegment allocated =
+                    tryAllocate(grown, byteSize, byteAlignment);
+            if (allocated == null) {
+                throw new AssertionError(
+                        "fresh actor heap segment cannot satisfy allocation");
+            }
+            return allocated;
+        }
+
+        private MemorySegment tryAllocate(
+                ArenaChunk chunk,
+                long byteSize,
+                long byteAlignment) {
+            final long aligned;
+            final long end;
+            try {
+                long absolute =
+                        Math.addExact(chunk.segment.address(), chunk.cursor);
+                long mask = byteAlignment - 1;
+                long alignedAbsolute =
+                        Math.addExact(absolute, mask) & ~mask;
+                aligned =
+                        Math.subtractExact(
+                                alignedAbsolute,
+                                chunk.segment.address());
+                end = Math.addExact(aligned, byteSize);
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError(
+                        "actor private arena allocation overflow");
+            }
+            if (end > chunk.segment.byteSize()) return null;
+
+            try {
+                long consumed = Math.subtractExact(end, chunk.cursor);
+                usedBytes = Math.addExact(usedBytes, consumed);
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError(
+                        "actor private arena usage accounting overflow");
+            }
+
+            MemorySegment slice =
+                    chunk.segment.asSlice(aligned, byteSize);
+            chunk.cursor = end;
+            return slice;
+        }
+
+        private ArenaChunk grow(long byteSize, long byteAlignment) {
+            final long remaining;
+            try {
+                remaining =
+                        Math.subtractExact(
+                                maxCapacityBytes,
+                                capacityBytes);
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError(
+                        "actor private arena capacity accounting overflow");
+            }
+            if (byteSize > remaining) {
+                throw actorLimitExceeded(byteSize);
+            }
+
+            long previous = chunks.isEmpty()
+                    ? initialCapacityBytes
+                    : chunks.getLast().segment.byteSize();
+            long doubled =
+                    previous > Long.MAX_VALUE / 2
+                            ? Long.MAX_VALUE
+                            : previous * 2;
+            long desired =
+                    Math.max(
+                            byteSize,
+                            Math.max(initialCapacityBytes, doubled));
+            long chunkBytes = Math.min(remaining, desired);
+            if (chunkBytes < byteSize) {
+                throw actorLimitExceeded(byteSize);
+            }
+            return addChunk(
+                    chunkBytes,
+                    Math.max(8, byteAlignment));
+        }
+
+        private ArenaChunk addChunk(
+                long byteSize,
+                long byteAlignment) {
+            reservePrivateArenaBytes(byteSize);
+            boolean committed = false;
+            try {
+                MemorySegment segment =
+                        arena.allocate(byteSize, byteAlignment);
+                ArenaChunk chunk = new ArenaChunk(segment);
+                chunks.add(chunk);
+                capacityBytes =
+                        Math.addExact(capacityBytes, byteSize);
+                committed = true;
+                return chunk;
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError(
+                        "actor private arena capacity accounting overflow");
+            } finally {
+                if (!committed) {
+                    releasePrivateArenaBytes(byteSize);
+                }
+            }
+        }
+
+        private OutOfMemoryError actorLimitExceeded(
+                long requestedBytes) {
+            return new OutOfMemoryError(
+                    "actor private arena hard limit exceeded: requested="
+                            + requestedBytes
+                            + " used=" + usedBytes
+                            + " committed=" + capacityBytes
+                            + " max=" + maxCapacityBytes);
+        }
+
+        private void ensureOpen() {
+            if (closed) {
+                throw new IllegalStateException(
+                        "actor private arena is closed");
+            }
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            closed = true;
+            long committed = capacityBytes;
+            try {
+                arena.close();
+            } finally {
+                chunks.clear();
+                capacityBytes = 0;
+                usedBytes = 0;
+                releasePrivateArenaBytes(committed);
+            }
+        }
+    }
+
+    private static final class ArenaChunk {
+        private final MemorySegment segment;
+        private long cursor;
+
+        private ArenaChunk(MemorySegment segment) {
+            this.segment = segment;
+        }
+    }
+
+    private void reservePrivateArenaBytes(long bytes) {
+        while (true) {
+            long current = privateArenaReservedBytes.get();
+            final long next;
+            try {
+                next = Math.addExact(current, bytes);
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError(
+                        "tenant private arena reservation overflow");
+            }
+            if (next > privateArenaBudgetBytes()) {
+                throw new OutOfMemoryError(
+                        "tenant private arena budget exhausted: requested="
+                                + bytes
+                                + " reserved=" + current
+                                + " budget=" + privateArenaBudgetBytes());
+            }
+            if (privateArenaReservedBytes.compareAndSet(
+                    current, next)) {
+                return;
+            }
+        }
+    }
+
+    private void releasePrivateArenaBytes(long bytes) {
+        if (bytes == 0) return;
+        long remaining =
+                privateArenaReservedBytes.addAndGet(-bytes);
+        if (remaining < 0) {
+            privateArenaReservedBytes.addAndGet(bytes);
+            throw new IllegalStateException(
+                    "actor private arena reservation accounting underflow");
+        }
+    }
+
+    private static final class ProcessActorSchedulers {
+        private static final int SCALE_STEP = 2;
+
+        private final SchedulerConfig config;
+        private final ForkJoinPool sharedPool;
+        private final VirtualThreadSchedulerMXBean virtualScheduler;
+        private final ScheduledThreadPoolExecutor controller;
+        private final AtomicInteger sharedWorkerSequence =
+                new AtomicInteger();
+        private int privateIdleTicks;
+        private int sharedIdleTicks;
+
+        private ProcessActorSchedulers(SchedulerConfig config) {
+            this.config = config;
+
+            setDefaultProperty(
+                    "jdk.virtualThreadScheduler.parallelism",
+                    Integer.toString(config.privateCarrierMin()));
+            setDefaultProperty(
+                    "jdk.virtualThreadScheduler.maxPoolSize",
+                    Integer.toString(config.privateCarrierMax()));
+
+            this.sharedPool = new ForkJoinPool(
+                    config.sharedPoolMin(),
+                    pool -> {
+                        ForkJoinWorkerThread worker =
+                                ForkJoinPool
+                                        .defaultForkJoinWorkerThreadFactory
+                                        .newThread(pool);
+                        worker.setName(
+                                "ores-shared-actor-"
+                                        + sharedWorkerSequence
+                                                .incrementAndGet());
+                        return worker;
+                    },
+                    null,
+                    true,
+                    0,
+                    config.sharedPoolMax(),
+                    1,
+                    null,
+                    30L,
+                    TimeUnit.SECONDS);
+
+            VirtualThreadSchedulerMXBean scheduler = null;
+            try {
+                scheduler =
+                        ManagementFactory.getPlatformMXBean(
+                                VirtualThreadSchedulerMXBean.class);
+                if (scheduler != null) {
+                    scheduler.setParallelism(
+                            clamp(
+                                    scheduler.getParallelism(),
+                                    config.privateCarrierMin(),
+                                    config.privateCarrierMax()));
+                }
+            } catch (UnsupportedOperationException
+                    | SecurityException
+                    | LinkageError unavailable) {
+                // Alternate JVM/native-image environments may omit it.
+            }
+            this.virtualScheduler = scheduler;
+
+            this.controller =
+                    new ScheduledThreadPoolExecutor(
+                            1,
+                            runnable ->
+                                    Thread.ofPlatform()
+                                            .daemon(true)
+                                            .name(
+                                                    "ores-actor-scheduler-controller")
+                                            .unstarted(runnable));
+            this.controller.setRemoveOnCancelPolicy(true);
+            this.controller.scheduleWithFixedDelay(
+                    this::rebalanceSafely,
+                    250L,
+                    250L,
+                    TimeUnit.MILLISECONDS);
+        }
+
+        private void executeShared(Runnable task) {
+            sharedPool.execute(task);
+        }
+
+        private SchedulerSnapshot snapshot() {
+            int privateTarget =
+                    virtualScheduler == null
+                            ? -1
+                            : virtualScheduler.getParallelism();
+            int privatePoolSize =
+                    virtualScheduler == null
+                            ? -1
+                            : virtualScheduler.getPoolSize();
+            long privateQueued =
+                    virtualScheduler == null
+                            ? -1L
+                            : virtualScheduler
+                                    .getQueuedVirtualThreadCount();
+            return new SchedulerSnapshot(
+                    privateTarget,
+                    privatePoolSize,
+                    privateQueued,
+                    sharedPool.getParallelism(),
+                    sharedPool.getPoolSize(),
+                    sharedPool.getQueuedSubmissionCount()
+                            + sharedPool.getQueuedTaskCount());
+        }
+
+        private void rebalanceSafely() {
+            try {
+                rebalancePrivate();
+                rebalanceShared();
+            } catch (Throwable ignored) {
+                // Telemetry/tuning must never take down actor work.
+            }
+        }
+
+        private void rebalancePrivate() {
+            if (virtualScheduler == null) return;
+            int current = virtualScheduler.getParallelism();
+            long queued =
+                    Math.max(
+                            0L,
+                            virtualScheduler
+                                    .getQueuedVirtualThreadCount());
+            int mounted =
+                    Math.max(
+                            0,
+                            virtualScheduler
+                                    .getMountedVirtualThreadCount());
+
+            int desired = current;
+            if (queued > 0
+                    && current < config.privateCarrierMax()) {
+                privateIdleTicks = 0;
+                desired =
+                        Math.min(
+                                config.privateCarrierMax(),
+                                current + SCALE_STEP);
+            } else if (queued == 0
+                    && mounted < current / 2) {
+                privateIdleTicks++;
+                if (privateIdleTicks >= 8
+                        && current > config.privateCarrierMin()) {
+                    desired =
+                            Math.max(
+                                    config.privateCarrierMin(),
+                                    current - SCALE_STEP);
+                    privateIdleTicks = 0;
+                }
+            } else {
+                privateIdleTicks = 0;
+            }
+
+            if (desired != current) {
+                virtualScheduler.setParallelism(desired);
+            }
+        }
+
+        private void rebalanceShared() {
+            int current = sharedPool.getParallelism();
+            long queued =
+                    sharedPool.getQueuedSubmissionCount()
+                            + sharedPool.getQueuedTaskCount();
+            int active = sharedPool.getActiveThreadCount();
+
+            int desired = current;
+            if (queued > current
+                    && current < config.sharedPoolMax()) {
+                sharedIdleTicks = 0;
+                desired =
+                        Math.min(
+                                config.sharedPoolMax(),
+                                current + SCALE_STEP);
+            } else if (queued == 0
+                    && active < current / 2) {
+                sharedIdleTicks++;
+                if (sharedIdleTicks >= 8
+                        && current > config.sharedPoolMin()) {
+                    desired =
+                            Math.max(
+                                    config.sharedPoolMin(),
+                                    current - SCALE_STEP);
+                    sharedIdleTicks = 0;
+                }
+            } else {
+                sharedIdleTicks = 0;
+            }
+
+            if (desired != current) {
+                sharedPool.setParallelism(desired);
+            }
+        }
+
+        private static void setDefaultProperty(
+                String name,
+                String value) {
+            if (System.getProperty(name) == null) {
+                System.setProperty(name, value);
+            }
+        }
+
+        private static int clamp(int value, int min, int max) {
+            return Math.max(min, Math.min(max, value));
+        }
+    }
+
     @Override
     public void close() {
         requireSupervisorContext("close an ActorRuntime");
@@ -892,27 +1366,56 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final class ActorCell<M> {
-        private static final Object STOP = new Object();
+        private static final int SHARED_TURN_MESSAGE_BUDGET = 64;
+
         private final ActorRef<M> ref;
         private final IsolatePolicy policy;
+        private final MemoryPolicy memoryPolicy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
+        private final Consumer<Throwable> onTerminated;
         private final BlockingQueue<Object> mailbox;
         private final AtomicInteger queuedMessages = new AtomicInteger();
-        private boolean terminated;
-        private volatile Thread thread;
+        private final AtomicBoolean sharedTurnScheduled =
+                new AtomicBoolean();
+        private final AtomicBoolean stopped = new AtomicBoolean();
+        private final AtomicBoolean terminationNotified =
+                new AtomicBoolean();
+        private final CountDownLatch terminatedLatch =
+                new CountDownLatch(1);
 
-        private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
+        private volatile boolean terminated;
+        private volatile Thread privateActorThread;
+        private volatile Behavior<M> sharedBehavior;
+        private volatile ActorContext<M> sharedContext;
+
+        private ActorCell(
+                ActorRef<M> ref,
+                IsolatePolicy policy,
+                MemoryPolicy memoryPolicy,
+                Supplier<? extends Behavior<M>> behaviorFactory,
+                Consumer<Throwable> onTerminated) {
             this.ref = ref;
             this.policy = policy;
+            this.memoryPolicy = memoryPolicy;
             this.behaviorFactory = behaviorFactory;
-            this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
+            this.onTerminated = onTerminated;
+            this.mailbox =
+                    new LinkedBlockingQueue<>(
+                            policy.maxMailboxMessages());
         }
 
         private boolean reserveMailboxSlot() {
+            if (stopped.get() || terminated) return false;
             while (true) {
                 int current = queuedMessages.get();
-                if (current >= policy.maxMailboxMessages()) return false;
-                if (queuedMessages.compareAndSet(current, current + 1)) return true;
+                if (current >= policy.maxMailboxMessages()) {
+                    return false;
+                }
+                if (queuedMessages.compareAndSet(
+                        current, current + 1)) {
+                    return true;
+                }
+                if (stopped.get() || terminated) return false;
             }
         }
 
@@ -921,86 +1424,247 @@ public final class ActorRuntime implements AutoCloseable {
             if (remaining < 0) {
                 queuedMessages.incrementAndGet();
                 throw new IllegalStateException(
-                        "actor mailbox accounting underflow for " + ref.id());
+                        "actor mailbox accounting underflow for "
+                                + ref.id());
             }
         }
 
-        private synchronized boolean enqueueReserved(Object message) {
-            if (terminated) return false;
+        private synchronized boolean enqueueReserved(
+                Object message) {
+            if (terminated || stopped.get() || closed.get()) {
+                return false;
+            }
             if (!mailbox.offer(message)) {
                 throw new IllegalStateException(
-                        "actor mailbox physical capacity unexpectedly exhausted for " + ref.id());
+                        "actor mailbox physical capacity unexpectedly exhausted for "
+                                + ref.id());
             }
             return true;
         }
 
-        private synchronized void markTerminated() {
-            terminated = true;
+        private void start() {
+            if (memoryPolicy.mode()
+                    == MemoryMode.PRIVATE_ARENA) {
+                privateActorThread =
+                        Thread.ofVirtual()
+                                .name(
+                                        "ores-private-actor-"
+                                                + ref.id().value())
+                                .start(this::runPrivateActor);
+            }
         }
 
-        private void start() {
-            thread = Thread.ofVirtual().name("ores-actor-" + ref.id().value()).start(this::run);
+        private void messageAvailable() {
+            if (memoryPolicy.mode()
+                    == MemoryMode.SHARED_HEAP) {
+                scheduleSharedTurn();
+            }
         }
 
         @SuppressWarnings("unchecked")
-        private void run() {
-            CURRENT_ACTOR_POLICY.set(policy);
-            CURRENT_ACTOR_RUNTIME.set(ActorRuntime.this);
-            CURRENT_ACTOR_DOMAIN.set(new ActorDomain(ActorRuntime.this, ref.id()));
-            try {
-                final Behavior<M> behavior = java.util.Objects.requireNonNull(
-                        behaviorFactory.get(), "actor behavior factory returned null");
-                final ActorContext<M> context = new ActorContext<>() {
-                    @Override public ActorRef<M> self() { return ref; }
-                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
-                    @Override public IsolatePolicy policy() { return policy; }
-                };
-                while (!closed.get()) {
+        private void runPrivateActor() {
+            Throwable terminalFailure = null;
+            installActorThreadLocals();
+            try (ActorMemory memory =
+                    openActorMemory(memoryPolicy, policy)) {
+                Behavior<M> behavior =
+                        java.util.Objects.requireNonNull(
+                                behaviorFactory.get(),
+                                "actor behavior factory returned null");
+                ActorContext<M> context =
+                        newContext(memory);
+
+                while (!stopped.get() && !closed.get()) {
                     Object message = mailbox.take();
-                    if (message == STOP) return;
                     releaseMailboxSlot();
-                    if (closed.get()) return;
+                    if (stopped.get() || closed.get()) break;
                     behavior.onMessage((M) message, context);
                 }
             } catch (InterruptedException interrupted) {
+                if (!stopped.get() && !closed.get()) {
+                    terminalFailure = interrupted;
+                }
                 Thread.currentThread().interrupt();
             } catch (VirtualMachineError fatal) {
+                terminalFailure = fatal;
                 throw fatal;
             } catch (ThreadDeath death) {
+                terminalFailure = death;
                 throw death;
             } catch (Throwable failure) {
-                // v0 fail-stop supervision policy. The cell is removed below
-                // so subsequent sends fail immediately instead of targeting a
-                // dead actor left behind in the runtime registry.
+                terminalFailure = failure;
             } finally {
-                markTerminated();
-                CURRENT_ACTOR_DOMAIN.remove();
-                CURRENT_ACTOR_RUNTIME.remove();
-                CURRENT_ACTOR_POLICY.remove();
-                if (actors.remove(ref.id(), this)) {
-                    releaseActorSlot();
+                clearActorThreadLocals();
+                terminate(terminalFailure);
+            }
+        }
+
+        private void scheduleSharedTurn() {
+            if (terminated) return;
+            if (sharedTurnScheduled.compareAndSet(
+                    false, true)) {
+                try {
+                    PROCESS_SCHEDULERS.executeShared(
+                            this::runSharedTurn);
+                } catch (Throwable schedulingFailure) {
+                    sharedTurnScheduled.set(false);
+                    terminate(schedulingFailure);
+                }
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private void runSharedTurn() {
+            Throwable terminalFailure = null;
+            boolean reschedule = false;
+            installActorThreadLocals();
+            try {
+                if (stopped.get() || closed.get()) return;
+
+                Behavior<M> behavior = sharedBehavior;
+                ActorContext<M> context = sharedContext;
+                if (behavior == null) {
+                    behavior =
+                            java.util.Objects.requireNonNull(
+                                    behaviorFactory.get(),
+                                    "actor behavior factory returned null");
+                    context =
+                            newContext(SharedHeapMemory.INSTANCE);
+                    sharedBehavior = behavior;
+                    sharedContext = context;
+                }
+
+                int processed = 0;
+                while (processed
+                        < SHARED_TURN_MESSAGE_BUDGET) {
+                    if (stopped.get() || closed.get()) break;
+                    Object message = mailbox.poll();
+                    if (message == null) break;
+                    releaseMailboxSlot();
+                    behavior.onMessage((M) message, context);
+                    processed++;
+                }
+                reschedule =
+                        !stopped.get()
+                                && !closed.get()
+                                && !mailbox.isEmpty();
+            } catch (VirtualMachineError fatal) {
+                terminalFailure = fatal;
+                throw fatal;
+            } catch (ThreadDeath death) {
+                terminalFailure = death;
+                throw death;
+            } catch (Throwable failure) {
+                terminalFailure = failure;
+            } finally {
+                clearActorThreadLocals();
+                sharedTurnScheduled.set(false);
+
+                if (terminalFailure != null
+                        || stopped.get()
+                        || closed.get()) {
+                    terminate(terminalFailure);
+                } else if (reschedule || !mailbox.isEmpty()) {
+                    scheduleSharedTurn();
+                }
+            }
+        }
+
+        private void installActorThreadLocals() {
+            CURRENT_ACTOR_POLICY.set(policy);
+            CURRENT_ACTOR_RUNTIME.set(ActorRuntime.this);
+            CURRENT_ACTOR_DOMAIN.set(
+                    new ActorDomain(
+                            ActorRuntime.this, ref.id()));
+            CURRENT_ACTOR_MEMORY_MODE.set(
+                    memoryPolicy.mode());
+        }
+
+        private void clearActorThreadLocals() {
+            CURRENT_ACTOR_MEMORY_MODE.remove();
+            CURRENT_ACTOR_DOMAIN.remove();
+            CURRENT_ACTOR_RUNTIME.remove();
+            CURRENT_ACTOR_POLICY.remove();
+        }
+
+        private ActorContext<M> newContext(
+                ActorMemory memory) {
+            return new ActorContext<>() {
+                @Override
+                public ActorRef<M> self() { return ref; }
+
+                @Override
+                public ActorRuntime runtime() {
+                    return ActorRuntime.this;
+                }
+
+                @Override
+                public IsolatePolicy policy() {
+                    return policy;
+                }
+
+                @Override
+                public ActorMemory memory() {
+                    return memory;
+                }
+            };
+        }
+
+        private void terminate(Throwable failure) {
+            synchronized (this) {
+                if (terminated) return;
+                terminated = true;
+                stopped.set(true);
+                mailbox.clear();
+                queuedMessages.set(0);
+            }
+
+            if (actors.remove(ref.id(), this)) {
+                releaseActorSlot();
+            }
+            notifyTerminated(failure);
+            terminatedLatch.countDown();
+        }
+
+        private void notifyTerminated(Throwable failure) {
+            if (terminationNotified.compareAndSet(
+                    false, true)) {
+                try {
+                    onTerminated.accept(failure);
+                } catch (Throwable ignored) {
+                    // Lifecycle notification must not destabilize runtime cleanup.
                 }
             }
         }
 
         private boolean isAlive() {
-            Thread current = thread;
-            return current != null && current.isAlive();
+            return !terminated;
         }
 
-        private void awaitStopped(long remainingNanos) throws InterruptedException {
-            Thread current = thread;
-            if (current == null || current == Thread.currentThread()) return;
-            long millis = Math.max(1L, Math.min(
-                    java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(remainingNanos),
-                    MAX_CLOSE_WAIT.toMillis()));
-            current.join(millis);
+        private void awaitStopped(long remainingNanos)
+                throws InterruptedException {
+            if (remainingNanos <= 0 || terminated) return;
+            terminatedLatch.await(
+                    remainingNanos,
+                    TimeUnit.NANOSECONDS);
         }
 
         private void stop() {
-            mailbox.offer(STOP);
-            Thread t = thread;
-            if (t != null) t.interrupt();
+            if (terminated) return;
+            stopped.set(true);
+
+            if (memoryPolicy.mode()
+                    == MemoryMode.PRIVATE_ARENA) {
+                Thread actorThread = privateActorThread;
+                if (actorThread != null
+                        && actorThread
+                                != Thread.currentThread()) {
+                    actorThread.interrupt();
+                }
+            } else {
+                scheduleSharedTurn();
+            }
         }
     }
+
 }
