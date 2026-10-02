@@ -1152,9 +1152,11 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.ActorRef<Object> watcher = args.size() == 2
                         ? actorRef(args.get(1))
                         : context.actors().<Object>currentActorRef()
-                            .orElseThrow(() -> new IllegalStateException(
+                            .orElseThrow(() -> new OresRuntimeException(
                                     "actor.monitor(target) must run inside an actor; use actor.monitor(target, watcher) from control code"));
-                return new GuestMonitorRef(context.actors().monitor(watcher, target));
+                return guestRuntimeBoundary(
+                        "actor.monitor",
+                        () -> new GuestMonitorRef(context.actors().monitor(watcher, target)));
             }
 
             private Object demonitor(List<Object> args) {
@@ -1166,15 +1168,18 @@ public final class OresEvalRootNode extends RootNode {
                 ActorRuntime.ActorRef<Object> watcher = args.size() == 2
                         ? actorRef(args.get(1))
                         : context.actors().<Object>currentActorRef()
-                            .orElseThrow(() -> new IllegalStateException(
+                            .orElseThrow(() -> new OresRuntimeException(
                                     "actor.demonitor(monitor) must run inside an actor; use actor.demonitor(monitor, watcher) from control code"));
-                return context.actors().demonitor(watcher, monitor);
+                return guestRuntimeBoundary(
+                        "actor.demonitor",
+                        () -> context.actors().demonitor(watcher, monitor));
             }
 
             private Object self() {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_SEND, "actor.self");
                 ActorRuntime.ActorRef<Object> ref = context.actors().<Object>currentActorRef()
-                        .orElseThrow(() -> new IllegalStateException("actor.self is only available while handling an actor message"));
+                        .orElseThrow(() -> new OresRuntimeException(
+                                "actor.self is only available while handling an actor message"));
                 return new GuestActorRef(ref);
             }
 
@@ -1279,7 +1284,9 @@ public final class OresEvalRootNode extends RootNode {
                     case "borrow", "borrow_mut", "take", "copy" -> value;
                     case "share" -> {
                         context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "share");
-                        yield context.actors().shareReadonly(value);
+                        yield guestRuntimeBoundary(
+                                "share",
+                                () -> context.actors().shareReadonly(value));
                     }
                     default -> throw new IllegalArgumentException("unknown ownership intrinsic " + name);
                 };
@@ -1655,10 +1662,18 @@ public final class OresEvalRootNode extends RootNode {
         private Object write(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.write");requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.println");requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
     }
-    private record ProcessFacade(OresContext context) {
+    private final class ProcessFacade {
+        private final OresContext context;
+        private ProcessFacade(OresContext context){this.context=context;}
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
-        private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+        private Object shareReadonly(List<Object> args){
+            context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");
+            requireOne(args,"process.share_readonly");
+            return guestRuntimeBoundary(
+                    "process.share_readonly",
+                    () -> context.actors().shareReadonly(args.getFirst()));
+        }
         private Object gc(List<Object> args){context.requireCapability(IsolatePolicy.Capability.GC_CONTROL,"process.gc");requireZero(args,"process.gc");return context.gc().collect();}
     }
     private static long saturatingAdd(long left, long right) {
