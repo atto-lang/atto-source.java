@@ -139,4 +139,77 @@ final class ActorRuntimeTest {
             assertEquals(1, runtime.gcStats().processRequests());
         }
     }
+
+    @Test
+    void concurrentProcessGcRequestsAreCoalesced() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger processCollections = new AtomicInteger();
+
+        ActorRuntime.GarbageCollector collector = new ActorRuntime.GarbageCollector() {
+            @Override public void collectActor(ActorRuntime.ActorId actorId) { }
+
+            @Override public void collectProcess() {
+                processCollections.incrementAndGet();
+                entered.countDown();
+                try {
+                    assertTrue(release.await(2, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    fail(interrupted);
+                }
+            }
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), collector)) {
+            Thread first = Thread.ofVirtual().start(runtime::gcProcess);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            Thread second = Thread.ofVirtual().start(runtime::gcProcess);
+            second.join();
+            release.countDown();
+            first.join();
+
+            assertEquals(1, processCollections.get());
+            assertEquals(2, runtime.gcStats().processRequests());
+        }
+    }
+
+    @Test
+    void freezeRejectsCyclesNullAndPathologicalDepth() {
+        ArrayList<Object> cyclic = new ArrayList<>();
+        cyclic.add(cyclic);
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(cyclic));
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(null));
+
+        Object nested = "leaf";
+        for (int i = 0; i < 300; i++) nested = List.of(nested);
+        Object tooDeep = nested;
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(tooDeep));
+    }
+
+    @Test
+    void sendableRepresentationsAreRefrozenAndCannotReturnSelf() {
+        ArrayList<Integer> mutable = new ArrayList<>(List.of(1, 2));
+        ActorRuntime.Sendable safe = () -> mutable;
+        Object frozen = ActorRuntime.freeze(safe);
+
+        assertInstanceOf(List.class, frozen);
+        assertEquals(List.of(1, 2), frozen);
+        assertThrows(UnsupportedOperationException.class, () -> ((List<Object>) frozen).add(3));
+
+        ActorRuntime.Sendable recursive = new ActorRuntime.Sendable() {
+            @Override public Object freezeForSend() { return this; }
+        };
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(recursive));
+    }
+
+    @Test
+    void gcRequestsAreRejectedAfterRuntimeClose() {
+        ActorRuntime runtime = new ActorRuntime();
+        runtime.close();
+
+        assertThrows(IllegalStateException.class, runtime::gcProcess);
+        assertThrows(IllegalStateException.class, runtime::gcCurrentActor);
+    }
 }
