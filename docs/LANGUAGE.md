@@ -232,6 +232,27 @@ fi
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
+### Loop control
+
+Both classic `for (;;)` loops and `for (... of ...)` loops support `break` and
+`continue`.
+
+```ores
+for (let i = 0; i < 10; i = i + 1) {
+  if i == 2; do
+    continue; // the update expression still runs
+  fi
+  if i == 7; do
+    break;    // exits the nearest loop without running its update
+  fi
+}
+```
+
+The target is always the nearest loop in the same callable. A lambda/function/routine/method
+is a control-flow boundary, so it cannot break or continue a loop owned by its caller or
+creator. `finally` executes before a pending `break` or `continue` resumes. Callable-scoped
+`defer` is unaffected: breaking or continuing a loop does not drain the defer stack.
+
 ## Exceptions and defer
 
 Both structured exceptions and lexical `defer` are supported:
