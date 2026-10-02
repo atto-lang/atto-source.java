@@ -204,22 +204,49 @@ public final class OresEvalRootNode extends RootNode {
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             Env env = new Env(parent);
             ArrayDeque<DeferredAction> deferred = new ArrayDeque<>();
+            RuntimeException bodyOutcome = null;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
-            } finally {
-                try {
-                    while (!deferred.isEmpty()) {
-                        DeferredAction action = deferred.pop();
-                        try {
-                            eval(action.expression(), action.environment());
-                        } finally {
-                            action.environment().release();
-                        }
-                    }
-                } finally {
-                    env.release();
-                }
+            } catch (RuntimeException outcome) {
+                bodyOutcome = outcome;
             }
+
+            RuntimeException cleanupFailure = null;
+            boolean forcedStop = bodyOutcome instanceof CancellationException
+                    || bodyOutcome instanceof SecurityException;
+
+            try {
+                while (!deferred.isEmpty()) {
+                    DeferredAction action = deferred.pop();
+                    try {
+                        if (!forcedStop) {
+                            context.schedulerSafepoint();
+                            eval(action.expression(), action.environment());
+                        }
+                    } catch (RuntimeException failure) {
+                        if (cleanupFailure == null) cleanupFailure = failure;
+                        else if (cleanupFailure != failure) cleanupFailure.addSuppressed(failure);
+                        if (failure instanceof CancellationException || failure instanceof SecurityException) {
+                            forcedStop = true;
+                        }
+                    } finally {
+                        action.environment().release();
+                    }
+                }
+            } finally {
+                env.release();
+            }
+
+            if (bodyOutcome != null) {
+                if (bodyOutcome instanceof ReturnSignal && cleanupFailure != null) {
+                    throw cleanupFailure;
+                }
+                if (cleanupFailure != null && cleanupFailure != bodyOutcome) {
+                    bodyOutcome.addSuppressed(cleanupFailure);
+                }
+                throw bodyOutcome;
+            }
+            if (cleanupFailure != null) throw cleanupFailure;
         }
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<DeferredAction> deferred) {
