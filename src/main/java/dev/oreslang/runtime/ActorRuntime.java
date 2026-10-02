@@ -1578,6 +1578,25 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
+
+        ActorCell<?> sender = currentActor.get();
+        if (sender != null && sender.kind == ActorKind.UNTRUSTED) {
+            sender.checkUntrustedBudget(1);
+            try {
+                estimatePrivateTransportBytes(
+                        message,
+                        new IdentityHashMap<>(),
+                        0,
+                        sender.untrustedLimits.maxMailboxReturnBytes());
+            } catch (IllegalStateException tooLarge) {
+                throw new IllegalStateException(
+                        "untrusted actor outbound mailbox payload exceeds "
+                                + sender.untrustedLimits.maxMailboxReturnBytes()
+                                + " bytes; stream large HTTP responses through context.httpResponse()",
+                        tooLarge);
+            }
+        }
+
         if (!cell.reserveMailboxSlot()) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -1619,9 +1638,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
-        Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freezeForTransport(message);
+        Object prepared = cell.kind.memoryIsolated() ? isolateCopy(message) : freezeForTransport(message);
         Runnable release;
-        if (cell.kind == ActorKind.PRIVATE) {
+        if (cell.kind.memoryIsolated()) {
             MemoryReservation reservation;
             try {
                 reservation = cell.memorySlice.reserveMailbox(prepared);
@@ -1677,13 +1696,22 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
-        if (cell != null && cell.stopped.get()) {
-            throw new CancellationException("actor execution stopped");
+        if (cell != null) {
+            if (cell.stopped.get()) {
+                throw new CancellationException("actor execution stopped");
+            }
+            cell.checkUntrustedBudget(1);
         }
         if (Thread.currentThread().isInterrupted()) {
             throw new CancellationException("actor execution interrupted");
         }
-        Thread.yield();
+        // Trusted actors retain cooperative yielding. UNTRUSTED actors are
+        // enforced by fuel/deadline checks and periodically yield as a courtesy
+        // to the dedicated sandbox dispatcher.
+        if (cell == null || cell.kind != ActorKind.UNTRUSTED
+                || (cell.fuelRemaining.get() & 1023L) == 0L) {
+            Thread.yield();
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -2549,6 +2577,8 @@ public final class ActorRuntime implements AutoCloseable {
             // reporting success until they actually leave the runtime.
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
+            untrustedDispatcher.shutdownNow();
+            untrustedWatchdog.shutdownNow();
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
@@ -2591,7 +2621,11 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
-        return kind == ActorKind.PRIVATE ? privateDispatcher : sharedDispatcher;
+        return switch (kind) {
+            case PRIVATE -> privateDispatcher;
+            case SHARED -> sharedDispatcher;
+            case UNTRUSTED -> untrustedDispatcher;
+        };
     }
 
     private static ExecutorService newDispatcher(
@@ -2627,6 +2661,13 @@ public final class ActorRuntime implements AutoCloseable {
         private final boolean trustedFactory;
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
+        private final UntrustedActorLimits untrustedLimits;
+        private final HttpResponseCapability httpResponse;
+        private final AtomicLong fuelRemaining = new AtomicLong(Long.MAX_VALUE);
+        private final long createdNanos;
+        private final long deadlineNanos;
+        private volatile Thread activeCarrier;
+        private volatile ScheduledFuture<?> lifetimeFuture;
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final AtomicInteger queuedMessages = new AtomicInteger();
@@ -2642,16 +2683,92 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
-                boolean trustedFactory) {
+                boolean trustedFactory,
+                UntrustedActorLimits untrustedLimits,
+                HttpResponseTransport responseTransport) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
-            this.memorySlice = kind == ActorKind.PRIVATE
+            this.memorySlice = kind.memoryIsolated()
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+            this.untrustedLimits = untrustedLimits;
+            this.createdNanos = System.nanoTime();
+            if (kind == ActorKind.UNTRUSTED) {
+                if (untrustedLimits == null) {
+                    throw new IllegalArgumentException("UNTRUSTED actor requires limits");
+                }
+                long lifetimeNanos = untrustedLimits.maxLifetime().toNanos();
+                this.deadlineNanos = lifetimeNanos >= Long.MAX_VALUE - createdNanos
+                        ? Long.MAX_VALUE
+                        : createdNanos + lifetimeNanos;
+                this.fuelRemaining.set(untrustedLimits.fuelPerTurn());
+                this.httpResponse = responseTransport == null
+                        ? null
+                        : new HttpResponseCapability(
+                                ref.id(),
+                                responseTransport,
+                                untrustedLimits.maxHttpResponseBytes());
+            } else {
+                this.deadlineNanos = Long.MAX_VALUE;
+                this.httpResponse = null;
+            }
+        }
+
+        private void armLifetimeLimit() {
+            if (kind != ActorKind.UNTRUSTED) return;
+            long delay = Math.max(1L, deadlineNanos - System.nanoTime());
+            lifetimeFuture = untrustedWatchdog.schedule(
+                    this::expireUntrusted,
+                    delay,
+                    TimeUnit.NANOSECONDS);
+        }
+
+        private void expireUntrusted() {
+            Thread carrier;
+            synchronized (lifecycleLock) {
+                if (finalized || stopped.get()) return;
+                ActorLifetimeExceededException failure = new ActorLifetimeExceededException(
+                        "untrusted actor exceeded hard lifetime of "
+                                + untrustedLimits.maxLifetime().toSeconds() + " seconds");
+                ref.terminationCause.compareAndSet(null, failure);
+                stopped.set(true);
+                drainMailboxReservations();
+                carrier = activeCarrier;
+                finalizeStopLocked();
+            }
+            if (carrier != null) carrier.interrupt();
+        }
+
+        private void beginMessageBudget() {
+            if (kind != ActorKind.UNTRUSTED) return;
+            fuelRemaining.set(untrustedLimits.fuelPerTurn());
+            checkUntrustedBudget(0);
+        }
+
+        private void checkUntrustedBudget(long cost) {
+            if (kind != ActorKind.UNTRUSTED) return;
+            if (cost < 0) throw new IllegalArgumentException("budget cost cannot be negative");
+            if (System.nanoTime() - deadlineNanos >= 0) {
+                throw new ActorLifetimeExceededException(
+                        "untrusted actor exceeded hard lifetime of "
+                                + untrustedLimits.maxLifetime().toSeconds() + " seconds");
+            }
+            long remaining = cost == 0 ? fuelRemaining.get() : fuelRemaining.addAndGet(-cost);
+            if (remaining < 0) {
+                throw new ActorBudgetExceededException(
+                        "untrusted actor exhausted per-turn execution fuel "
+                                + untrustedLimits.fuelPerTurn());
+            }
+        }
+
+        private Duration remainingLifetime() {
+            if (kind != ActorKind.UNTRUSTED) return policy.maxWallTime();
+            long remaining = Math.max(0L, deadlineNanos - System.nanoTime());
+            return Duration.ofNanos(remaining);
         }
 
         private boolean reserveMailboxSlot() {
@@ -2693,8 +2810,19 @@ public final class ActorRuntime implements AutoCloseable {
         private void finalizeStopLocked() {
             if (finalized || activeTurns != 0) return;
             finalized = true;
+            ScheduledFuture<?> timer = lifetimeFuture;
+            lifetimeFuture = null;
+            if (timer != null) timer.cancel(false);
             drainMailboxReservations();
-            if (memorySlice != null) memorySlice.close();
+            behavior = null;
+            if (httpResponse != null) {
+                httpResponse.abortFromRuntime(ref.terminationCause.get());
+            }
+            if (memorySlice != null) {
+                // ActorMemorySlice.close() zeroes owned direct-memory blocks,
+                // releases every reservation, and makes leaked handles fail.
+                memorySlice.close();
+            }
             unregisterActor(this);
             lifecycleLock.notifyAll();
         }
@@ -2777,6 +2905,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
+            activeCarrier = Thread.currentThread();
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
@@ -2792,13 +2921,28 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
+                    @Override public Optional<HttpResponseCapability> httpResponse() {
+                        return Optional.ofNullable(httpResponse);
+                    }
+                    @Override public void checkpoint() {
+                        ActorRuntime.this.schedulerSafepoint();
+                    }
+                    @Override public long fuelRemaining() {
+                        return kind == ActorKind.UNTRUSTED
+                                ? ActorCell.this.fuelRemaining.get()
+                                : Long.MAX_VALUE;
+                    }
+                    @Override public Duration remainingLifetime() {
+                        return ActorCell.this.remainingLifetime();
+                    }
                 };
 
                 if (behavior == null) {
+                    beginMessageBudget();
                     Behavior<M> created = Objects.requireNonNull(
                             behaviorFactory.create(context),
                             "actor behaviorFactory returned null");
-                    if (kind == ActorKind.PRIVATE && !trustedFactory) {
+                    if (kind.memoryIsolated() && !trustedFactory) {
                         validatePrivateBehaviorState(ref.id(), created);
                     }
                     behavior = created;
@@ -2810,8 +2954,9 @@ public final class ActorRuntime implements AutoCloseable {
                     if (envelope == null) break;
                     releaseMailboxSlot();
                     try (envelope) {
+                        beginMessageBudget();
                         behavior.onMessage((M) envelope.value(), context);
-                        if (kind == ActorKind.PRIVATE && !trustedFactory) {
+                        if (kind.memoryIsolated() && !trustedFactory) {
                             // Private state that survives a mailbox turn must
                             // remain in actor-owned storage/capabilities. This
                             // catches behavior fields that were null/immutable
@@ -2831,8 +2976,14 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
                 if (turnActive) endTurn();
+                activeCarrier = null;
                 CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
+                if (kind == ActorKind.UNTRUSTED) {
+                    // Watchdog interruption is a control signal for this turn;
+                    // do not leak it into the pooled sandbox carrier.
+                    Thread.interrupted();
+                }
                 scheduled.set(false);
 
                 if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
