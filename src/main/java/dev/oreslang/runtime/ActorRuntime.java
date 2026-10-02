@@ -114,6 +114,10 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime.this.send(this, message);
         }
 
+        private boolean belongsTo(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
         @Override
         public String toString() {
             return "ActorRef[" + id.value() + "]";
@@ -164,7 +168,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
-        Object frozen = freeze(message);
+        Object frozen = freezeForThisRuntime(message);
         if (containsSharedMutex(frozen)) {
             IsolatePolicy sender = CURRENT_ACTOR_POLICY.get();
             if (sender != null) sender.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor send");
@@ -193,7 +197,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public Shared<Object> shareReadonly(Object value) {
-        return new Shared<>(freeze(value));
+        return new Shared<>(freezeForThisRuntime(value));
     }
 
     /**
@@ -201,32 +205,56 @@ public final class ActorRuntime implements AutoCloseable {
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
+        return freeze(value, null);
+    }
+
+    private Object freezeForThisRuntime(Object value) {
+        return freeze(value, this);
+    }
+
+    private static Object freeze(Object value, ActorRuntime allowedActorRuntime) {
         if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
             return value;
         }
-        if (value instanceof Shared<?> shared) return shared;
+        if (value instanceof Shared<?> shared) {
+            return new Shared<>(freeze(shared.value(), allowedActorRuntime));
+        }
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
-        if (value instanceof ActorRef<?> ref) return ref;
+        if (value instanceof ActorRef<?> ref) {
+            if (allowedActorRuntime == null || !ref.belongsTo(allowedActorRuntime)) {
+                throw new IllegalArgumentException(
+                        "ActorRef capabilities may cross only within their owning ActorRuntime");
+            }
+            return ref;
+        }
         if (value instanceof List<?> list) {
             List<Object> frozen = new ArrayList<>(list.size());
-            for (Object item : list) frozen.add(freeze(item));
+            for (Object item : list) frozen.add(freeze(item, allowedActorRuntime));
             return List.copyOf(frozen);
         }
         if (value instanceof Set<?> set) {
-            return set.stream().map(ActorRuntime::freeze).collect(java.util.stream.Collectors.toUnmodifiableSet());
+            return set.stream()
+                    .map(item -> freeze(item, allowedActorRuntime))
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
         }
         if (value instanceof Map<?, ?> map) {
             Map<Object, Object> frozen = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) frozen.put(freeze(entry.getKey()), freeze(entry.getValue()));
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                frozen.put(
+                        freeze(entry.getKey(), allowedActorRuntime),
+                        freeze(entry.getValue(), allowedActorRuntime));
+            }
             return Map.copyOf(frozen);
         }
         if (value.getClass().isArray()) {
             int length = Array.getLength(value);
             List<Object> frozen = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i)));
+            for (int i = 0; i < length; i++) {
+                frozen.add(freeze(Array.get(value, i), allowedActorRuntime));
+            }
             return List.copyOf(frozen);
         }
         if (value instanceof Sendable sendable) {
@@ -235,7 +263,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "Sendable.freezeForSend() must return a distinct frozen representation; self-returning mutable aliases are forbidden");
             }
-            return freeze(candidate);
+            return freeze(candidate, allowedActorRuntime);
         }
         throw new IllegalArgumentException("value of type " + value.getClass().getName()
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
