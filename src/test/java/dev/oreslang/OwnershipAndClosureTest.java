@@ -332,6 +332,97 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("use of moved value 'box'"));
     }
 
+    @Test
+    void mutableStructReceiverRequiresMutableOwnerAtCallSite() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        struct Counter {
+                          pub let int count = 0;
+
+                          pub bump(self &mut self)() => int {
+                            self.count = self.count + 1;
+                            return self.count;
+                          }
+                        }
+
+                        fnc bad() => void {
+                          val Counter counter = Counter {};
+                          counter.bump();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("method 'bump' receiver"));
+        assertTrue(error.getMessage().contains("immutable"));
+    }
+
+    @Test
+    void mutableStructReceiverWorksThroughLetOwner() throws Exception {
+        String output = run("""
+                struct Counter {
+                  pub let int count = 0;
+
+                  pub bump(self &mut self)() => int {
+                    self.count = self.count + 1;
+                    return self.count;
+                  }
+                }
+
+                pub fnc main() => void {
+                  let Counter counter = Counter {};
+                  stdio.stdout.write(counter.bump());
+                  stdio.stdout.write(counter.bump());
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void traitComposedMutableReceiverKeepsSameBorrowRuleOnStructs() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define trait Counting as
+                          private let int count = 0;
+
+                          pub bump(self &mut self)() => int {
+                            self.count = self.count + 1;
+                            return self.count;
+                          }
+                        end
+
+                        struct Counter with Counting {
+                        }
+
+                        fnc bad() => void {
+                          val Counter counter = Counter {};
+                          counter.bump();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("method 'bump' receiver"));
+    }
+
+    @Test
+    void mutableStructReceiverAllowsOwnedTemporary() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct Counter {
+                  pub let int count = 0;
+
+                  pub bump(self &mut self)() => int {
+                    self.count = self.count + 1;
+                    return self.count;
+                  }
+                }
+
+                fnc ok() => int {
+                  return Counter {}.bump();
+                }
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
