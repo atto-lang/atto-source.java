@@ -105,8 +105,7 @@ defer_stmt      = "defer" expression stmt_terminator ;
 if_stmt         = "if" condition [ ";" ] "do" { statement }
                   { "elseif" condition [ ";" ] "do" { statement } }
                   [ "else" { statement } ] "fi" ;
-condition       = condition_and { "|" condition_and } ;
-condition_and   = equality { "," equality } ;
+condition       = logic_or { "," logic_or } ;  (* comma is a legacy condition-only && alias *)
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
@@ -120,12 +119,18 @@ for_init        = binding_kind [ type_ref ] IDENT "=" expression
 expression      = assignment ;
 assignment      = conditional [ "=" assignment ] ;
 conditional     = logic_or [ "?" assignment ":" conditional ] ;
-logic_or        = equality { "|" equality } ;
+logic_or        = logic_xor { "||" logic_xor } ;
+logic_xor       = logic_and { "^^" logic_and } ;
+logic_and       = bit_or { "&&" bit_or } ;
+bit_or          = bit_xor { "|" bit_xor } ;
+bit_xor         = bit_and { "^" bit_and } ;
+bit_and         = equality { "&" equality } ;
 equality        = comparison { ( "==" | "!=" ) comparison } ;
-comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
+comparison      = shift { ( "<" | "<=" | ">" | ">=" ) shift } ;
+shift           = additive { ( "<<" | ">>" | ">>>" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
-unary           = [ "!" | "-" | "+" | "await" ] postfix
+unary           = [ "!" | "~" | "-" | "+" | "await" ] postfix
                 | "&" [ "mut" ] unary ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
@@ -212,6 +217,11 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      dispatched through the class namespace, never through an instance.
    - "=>" belongs to named callable return declarations.
    - "->" belongs to function types and lambdas.
+   - "<...>" is generic/type-argument syntax in type/declaration context.
+   - "<>" remains the inferred-type-argument marker where inference is supported;
+     it is never an XOR operator. Logical XOR is "^^"; bitwise XOR is "^".
+   - "&&", "||", and "^^" are boolean operators. "&", "|", "^", "~", "<<",
+     ">>", and ">>>" are integer bitwise operators.
    - In a destructure pattern, an explicit binding kind propagates to subsequent
      unqualified names until another binding kind appears. A leading binding
      kind (for example const [a, b]) seeds the whole pattern. "_" never binds.
