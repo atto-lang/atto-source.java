@@ -103,7 +103,7 @@ public final class ProcessSingletonRegistry {
         private final String key;
         private final UUID instanceId = UUID.randomUUID();
         private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY);
-        private final Supplier<?> stateFactory;
+        private Supplier<?> stateFactory;
 
         private Cell(String key, Supplier<?> stateFactory) {
             this.key = key;
@@ -116,8 +116,10 @@ public final class ProcessSingletonRegistry {
         private void run() {
             Object state;
             Throwable initializationFailure = null;
+            Supplier<?> factory = stateFactory;
+            stateFactory = null; // do not retain the first isolate/evaluator after initialization
             try {
-                state = Objects.requireNonNull(stateFactory.get(),
+                state = Objects.requireNonNull(factory.get(),
                         "singleton state factory returned null for " + key);
             } catch (Throwable failure) {
                 state = null;
