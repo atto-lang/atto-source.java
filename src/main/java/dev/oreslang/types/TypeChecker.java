@@ -241,9 +241,19 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
-            Set<String> generics = new HashSet<>(classGenerics);
+            Set<String> generics = new HashSet<>();
+            if (!method.isStatic()) generics.addAll(classGenerics);
             for (String generic : method.genericParameters()) {
-                if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
+                if (classGenerics.contains(generic) || !generics.add(generic)) {
+                    throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
+                }
+            }
+
+            if (method.isStatic()) {
+                for (Ast.Param param : method.parameters()) {
+                    rejectStaticClassGenericReference(param.type(), classGenerics, klass, method);
+                }
+                rejectStaticClassGenericReference(method.returnType(), classGenerics, klass, method);
             }
 
             if (method.explicitReceiverType() != null) {
@@ -552,8 +562,7 @@ public final class TypeChecker {
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
                     validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + klass.name() + "." + fn.name());
-                    List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
-                    callableGenerics.addAll(fn.genericParameters());
+                    List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
                     return checkGenericCallable(
                             callableGenerics,
@@ -1335,6 +1344,27 @@ public final class TypeChecker {
             return substituteGenerics(shape, classGenericBindings(klass, named));
         }
         throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
+    }
+
+    private void rejectStaticClassGenericReference(
+            Ast.TypeRef ref,
+            Set<String> classGenerics,
+            Ast.ClassDecl klass,
+            Ast.MethodDecl method) {
+        if (ref == null || classGenerics.isEmpty()) return;
+        if (ref.isBorrow()) {
+            rejectStaticClassGenericReference(ref.borrowedTarget(), classGenerics, klass, method);
+            return;
+        }
+        if (classGenerics.contains(ref.name())) {
+            throw new IllegalArgumentException(
+                    "static function " + klass.name() + "." + method.name()
+                            + " cannot reference enclosing class generic '" + ref.name()
+                            + "'; declare a static-function generic parameter instead");
+        }
+        for (Ast.TypeRef argument : ref.arguments()) {
+            rejectStaticClassGenericReference(argument, classGenerics, klass, method);
+        }
     }
 
     private void validateGenericArity(Ast.TypeRef ref, List<String> parameters, String owner) {
