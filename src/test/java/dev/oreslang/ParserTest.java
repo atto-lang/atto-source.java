@@ -95,6 +95,49 @@ final class ParserTest {
     }
 
     @Test
+    void parsesActorReceiveLoopsChannelsAndSelectAsDedicatedAst() {
+        Ast.Program program = Parser.parse("""
+                pub actor fnc service() => void {
+                  val Channel<int> events = channel<int>(8);
+
+                  receive loop (int msg) {
+                    try_send(events, msg);
+                  }
+
+                  select {
+                    case receive(events) as int next => {
+                      stdio.println(next);
+                    }
+                    case send(events, 1) => {
+                      stdio.println("sent");
+                    }
+                    default => {
+                      stdio.println("idle");
+                    }
+                  }
+
+                  return;
+                }
+                """);
+
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        assertInstanceOf(Ast.ChannelExpr.class, ((Ast.BindingStmt) fn.body().get(0)).initializer());
+
+        Ast.ReceiveLoopStmt receiveLoop = assertInstanceOf(Ast.ReceiveLoopStmt.class, fn.body().get(1));
+        assertEquals(Ast.ReceiveLoopMode.BLOCKING, receiveLoop.mode());
+        assertEquals("msg", receiveLoop.bindingName());
+        assertInstanceOf(
+                Ast.ChannelOpExpr.class,
+                ((Ast.ExprStmt) receiveLoop.body().getFirst()).expression());
+
+        Ast.SelectStmt select = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(2));
+        assertEquals(2, select.cases().size());
+        assertEquals(Ast.ChannelOpKind.RECEIVE, select.cases().get(0).operation().kind());
+        assertEquals(Ast.ChannelOpKind.SEND, select.cases().get(1).operation().kind());
+        assertFalse(select.defaultBody().isEmpty());
+    }
+
+    @Test
     void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
         String source = """
                 shared actor Account {
