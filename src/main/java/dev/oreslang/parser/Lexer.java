@@ -65,6 +65,7 @@ public final class Lexer {
             case ' ', '\r', '\t' -> { }
             case '\n' -> newline();
             case '"', '\'' -> string(c);
+            case '`' -> template();
             default -> {
                 if (isDigit(c)) number();
                 else if (isIdentStart(c)) identifier();
@@ -87,19 +88,169 @@ public final class Lexer {
     private void string(char quote) {
         StringBuilder value = new StringBuilder();
         while (!isAtEnd() && peek() != quote) {
+            if (peek() == '\n' || peek() == '\r') {
+                throw error("unterminated string before newline; use backticks for multiline strings");
+            }
             char c = advance();
-            if (c == '\n') { newline(); value.append('\n'); continue; }
             if (c == '\\') {
                 if (isAtEnd()) throw error("unterminated string escape");
                 char escaped = advance();
+                if (escaped == '\n') {
+                    newline();
+                    continue;
+                }
                 value.append(switch (escaped) {
-                    case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\'' -> '\''; case '\\' -> '\\'; default -> escaped;
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    case 't' -> '\t';
+                    case 'b' -> '\b';
+                    case 'f' -> '\f';
+                    case '"' -> '"';
+                    case '\'' -> '\'';
+                    case '\\' -> '\\';
+                    default -> escaped;
                 });
             } else value.append(c);
         }
         if (isAtEnd()) throw error("unterminated string");
         advance();
         tokens.add(new Token(STRING, value.toString(), line, startColumn));
+    }
+
+    private void template() {
+        int contentStart = current;
+        scanTemplateBody();
+        int contentEnd = current - 1;
+        tokens.add(new Token(TEMPLATE, source.substring(contentStart, contentEnd), line, startColumn));
+    }
+
+    private void scanTemplateBody() {
+        while (!isAtEnd()) {
+            char c = advance();
+            if (c == '\n') {
+                newline();
+                continue;
+            }
+            if (c == '\\') {
+                if (isAtEnd()) throw error("unterminated template escape");
+                char escaped = advance();
+                if (escaped == '\n') newline();
+                continue;
+            }
+            if (c == '`') return;
+            if (c == '
+    private void number() {
+        while (isDigit(peek()) || peek() == '_') advance();
+        boolean floating = false;
+        if (peek() == '.' && isDigit(peekNext())) {
+            floating = true; advance();
+            while (isDigit(peek()) || peek() == '_') advance();
+        }
+        if (peek() == 'e' || peek() == 'E') {
+            floating = true; advance();
+            if (peek() == '+' || peek() == '-') advance();
+            if (!isDigit(peek())) throw error("malformed exponent");
+            while (isDigit(peek()) || peek() == '_') advance();
+        }
+        if (peek() == 'i') { advance(); add(IMAG); }
+        else add(floating ? FLOAT : INT);
+    }
+
+    private void identifier() {
+        while (isIdentPart(peek())) advance();
+        String text = source.substring(start, current);
+        add(KEYWORDS.getOrDefault(text, IDENT));
+    }
+
+    private boolean isAtEnd() { return current >= source.length(); }
+    private char advance() { char c = source.charAt(current++); column++; return c; }
+    private boolean match(char expected) {
+        if (isAtEnd() || source.charAt(current) != expected) return false;
+        current++; column++; return true;
+    }
+    private char peek() { return isAtEnd() ? '\0' : source.charAt(current); }
+    private char peekNext() { return current + 1 >= source.length() ? '\0' : source.charAt(current + 1); }
+    private void newline() { line++; column = 1; }
+    private void add(Token.Type type) { tokens.add(new Token(type, source.substring(start, current), line, startColumn)); }
+    private boolean isDigit(char c) { return c >= '0' && c <= '9'; }
+    private boolean isIdentStart(char c) { return Character.isLetter(c) || c == '_'; }
+    private boolean isIdentPart(char c) { return isIdentStart(c) || isDigit(c); }
+    private IllegalArgumentException error(String message) {
+        return new IllegalArgumentException("Oreslang lexer error at " + line + ":" + startColumn + ": " + message);
+    }
+}
+ && peek() == '{') {
+                advance();
+                scanTemplateInterpolation();
+            }
+        }
+        throw error("unterminated template string");
+    }
+
+    private void scanTemplateInterpolation() {
+        int depth = 1;
+        while (!isAtEnd()) {
+            char c = advance();
+            if (c == '\n') {
+                newline();
+                continue;
+            }
+            if (c == '\\') {
+                if (isAtEnd()) throw error("unterminated escape in template interpolation");
+                char escaped = advance();
+                if (escaped == '\n') newline();
+                continue;
+            }
+            if (c == '"' || c == '\'') {
+                scanQuotedInsideTemplate(c);
+                continue;
+            }
+            if (c == '`') {
+                scanTemplateBody();
+                continue;
+            }
+            if (c == '/' && peek() == '/') {
+                advance();
+                while (!isAtEnd() && peek() != '\n') advance();
+                continue;
+            }
+            if (c == '/' && peek() == '*') {
+                advance();
+                scanBlockCommentInsideTemplate();
+                continue;
+            }
+            if (c == '{') {
+                depth++;
+                continue;
+            }
+            if (c == '}' && --depth == 0) return;
+        }
+        throw error("unterminated template interpolation");
+    }
+
+    private void scanQuotedInsideTemplate(char quote) {
+        while (!isAtEnd()) {
+            char c = advance();
+            if (c == quote) return;
+            if (c == '\n' || c == '\r') throw error("unterminated quoted string in template interpolation");
+            if (c == '\\') {
+                if (isAtEnd()) throw error("unterminated string escape in template interpolation");
+                char escaped = advance();
+                if (escaped == '\n') newline();
+            }
+        }
+        throw error("unterminated quoted string in template interpolation");
+    }
+
+    private void scanBlockCommentInsideTemplate() {
+        int depth = 1;
+        while (depth > 0) {
+            if (isAtEnd()) throw error("unterminated block comment in template interpolation");
+            char c = advance();
+            if (c == '\n') newline();
+            else if (c == '/' && match('*')) depth++;
+            else if (c == '*' && match('/')) depth--;
+        }
     }
 
     private void number() {
