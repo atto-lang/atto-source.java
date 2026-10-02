@@ -30,7 +30,7 @@ final class SingletonModuleTest {
     @Test
     void parsesSingletonModuleAsDistinctModuleKind() {
         Ast.Program program = Parser.parse("""
-                define singleton module process_cache
+                define singleton module process_cache as
                   let int count = 0;
                   pub fnc read() => int { return count; }
                 end
@@ -43,7 +43,7 @@ final class SingletonModuleTest {
     @Test
     void singletonStateIsMutableOnlyBehindActorSafeFunctions() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define singleton module process_counter
+                define singleton module process_counter as
                   let int count = 0;
 
                   pub fnc next() => int {
@@ -52,7 +52,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int first = await process_counter.next();
                     stdio.println(first);
@@ -63,7 +63,7 @@ final class SingletonModuleTest {
 
         IllegalArgumentException exposedField = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module bad_singleton
+                        define singleton module bad_singleton as
                           pub let int count = 0;
                         end
                         """)));
@@ -73,7 +73,7 @@ final class SingletonModuleTest {
     @Test
     void singletonModulePersistsAcrossIndependentGraalContextsInOneProcess() throws Exception {
         String program = """
-                define singleton module process_counter_cross_context_test
+                define singleton module process_counter_cross_context_test as
                   let int count = 0;
 
                   pub fnc next() => int {
@@ -82,7 +82,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await process_counter_cross_context_test.next();
                     stdio.println(n);
@@ -103,7 +103,7 @@ final class SingletonModuleTest {
         String program = """
                 namespace shared_tenant_namespace;
 
-                define singleton module same_name_cache
+                define singleton module same_name_cache as
                   let int count = 0;
 
                   pub fnc next() => int {
@@ -112,7 +112,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await same_name_cache.next();
                     stdio.println(n);
@@ -131,7 +131,7 @@ final class SingletonModuleTest {
     @Test
     void hotReloadKeepsStateWhenSingletonSchemaIsStable() throws Exception {
         String firstProgram = """
-                define singleton module reload_stable_counter
+                define singleton module reload_stable_counter as
                   let int count = 0;
 
                   pub fnc next() => int {
@@ -140,7 +140,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await reload_stable_counter.next();
                     stdio.println(n);
@@ -150,7 +150,7 @@ final class SingletonModuleTest {
                 """;
 
         String secondProgram = """
-                define singleton module reload_stable_counter
+                define singleton module reload_stable_counter as
                   let int count = 0;
 
                   pub fnc next() => int {
@@ -159,7 +159,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await reload_stable_counter.next();
                     stdio.println(n);
@@ -178,7 +178,7 @@ final class SingletonModuleTest {
     @Test
     void hotReloadRejectsSingletonSchemaReinterpretationWithoutMigration() throws Exception {
         String firstProgram = """
-                define singleton module reload_schema_guard_counter
+                define singleton module reload_schema_guard_counter as
                   let int count = 0;
 
                   pub fnc next() => int {
@@ -187,7 +187,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await reload_schema_guard_counter.next();
                     stdio.println(n);
@@ -197,7 +197,7 @@ final class SingletonModuleTest {
                 """;
 
         String incompatibleProgram = """
-                define singleton module reload_schema_guard_counter
+                define singleton module reload_schema_guard_counter as
                   let int count = 0;
                   let int extra = 5;
 
@@ -207,7 +207,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await reload_schema_guard_counter.next();
                     stdio.println(n);
@@ -226,7 +226,7 @@ final class SingletonModuleTest {
     void singletonStateRequiresExplicitFieldTypes() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module inferred_state
+                        define singleton module inferred_state as
                           let count = 0;
                           pub fnc read() => int { return count; }
                         end
@@ -238,7 +238,7 @@ final class SingletonModuleTest {
     void singletonInitializersAreContextFreeAndStateTypesAreStable() {
         IllegalArgumentException capabilityInitializer = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module unsafe_init
+                        define singleton module unsafe_init as
                           let String captured = process.context_id;
                           pub fnc read() => String { return captured; }
                         end
@@ -247,7 +247,7 @@ final class SingletonModuleTest {
 
         IllegalArgumentException aliasedState = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module aliased_state
+                        define singleton module aliased_state as
                           type Count = int;
                           let Count count = 0;
                           pub fnc read() => int { return count; }
@@ -260,11 +260,11 @@ final class SingletonModuleTest {
     void singletonPublicApiMustBeStaticallySendable() {
         IllegalArgumentException classBoundary = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define class Box
+                        define class Box as
                           val int value;
                         end
 
-                        define singleton module class_boundary
+                        define singleton module class_boundary as
                           pub fnc echo(Box value) => Box {
                             return value;
                           }
@@ -274,7 +274,7 @@ final class SingletonModuleTest {
 
         IllegalArgumentException mutableBoundary = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module mutable_boundary
+                        define singleton module mutable_boundary as
                           pub fnc consume(Array<int> mut values) => void {
                             return;
                           }
@@ -287,11 +287,11 @@ final class SingletonModuleTest {
     void crossSingletonCallsMustBeImmediatelyAwaited() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module await_required
+                        define singleton module await_required as
                           pub fnc read() => int { return 1; }
                         end
 
-                        define module app
+                        define module app as
                           pub fnc main() => void {
                             await_required.read();
                             return;
@@ -304,7 +304,7 @@ final class SingletonModuleTest {
     @Test
     void singletonStateFlowsThroughClassAndStaticDispatchWithoutSelfMailboxReentry() throws Exception {
         String output = eval("""
-                define singleton module method_state
+                define singleton module method_state as
                   let int count = 0;
 
                   fnc bump() => int {
@@ -312,7 +312,7 @@ final class SingletonModuleTest {
                     return count;
                   }
 
-                  define class Helper
+                  define class Helper as
                     pub run() => int {
                       return bump();
                     }
@@ -329,7 +329,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int result = await method_state.next();
                     stdio.println(result);
@@ -345,8 +345,8 @@ final class SingletonModuleTest {
     void singletonHelperClassesCannotBypassTheActorProxy() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module private_helpers
-                          define class Helper
+                        define singleton module private_helpers as
+                          define class Helper as
                             pub static fnc value() => int { return 1; }
                           end
 
@@ -355,7 +355,7 @@ final class SingletonModuleTest {
                           }
                         end
 
-                        define module app
+                        define module app as
                           pub fnc main() => void {
                             val int leaked = Helper.value();
                             return;
@@ -369,12 +369,12 @@ final class SingletonModuleTest {
     void privateSingletonFunctionsCannotEscapeThroughTheGlobalFunctionIndex() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module private_calls
+                        define singleton module private_calls as
                           fnc reset_secret() => int { return 99; }
                           pub fnc read() => int { return 1; }
                         end
 
-                        define module app
+                        define module app as
                           pub fnc main() => void {
                             val int leaked = await reset_secret();
                             return;
@@ -388,14 +388,14 @@ final class SingletonModuleTest {
     void singletonHelperClassesCannotBeInheritedOutsideTheirActorModule() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define singleton module inherited_helpers
-                          define class Helper
+                        define singleton module inherited_helpers as
+                          define class Helper as
                             pub value() => int { return 1; }
                           end
                           pub fnc read() => int { return 1; }
                         end
 
-                        define class Escape extends Helper
+                        define class Escape extends Helper as
                         end
                         """)));
         assertTrue(error.getMessage().contains("cannot be inherited"));
@@ -477,7 +477,7 @@ final class SingletonModuleTest {
                 Duration.ofSeconds(2));
 
         String firstProgram = """
-                define singleton module no_hot_reload_guard
+                define singleton module no_hot_reload_guard as
                   let int count = 0;
                   pub fnc next() => int {
                     count = count + 1;
@@ -485,7 +485,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await no_hot_reload_guard.next();
                     stdio.println(n);
@@ -495,7 +495,7 @@ final class SingletonModuleTest {
                 """;
 
         String changedProgram = """
-                define singleton module no_hot_reload_guard
+                define singleton module no_hot_reload_guard as
                   let int count = 0;
                   pub fnc next() => int {
                     count = count + 10;
@@ -503,7 +503,7 @@ final class SingletonModuleTest {
                   }
                 end
 
-                define module app
+                define module app as
                   pub fnc main() => void {
                     val int n = await no_hot_reload_guard.next();
                     stdio.println(n);
