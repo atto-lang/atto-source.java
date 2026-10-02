@@ -59,6 +59,57 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void actorCannotLaunderBlockingModuleHelperAsFunctionValue() {
+        var program = Parser.parse("""
+                define module helpers
+                  pub fnc blocking(SharedMutex<int> mutex) => void {
+                    val guard = mutex.lock();
+                    guard.release();
+                    return;
+                  }
+                end
+
+                define module app
+                  pub shared actor fnc worker(SharedMutex<int> mutex) => void {
+                    val helper = helpers.blocking;
+                    helper(mutex);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains(
+                "actor code cannot use blocking SharedMutex.lock"));
+    }
+
+    @Test
+    void actorCannotLaunderBlockingBoundMethodValue() {
+        var program = Parser.parse("""
+                define class Helper as
+                  pub fnc block(SharedMutex<int> mutex) => void {
+                    mutex.with_lock(|value| -> {
+                      return;
+                    });
+                    return;
+                  }
+                end
+
+                pub shared actor fnc worker(SharedMutex<int> mutex, Helper helper) => void {
+                  val blocking = helper.block;
+                  blocking(mutex);
+                  return;
+                }
+                """);
+
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains(
+                "actor code cannot use blocking SharedMutex.with_lock"));
+    }
+
+    @Test
     void actorCannotHideBlockingSharedMutexInInstanceMethod() {
         var program = Parser.parse("""
                 define class Helper as
