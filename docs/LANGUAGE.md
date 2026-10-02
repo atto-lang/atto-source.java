@@ -690,7 +690,8 @@ A static class function:
 - has no implicit or explicit `self`;
 - cannot be invoked through an instance;
 - may be extracted as a function value from the class namespace;
-- has one shared definition, just like any other named function.
+- has one shared definition, just like any other named function;
+- does not capture enclosing class generics. In `class Box<T>`, a static function cannot use that `T`; declare its own `static fnc identity<U>(U value) => U` instead. Static-function generics support the same explicit and inferred call syntax as top-level functions.
 
 Static data fields are intentionally not part of v0.5 yet; `static` on a class binding is rejected rather than silently acquiring Java-like global mutable state semantics.
 
