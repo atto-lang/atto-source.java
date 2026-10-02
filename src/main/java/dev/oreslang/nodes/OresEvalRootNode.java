@@ -60,6 +60,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final Map<String, ProcessSingletonRegistry.Handle<SingletonState>> singletonHandles = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
@@ -78,7 +79,10 @@ public final class OresEvalRootNode extends RootNode {
                     if (decl instanceof Ast.FunctionDecl fn) {
                         index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                         functionOwners.put(fn, module.name());
-                    } else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                    } else if (decl instanceof Ast.ClassDecl klass) {
+                        index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                        classOwners.put(klass, module.name());
+                    }
                 }
             }
         }
@@ -213,6 +217,11 @@ public final class OresEvalRootNode extends RootNode {
             return owner == null ? null : modules.get(owner);
         }
 
+        private Ast.ModuleDecl ownerModule(Ast.ClassDecl klass) {
+            String owner = classOwners.get(klass);
+            return owner == null ? null : modules.get(owner);
+        }
+
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args, SingletonState singletonState) {
             if (singletonState != null) ProcessSingletonRegistry.checkExecutionBudget();
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
@@ -328,7 +337,16 @@ public final class OresEvalRootNode extends RootNode {
                     return new ModuleFacade(module, localState);
                 }
                 Ast.ClassDecl klass = findClass(name.name());
-                if (klass != null) return new ClassFacade(klass, env.singletonState);
+                if (klass != null) {
+                    Ast.ModuleDecl owner = ownerModule(klass);
+                    if (owner != null && owner.singleton()
+                            && (env.singletonState == null
+                            || !env.singletonState.key.equals(singletonKey(owner)))) {
+                        throw new IllegalArgumentException("class '" + klass.name()
+                                + "' is actor-private inside singleton module '" + owner.name() + "'");
+                    }
+                    return new ClassFacade(klass, env.singletonState);
+                }
                 Ast.FunctionDecl fn = findFunction(name.name());
                 if (fn != null) {
                     Ast.ModuleDecl owner = ownerModule(fn);
@@ -421,6 +439,13 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NewExpr created) {
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                Ast.ModuleDecl owner = ownerModule(klass);
+                if (owner != null && owner.singleton()
+                        && (env.singletonState == null
+                        || !env.singletonState.key.equals(singletonKey(owner)))) {
+                    throw new IllegalArgumentException("class '" + klass.name()
+                            + "' is actor-private inside singleton module '" + owner.name() + "'");
+                }
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
                 if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
@@ -568,6 +593,10 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ModuleDecl module = facade.module();
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
+                    if (module.singleton() && facade.localState() == null) {
+                        throw new IllegalArgumentException("classes inside singleton module '" + module.name()
+                                + "' are actor-private and cannot be accessed through its external proxy");
+                    }
                     return new ClassFacade(klass, facade.localState());
                 }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
