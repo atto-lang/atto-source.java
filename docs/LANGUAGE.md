@@ -579,7 +579,7 @@ Security is layered. Oreslang uses a deny-by-default language capability policy 
 
 An isolate policy can independently allow or deny:
 
-`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `SHARED_MEMORY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `GC_CONTROL`, `ACTOR_SHARE_READONLY`, `SHARED_MEMORY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
 
 The trusted compiler API can reject forbidden API usage before execution:
 
@@ -922,7 +922,45 @@ Borrow rules:
 
 The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
+### Inferred lifetimes
+
+Oreslang has lifetime semantics even though ordinary source code does not spell Rust-style lifetime parameters. Every borrow carries an inferred region tied to its owner. A borrow alias keeps the same region, and a borrow returned from another callable keeps the region of the input borrow/receiver that produced it.
+
+A returned borrow is accepted only when the compiler can prove that its lifetime is caller-owned. In particular:
+
+- a borrow of a local cannot escape, even after one or more local aliases;
+- a borrow of an owned by-value parameter cannot be returned, because that parameter dies with the callee;
+- a borrow returned from a call continues to keep the caller's owner borrowed for as long as the returned local binding is live;
+- an actor-confined borrow cannot cross the mailbox-turn boundary;
+- a borrow-returning signature with multiple possible input lifetime sources is rejected rather than guessed.
+
+That last case is where explicit named lifetimes are useful. Named lifetime syntax is reserved for a later source-syntax pass; until it is exposed, Oreslang intentionally accepts the common one-source case and rejects ambiguous multi-source borrow returns. This keeps lifetimes mostly invisible while preserving the safety property now.
+
 Structural parameters remain read-only views and therefore do not consume the supplied value.
+
+## Memory reclamation and fallback GC
+
+Oreslang's primary memory model is **deterministic ownership/drop**, not tracing GC. `Copy` values copy, move-only values have one owner, lexical bindings stop being evaluator roots at scope exit, and compiler/backends are expected to insert drops when owned values die. The JVM reference interpreter still relies on the host VM for the physical reclamation of ordinary Java heap objects, but guest semantics never depend on a tracing collector to decide whether an alias is valid.
+
+A narrow runtime fallback collector exists for host/runtime resources that are not ordinary Ores values: reflection/interop proxies, direct-memory reservations, shared-runtime handles, future FFI handles, caches, and similar metadata whose cleanup must release quota or native/runtime state. Such handles use weak/phantom reachability and idempotent cleanup. Guest destructors are **not** run from this collector; arbitrary user code must never execute at nondeterministic GC time.
+
+The VM drains fallback cleanup candidates periodically at scheduler/runtime checkpoints. It does not call JVM `System.gc()`, does not introduce a stop-the-world Ores collector thread, and does not make carrier-thread identity part of object lifetime.
+
+Two explicit maintenance hooks are available:
+
+```ores
+pub fnc maintenance() => int {
+  // Process-wide fallback sweep. Requires GC_CONTROL.
+  return process.gc();
+}
+
+pub actor fnc actor_maintenance() => int {
+  // Only this actor's fallback resources. Valid only in an actor turn.
+  return actor.gc();
+}
+```
+
+Both return the number of runtime cleanup records reclaimed by that sweep. `actor.gc()` cannot collect another actor's resources. `process.gc()` is capability-gated because a process-wide maintenance sweep is a broader CPU/runtime-control operation. Neither call forces the host JVM/native heap to perform a full collection.
 
 ## Multi-threaded targets
 
