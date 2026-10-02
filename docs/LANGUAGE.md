@@ -250,7 +250,33 @@ try {
 
 ## Async / await
 
-`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
+`async` is a **task/future contract**, not a request to create an OS or JVM thread.
+
+```ores
+pub async fnc fetch_count() => int {
+  return 42;
+}
+
+pub async fnc doubled() => int {
+  val int count = await fetch_count();
+  return count * 2;
+}
+
+pub fnc start() => void {
+  val Future<int> pending = fetch_count();
+  return;
+}
+```
+
+The return type written after `=>` is always the **fulfilled result type**. Therefore `async fnc fetch_count() => int` is called as `Future<int>`; source code does not write `=> Future<int>` on an async callable. `Future<T>` is an Oreslang type. A JVM backend may use `CompletionStage` / `CompletableFuture` internally, but Java future classes are not part of the language ABI.
+
+`await expression` is legal only inside an async callable or an actor mailbox turn, and the expression must have type `Future<T>`. Awaiting a non-future is a compile-time error. Ordinary lambdas do not inherit async permission from an enclosing async function; a future explicit async-lambda form may add that capability separately.
+
+A pending `Future<T>` is an ownership-bearing task capability. Await consumes that future in the current ownership model and produces `T`. Ordinary immutable or mutable borrows may not remain live across a suspension point. Actor-owned `self` is the deliberate exception: it is tied to actor identity and the mailbox continuation, never to the carrier thread.
+
+Exceptions raised by an async task complete its future exceptionally and are re-raised at `await`. Cancellation is cooperative and must be observed at scheduler safepoints. `defer` belongs to the async frame and runs when that frame actually unwinds, not when the caller merely receives the future.
+
+The scheduler and Java execution mechanism are intentionally separate from the source contract. In particular, an async call does **not** mean “one Java virtual thread per call.” A backend may use virtual threads for blocking host adapters where appropriate, but Oreslang async guest code is lowered as tasks/continuations so suspension can release the carrier without changing ownership semantics.
 
 ## Actors
 
@@ -263,6 +289,12 @@ pub actor fnc worker(int value) => int {
   return value;
 }
 
+pub async fnc launch_worker() => int {
+  val ActorHandle<int> worker_handle = worker(7);
+  val ActorId id = worker_handle.id;
+  return await worker_handle.result();
+}
+
 shared actor Account {
   let int balance = 100;
 
@@ -273,8 +305,12 @@ shared actor Account {
 }
 ```
 
+- `async` and `actor` are mutually exclusive callable modifiers;
 - an unqualified `actor` is **private**;
 - `shared actor` is a **shared-memory-capable** actor;
+- calling `actor fnc ... => T` returns `ActorHandle<T>` immediately, never `Future<T>`;
+- `ActorHandle<T>` is the actor capability: it exposes `id`, `kind`, `status()`, `is_alive()`, `stop()`, and `result() => Future<T>` for one-shot actor-function completion;
+- the handle itself is not awaitable; awaiting actor completion is explicit as `await handle.result()`;
 - private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
 - both kinds still process their own mailbox serially;
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
