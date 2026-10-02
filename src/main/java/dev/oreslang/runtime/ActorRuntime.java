@@ -40,6 +40,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_FREEZE_DEPTH = 256;
     private static final int MAX_FREEZE_NODES = 1_000_000;
     private static final int MAX_FAILURE_TOMBSTONES = 4096;
+    private static final int MAX_FAILURE_MESSAGE_CHARS = 4096;
+    private static final int MONITORS_PER_ACTOR_BUDGET = 8;
     private static final long SHARED_HANDLE_BYTES = 64L;
 
     private final UUID runtimeId = UUID.randomUUID();
@@ -53,6 +55,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadLocal<Long> actorDeadlineNanos = new ThreadLocal<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicInteger activeActorSlots = new AtomicInteger();
+    private final AtomicInteger activeMonitorSlots = new AtomicInteger();
     private final IsolatePolicy policyCeiling;
 
     public ActorRuntime() {
@@ -399,6 +402,34 @@ public final class ActorRuntime implements AutoCloseable {
         return activeActorSlots.get();
     }
 
+    public int activeMonitorCount() {
+        return activeMonitorSlots.get();
+    }
+
+    private int maxMonitorSlots() {
+        long budget = (long) policyCeiling.maxActors() * MONITORS_PER_ACTOR_BUDGET;
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1L, budget));
+    }
+
+    private void reserveMonitorSlot() {
+        int limit = maxMonitorSlots();
+        while (true) {
+            int current = activeMonitorSlots.get();
+            if (current >= limit) {
+                throw new IllegalStateException("monitor limit exceeded for isolate: maxMonitors=" + limit);
+            }
+            if (activeMonitorSlots.compareAndSet(current, current + 1)) return;
+        }
+    }
+
+    private void releaseMonitorSlot() {
+        int remaining = activeMonitorSlots.decrementAndGet();
+        if (remaining < 0) {
+            activeMonitorSlots.incrementAndGet();
+            throw new IllegalStateException("monitor slot underflow");
+        }
+    }
+
     private void reserveActorSlot() {
         while (true) {
             int current = activeActorSlots.get();
@@ -472,14 +503,18 @@ public final class ActorRuntime implements AutoCloseable {
             return monitor;
         }
 
-        monitorsByTarget.computeIfAbsent(target.id(), ignored -> new ConcurrentHashMap<>())
-                .put(monitor.value(), watcher.id());
+        reserveMonitorSlot();
+        Map<UUID, ActorId> targetMonitors =
+                monitorsByTarget.computeIfAbsent(target.id(), ignored -> new ConcurrentHashMap<>());
+        targetMonitors.put(monitor.value(), watcher.id());
 
         // Close the race where the target exits after the liveness check but
-        // before monitor registration.
+        // before monitor registration. Whichever side removes the registration
+        // owns releasing its bounded monitor slot.
         if (targetCell.isTerminal()) {
             Map<UUID, ActorId> monitors = monitorsByTarget.get(target.id());
             if (monitors != null && monitors.remove(monitor.value(), watcher.id())) {
+                releaseMonitorSlot();
                 if (monitors.isEmpty()) monitorsByTarget.remove(target.id(), monitors);
                 ActorFailure failure = failures.get(target.id());
                 sendDown(watcher.id(), monitor, failure == null ? "normal" : "failed", failure);
@@ -494,6 +529,7 @@ public final class ActorRuntime implements AutoCloseable {
         Map<UUID, ActorId> monitors = monitorsByTarget.get(monitor.target());
         if (monitors == null) return false;
         boolean removed = monitors.remove(monitor.value(), watcher.id());
+        if (removed) releaseMonitorSlot();
         if (monitors.isEmpty()) monitorsByTarget.remove(monitor.target(), monitors);
         return removed;
     }
@@ -686,6 +722,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static long durationToMillisSaturated(Duration duration) {
+        try {
+            return Math.max(1L, duration.toMillis());
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE / 4L;
+        }
+    }
+
     private static long deadlineAfter(Duration duration) {
         long delta = Math.min(durationToNanosSaturated(duration), Long.MAX_VALUE / 4L);
         return System.nanoTime() + delta;
@@ -709,7 +753,7 @@ public final class ActorRuntime implements AutoCloseable {
         Thread thread = cell.thread;
         if (thread == null) return true;
         try {
-            long millis = Math.max(1L, timeout.toMillis());
+            long millis = durationToMillisSaturated(timeout);
             thread.join(millis);
             return !thread.isAlive();
         } catch (InterruptedException interrupted) {
@@ -998,6 +1042,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static String boundedText(String value, int maxChars) {
+        if (value == null) return "";
+        if (value.length() <= maxChars) return value;
+        int keep = Math.max(0, maxChars - 16);
+        return value.substring(0, keep) + "...[truncated]";
+    }
+
     private static <K, V> Map<K, V> immutableLinkedMap(Map<? extends K, ? extends V> source) {
         return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(source));
     }
@@ -1029,6 +1080,7 @@ public final class ActorRuntime implements AutoCloseable {
     private void notifyMonitors(ActorId target, String reason, ActorFailure failure) {
         Map<UUID, ActorId> monitors = monitorsByTarget.remove(target);
         if (monitors == null || monitors.isEmpty()) return;
+        for (int i = 0; i < monitors.size(); i++) releaseMonitorSlot();
         for (Map.Entry<UUID, ActorId> entry : monitors.entrySet()) {
             sendDown(entry.getValue(), new MonitorRef(entry.getKey(), target, runtimeId), reason, failure);
         }
@@ -1065,7 +1117,12 @@ public final class ActorRuntime implements AutoCloseable {
     private void removeWatchesOwnedBy(ActorId watcher) {
         for (Map.Entry<ActorId, Map<UUID, ActorId>> entry : monitorsByTarget.entrySet()) {
             Map<UUID, ActorId> monitors = entry.getValue();
-            monitors.entrySet().removeIf(item -> item.getValue().equals(watcher));
+            for (Map.Entry<UUID, ActorId> monitor : List.copyOf(monitors.entrySet())) {
+                if (monitor.getValue().equals(watcher)
+                        && monitors.remove(monitor.getKey(), watcher)) {
+                    releaseMonitorSlot();
+                }
+            }
             if (monitors.isEmpty()) monitorsByTarget.remove(entry.getKey(), monitors);
         }
     }
@@ -1089,6 +1146,7 @@ public final class ActorRuntime implements AutoCloseable {
         activeActorSlots.set(0);
         singletonActors.clear();
         monitorsByTarget.clear();
+        activeMonitorSlots.set(0);
         failures.clear();
         failureOrder.clear();
     }
@@ -1244,8 +1302,8 @@ public final class ActorRuntime implements AutoCloseable {
         private synchronized void recordFailure(Throwable failure) {
             state = ActorState.FAILED;
             ActorFailure record = new ActorFailure(
-                    failure.getClass().getName(),
-                    failure.getMessage() == null ? "" : failure.getMessage());
+                    boundedText(failure.getClass().getName(), 512),
+                    boundedText(failure.getMessage(), MAX_FAILURE_MESSAGE_CHARS));
             failureRecord = record;
             if (closed.get()) return;
             failures.put(ref.id(), record);
