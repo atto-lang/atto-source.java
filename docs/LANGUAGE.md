@@ -389,7 +389,7 @@ This preserves the central invariant:
 
 Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private, shared, or untrusted actor invalidates dependent compiled units.
 
-An untrusted actor cannot obtain ambient network access. For HTTP request handling, the host may instead bind exactly one accepted request/response exchange to the actor. The runtime exposes bounded, owner-only request-body and response-body stream capabilities through the actor turn context, allowing the HTTP server to stream directly from/to its socket or event-loop buffers without copying bulk body data through actor mailboxes. The capability is deliberately higher-level than a raw fd so it remains safe for multiplexed HTTP/2 and HTTP/3 connections.
+An untrusted actor cannot obtain ambient network access. For HTTP request handling, the host may instead bind exactly one accepted request/response exchange to the actor. The runtime exposes bounded, owner-only request-body and response-body stream capabilities through the actor turn context, allowing the HTTP server to stream directly from/to its socket or event-loop buffers without copying bulk body data through actor mailboxes. When body data is staged in an actor-owned native block, the runtime can read/write that FFM-backed region directly through the HTTP capability without an intermediate heap byte array. The capability is deliberately higher-level than a raw fd so it remains safe for multiplexed HTTP/2 and HTTP/3 connections.
 
 Shared writable handles use transactional publication. A `SharedMutex<T>` is reserved to the destination runtime before mailbox visibility, committed only after queue admission, and unbound again when first publication fails. This prevents failed sends from accidentally claiming a writable capability for the wrong runtime.
 
@@ -552,7 +552,7 @@ define class Bag
 end
 ```
 
-The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. For untrusted actors, callable/recursive call boundaries are also metered. Each checkpoint rechecks the actor deadline and consumes execution fuel; exhausting fuel fails the actor. The runtime may yield a carrier as a scheduling optimization, but untrusted-system liveness does **not** depend on source code voluntarily calling `yield`.
+The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. For untrusted actors, statement/expression evaluation and callable/recursive execution are also metered. Each checkpoint rechecks the actor deadline and consumes execution fuel; exhausting fuel fails the actor. The runtime may yield a carrier as a scheduling optimization, but untrusted-system liveness does **not** depend on source code voluntarily calling `yield`.
 
 This means Oreslang does not require recursion as the only way to loop, and recursive code is not a loophole around sandbox scheduling. User code receives no ambient thread-control capability.
 
