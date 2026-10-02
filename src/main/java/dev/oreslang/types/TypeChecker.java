@@ -1568,23 +1568,12 @@ public final class TypeChecker {
     }
 
     private Ast.FieldDecl findStaticField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
-        if (!seen.add(klass)) return null;
+        // Static data belongs to the class namespace that declares it. Unlike
+        // instance fields/methods it is deliberately not inherited through the
+        // instance layout/MRO.
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.isStatic() && field.name().equals(name)) {
-                seen.remove(klass);
-                return field;
-            }
+            if (field.isStatic() && field.name().equals(name)) return field;
         }
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent == null) continue;
-            Ast.FieldDecl result = findStaticField(parent, name, seen);
-            if (result != null) {
-                seen.remove(klass);
-                return result;
-            }
-        }
-        seen.remove(klass);
         return null;
     }
 
