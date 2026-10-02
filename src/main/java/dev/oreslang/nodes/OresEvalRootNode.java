@@ -211,7 +211,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (field.initializer() == null) {
                     throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + field.name());
                 }
-                state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
+                Object value = coerceDeclaredValue(field.type(), eval(field.initializer(), state), state);
+                state.define(field.name(), value, field.bindingKind(), field.type());
             }
             Ast.InitDecl init = findInit(module);
             if (init != null) executeInitializer(init, state);
@@ -260,8 +261,12 @@ public final class OresEvalRootNode extends RootNode {
             predeclareLocalTypes(fn.body(), env, owner == null ? null : owner.name());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
-                Object argument = coerceDeclaredValue(param.type(), args.get(i), env);
-                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                Object argument = param.structural()
+                        ? args.get(i)
+                        : coerceDeclaredValue(param.type(), args.get(i), env);
+                env.define(param.name(), argument,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
+                        param.type());
             }
             try {
                 executeBlock(fn.body(), env);
@@ -316,8 +321,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (field.initializer() == null) {
                     throw new IllegalArgumentException("singleton field has no initializer: " + module.name() + "." + field.name());
                 }
-                Object value = eval(field.initializer(), state.fields);
-                state.fields.define(field.name(), value, field.bindingKind());
+                Object value = coerceDeclaredValue(field.type(), eval(field.initializer(), state.fields), state.fields);
+                state.fields.define(field.name(), value, field.bindingKind(), field.type());
             }
             Ast.InitDecl init = findInit(module);
             if (init != null) executeInitializer(init, state.fields);
@@ -419,8 +424,12 @@ public final class OresEvalRootNode extends RootNode {
             predeclareLocalTypes(method.body(), env, owner == null ? null : owner.name());
             for (int i = 0; i < method.parameters().size(); i++) {
                 Ast.Param param = method.parameters().get(i);
-                Object argument = coerceDeclaredValue(param.type(), args.get(i), env);
-                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                Object argument = param.structural()
+                        ? args.get(i)
+                        : coerceDeclaredValue(param.type(), args.get(i), env);
+                env.define(param.name(), argument,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
+                        param.type());
             }
             try {
                 executeBlock(method.body(), env);
@@ -445,7 +454,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TypeDeclStmt) return;
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
-                    env.reserve(binding.name(), binding.kind());
+                    env.reserve(binding.name(), binding.kind(), runtimeBindingType(binding));
                     Object value = coerceDeclaredValue(
                             binding.declaredType(),
                             eval(binding.initializer(), env),
@@ -456,7 +465,7 @@ public final class OresEvalRootNode extends RootNode {
                             binding.declaredType(),
                             eval(binding.initializer(), env),
                             env);
-                    env.define(binding.name(), value, binding.kind());
+                    env.define(binding.name(), value, binding.kind(), runtimeBindingType(binding));
                 }
                 return;
             }
@@ -466,7 +475,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (items.size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
                 for (int i = 0; i < items.size(); i++) {
                     Ast.DestructureBinding binding = destructure.bindings().get(i);
-                    env.define(binding.name(), items.get(i), binding.kind());
+                    env.define(binding.name(), copyStructValue(items.get(i)), binding.kind());
                 }
                 return;
             }
@@ -495,7 +504,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : iterableValues(iterable, env.singletonState)) {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
-                    iteration.define(loop.bindingName(), item, loop.bindingKind());
+                    iteration.define(loop.bindingName(), copyStructValue(item), loop.bindingKind());
                     executeBlock(loop.body(), iteration);
                 }
                 return;
@@ -528,7 +537,7 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 if (name.name().equals("Some")) return (Invokable) args -> {
                     requireOne(args, "Some");
-                    return new OptionValue(true, args.getFirst());
+                    return new OptionValue(true, copyStructValue(args.getFirst()));
                 };
                 if (name.name().equals("None")) return new OptionValue(false, null);
                 Ast.ModuleDecl module = modules.get(name.name());
@@ -571,8 +580,10 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.AssignExpr assignment) {
                 Object value = eval(assignment.value(), env);
                 if (assignment.target() instanceof Ast.NameExpr target) {
-                    env.assign(target.name(), value);
-                    return value;
+                    Ast.TypeRef targetType = env.lookupBindingType(target.name());
+                    Object assigned = coerceDeclaredValue(targetType, value, env);
+                    env.assign(target.name(), assigned);
+                    return assigned;
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
@@ -585,15 +596,16 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
                         }
+                        Object assigned = coerceDeclaredValue(field.type(), value, env);
                         Object previous = object.fields.get(target.member());
-                        object.fields.put(target.member(), value);
+                        object.fields.put(target.member(), assigned);
                         try {
                             if (env.singletonState != null) env.singletonState.validateStorageGraph();
                         } catch (RuntimeException | Error failure) {
                             object.fields.put(target.member(), previous);
                             throw failure;
                         }
-                        return value;
+                        return object.fields.get(target.member());
                     }
                     throw new IllegalArgumentException("member assignment requires a class instance");
                 }
@@ -604,14 +616,15 @@ public final class OresEvalRootNode extends RootNode {
                     int i = Math.toIntExact(number.longValue());
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
-                        Object previous = list.set(i, value);
+                        Object assigned = copyStructValue(value);
+                        Object previous = list.set(i, assigned);
                         try {
                             if (env.singletonState != null) env.singletonState.validateStorageGraph();
                         } catch (RuntimeException | Error failure) {
                             list.set(i, previous);
                             throw failure;
                         }
-                        return value;
+                        return list.get(i);
                     }
                     throw new IllegalArgumentException("indexed assignment requires a mutable array/list");
                 }
@@ -702,7 +715,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (!field.composed() && argumentIndex < args.size()) value = args.get(argumentIndex++);
                     else if (field.initializer() != null) value = eval(field.initializer(), env);
                     else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
-                    fields.put(field.name(), value);
+                    fields.put(field.name(), coerceDeclaredValue(field.type(), value, env));
                 }
                 return new OresObject(klass, fields);
             }
@@ -742,12 +755,17 @@ public final class OresEvalRootNode extends RootNode {
                         if (field.initializer() == null) {
                             throw new IllegalArgumentException("composed trait state has no initializer " + struct.name() + "." + field.name());
                         }
-                        fields.put(field.name(), eval(field.initializer(), env));
+                        fields.put(field.name(), coerceDeclaredValue(
+                                field.type(), eval(field.initializer(), env), env));
                         continue;
                     }
                     Ast.Expr value = supplied.get(field.name());
-                    if (value != null) fields.put(field.name(), eval(value, env));
-                    else if (field.initializer() != null) fields.put(field.name(), eval(field.initializer(), env));
+                    if (value != null) {
+                        fields.put(field.name(), coerceDeclaredValue(field.type(), eval(value, env), env));
+                    } else if (field.initializer() != null) {
+                        fields.put(field.name(), coerceDeclaredValue(
+                                field.type(), eval(field.initializer(), env), env));
+                    }
                     else throw new IllegalArgumentException("missing struct field " + struct.name() + "." + field.name());
                 }
                 return new OresObject(struct, fields);
@@ -759,14 +777,20 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
-                for (Ast.Expr item : list.elements()) result.add(eval(item, env));
+                for (Ast.Expr item : list.elements()) result.add(copyStructValue(eval(item, env)));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) {
+                return tuple.elements().stream()
+                        .map(item -> copyStructValue(eval(item, env)))
+                        .toList();
+            }
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    if (result.putIfAbsent(field.name(), eval(field.value(), env)) != null) throw new IllegalArgumentException("duplicate obj field " + field.name());
+                    if (result.putIfAbsent(field.name(), copyStructValue(eval(field.value(), env))) != null) {
+                        throw new IllegalArgumentException("duplicate obj field " + field.name());
+                    }
                 }
                 return Map.copyOf(result);
             }
@@ -777,7 +801,12 @@ public final class OresEvalRootNode extends RootNode {
                     Env local = new Env(captured);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
                         Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        Object argument = param.structural()
+                                ? args.get(i)
+                                : coerceDeclaredValue(param.type(), args.get(i), local);
+                        local.define(param.name(), argument,
+                                param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
+                                param.type());
                     }
                     if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
                     try { executeBlock(lambda.blockBody(), local); return null; }
@@ -812,7 +841,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object coerceDeclaredValue(Ast.TypeRef declaredType, Object value, Env env) {
-            if (declaredType == null) return value;
+            if (declaredType == null) return copyStructValue(value);
+            if (declaredType.isBorrow()) return value;
 
             Ast.TypeRef resolvedType = resolveRuntimeTypeAlias(declaredType, env, new LinkedHashSet<>());
             if (resolvedType != declaredType) {
@@ -842,7 +872,18 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
 
-            return coerceDeclaredAggregate(declaredType, value, env);
+            return copyStructValue(coerceDeclaredAggregate(declaredType, value, env));
+        }
+
+        private Ast.TypeRef runtimeBindingType(Ast.BindingStmt binding) {
+            if (binding.declaredType() != null) return binding.declaredType();
+            if (binding.initializer() instanceof Ast.UnaryExpr unary
+                    && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+                return Ast.TypeRef.borrowed(
+                        Ast.TypeRef.inferred(),
+                        unary.operator().equals("&mut"));
+            }
+            return Ast.TypeRef.inferred();
         }
 
         private Ast.TypeRef resolveRuntimeTypeAlias(
@@ -1054,8 +1095,12 @@ public final class OresEvalRootNode extends RootNode {
             predeclareLocalTypes(fn.body(), env, owner == null ? null : owner.name());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
-                Object argument = coerceDeclaredValue(param.type(), args.get(i), env);
-                env.define(param.name(), argument, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                Object argument = param.structural()
+                        ? args.get(i)
+                        : coerceDeclaredValue(param.type(), args.get(i), env);
+                env.define(param.name(), argument,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL,
+                        param.type());
             }
             try {
                 executeBlock(fn.body(), env);
@@ -1318,7 +1363,7 @@ public final class OresEvalRootNode extends RootNode {
                 Object value = slot.value == Env.MISSING
                         ? Env.MISSING
                         : copySingletonValue(slot.value, copied);
-                copy.fields.slots.put(entry.getKey(), new Slot(value, slot.kind));
+                copy.fields.slots.put(entry.getKey(), new Slot(value, slot.kind, slot.declaredType));
             }
             return copy;
         }
@@ -1486,6 +1531,28 @@ public final class OresEvalRootNode extends RootNode {
         return value;
     }
 
+    private static Object copyStructValue(Object value) {
+        return copyStructValue(value, new IdentityHashMap<>());
+    }
+
+    private static Object copyStructValue(Object value, IdentityHashMap<Object, Object> copies) {
+        if (value instanceof OresObject object && object.klass.isStruct()) {
+            Object existing = copies.get(object);
+            if (existing != null) return existing;
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            OresObject copy = new OresObject(object.klass, fields);
+            copies.put(object, copy);
+            for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                fields.put(entry.getKey(), copyStructValue(entry.getValue(), copies));
+            }
+            return copy;
+        }
+        if (value instanceof OptionValue option && option.present()) {
+            return new OptionValue(true, copyStructValue(option.value(), copies));
+        }
+        return value;
+    }
+
     private static final class Env {
         private static final Object MISSING = new Object();
         private final Env parent;
@@ -1510,8 +1577,13 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void define(String name, Object value, Ast.BindingKind kind) {
+            define(name, value, kind, null);
+        }
+        private void define(String name, Object value, Ast.BindingKind kind, Ast.TypeRef declaredType) {
             validateSingletonStorageValue(value);
-            if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            if (slots.putIfAbsent(name, new Slot(value, kind, declaredType)) != null) {
+                throw new IllegalArgumentException("duplicate binding " + name);
+            }
             if (singletonStorage) {
                 try {
                     singletonState.validateStorageGraph();
@@ -1522,7 +1594,12 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
         private void reserve(String name, Ast.BindingKind kind) {
-            if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+            reserve(name, kind, null);
+        }
+        private void reserve(String name, Ast.BindingKind kind, Ast.TypeRef declaredType) {
+            if (slots.putIfAbsent(name, new Slot(MISSING, kind, declaredType)) != null) {
+                throw new IllegalArgumentException("duplicate binding " + name);
+            }
         }
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
@@ -1540,6 +1617,11 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private Ast.TypeRef lookupBindingType(String name) {
+            Slot slot = slots.get(name);
+            return slot != null ? slot.declaredType
+                    : parent == null ? null : parent.lookupBindingType(name);
+        }
         private void defineType(String name, Ast.ClassDecl type) {
             Ast.ClassDecl previous = localTypes.putIfAbsent(name, type);
             if (previous != null && previous != type) throw new IllegalArgumentException("duplicate local type " + name);
@@ -1588,7 +1670,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private Env snapshot() {
             Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState, singletonStorage);
-            cp.slots.putAll(slots);
+            for (Map.Entry<String, Slot> entry : slots.entrySet()) {
+                Slot slot = entry.getValue();
+                cp.slots.put(entry.getKey(), new Slot(
+                        slot.value == MISSING ? MISSING : copyStructValue(slot.value),
+                        slot.kind,
+                        slot.declaredType));
+            }
             cp.localTypes.putAll(localTypes);
             cp.localTypeAliases.putAll(localTypeAliases);
             return cp;
@@ -1598,7 +1686,15 @@ public final class OresEvalRootNode extends RootNode {
     private static final class Slot {
         private Object value;
         private final Ast.BindingKind kind;
-        private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+        private final Ast.TypeRef declaredType;
+        private Slot(Object value, Ast.BindingKind kind) {
+            this(value, kind, null);
+        }
+        private Slot(Object value, Ast.BindingKind kind, Ast.TypeRef declaredType) {
+            this.value = value;
+            this.kind = kind;
+            this.declaredType = declaredType;
+        }
     }
 
     private static final class ReturnSignal extends RuntimeException {
