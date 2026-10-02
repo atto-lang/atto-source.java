@@ -580,6 +580,132 @@ final class OwnershipIntrinsicsHardeningTest {
     }
 
     @Test
+    void traitProvidedCopyDoesNotSatisfyClassIdentityCopyContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define trait Copier as
+                          pub copy() => Widget {
+                            return new Widget(1);
+                          }
+                        end
+
+                        define class Widget with Copier as
+                          pub val int value = 1;
+                        end
+
+                        fnc bad() => void {
+                          let Widget original = new Widget(7);
+                          let Widget duplicate = copy(original);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("declared directly on the class"));
+    }
+
+    @Test
+    void moduleOwnedMoveOnlyValuesCannotAcquirePersistentAliasesByInitializer() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+                        end
+
+                        define module store as
+                          let Buffer original = new Buffer(7);
+                          let Buffer alias = original;
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot move module-owned value"));
+        assertTrue(error.getMessage().contains("copy(...) or share(...)"));
+    }
+
+    @Test
+    void classFieldInitializerCannotPersistOrdinaryModuleBorrow() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module store as
+                          define class Buffer as
+                            pub let int value = 0;
+                          end
+
+                          let Buffer source = new Buffer(7);
+
+                          define class Holder as
+                            pub val &Buffer view = borrow(source);
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot store an ordinary borrow"));
+    }
+
+    @Test
+    void assignmentCannotHideOrdinaryBorrowInsideContainer() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+
+                          pub copy() => Buffer {
+                            return new Buffer(self.value);
+                          }
+                        end
+
+                        fnc bad() => void {
+                          let Buffer first = new Buffer(1);
+                          let Buffer second = new Buffer(2);
+                          let values = arr[share(first)];
+                          values[0] = borrow(second);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot store an ordinary borrow"));
+    }
+
+    @Test
+    void assignmentMayStoreDetachedShareInsideContainer() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Buffer as
+                  pub let int value = 0;
+
+                  pub copy() => Buffer {
+                    return new Buffer(self.value);
+                  }
+                end
+
+                fnc ok() => void {
+                  let Buffer first = new Buffer(1);
+                  let Buffer second = new Buffer(2);
+                  let values = arr[share(first)];
+                  values[0] = share(second);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void takeOfCallReturningOwnedValueChecksSideEffectsOnce() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Buffer as
+                  pub let int value = 1;
+                end
+
+                fnc identity(Buffer value) => Buffer {
+                  return value;
+                }
+
+                fnc ok() => int {
+                  let Buffer original = new Buffer(7);
+                  let Buffer moved = take(identity(original));
+                  return moved.value;
+                }
+                """)));
+    }
+
+    @Test
     void contextualIntrinsicNamesDoNotHijackUserFunctions() throws Exception {
         assertEquals("42", run("""
                 fnc copy(int value) => int {
