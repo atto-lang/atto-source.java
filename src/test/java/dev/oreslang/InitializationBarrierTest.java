@@ -74,7 +74,7 @@ final class InitializationBarrierTest {
         assertInitRejected("async fnc init() => void { return; }");
         assertInitRejected("pub fnc init() => void { return; }");
         assertInitRejected("actor fnc init() => void { return; }");
-        assertInitRejected("actor isolate routine init() => void { return; }");
+        assertInitRejected("shared actor fnc init() => void { return; }");
     }
 
     @Test
