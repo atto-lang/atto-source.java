@@ -1080,4 +1080,214 @@ final class ActorRuntimeTest {
     }
 
 
+
+    @Test
+    void actorGroupBroadcastFansOutToSnapshotWithoutDuplicateMembership() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(2);
+            AtomicInteger deliveries = new AtomicInteger();
+
+            var first = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> {
+                deliveries.incrementAndGet();
+                received.countDown();
+            });
+            var second = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> {
+                deliveries.incrementAndGet();
+                received.countDown();
+            });
+
+            try (var workers = runtime.<String>group("workers")) {
+                workers.add(first).add(first).add(second);
+                assertEquals(2, workers.size());
+
+                ActorRuntime.FanoutReceipt receipt = workers.broadcast("job");
+                assertEquals(2, receipt.attempted());
+                assertEquals(2, receipt.delivered());
+                assertEquals(0, receipt.terminated());
+                assertEquals(0, receipt.rejected());
+                assertTrue(receipt.allDelivered());
+                assertTrue(received.await(2, TimeUnit.SECONDS));
+                assertEquals(2, deliveries.get());
+            }
+        }
+    }
+
+    @Test
+    void actorGroupDropsTerminatedMembersAndReportsPartialFanout() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch liveReceived = new CountDownLatch(1);
+            var dead = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> { });
+            var live = runtime.<String>spawnPrivateTrusted(context -> (message, turn) -> liveReceived.countDown());
+            dead.stop();
+
+            try (var workers = runtime.<String>group("workers")) {
+                workers.add(dead).add(live);
+                ActorRuntime.FanoutReceipt receipt = workers.broadcast("job");
+
+                assertEquals(2, receipt.attempted());
+                assertEquals(1, receipt.delivered());
+                assertEquals(1, receipt.terminated());
+                assertEquals(0, receipt.rejected());
+                assertFalse(receipt.allDelivered());
+                assertEquals(1, workers.size());
+                assertTrue(receipt.failures().containsKey(dead.id()));
+                assertTrue(liveReceived.await(2, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void actorGroupRejectsForeignRuntimeMembership() {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            var foreign = left.<String>spawnPrivateTrusted(context -> (message, turn) -> { });
+            try (var group = right.<String>group("workers")) {
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> group.add(foreign));
+                assertTrue(failure.getMessage().contains("different ActorRuntime"));
+            }
+        }
+    }
+
+    @Test
+    void receiveAsyncClaimsNextMessageWithoutBlockingCarrier() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch armed = new CountDownLatch(1);
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<String> observed = new AtomicReference<>();
+            AtomicInteger behaviorCalls = new AtomicInteger();
+
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                behaviorCalls.incrementAndGet();
+                if (message.equals("arm")) {
+                    context.receiveAsync().thenAccept(next -> {
+                        observed.set(next);
+                        received.countDown();
+                    });
+                    armed.countDown();
+                }
+            });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+            ref.send("payload");
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals("payload", observed.get());
+            assertEquals(1, behaviorCalls.get(), "claimed message must not also reach reactive behavior");
+            assertTrue(ref.isAlive());
+        }
+    }
+
+    @Test
+    void receiveAsyncAllowsOnlyOneOutstandingPullConsumer() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                context.receiveAsync();
+                try {
+                    context.receiveAsync();
+                } catch (Throwable failure) {
+                    observed.set(failure);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            ref.send("arm");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(IllegalStateException.class, observed.get());
+            assertTrue(observed.get().getMessage().contains("one mailbox must have exactly one pull consumer"));
+        }
+    }
+
+    @Test
+    void tryReceiveIsImmediateAndConsumesQueuedMessageOnce() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch queued = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<String> observed = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                if (!message.equals("probe")) return;
+                entered.countDown();
+                assertTrue(queued.await(2, TimeUnit.SECONDS));
+                observed.set(context.tryReceive().orElseThrow());
+                assertTrue(context.tryReceive().isEmpty());
+                checked.countDown();
+            });
+
+            ref.send("probe");
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+            ref.send("queued");
+            queued.countDown();
+
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertEquals("queued", observed.get());
+            assertTrue(ref.isAlive());
+        }
+    }
+
+    @Test
+    void stoppingActorCompletesPendingReceiveExceptionally() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch armed = new CountDownLatch(1);
+            AtomicReference<java.util.concurrent.CompletionStage<String>> pending = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                pending.set(context.receiveAsync());
+                armed.countDown();
+            });
+
+            ref.send("arm");
+            assertTrue(armed.await(2, TimeUnit.SECONDS));
+            ref.stop();
+
+            java.util.concurrent.CompletionException failure = assertThrows(
+                    java.util.concurrent.CompletionException.class,
+                    () -> pending.get().toCompletableFuture().join());
+            assertInstanceOf(ActorRuntime.ActorTerminatedException.class, failure.getCause());
+        }
+    }
+
+    @Test
+    void sameRuntimeActorGroupCapabilityCanCrossMailboxButCannotBecomeSharedData() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<Object> observed = new AtomicReference<>();
+            var member = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> { });
+
+            try (var group = runtime.<String>group("workers")) {
+                group.add(member);
+                var receiver = runtime.<Object>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                    observed.set(message);
+                    received.countDown();
+                });
+
+                receiver.send(group);
+                assertTrue(received.await(2, TimeUnit.SECONDS));
+                assertSame(group, observed.get());
+                assertThrows(IllegalArgumentException.class, () -> runtime.shareReadonly(group));
+            }
+        }
+    }
+
+    @Test
+    void foreignActorGroupCapabilityCannotCrossRuntimeMailbox() {
+        try (ActorRuntime left = new ActorRuntime();
+             ActorRuntime right = new ActorRuntime()) {
+            try (var foreignGroup = left.<String>group("workers")) {
+                var receiver = right.<Object>spawnPrivateTrusted(factoryContext -> (message, context) -> { });
+                IllegalArgumentException failure = assertThrows(
+                        IllegalArgumentException.class,
+                        () -> receiver.send(foreignGroup));
+                assertTrue(failure.getMessage().contains("different ActorRuntime"));
+            }
+        }
+    }
+
 }
