@@ -1268,6 +1268,9 @@ public final class TypeChecker {
     }
 
     private void collectCalls(Ast.Expr expr, String module, Set<Ast.FunctionDecl> out) {
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) {
+            return;
+        }
         if (expr instanceof Ast.CallExpr call) {
             Ast.FunctionDecl callee = resolveStaticCall(call.callee(), module);
             if (callee != null) out.add(callee);
@@ -1292,6 +1295,8 @@ public final class TypeChecker {
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) collectCalls(e.expressionBody(), module, out);
             if (e.blockBody() != null) for (Ast.Stmt nested : e.blockBody()) collectCalls(nested, module, out);
+        } else {
+            throw new IllegalArgumentException("call-graph analysis does not handle expression kind " + expr.getClass().getSimpleName());
         }
     }
 
