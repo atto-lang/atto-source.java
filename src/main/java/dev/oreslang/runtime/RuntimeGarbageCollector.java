@@ -103,6 +103,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     }
 
     private final Set<TrackedCleanup> tracked = ConcurrentHashMap.newKeySet();
+    private final Set<TrackedCleanup> retryableFailures = ConcurrentHashMap.newKeySet();
     private final Map<Object, Set<TrackedCleanup>> trackedByDomain = new ConcurrentHashMap<>();
     private final Set<Object> retiredDomains = ConcurrentHashMap.newKeySet();
     private final ReferenceQueue<Object> referenceQueue = new ReferenceQueue<>();
@@ -268,6 +269,25 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         int cleanupFailures = 0;
 
         if (requestedDomain == null) {
+            for (TrackedCleanup entry : Set.copyOf(retryableFailures)) {
+                if (inspected >= maxEntriesToInspect) break;
+                if (!tracked.contains(entry)) {
+                    retryableFailures.remove(entry);
+                    continue;
+                }
+                inspected++;
+                try {
+                    if (entry.tryClean()) {
+                        cleanedCount++;
+                        removeTracked(entry);
+                    }
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable cleanupFailure) {
+                    cleanupFailures++;
+                }
+            }
+
             while (inspected < maxEntriesToInspect) {
                 TrackedCleanup entry = (TrackedCleanup) referenceQueue.poll();
                 if (entry == null) break;
@@ -281,6 +301,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 } catch (VirtualMachineError | ThreadDeath fatal) {
                     throw fatal;
                 } catch (Throwable cleanupFailure) {
+                    retryableFailures.add(entry);
                     cleanupFailures++;
                 }
             }
@@ -301,6 +322,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                     } catch (VirtualMachineError | ThreadDeath fatal) {
                         throw fatal;
                     } catch (Throwable cleanupFailure) {
+                        retryableFailures.add(entry);
                         cleanupFailures++;
                     }
                 }
@@ -320,6 +342,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 } catch (VirtualMachineError | ThreadDeath fatal) {
                     throw fatal;
                 } catch (Throwable cleanupFailure) {
+                    retryableFailures.add(entry);
                     cleanupFailures++;
                 }
             }
@@ -342,6 +365,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private void removeTracked(TrackedCleanup entry) {
         synchronized (lifecycleLock) {
             tracked.remove(entry);
+            retryableFailures.remove(entry);
             Set<TrackedCleanup> domainEntries = trackedByDomain.get(entry.domain);
             if (domainEntries == null) return;
             domainEntries.remove(entry);
@@ -385,6 +409,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         }
         synchronized (lifecycleLock) {
             tracked.clear();
+            retryableFailures.clear();
             trackedByDomain.clear();
             retiredDomains.clear();
             while (referenceQueue.poll() != null) { /* drain */ }
