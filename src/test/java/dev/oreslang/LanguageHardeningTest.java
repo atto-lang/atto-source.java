@@ -481,4 +481,48 @@ final class LanguageHardeningTest {
                         """)));
         assertTrue(write.getMessage().contains("assignment"));
     }
+    @Test
+    void structuralGenericShapesUseConcreteAndInheritedArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box<T> as
+                  pub val T value;
+
+                  pub get() => T {
+                    return self.value;
+                  }
+                end
+
+                fnc direct(@Structural Box<int> box) => int {
+                  return box.get();
+                }
+
+                define class Parent<T> as
+                  pub get() => T {
+                    return 7;
+                  }
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc inherited(@Structural Child<int> child) => int {
+                  return child.get();
+                }
+                """)));
+
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub get() => T {
+                            return 7;
+                          }
+                        end
+
+                        fnc bad(@Structural Box<int> box) => String {
+                          return box.get();
+                        }
+                        """)));
+
+        assertTrue(wrong.getMessage().contains("return"));
+    }
 }
