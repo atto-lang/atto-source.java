@@ -38,6 +38,11 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    private final java.util.ArrayDeque<Map<String, Ast.ClassDecl>> localClassScopes = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<Map<String, Ast.InterfaceDecl>> localInterfaceScopes = new java.util.ArrayDeque<>();
+    private final IdentityHashMap<Ast.ClassDecl, String> localClassIdentities = new IdentityHashMap<>();
+    private final Map<String, Ast.ClassDecl> escapedLocalClasses = new HashMap<>();
+    private int nextLocalTypeIdentity = 1;
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -71,7 +76,7 @@ public final class TypeChecker {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
+                    if (imported.kind() != Ast.ImportKind.CLASS && imported.kind() != Ast.ImportKind.STRUCT) importedValues.add(name);
                 }
             }
         }
@@ -85,7 +90,7 @@ public final class TypeChecker {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
-                    putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
+                    putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, klass.isStruct() ? "struct" : "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
@@ -152,7 +157,7 @@ public final class TypeChecker {
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
-                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                Type signature = declaredFunctionType(fn);
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()), signature, "module " + module.name());
             } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
@@ -261,17 +266,22 @@ public final class TypeChecker {
     }
 
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
-        Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
-        Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        Type returns = resolve(fn.returnType(), generics, null);
-        validateSingletonTransportStatements(fn.body(), module.name());
-        checkBlock(fn.body(), env, generics, returns, null);
-        if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
-            throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module.name() + "." + fn.name() + "' must explicitly return on every path");
-        }
-        if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
-            throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+        pushLocalTypeScope(fn.body());
+        try {
+            Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+            Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
+            for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            Type returns = resolve(fn.returnType(), generics, null);
+            validateSingletonTransportStatements(fn.body(), module.name());
+            checkBlock(fn.body(), env, generics, returns, null);
+            if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
+                throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module.name() + "." + fn.name() + "' must explicitly return on every path");
+            }
+            if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
+                throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+            }
+        } finally {
+            popLocalTypeScope();
         }
     }
 
@@ -554,6 +564,49 @@ public final class TypeChecker {
             }
             return false;
         }
+        if (expr instanceof Ast.StructInitExpr created) {
+            if (created.anonymous()) {
+                Map<String, Type> members = new LinkedHashMap<>();
+                for (Ast.ObjectField field : created.fields()) {
+                    if (members.putIfAbsent(field.name(), typeOf(field.value(), env, generics, self)) != null) {
+                        throw new IllegalArgumentException("duplicate anonymous struct field '" + field.name() + "'");
+                    }
+                }
+                return new Record(members);
+            }
+
+            Ast.ClassDecl struct = findClass(created.type().name());
+            if (struct == null || !struct.isStruct()) {
+                throw new IllegalArgumentException("'" + created.type().name() + "' is not a struct type");
+            }
+
+            LinkedHashMap<String, Ast.FieldDecl> declared = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : struct.fields()) declared.put(field.name(), field);
+
+            LinkedHashMap<String, Ast.Expr> supplied = new LinkedHashMap<>();
+            for (Ast.ObjectField field : created.fields()) {
+                if (!declared.containsKey(field.name())) {
+                    throw new IllegalArgumentException("unknown struct field '" + struct.name() + "." + field.name() + "'");
+                }
+                if (supplied.putIfAbsent(field.name(), field.value()) != null) {
+                    throw new IllegalArgumentException("duplicate struct field '" + struct.name() + "." + field.name() + "'");
+                }
+            }
+
+            Type nominal = nominalClassType(struct);
+            Set<String> structGenerics = Set.copyOf(struct.genericParameters());
+            for (Ast.FieldDecl field : struct.fields()) {
+                Ast.Expr value = supplied.get(field.name());
+                if (value != null) {
+                    requireAssignable(typeOf(value, env, generics, self),
+                            resolve(field.type(), structGenerics, nominal),
+                            "struct field " + struct.name() + "." + field.name());
+                } else if (field.initializer() == null) {
+                    throw new IllegalArgumentException("struct initializer for " + struct.name() + " is missing field '" + field.name() + "'");
+                }
+            }
+            return nominal;
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             return referencesActorModuleBinding(awaited.expression(), actorBindings, shadowed);
         }
@@ -660,13 +713,13 @@ public final class TypeChecker {
     }
 
     private Function singletonTransportType(Ast.FunctionDecl fn) {
-        Set<String> generics = Set.copyOf(fn.genericParameters());
-        Function logical = (Function) functionType(fn.parameters(), fn.returnType(), generics, null);
+        Function logical = declaredFunctionType(fn);
         return new Function(logical.parameters(), new Named("Future", List.of(logical.result())));
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
-        Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
+        String aggregateLabel = klass.isStruct() ? "struct " : "class ";
+        Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), aggregateLabel + klass.name());
         Type self = nominalClassType(klass);
 
         Set<String> parentNames = new HashSet<>();
@@ -740,7 +793,8 @@ public final class TypeChecker {
             Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
-                throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+                throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
+                        + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
     }
@@ -755,11 +809,24 @@ public final class TypeChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
-        Env env = new Env(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        pushLocalTypeScope(body);
+        try {
+            Env env = new Env(parent);
+            for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        } finally {
+            popLocalTypeScope();
+        }
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.TypeDeclStmt localType) {
+            if (localType.declaration() instanceof Ast.ClassDecl struct) {
+                checkClass(env.moduleName, struct);
+            } else if (localType.declaration() instanceof Ast.InterfaceDecl iface) {
+                checkInterface(iface);
+            }
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
             boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
@@ -775,7 +842,7 @@ public final class TypeChecker {
                         + proxy.fieldName() + "' cannot be rebound locally; invoke and await its methods directly");
             }
             Type declared = declaredAhead == null ? actual : declaredAhead;
-            requireAssignable(actual, declared, "initializer for " + binding.name());
+            requireAssignableExpression(binding.initializer(), actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
                 throw new IllegalArgumentException("const '" + binding.name() + "' needs a compile-time constant initializer");
             }
@@ -801,7 +868,7 @@ public final class TypeChecker {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
             Type actual = ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
-            requireAssignable(actual, expectedReturn, "return value");
+            requireAssignableExpression(ret.value(), actual, expectedReturn, "return value");
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
@@ -880,7 +947,7 @@ public final class TypeChecker {
                     }
                     return singletonTransportType(fn);
                 }
-                return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                return declaredFunctionType(fn);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -1029,7 +1096,7 @@ public final class TypeChecker {
                                 && fn.visibility() == Ast.Visibility.PUBLIC
                                 && fn.name().equals(member.member())) {
                             return module.name().equals(env.moduleName)
-                                    ? functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null)
+                                    ? declaredFunctionType(fn)
                                     : singletonTransportType(fn);
                         }
                         if (decl instanceof Ast.FieldDecl field
@@ -1115,6 +1182,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            if (klass.isStruct()) throw new IllegalArgumentException("struct '" + klass.name() + "' is a value type; initialize it with " + klass.name() + " { ... }, not new");
             String ownerName = classOwners.get(klass);
             Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
             if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
@@ -1573,6 +1641,7 @@ public final class TypeChecker {
         if (parentRef.name().equals("obj") || parentRef.name().equals("arr")) throw new IllegalArgumentException("inline obj/arr values cannot be subclassed; extend Object or List instead");
         Ast.ClassDecl parent = findClass(parentRef.name());
         if (parent == null) throw new IllegalArgumentException("unknown parent class '" + parentRef.name() + "' for " + child.name());
+        if (parent.isStruct()) throw new IllegalArgumentException("struct '" + parent.name() + "' cannot be used as a base class");
         if (parent == child) throw new IllegalArgumentException("class '" + child.name() + "' cannot extend itself");
 
         String parentOwnerName = classOwners.get(parent);
@@ -1623,6 +1692,17 @@ public final class TypeChecker {
             return Primitive.NULL;
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
+
+        Ast.ClassDecl lexicalClass = findLexicalClass(ref.name());
+        if (lexicalClass != null) return nominalLocalType(lexicalClass, ref, generics, self);
+
+        Ast.InterfaceDecl lexicalInterface = findLexicalInterface(ref.name());
+        if (lexicalInterface != null) {
+            if (!lexicalInterface.genericParameters().isEmpty() || !ref.arguments().isEmpty() || ref.inferArguments()) {
+                throw new IllegalArgumentException("generic callable-local interfaces are not supported yet");
+            }
+            return interfaceShape(lexicalInterface, Set.of(), new LinkedHashSet<>());
+        }
 
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
         if (alias != null) {
@@ -1683,6 +1763,8 @@ public final class TypeChecker {
     }
 
     private String qualifiedClassName(Ast.ClassDecl klass) {
+        String local = localClassIdentities.get(klass);
+        if (local != null) return local;
         String owner = classOwners.get(klass);
         return owner == null || owner.equals("__root__") ? klass.name() : owner + "." + klass.name();
     }
@@ -1751,18 +1833,121 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl findClass(String name) {
-        if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class name '" + name + "'; qualify it with its module");
+        Ast.ClassDecl lexical = findLexicalClass(name);
+        if (lexical != null) return lexical;
+        Ast.ClassDecl escaped = escapedLocalClasses.get(name);
+        if (escaped != null) return escaped;
+        if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class/struct name '" + name + "'; qualify it with its module");
         return classes.get(name);
     }
 
+    private Ast.ClassDecl findLexicalClass(String name) {
+        if (name.contains(".")) return null;
+        for (Map<String, Ast.ClassDecl> scope : localClassScopes) {
+            Ast.ClassDecl local = scope.get(name);
+            if (local != null) return local;
+        }
+        return null;
+    }
+
     private Ast.InterfaceDecl findInterface(String name) {
+        Ast.InterfaceDecl lexical = findLexicalInterface(name);
+        if (lexical != null) return lexical;
         if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface name '" + name + "'; qualify it with its module");
         return interfaces.get(name);
+    }
+
+    private Ast.InterfaceDecl findLexicalInterface(String name) {
+        if (name.contains(".")) return null;
+        for (Map<String, Ast.InterfaceDecl> scope : localInterfaceScopes) {
+            Ast.InterfaceDecl local = scope.get(name);
+            if (local != null) return local;
+        }
+        return null;
     }
 
     private Ast.TypeAliasDecl findTypeAlias(String name) {
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
+    }
+
+    private void pushLocalTypeScope(List<Ast.Stmt> body) {
+        Map<String, Ast.ClassDecl> classesHere = new LinkedHashMap<>();
+        Map<String, Ast.InterfaceDecl> interfacesHere = new LinkedHashMap<>();
+        Set<String> names = new HashSet<>();
+
+        for (Ast.Stmt stmt : body) {
+            if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
+            if (local.declaration() instanceof Ast.ClassDecl struct) {
+                if (!names.add(struct.name())) throw new IllegalArgumentException("duplicate callable-local type '" + struct.name() + "'");
+                classesHere.put(struct.name(), struct);
+                String identity = localClassIdentities.computeIfAbsent(struct,
+                        ignored -> "$local$" + (nextLocalTypeIdentity++) + "." + struct.name());
+                escapedLocalClasses.put(identity, struct);
+            } else if (local.declaration() instanceof Ast.InterfaceDecl iface) {
+                if (!names.add(iface.name())) throw new IllegalArgumentException("duplicate callable-local type '" + iface.name() + "'");
+                interfacesHere.put(iface.name(), iface);
+            }
+        }
+
+        localClassScopes.push(classesHere);
+        localInterfaceScopes.push(interfacesHere);
+    }
+
+    private void popLocalTypeScope() {
+        localClassScopes.pop();
+        localInterfaceScopes.pop();
+    }
+
+    private Function declaredFunctionType(Ast.FunctionDecl fn) {
+        pushLocalTypeScope(fn.body());
+        try {
+            Set<String> generics = Set.copyOf(fn.genericParameters());
+            return functionType(fn.parameters(), fn.returnType(), generics, null);
+        } finally {
+            popLocalTypeScope();
+        }
+    }
+
+    private Type nominalLocalType(Ast.ClassDecl klass, Ast.TypeRef ref, Set<String> generics, Type self) {
+        if (!klass.isStruct()) throw new IllegalArgumentException("callable-local classes are not supported");
+        if (ref.inferArguments()) {
+            return new Named(qualifiedClassName(klass),
+                    klass.genericParameters().stream().map(ignored -> (Type) Unknown.INSTANCE).toList());
+        }
+        if (ref.arguments().size() != klass.genericParameters().size()) {
+            throw new IllegalArgumentException("struct '" + klass.name() + "' expects "
+                    + klass.genericParameters().size() + " type argument(s), got " + ref.arguments().size());
+        }
+        return new Named(qualifiedClassName(klass),
+                ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+    }
+
+    private void requireAssignableExpression(Ast.Expr expression, Type actual, Type expected, String where) {
+        if (expression instanceof Ast.ObjectExpr object && actual instanceof Record record && expected instanceof Named named) {
+            Ast.ClassDecl struct = findClass(named.name());
+            if (struct != null && struct.isStruct()) {
+                LinkedHashMap<String, Ast.FieldDecl> expectedFields = new LinkedHashMap<>();
+                for (Ast.FieldDecl field : effectiveFields(struct, new LinkedHashSet<>())) {
+                    expectedFields.put(field.name(), field);
+                }
+                if (!record.members().keySet().equals(expectedFields.keySet())) {
+                    throw new IllegalArgumentException(where + " does not match struct '" + struct.name()
+                            + "': expected fields " + expectedFields.keySet() + " but got " + record.members().keySet());
+                }
+                Type nominal = nominalClassType(struct);
+                for (Ast.FieldDecl field : expectedFields.values()) {
+                    Type supplied = record.members().get(field.name());
+                    Type required = resolve(field.type(), Set.copyOf(struct.genericParameters()), nominal);
+                    if (!assignable(supplied, required)) {
+                        throw new IllegalArgumentException(where + " field '" + field.name() + "' expects "
+                                + required + " but got " + supplied);
+                    }
+                }
+                return;
+            }
+        }
+        requireAssignable(actual, expected, where);
     }
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
@@ -1881,6 +2066,7 @@ public final class TypeChecker {
         } else if (expr instanceof Ast.MemberExpr e) collectCalls(e.receiver(), module, out);
         else if (expr instanceof Ast.IndexExpr e) { collectCalls(e.receiver(), module, out); collectCalls(e.index(), module, out); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) collectCalls(arg, module, out);
+        else if (expr instanceof Ast.StructInitExpr e) for (Ast.ObjectField f : e.fields()) collectCalls(f.value(), module, out);
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
