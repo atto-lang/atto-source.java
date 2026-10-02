@@ -3,29 +3,41 @@ package dev.oreslang.runtime;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 /**
  * Host-side actor substrate used by the first interpreter.
  *
- * Oreslang actor state is owned by one actor. Messages pass through freeze(),
- * which only accepts values that can be made deeply immutable without leaving
- * a writable alias in the receiver. Cross-isolate transports should serialize
- * Frozen values rather than sharing Java object references.
+ * The language contract is stronger than the JVM backing implementation:
+ * mutable state is actor-owned, cross-actor values are copied/frozen, and
+ * explicitly shared regions are deeply immutable. The JVM heap remains the
+ * backing store for this prototype; ActorRuntime therefore enforces semantic
+ * heap isolation and mailbox budgets while the compiler/runtime continue to
+ * move toward fully actor-local allocation arenas.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final int MAX_FREEZE_DEPTH = 256;
+    private static final long SHARED_HANDLE_BYTES = 64L;
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final Map<String, ActorId> singletonActors = new ConcurrentHashMap<>();
+    private final Map<ActorId, ActorFailure> failures = new ConcurrentHashMap<>();
+    private final ThreadLocal<ActorId> currentActor = new ThreadLocal<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
 
@@ -40,10 +52,69 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
 
     public record ActorId(UUID value) {
+        public ActorId {
+            java.util.Objects.requireNonNull(value, "value");
+        }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
+        @Override public String toString() { return value.toString(); }
     }
 
-    public record Shared<T>(T value) { }
+    public enum ActorState {
+        STARTING,
+        RUNNING,
+        STOPPING,
+        STOPPED,
+        FAILED
+    }
+
+    public record ActorFailure(String type, String message) { }
+
+    public record ActorSnapshot(
+            ActorId id,
+            ActorState state,
+            int mailboxMessages,
+            long mailboxBytes,
+            long manualGcRequests,
+            ActorFailure failure) {
+        public Map<String, Object> asMap() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("id", id.toString());
+            result.put("state", state.name().toLowerCase(java.util.Locale.ROOT));
+            result.put("mailbox_messages", mailboxMessages);
+            result.put("mailbox_bytes", mailboxBytes);
+            result.put("manual_gc_requests", manualGcRequests);
+            if (failure != null) {
+                result.put("failure_type", failure.type());
+                result.put("failure_message", failure.message() == null ? "" : failure.message());
+            }
+            return Map.copyOf(result);
+        }
+    }
+
+    /**
+     * Opaque handle to a deeply immutable graph that may be reused by multiple
+     * actors without copying the backing graph again.
+     */
+    public static final class Shared<T> {
+        private final UUID regionId;
+        private final T value;
+        private final long estimatedBytes;
+
+        private Shared(T value, long estimatedBytes) {
+            this.regionId = UUID.randomUUID();
+            this.value = value;
+            this.estimatedBytes = estimatedBytes;
+        }
+
+        public UUID regionId() { return regionId; }
+        public T value() { return value; }
+        public long estimatedBytes() { return estimatedBytes; }
+
+        @Override
+        public String toString() {
+            return "Shared[" + regionId + ", estimatedBytes=" + estimatedBytes + "]";
+        }
+    }
 
     @FunctionalInterface
     public interface Behavior<M> {
@@ -69,6 +140,10 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime.this.send(this, message);
         }
 
+        public ActorSnapshot snapshot() {
+            return ActorRuntime.this.snapshot(this);
+        }
+
         @Override
         public String toString() {
             return "ActorRef[" + id.value() + "]";
@@ -85,13 +160,65 @@ public final class ActorRuntime implements AutoCloseable {
 
     public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        java.util.Objects.requireNonNull(behaviorFactory, "behaviorFactory");
         requireWithinCeiling(policy);
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id);
         ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
-        actors.put(id, cell);
+        ActorCell<?> previous = actors.putIfAbsent(id, cell);
+        if (previous != null) throw new IllegalStateException("actor id collision");
         cell.start();
         return ref;
+    }
+
+    /**
+     * Returns one named actor for this runtime/context. Mutable singleton state
+     * remains owned by that actor; callers still communicate exclusively by
+     * message passing.
+     */
+    @SuppressWarnings("unchecked")
+    public synchronized <M> ActorRef<M> spawnSingleton(
+            String name,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
+        validateSingletonName(name);
+        ActorId existingId = singletonActors.get(name);
+        if (existingId != null) {
+            ActorCell<?> existing = actors.get(existingId);
+            if (existing != null && existing.state != ActorState.FAILED && existing.state != ActorState.STOPPED) {
+                return (ActorRef<M>) existing.ref;
+            }
+            singletonActors.remove(name, existingId);
+        }
+
+        ActorRef<M> created = spawn(behaviorFactory);
+        singletonActors.put(name, created.id());
+        return created;
+    }
+
+    @SuppressWarnings("unchecked")
+    public <M> Optional<ActorRef<M>> lookupSingleton(String name) {
+        ActorId id = singletonActors.get(name);
+        if (id == null) return Optional.empty();
+        ActorCell<?> cell = actors.get(id);
+        if (cell == null) return Optional.empty();
+        return Optional.of((ActorRef<M>) cell.ref);
+    }
+
+    public Optional<ActorId> currentActorId() {
+        return Optional.ofNullable(currentActor.get());
+    }
+
+    @SuppressWarnings("unchecked")
+    public <M> Optional<ActorRef<M>> currentActorRef() {
+        ActorId id = currentActor.get();
+        if (id == null) return Optional.empty();
+        ActorCell<?> cell = actors.get(id);
+        if (cell == null) return Optional.empty();
+        return Optional.of((ActorRef<M>) cell.ref);
+    }
+
+    public int activeActorCount() {
+        return actors.size();
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
@@ -117,11 +244,35 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        java.util.Objects.requireNonNull(ref, "ref");
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
-        Object frozen = freeze(message);
-        if (!cell.mailbox.offer(frozen)) {
-            throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+        if (cell == null) {
+            ActorFailure failure = failures.get(ref.id());
+            if (failure != null) {
+                throw new IllegalStateException("actor " + ref.id() + " failed: " + failure.type() + ": " + failure.message());
+            }
+            throw new IllegalStateException("unknown actor " + ref.id());
+        }
+
+        final Object deliveryValue;
+        final long mailboxBytes;
+        if (message instanceof Shared<?> shared) {
+            if (shared.estimatedBytes() > cell.policy.maxHeapBytes()) {
+                throw new IllegalArgumentException("shared message exceeds actor heap policy");
+            }
+            deliveryValue = shared.value();
+            mailboxBytes = SHARED_HANDLE_BYTES;
+        } else {
+            deliveryValue = freeze(message);
+            mailboxBytes = estimatedFrozenBytes(deliveryValue);
+            long maxMessageBytes = Math.max(1024L * 1024L, Math.min(cell.policy.maxHeapBytes() / 2L, 64L * 1024L * 1024L));
+            if (mailboxBytes > maxMessageBytes) {
+                throw new IllegalArgumentException("message is too large for actor policy; use process.share_readonly for large immutable payloads");
+            }
+        }
+
+        if (!cell.offer(new Envelope(deliveryValue, mailboxBytes))) {
+            throw new IllegalStateException("actor mailbox memory/message limit exceeded for " + ref.id());
         }
     }
 
@@ -129,11 +280,14 @@ public final class ActorRuntime implements AutoCloseable {
      * Creates an explicitly read-only shared value. The returned graph is a
      * frozen representation; no mutable source object itself is exposed.
      */
+    @SuppressWarnings("unchecked")
+    public <T> Shared<T> shareReadonly(T value) {
+        T frozen = (T) freeze(value);
+        return new Shared<>(frozen, estimatedFrozenBytes(frozen));
+    }
+
     /**
      * Cooperative scheduler hook used by compiler-injected loop safepoints.
-     * It observes runtime shutdown/interruption and yields the carrier so
-     * supervisor/control-plane work can run. This is intentionally a runtime
-     * hook rather than guest-accessible thread control.
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
@@ -141,16 +295,58 @@ public final class ActorRuntime implements AutoCloseable {
         Thread.yield();
     }
 
-    @SuppressWarnings("unchecked")
-    public <T> Shared<T> shareReadonly(T value) {
-        return new Shared<>((T) freeze(value));
+    public boolean stop(ActorRef<?> ref) {
+        java.util.Objects.requireNonNull(ref, "ref");
+        ActorCell<?> cell = actors.get(ref.id());
+        return cell != null && cell.requestGracefulStop();
+    }
+
+    public boolean join(ActorRef<?> ref, Duration timeout) {
+        java.util.Objects.requireNonNull(ref, "ref");
+        java.util.Objects.requireNonNull(timeout, "timeout");
+        if (timeout.isNegative() || timeout.isZero()) throw new IllegalArgumentException("timeout must be positive");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return true;
+        Thread thread = cell.thread;
+        if (thread == null) return true;
+        try {
+            long millis = Math.max(1L, timeout.toMillis());
+            thread.join(millis);
+            return !thread.isAlive();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    public ActorSnapshot snapshot(ActorRef<?> ref) {
+        java.util.Objects.requireNonNull(ref, "ref");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell != null) return cell.snapshot();
+        ActorFailure failure = failures.get(ref.id());
+        return new ActorSnapshot(ref.id(), failure == null ? ActorState.STOPPED : ActorState.FAILED, 0, 0L, 0L, failure);
+    }
+
+    /** Called by process.gc() so actor-local pressure/telemetry can be tracked. */
+    public void noteManualGcRequest() {
+        ActorId id = currentActor.get();
+        if (id == null) return;
+        ActorCell<?> cell = actors.get(id);
+        if (cell != null) cell.manualGcRequests.incrementAndGet();
     }
 
     /**
      * Converts supported values into a deeply immutable/sendable graph.
      * Unknown host objects are rejected instead of being passed by reference.
+     * Cyclic mutable graphs are rejected; explicit shared regions must be
+     * acyclic immutable values.
      */
     public static Object freeze(Object value) {
+        return freeze(value, new IdentityHashMap<>(), 0);
+    }
+
+    private static Object freeze(Object value, IdentityHashMap<Object, Boolean> path, int depth) {
+        if (depth > MAX_FREEZE_DEPTH) throw new IllegalArgumentException("message graph exceeds maximum freeze depth " + MAX_FREEZE_DEPTH);
         if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
@@ -159,89 +355,247 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof Shared<?> shared) return shared;
         if (value instanceof ActorRef<?> ref) return ref;
-        if (value instanceof List<?> list) {
-            List<Object> frozen = new ArrayList<>(list.size());
-            for (Object item : list) frozen.add(freeze(item));
-            return List.copyOf(frozen);
+
+        if (path.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic mutable graphs cannot cross actor boundaries");
         }
-        if (value instanceof Set<?> set) {
-            return set.stream().map(ActorRuntime::freeze).collect(java.util.stream.Collectors.toUnmodifiableSet());
+
+        try {
+            if (value instanceof List<?> list) {
+                List<Object> frozen = new ArrayList<>(list.size());
+                for (Object item : list) frozen.add(freeze(item, path, depth + 1));
+                return List.copyOf(frozen);
+            }
+            if (value instanceof Set<?> set) {
+                java.util.LinkedHashSet<Object> frozen = new java.util.LinkedHashSet<>(Math.max(16, set.size()));
+                for (Object item : set) frozen.add(freeze(item, path, depth + 1));
+                return Set.copyOf(frozen);
+            }
+            if (value instanceof Map<?, ?> map) {
+                Map<Object, Object> frozen = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    frozen.put(freeze(entry.getKey(), path, depth + 1), freeze(entry.getValue(), path, depth + 1));
+                }
+                return Map.copyOf(frozen);
+            }
+            if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                List<Object> frozen = new ArrayList<>(length);
+                for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i), path, depth + 1));
+                return List.copyOf(frozen);
+            }
+            if (value instanceof Sendable sendable) {
+                Object replacement = sendable.freezeForSend();
+                if (replacement == value) {
+                    throw new IllegalArgumentException("Sendable.freezeForSend() must return an immutable transport representation, not this");
+                }
+                return freeze(replacement, path, depth + 1);
+            }
+            throw new IllegalArgumentException("value of type " + value.getClass().getName()
+                    + " is not Sendable; mutable host objects cannot cross actor boundaries");
+        } finally {
+            path.remove(value);
         }
-        if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> frozen = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) frozen.put(freeze(entry.getKey()), freeze(entry.getValue()));
-            return Map.copyOf(frozen);
-        }
-        if (value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            List<Object> frozen = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i)));
-            return List.copyOf(frozen);
-        }
-        if (value instanceof Sendable sendable) return sendable.freezeForSend();
-        throw new IllegalArgumentException("value of type " + value.getClass().getName()
-                + " is not Sendable; mutable host objects cannot cross actor boundaries");
     }
 
-    /** Implemented by generated immutable Oreslang aggregate values. */
+    /** Implemented by generated Oreslang values that define a safe transport representation. */
     public interface Sendable {
         Object freezeForSend();
+    }
+
+    public static long estimatedFrozenBytes(Object value) {
+        return estimatedFrozenBytes(value, 0);
+    }
+
+    private static long estimatedFrozenBytes(Object value, int depth) {
+        if (depth > MAX_FREEZE_DEPTH) return Long.MAX_VALUE;
+        if (value == null) return 8L;
+        if (value instanceof Shared<?>) return SHARED_HANDLE_BYTES;
+        if (value instanceof String string) return safeAdd(24L, safeMultiply(2L, string.length()));
+        if (value instanceof Boolean || value instanceof Byte) return 16L;
+        if (value instanceof Character || value instanceof Short) return 16L;
+        if (value instanceof Integer || value instanceof Float) return 16L;
+        if (value instanceof Long || value instanceof Double || value instanceof UUID || value instanceof ActorId) return 32L;
+        if (value instanceof BigInteger integer) return safeAdd(32L, integer.bitLength() / 8L + 1L);
+        if (value instanceof BigDecimal decimal) return safeAdd(48L, estimatedFrozenBytes(decimal.unscaledValue(), depth + 1));
+        if (value instanceof Enum<?>) return 24L;
+        if (value instanceof ActorRef<?>) return SHARED_HANDLE_BYTES;
+        if (value instanceof List<?> list) {
+            long total = 24L;
+            for (Object item : list) total = safeAdd(total, estimatedFrozenBytes(item, depth + 1));
+            return total;
+        }
+        if (value instanceof Set<?> set) {
+            long total = 48L;
+            for (Object item : set) total = safeAdd(total, estimatedFrozenBytes(item, depth + 1));
+            return total;
+        }
+        if (value instanceof Map<?, ?> map) {
+            long total = 64L;
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                total = safeAdd(total, estimatedFrozenBytes(entry.getKey(), depth + 1));
+                total = safeAdd(total, estimatedFrozenBytes(entry.getValue(), depth + 1));
+            }
+            return total;
+        }
+        return 64L;
+    }
+
+    private static long safeAdd(long left, long right) {
+        if (left == Long.MAX_VALUE || right == Long.MAX_VALUE || right > Long.MAX_VALUE - left) return Long.MAX_VALUE;
+        return left + right;
+    }
+
+    private static long safeMultiply(long left, long right) {
+        if (left == 0L || right == 0L) return 0L;
+        if (left > Long.MAX_VALUE / right) return Long.MAX_VALUE;
+        return left * right;
+    }
+
+    private static void validateSingletonName(String name) {
+        if (name == null || name.isBlank()) throw new IllegalArgumentException("singleton actor name cannot be blank");
+        if (name.length() > 128) throw new IllegalArgumentException("singleton actor name is too long");
+        if (!name.matches("[A-Za-z0-9_.:-]+")) {
+            throw new IllegalArgumentException("singleton actor name contains unsupported characters");
+        }
     }
 
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        for (ActorCell<?> cell : actors.values()) cell.stop();
+        List<ActorCell<?>> cells = List.copyOf(actors.values());
+        for (ActorCell<?> cell : cells) cell.forceStop();
+        for (ActorCell<?> cell : cells) {
+            Thread thread = cell.thread;
+            if (thread == null) continue;
+            try {
+                thread.join(1000L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
         actors.clear();
+        singletonActors.clear();
+        failures.clear();
     }
+
+    private record Envelope(Object value, long bytes) { }
 
     private final class ActorCell<M> {
         private static final Object STOP = new Object();
+
         private final ActorRef<M> ref;
         private final IsolatePolicy policy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
+        private final AtomicLong mailboxBytes = new AtomicLong();
+        private final AtomicLong manualGcRequests = new AtomicLong();
+        private final long maxMailboxBytes;
         private volatile Thread thread;
+        private volatile ActorState state = ActorState.STARTING;
 
         private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
             this.ref = ref;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
+            this.maxMailboxBytes = Math.max(1024L * 1024L, Math.min(policy.maxHeapBytes() / 4L, 64L * 1024L * 1024L));
         }
 
         private void start() {
             thread = Thread.ofVirtual().name("ores-actor-" + ref.id().value()).start(this::run);
         }
 
+        private boolean offer(Envelope envelope) {
+            if (state == ActorState.STOPPING || state == ActorState.STOPPED || state == ActorState.FAILED) return false;
+            long next;
+            do {
+                long current = mailboxBytes.get();
+                if (envelope.bytes() > maxMailboxBytes - current) return false;
+                next = current + envelope.bytes();
+                if (mailboxBytes.compareAndSet(current, next)) break;
+            } while (true);
+
+            if (mailbox.offer(envelope)) return true;
+            mailboxBytes.addAndGet(-envelope.bytes());
+            return false;
+        }
+
         @SuppressWarnings("unchecked")
         private void run() {
-            final Behavior<M> behavior = behaviorFactory.get();
+            currentActor.set(ref.id());
+            state = ActorState.RUNNING;
+            final Behavior<M> behavior;
+            try {
+                behavior = java.util.Objects.requireNonNull(behaviorFactory.get(), "behaviorFactory returned null");
+            } catch (Throwable failure) {
+                recordFailure(failure);
+                currentActor.remove();
+                actors.remove(ref.id(), this);
+                removeSingletonMapping();
+                return;
+            }
+
             final ActorContext<M> context = new ActorContext<>() {
                 @Override public ActorRef<M> self() { return ref; }
                 @Override public ActorRuntime runtime() { return ActorRuntime.this; }
                 @Override public IsolatePolicy policy() { return policy; }
             };
+
             try {
                 while (true) {
-                    Object message = mailbox.take();
-                    if (message == STOP) return;
-                    behavior.onMessage((M) message, context);
+                    Object queued = mailbox.take();
+                    if (queued == STOP) {
+                        state = ActorState.STOPPED;
+                        return;
+                    }
+                    Envelope envelope = (Envelope) queued;
+                    mailboxBytes.addAndGet(-envelope.bytes());
+                    behavior.onMessage((M) envelope.value(), context);
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+                if (state != ActorState.FAILED) state = ActorState.STOPPED;
             } catch (Throwable failure) {
-                // v0 fail-stop supervision policy. A later supervisor layer will
-                // expose restart/escalation strategies as typed Oreslang APIs.
+                recordFailure(failure);
             } finally {
+                currentActor.remove();
                 actors.remove(ref.id(), this);
+                removeSingletonMapping();
             }
         }
 
-        private void stop() {
+        private void recordFailure(Throwable failure) {
+            state = ActorState.FAILED;
+            failures.put(ref.id(), new ActorFailure(
+                    failure.getClass().getName(),
+                    failure.getMessage() == null ? "" : failure.getMessage()));
+        }
+
+        private void removeSingletonMapping() {
+            singletonActors.entrySet().removeIf(entry -> entry.getValue().equals(ref.id()));
+        }
+
+        private boolean requestGracefulStop() {
+            if (state == ActorState.STOPPED || state == ActorState.FAILED) return true;
+            state = ActorState.STOPPING;
+            if (mailbox.offer(STOP)) return true;
+            state = ActorState.RUNNING;
+            return false;
+        }
+
+        private void forceStop() {
+            state = ActorState.STOPPING;
+            mailbox.clear();
+            mailboxBytes.set(0L);
             mailbox.offer(STOP);
             Thread t = thread;
             if (t != null) t.interrupt();
+        }
+
+        private ActorSnapshot snapshot() {
+            return new ActorSnapshot(ref.id(), state, mailbox.size(), mailboxBytes.get(), manualGcRequests.get(), failures.get(ref.id()));
         }
     }
 }
