@@ -325,9 +325,15 @@ try {
 
 ## Actors
 
-Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
+The core Oreslang invariant is:
 
-There are two actor execution domains:
+> **one actor = one worker; one worker = one actor**
+
+An actor is not scheduled onto a separate Oreslang worker pool. Spawning an actor creates one long-lived virtual-thread worker owned by that actor. That same actor/worker owns the mailbox and sequentially executes every message for the actor until termination.
+
+The JVM may mount that virtual thread on different OS carrier threads. Those carrier threads are not Oreslang workers and have no actor identity or ownership semantics.
+
+There are two actor memory/capability modes:
 
 ```ores
 pub actor fnc worker(int value) => int {
@@ -346,25 +352,22 @@ shared actor Account {
 
 - an unqualified `actor` is **private**;
 - `shared actor` is a **shared-memory-capable** actor;
-- private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
+- both are one actor/worker with one mailbox and one sequential execution stream;
 - compiler-generated/context-aware actor factories are capture-free for **both** actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
 - trusted host embedding has separately named supervisor-only construction escape hatches, and adversarial policies reject them;
-- both kinds still process their own mailbox serially;
-- actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
+- actor-owned `let` fields may mutate during a mailbox turn because that actor/worker is the exclusive mutation capability for `self`;
 - no lock is required around ordinary actor-owned fields, including fields of a shared actor;
 - actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
 - synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
 
-Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
+Private actors do not accept explicitly shared mutable memory. Each private actor/worker owns a **confined memory slice** identified by its `ActorId`. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
 The slice has two simultaneous limits:
 
 - a per-actor limit from that actor's `IsolatePolicy.maxHeapBytes()`;
 - an aggregate private-actor memory budget from the parent runtime policy.
 
-This prevents many private actors from multiplying the parent's memory ceiling. Destroying the actor closes its slice and releases its accounting.
-
-The JVM backend's slice is a language/runtime ownership and accounting boundary, not a separate Java GC heap. The slice follows the actor id across dispatcher workers; it is not thread-local state. When physical heap separation is required for adversarial tenant code, the same private-actor semantics must be backed by a cross-thread-capable private region or a separate Graal polyglot/native isolate.
+Destroying the actor terminates its worker and releases the actor-owned slice. A physical backend may back that slice with an actor-owned confined FFM arena or a separate Graal/native isolate. It must never make an OS carrier thread the owner.
 
 Shared actors may additionally receive:
 
@@ -377,11 +380,7 @@ Actor message graphs are cyclicity-checked and bounded by nesting depth, node co
 
 This preserves the central invariant:
 
-> Actor state is mutated through mailbox ownership. Shared mutable state outside an actor is exceptional and must use an explicit synchronization abstraction.
-
-Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private or shared actor invalidates dependent compiled units.
-
-Shared writable handles use transactional publication. A `SharedMutex<T>` is reserved to the destination runtime before mailbox visibility, committed only after queue admission, and unbound again when first publication fails. This prevents failed sends from accidentally claiming a writable capability for the wrong runtime.
+> Actor state is mutated by its one actor/worker. Shared mutable state outside an actor is exceptional and must use an explicit synchronization abstraction.
 
 ## Isolates
 
