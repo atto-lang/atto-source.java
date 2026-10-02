@@ -7,6 +7,8 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresValues.Complex;
+import dev.oreslang.runtime.OresValues.OptionValue;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.ProcessSingletonRegistry;
@@ -800,7 +802,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object negate(Object value) {
-            if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
+            if (value instanceof Complex c) return c.negate();
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
@@ -910,15 +912,6 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) implements ActorRuntime.Sendable {
-        @Override public Object freezeForSend() { return this; }
-        private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
-        private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
-        private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
-        private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
-        @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
-    }
-
     private static final class OresObject {
         private final Ast.ClassDecl klass; private final Map<String,Object> fields;
         private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){this.klass=klass;this.fields=fields;}
@@ -927,12 +920,6 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
-    private record OptionValue(boolean present, Object value) implements ActorRuntime.Sendable {
-        @Override public Object freezeForSend() {
-            return present ? new OptionValue(true, ActorRuntime.freeze(value)) : this;
-        }
-        @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
-    }
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.print");requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.println");requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
