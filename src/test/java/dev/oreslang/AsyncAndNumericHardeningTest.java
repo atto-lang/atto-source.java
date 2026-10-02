@@ -1,0 +1,115 @@
+package dev.oreslang;
+
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class AsyncAndNumericHardeningTest {
+
+    @Test
+    void asyncCallableProducesFutureAndAwaitUnwrapsIt() throws Exception {
+        String program = """
+                define module app
+                  pub async fnc plus_one(int x) => int {
+                    return x + 1;
+                  }
+
+                  pub fnc main() => void {
+                    val pending = plus_one(41);
+                    val answer = await pending;
+                    stdio.println(answer);
+                    return;
+                  }
+                end
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "async.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("42"));
+    }
+
+    @Test
+    void awaitRejectsNonAsyncValuesAtCompileTime() {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val answer = await 42;
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("await requires"));
+    }
+
+    @Test
+    void asyncResultCannotBeUsedAsPlainValueWithoutAwait() {
+        String program = """
+                define module app
+                  pub async fnc plus_one(int x) => int {
+                    return x + 1;
+                  }
+
+                  pub fnc consume(int value) => void {
+                    return;
+                  }
+
+                  pub fnc main() => void {
+                    consume(plus_one(41));
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("argument"));
+    }
+
+    @Test
+    void signedIntegerOverflowNeverSilentlyWraps() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    stdio.println(9223372036854775807 + 1);
+                    return;
+                  }
+                end
+                """;
+
+        Source source = Source.newBuilder(OresLanguage.ID, program, "overflow.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            PolyglotException failure = assertThrows(PolyglotException.class, () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("integer overflow"));
+        }
+    }
+}
