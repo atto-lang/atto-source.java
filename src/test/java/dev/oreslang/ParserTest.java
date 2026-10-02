@@ -74,6 +74,33 @@ final class ParserTest {
     }
 
     @Test
+    void numericLiteralFailuresUseOreslangDiagnostics() {
+        IllegalArgumentException integer = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define module app
+                          pub fnc main() => void {
+                            val x = 999999999999999999999999999999999999;
+                            return;
+                          }
+                        end
+                        """));
+        assertTrue(integer.getMessage().contains("signed 64-bit"));
+
+        IllegalArgumentException floating = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define module app
+                          pub fnc main() => void {
+                            val x = 1e9999;
+                            return;
+                          }
+                        end
+                        """));
+        assertTrue(floating.getMessage().contains("finite"));
+    }
+
+    @Test
     void lexerRecognizesLambdaAndFatReturnArrows() {
         var tokens = new Lexer("(int x) -> x + 1; fnc f() => int { return 1; }").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
