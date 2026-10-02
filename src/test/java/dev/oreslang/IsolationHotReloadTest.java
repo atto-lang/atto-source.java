@@ -112,6 +112,48 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void staleHotReloadGenerationCannotRollBackSingletonCode() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var first = hot.load("managed-singleton-generation.ores", """
+                    define singleton module managed_generation
+                      let int count = 0;
+                      pub fnc next() => int {
+                        count = count + 1;
+                        return count;
+                      }
+                    end
+
+                    pub routine main() => void {
+                      val int n = await managed_generation.next();
+                      return;
+                    }
+                    """);
+
+            var second = hot.load("managed-singleton-generation.ores", """
+                    define singleton module managed_generation
+                      let int count = 0;
+                      pub fnc next() => int {
+                        count = count + 10;
+                        return count;
+                      }
+                    end
+
+                    pub routine main() => void {
+                      val int n = await managed_generation.next();
+                      return;
+                    }
+                    """);
+
+            assertDoesNotThrow(second::start);
+            RuntimeException stale = assertThrows(RuntimeException.class, first::start);
+            assertTrue(String.valueOf(stale.getMessage()).contains("stale singleton generation")
+                    || (stale.getCause() != null
+                    && String.valueOf(stale.getCause().getMessage()).contains("stale singleton generation")));
+        }
+    }
+
+    @Test
     void hotReloadRequiresExplicitCapability() {
         assertThrows(SecurityException.class,
                 () -> new HotReloadManager(IsolatePolicy.strictFaas(), ExecutionProfile.serverJit()));
