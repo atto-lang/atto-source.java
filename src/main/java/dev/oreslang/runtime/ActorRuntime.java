@@ -32,11 +32,14 @@ import java.util.function.Supplier;
  */
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_FREEZE_DEPTH = 256;
+    private static final int MAX_FAILURE_TOMBSTONES = 4096;
     private static final long SHARED_HANDLE_BYTES = 64L;
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<String, ActorId> singletonActors = new ConcurrentHashMap<>();
     private final Map<ActorId, ActorFailure> failures = new ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentLinkedQueue<ActorId> failureOrder =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
     private final Map<ActorId, Map<UUID, ActorId>> monitorsByTarget = new ConcurrentHashMap<>();
     private final ThreadLocal<ActorId> currentActor = new ThreadLocal<>();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -320,11 +323,19 @@ public final class ActorRuntime implements AutoCloseable {
             deliveryValue = shared.value();
             mailboxBytes = SHARED_HANDLE_BYTES;
         } else {
+            long maxMessageBytes = Math.max(
+                    1024L * 1024L,
+                    Math.min(cell.policy.maxHeapBytes() / 2L, 64L * 1024L * 1024L));
+            long sourceEstimate = estimatedFrozenBytes(message);
+            if (sourceEstimate > maxMessageBytes) {
+                throw new IllegalArgumentException(
+                        "message is too large for actor policy; use process.share_readonly for large immutable payloads");
+            }
             deliveryValue = freeze(message);
             mailboxBytes = estimatedFrozenBytes(deliveryValue);
-            long maxMessageBytes = Math.max(1024L * 1024L, Math.min(cell.policy.maxHeapBytes() / 2L, 64L * 1024L * 1024L));
             if (mailboxBytes > maxMessageBytes) {
-                throw new IllegalArgumentException("message is too large for actor policy; use process.share_readonly for large immutable payloads");
+                throw new IllegalArgumentException(
+                        "frozen message is too large for actor policy; use process.share_readonly for large immutable payloads");
             }
         }
 
@@ -339,8 +350,16 @@ public final class ActorRuntime implements AutoCloseable {
      */
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
+        long sourceEstimate = estimatedFrozenBytes(value);
+        if (sourceEstimate > policyCeiling.maxHeapBytes()) {
+            throw new IllegalArgumentException("shared value exceeds isolate heap policy");
+        }
         T frozen = (T) freeze(value);
-        return new Shared<>(frozen, estimatedFrozenBytes(frozen));
+        long frozenBytes = estimatedFrozenBytes(frozen);
+        if (frozenBytes > policyCeiling.maxHeapBytes()) {
+            throw new IllegalArgumentException("frozen shared value exceeds isolate heap policy");
+        }
+        return new Shared<>(frozen, frozenBytes);
     }
 
     /**
@@ -422,12 +441,12 @@ public final class ActorRuntime implements AutoCloseable {
 
         try {
             if (value instanceof List<?> list) {
-                List<Object> frozen = new ArrayList<>(list.size());
+                List<Object> frozen = new ArrayList<>();
                 for (Object item : list) frozen.add(freeze(item, path, depth + 1));
                 return List.copyOf(frozen);
             }
             if (value instanceof Set<?> set) {
-                java.util.LinkedHashSet<Object> frozen = new java.util.LinkedHashSet<>(Math.max(16, set.size()));
+                java.util.LinkedHashSet<Object> frozen = new java.util.LinkedHashSet<>();
                 for (Object item : set) frozen.add(freeze(item, path, depth + 1));
                 return Set.copyOf(frozen);
             }
@@ -440,7 +459,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
-                List<Object> frozen = new ArrayList<>(length);
+                List<Object> frozen = new ArrayList<>();
                 for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i), path, depth + 1));
                 return List.copyOf(frozen);
             }
@@ -575,6 +594,7 @@ public final class ActorRuntime implements AutoCloseable {
         singletonActors.clear();
         monitorsByTarget.clear();
         failures.clear();
+        failureOrder.clear();
     }
 
     private record Envelope(Object value, long bytes) { }
@@ -591,6 +611,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final long maxMailboxBytes;
         private volatile Thread thread;
         private volatile ActorState state = ActorState.STARTING;
+        private volatile ActorFailure failureRecord;
 
         private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
             this.ref = ref;
@@ -632,7 +653,7 @@ public final class ActorRuntime implements AutoCloseable {
                 actors.remove(ref.id(), this);
                 removeSingletonMapping();
                 removeWatchesOwnedBy(ref.id());
-                notifyMonitors(ref.id(), "failed", failures.get(ref.id()));
+                notifyMonitors(ref.id(), "failed", failureRecord);
                 return;
             }
 
@@ -663,16 +684,24 @@ public final class ActorRuntime implements AutoCloseable {
                 actors.remove(ref.id(), this);
                 removeSingletonMapping();
                 removeWatchesOwnedBy(ref.id());
-                ActorFailure actorFailure = failures.get(ref.id());
+                ActorFailure actorFailure = failureRecord;
                 notifyMonitors(ref.id(), actorFailure == null ? "normal" : "failed", actorFailure);
             }
         }
 
         private void recordFailure(Throwable failure) {
             state = ActorState.FAILED;
-            failures.put(ref.id(), new ActorFailure(
+            ActorFailure record = new ActorFailure(
                     failure.getClass().getName(),
-                    failure.getMessage() == null ? "" : failure.getMessage()));
+                    failure.getMessage() == null ? "" : failure.getMessage());
+            failureRecord = record;
+            failures.put(ref.id(), record);
+            failureOrder.add(ref.id());
+            while (failures.size() > MAX_FAILURE_TOMBSTONES) {
+                ActorId oldest = failureOrder.poll();
+                if (oldest == null) break;
+                failures.remove(oldest);
+            }
         }
 
         private void removeSingletonMapping() {
@@ -697,7 +726,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private ActorSnapshot snapshot() {
-            return new ActorSnapshot(ref.id(), state, mailbox.size(), mailboxBytes.get(), manualGcRequests.get(), failures.get(ref.id()));
+            return new ActorSnapshot(ref.id(), state, mailbox.size(), mailboxBytes.get(), manualGcRequests.get(), failureRecord);
         }
     }
 }
