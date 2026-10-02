@@ -201,6 +201,14 @@ public final class TypeChecker {
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
             Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
+            if (resolvedParent == null) {
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("actor '" + klass.name()
+                            + "' cannot extend built-in class '" + parent.name()
+                            + "'; actor inheritance must preserve the actor isolation domain");
+                }
+                continue;
+            }
             if (klass.actorKind() != resolvedParent.actorKind()) {
                 throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
                         + klass.name() + " is " + klass.actorKind() + " but parent "
