@@ -229,6 +229,9 @@ public final class Parser {
 
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "actor state cannot be static");
+                if (mods.visibility == Ast.Visibility.PUBLIC) {
+                    throw error(peek(), "actor state fields are private; expose state through actor methods");
+                }
                 fields.add(parseField(mods.visibility));
                 continue;
             }
