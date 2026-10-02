@@ -120,28 +120,22 @@ Wildcard imports always require a namespace alias. This avoids silently injectin
 
 ## Module interfaces / OCaml-style module signatures
 
-Interfaces are storage-free structural contracts. They may require public functions and public data members, but an interface data member is only a **shape requirement**: it has no initializer, allocates no storage, contributes no constructor slot, and has no object identity.
-
-A module opts into checking with `@AdheresTo(...)`:
+Interfaces are storage-free function contracts and can also describe the callable public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
 
 ```ores
 define module contracts as
   define interface MathApi as
     fnc add(int a, int b) => int;
-    String name;
   end
 end
 
 @AdheresTo(contracts.MathApi)
 define module math as
   pub fnc add(int a, int b) => int { return a + b; }
-  pub val String name = "math";
 end
 ```
 
-Only exported (`pub`) members satisfy an adherence contract. `@AdheresTo(A, B)` may name more than one interface. Reusable stored state belongs in a trait or class, not an interface.
-
-A `singleton module` cannot currently use ordinary `@AdheresTo`, because its external functions are asynchronous mailbox calls and exported objects are proxy capabilities rather than direct synchronous values. A dedicated service/singleton interface kind should model that surface explicitly.
+Only exported (`pub`) callable members satisfy an interface contract. `@AdheresTo(A, B)` may name more than one interface. Data layout is intentionally not part of an interface; reusable stored state belongs in a trait or class.
 
 ## Functions and returns
 
@@ -159,6 +153,93 @@ fnc answer() {
 ```
 
 `@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+
+
+## Callable-local type declarations
+
+`struct` and `interface` declarations may appear inside callable and method blocks. They live in a lexical **type namespace**, separate from value bindings. Direct declarations in a callable body are type-hoisted across that callable so its signature can name a type declared textually inside the body without publishing that name into module/file scope.
+
+```ores
+pub fnc getat() => T {
+  struct T {
+    foo: string
+  }
+
+  return obj{
+    foo: "hello"
+  };
+}
+
+pub fnc use_it() => void {
+  val result = getat();
+  stdio.println(result.foo);
+  return;
+}
+```
+
+The name `T` is not visible in `use_it`. The compiler gives the escaped local struct an internal nominal identity and carries its shape through the return type, so callers may infer the result and use its fields/methods without adding `T` to shared file/module scope. Two unrelated callables may each declare a different local `T` without collision.
+
+Nested block type declarations remain block-scoped. Local interfaces are still storage-free method contracts. Local traits are compile-time-only composition units: they may contribute initialized state and behavior to local structs, are flattened before later compiler/runtime passes, and cannot be used as runtime value types. Generic local structs, traits, and interfaces use the same explicit generic rules as their module-level equivalents. Callable-local `type` aliases are also supported; aliases erase to their resolved type when they escape, so the alias name itself never enters module/file scope.
+
+Both compact and long forms are accepted:
+
+```ores
+struct Point {
+  x: int
+  y: int
+}
+
+define struct Point as
+  x: int
+  y: int
+end
+
+trait Printable {
+  pub print() => void {
+    stdio.println("value");
+    return;
+  }
+}
+
+interface Readable {
+  fnc read() => string;
+}
+
+define interface Readable as
+  fnc read() => string;
+end
+```
+
+
+Local aliases use the normal alias syntax and are hoisted within their lexical block:
+
+```ores
+pub fnc answer() => Answer {
+  type Answer = int;
+  return 42;
+}
+
+pub fnc boxed() => View<int> {
+  interface View<T> {
+    fnc get() => T;
+  }
+
+  struct Box is View<int> {
+    value: int;
+
+    pub get() => int {
+      return self.value;
+    }
+  }
+
+  return Box { value = 7 };
+}
+```
+
+Callers may infer and use the resolved return shapes, but names such as `Answer`, `View`, and `Box` are not visible outside the declaring callable. A nested block may shadow an outer local type name; the shadow ends with that block.
+
+The type namespace is separate from the value namespace, so a block may contain both a local type `T` and a value binding named `T`. Generic type parameters are part of the type namespace, however, so a callable-local `struct T`, `trait T`, `interface T`, or `type T = ...` may not reuse an in-scope generic parameter named `T`. This is rejected instead of relying on name-resolution order.
+
 
 ## Bindings
 
@@ -181,7 +262,18 @@ Destructuring carries mutability per element:
 [const code, let body] = (200, "ok");
 ```
 
-## Classes, receivers, multiple inheritance, interfaces, and traits
+## Interface, trait, struct, and class
+
+Oreslang keeps four distinct concepts instead of blending them:
+
+- `interface` — storage-free method contract only.
+- `trait` — non-instantiable compile-time composition of reusable instance state and behavior.
+- `struct` — concrete value-semantic aggregate with nominal named identity.
+- `class` — concrete reference/identity type with lifecycle/allocation semantics.
+
+`is` is the canonical interface-conformance spelling. `with` composes traits. Legacy `implements` / `impl` remain accepted during migration.
+
+## Classes and receivers
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
 
@@ -202,18 +294,14 @@ The explicit receiver form remains available:
 find(self Box)(int key) => self {
   return self;
 }
-```
 
-The receiver variable name is always `self`. The default receiver is immutable. A method that mutates `let` instance or trait state must opt into a mutable receiver:
-
-```ores
-increment(self &mut self)() => int {
+bump(self &mut self)() => int {
   self.count = self.count + 1;
   return self.count;
 }
 ```
 
-A mutable-receiver method can only be called through a mutable owner (`let` / mutable parameter) or an explicit mutable borrow. Calling it through an immutable `val` owner is rejected by the ownership checker. Extracting a mutable-receiver method as a bound method value is rejected in v0, because that would require a persistent `&mut` lifetime tied to the captured receiver; call the method directly instead.
+The receiver variable name is always `self`. Mutating instance/trait state requires an explicit mutable receiver such as `self &mut self`; ownership analysis treats ordinary implicit `self` as immutable.
 
 A class may list multiple parent classes, satisfy interfaces with `is`, and compose reusable state/behavior with `with`:
 
@@ -242,6 +330,59 @@ end
 
 Inline object and array literals are values, not classes, and cannot be inherited from.
 
+
+## Structs
+
+Named structs are value types: they have fields and may have methods, but they do not have class identity and are not allocated with `new`. They cannot extend classes. Named structs remain nominal even when two structs have identical fields.
+
+```ores
+struct Point {
+  x: f64
+  y: f64
+
+  pub length_squared() => f64 {
+    return self.x * self.x + self.y * self.y;
+  }
+}
+
+val p = Point { x = 3.0, y = 4.0 };
+```
+
+The long spelling is equivalent:
+
+```ores
+define struct Point as
+  x: f64
+  y: f64
+end
+```
+
+Struct fields support both type-first and name-first forms. Binding kinds may be written in either form, and all equivalent spellings normalize to the same field AST:
+
+```ores
+let f64 x;
+let x: f64;
+
+val String name;
+val name: String;
+
+const int limit = 10;
+const limit: int = 10;
+```
+
+A bare field such as `x: f64` or `f64 x` defaults to immutable `val`. Use `let` explicitly for mutable aggregate state.
+
+Anonymous struct values are structural:
+
+```ores
+val p = struct { x = 3, y = 4 };
+```
+
+An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. Every caller-supplied field must be declared by the struct and type-compatible; required host fields must be present, defaulted host fields may be omitted, and trait-owned composed state is never caller-supplied. Arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
+
+Struct equality is value equality within the same named struct identity. Copy semantics are derived structurally: a struct is Copy when all of its fields are Copy (including composed trait state); otherwise it is move-only. This keeps small data structs inexpensive while resource-owning structs retain move safety.
+
+
 ## Inline values
 
 Structural inline object:
@@ -269,15 +410,20 @@ val pair = (1, "one");
 
 ## Interfaces and stateful traits
 
-Interfaces are storage-free contracts. They may contain function signatures and data-member requirements, but never backing storage or initializers and never have object identity.
+Interfaces are storage-free method contracts. They contain function signatures only: no instance fields, no backing storage, and no object identity. A class uses `is` to ask the compiler to prove conformance.
 
 ```ores
 define interface Named as
-  String name;
+  fnc name() => String;
 end
 
 define class User is Named as
-  pub val String name = "Ada Lovelace";
+  private val String first = "Ada";
+  private val String last = "Lovelace";
+
+  pub name() => String {
+    return self.first + " " + self.last;
+  }
 end
 ```
 
@@ -301,7 +447,7 @@ define class Worker with Counter as
 end
 ```
 
-The compiler flattens trait state and behavior into the host class before ordinary type, ownership, capability, and runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes and foreign traits cannot reach it directly. Private trait helper methods are lexical as well: they remain callable from methods originating in that same trait but are not exposed to the consuming class.
+The compiler flattens trait storage and behavior into the host class before ownership/capability/runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes cannot reach it directly. A trait method may depend on another host method only when that dependency is declared as an abstract trait method requirement.
 
 Traits must declare their dependencies. If a trait method needs host behavior, it declares an abstract method requirement instead of silently reaching into the host class:
 

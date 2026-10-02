@@ -243,4 +243,719 @@ final class LanguageHardeningTest {
                 end
                 """)));
     }
+    @Test
+    void genericAggregateConstructionUsesConcreteTypeArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct Box<T> {
+                  value: T;
+                }
+
+                fnc good() => Box<int> {
+                  return Box<int> { value = 7 };
+                }
+
+                fnc inferred() => Box<int> {
+                  return Box<> { value = 8 };
+                }
+                """)));
+
+        IllegalArgumentException wrongField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad() => Box<int> {
+                          return Box<int> { value = "wrong" };
+                        }
+                        """)));
+        assertTrue(wrongField.getMessage().contains("struct field Box.value"));
+
+        IllegalArgumentException rawGeneric = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad() => Box<int> {
+                          return Box { value = 7 };
+                        }
+                        """)));
+        assertTrue(rawGeneric.getMessage().contains("expects 1 type argument"));
+
+        IllegalArgumentException unresolved = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Marker<T> {
+                          value: int;
+                        }
+
+                        fnc bad() => Marker<int> {
+                          return Marker<> { value = 7 };
+                        }
+                        """)));
+        assertTrue(unresolved.getMessage().contains("cannot infer generic 'T'"));
+
+        IllegalArgumentException conflicting = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Pair<T> {
+                          left: T;
+                          right: T;
+                        }
+
+                        fnc bad() => Pair<int> {
+                          return Pair<> { left = 7, right = "wrong" };
+                        }
+                        """)));
+        assertTrue(conflicting.getMessage().contains("incompatible types for generic 'T'"));
+    }
+
+    @Test
+    void declaredGenericTypesRequireConcreteArityAndInterfacesSubstituteArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface ValueApi<T> as
+                  fnc value() => T;
+                end
+
+                define class IntBox implements ValueApi<int> as
+                  pub value() => int { return 7; }
+                end
+
+                fnc use(IntBox box) => ValueApi<int> {
+                  return box;
+                }
+                """)));
+
+        IllegalArgumentException diamondType = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad(Box<> value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(diamondType.getMessage().contains("explicit type arguments"));
+
+        IllegalArgumentException rawType = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad(Box value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(rawType.getMessage().contains("expects 1 type argument"));
+
+        IllegalArgumentException wrongInterface = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc value() => T;
+                        end
+
+                        define class Bad implements ValueApi<int> as
+                          pub value() => String { return "wrong"; }
+                        end
+                        """)));
+        assertTrue(wrongInterface.getMessage().contains("does not implement interface"));
+    }
+
+    @Test
+    void nominalInterfaceReceiversResolveGenericMethodContracts() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface ValueApi<T> as
+                  fnc value() => T;
+                  fnc replace(T value) => T;
+                end
+
+                fnc read(ValueApi<int> api) => int {
+                  return api.value();
+                }
+
+                fnc replace(ValueApi<int> api) => int {
+                  return api.replace(7);
+                }
+                """)));
+
+        IllegalArgumentException wrongReturn = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc value() => T;
+                        end
+
+                        fnc bad(ValueApi<int> api) => String {
+                          return api.value();
+                        }
+                        """)));
+        assertTrue(wrongReturn.getMessage().contains("return"));
+
+        IllegalArgumentException wrongArgument = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc replace(T value) => T;
+                        end
+
+                        fnc bad(ValueApi<int> api) => int {
+                          return api.replace("wrong");
+                        }
+                        """)));
+        assertTrue(wrongArgument.getMessage().contains("interface argument"));
+
+        IllegalArgumentException unknown = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc value() => T;
+                        end
+
+                        fnc bad(ValueApi<int> api) => int {
+                          return api.missing();
+                        }
+                        """)));
+        assertTrue(unknown.getMessage().contains("no interface method"));
+    }
+
+    @Test
+    void privateAggregateMembersAreLexicalNotReceiverBased() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Secret as
+                  private val int hidden = 7;
+
+                  private read() => int {
+                    return self.hidden;
+                  }
+
+                  private static fnc twice(int x) => int {
+                    return x * 2;
+                  }
+
+                  pub expose() => int {
+                    return self.read();
+                  }
+
+                  pub static fnc exposed_twice(int x) => int {
+                    return Secret.twice(x);
+                  }
+                end
+                """)));
+
+        IllegalArgumentException field = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Secret as
+                          private val int hidden = 7;
+                        end
+
+                        fnc leak() => int {
+                          val secret = new Secret();
+                          return secret.hidden;
+                        }
+                        """)));
+        assertTrue(field.getMessage().contains("private to Secret"));
+
+        IllegalArgumentException method = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Secret as
+                          private read() => int { return 7; }
+                        end
+
+                        fnc leak() => int {
+                          val secret = new Secret();
+                          return secret.read();
+                        }
+                        """)));
+        assertTrue(method.getMessage().contains("private to Secret"));
+
+        IllegalArgumentException inherited = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Parent as
+                          private read() => int { return 7; }
+                        end
+
+                        define class Child extends Parent as
+                          pub leak() => int {
+                            return self.read();
+                          }
+                        end
+                        """)));
+        assertTrue(inherited.getMessage().contains("private to Parent"));
+
+        IllegalArgumentException staticFn = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Secret as
+                          private static fnc twice(int x) => int { return x * 2; }
+                        end
+
+                        fnc leak() => int {
+                          return Secret.twice(3);
+                        }
+                        """)));
+        assertTrue(staticFn.getMessage().contains("private to Secret"));
+    }
+
+    @Test
+    void genericMemberReadsAndWritesKeepConcreteFieldTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box<T> as
+                  pub let T value;
+                end
+
+                fnc read(Box<int> box) => int {
+                  return box.value;
+                }
+
+                fnc write(Box<int> mut box) => Box<int> {
+                  box.value = 9;
+                  return box;
+                }
+                """)));
+
+        IllegalArgumentException read = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub let T value;
+                        end
+
+                        fnc wrong(Box<int> box) => String {
+                          return box.value;
+                        }
+                        """)));
+        assertTrue(read.getMessage().contains("return"));
+
+        IllegalArgumentException write = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub let T value;
+                        end
+
+                        fnc wrong(Box<int> mut box) => void {
+                          box.value = "wrong";
+                          return;
+                        }
+                        """)));
+        assertTrue(write.getMessage().contains("assignment"));
+    }
+    @Test
+    void structuralGenericShapesUseConcreteAndInheritedArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box<T> as
+                  pub val T value;
+
+                  pub get() => T {
+                    return self.value;
+                  }
+                end
+
+                fnc direct(@Structural Box<int> box) => int {
+                  return box.get();
+                }
+
+                define class Parent<T> as
+                  pub val T value;
+                  pub get() => T {
+                    return self.value;
+                  }
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc inherited(@Structural Child<int> child) => int {
+                  return child.get();
+                }
+                """)));
+
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub val T value;
+                          pub get() => T {
+                            return self.value;
+                          }
+                        end
+
+                        fnc bad(@Structural Box<int> box) => String {
+                          return box.get();
+                        }
+                        """)));
+
+        assertTrue(wrong.getMessage().contains("return"));
+    }
+    @Test
+    void inheritedGenericConstructorFieldsUseParentInstantiation() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Parent<T> as
+                  pub val T value;
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc explicit() => Child<int> {
+                  return new Child<int>(7);
+                }
+
+                fnc inferred() => Child<int> {
+                  return new Child<>(8);
+                }
+                """)));
+
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Parent<T> as
+                          pub val T value;
+                        end
+
+                        define class Child<T> extends Parent<T> as
+                        end
+
+                        fnc bad() => Child<int> {
+                          return new Child<int>("wrong");
+                        }
+                        """)));
+        assertTrue(wrong.getMessage().contains("constructor field value"));
+    }
+    @Test
+    void inheritedGenericMethodsUseDeclaringOwnerInstantiation() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Parent<U> as
+                  pub val U value;
+
+                  pub get() => U {
+                    return self.value;
+                  }
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc read(Child<int> child) => int {
+                  return child.get();
+                }
+                """)));
+
+        IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Parent<U> as
+                          pub val U value;
+                          pub get() => U { return self.value; }
+                        end
+
+                        define class Child<T> extends Parent<T> as
+                        end
+
+                        fnc bad(Child<int> child) => String {
+                          return child.get();
+                        }
+                        """)));
+        assertTrue(wrong.getMessage().contains("return"));
+    }
+
+    @Test
+    void nominalGenericSubtypeProjectionPreservesArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Parent<U> as
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                fnc class_upcast(Child<int> child) => Parent<int> {
+                  return child;
+                }
+
+                define interface ValueApi<U> as
+                  fnc get() => U;
+                end
+
+                define interface DerivedApi<T> extends ValueApi<T> as
+                end
+
+                define class Impl<T> is DerivedApi<T> as
+                  pub val T value;
+                  pub get() => T {
+                    return self.value;
+                  }
+                end
+
+                fnc interface_upcast(Impl<int> value) => ValueApi<int> {
+                  return value;
+                }
+                """)));
+
+        IllegalArgumentException wrongClass = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Parent<U> as
+                        end
+                        define class Child<T> extends Parent<T> as
+                        end
+
+                        fnc bad(Child<int> child) => Parent<String> {
+                          return child;
+                        }
+                        """)));
+        assertTrue(wrongClass.getMessage().contains("return"));
+
+        IllegalArgumentException wrongInterface = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<U> as
+                          fnc get() => U;
+                        end
+
+                        define class Impl<T> is ValueApi<T> as
+                          pub val T value;
+                          pub get() => T { return self.value; }
+                        end
+
+                        fnc bad(Impl<int> value) => ValueApi<String> {
+                          return value;
+                        }
+                        """)));
+        assertTrue(wrongInterface.getMessage().contains("return"));
+    }
+    @Test
+    void callableGenericsAreRigidInBodiesAndInferredAtCalls() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc identity<T>(T value) => T {
+                  return value;
+                }
+
+                define module helpers as
+                  pub fnc pair<T>(T left, T right) => T {
+                    return left;
+                  }
+                end
+
+                define class Echo as
+                  pub echo<T>(T value) => T {
+                    return value;
+                  }
+
+                  pub static fnc static_echo<T>(T value) => T {
+                    return value;
+                  }
+                end
+
+                fnc run() => int {
+                  val a = identity(7);
+                  val b = helpers.pair(8, 9);
+                  val e = new Echo();
+                  val c = e.echo(10);
+                  val d = Echo.static_echo(11);
+                  return a + b + c + d;
+                }
+                """)));
+
+        IllegalArgumentException fabricated = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad<T>(T value) => T {
+                          return 7;
+                        }
+                        """)));
+        assertTrue(fabricated.getMessage().contains("return"));
+
+        IllegalArgumentException conflicting = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc same<T>(T left, T right) => T {
+                          return left;
+                        }
+
+                        fnc bad() => int {
+                          return same(1, "wrong");
+                        }
+                        """)));
+        assertTrue(conflicting.getMessage().contains("incompatible types for generic 'T'"));
+
+        IllegalArgumentException genericValue = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc identity<T>(T value) => T {
+                          return value;
+                        }
+
+                        fnc bad() => void {
+                          val f = identity;
+                          return;
+                        }
+                        """)));
+        assertTrue(genericValue.getMessage().contains("polymorphic function values"));
+    }
+    @Test
+    void staticFunctionsInGenericClassesDoNotCaptureClassTypeParameters() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box<T> as
+                  pub static fnc answer() => int {
+                    return 42;
+                  }
+
+                  pub static fnc echo<T>(T value) => T {
+                    return value;
+                  }
+                end
+
+                fnc use() => int {
+                  return Box.answer() + Box.echo(1);
+                }
+                """)));
+
+        IllegalArgumentException signature = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub static fnc bad(T value) => T {
+                            return value;
+                          }
+                        end
+                        """)));
+        assertTrue(signature.getMessage().contains("cannot use enclosing class generic parameter"));
+
+        IllegalArgumentException nested = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub static fnc bad() => void {
+                            type Item = T;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(nested.getMessage().contains("cannot use enclosing class generic parameter"));
+    }
+    @Test
+    void declaredGenericTypesRequireExplicitConcreteArguments() {
+        IllegalArgumentException rawClass = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub val T value;
+                        end
+
+                        fnc bad(Box value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(rawClass.getMessage().contains("expects 1 type argument"));
+
+        IllegalArgumentException diamondAnnotation = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          pub val T value;
+                        end
+
+                        fnc bad(Box<> value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(diamondAnnotation.getMessage().contains("use <> only at construction"));
+
+        IllegalArgumentException listDiamond = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(List<> value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(listDiamond.getMessage().contains("diamond inference"));
+    }
+
+    @Test
+    void genericInterfaceConformanceUsesConcreteArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface BoxApi<T> as
+                  fnc get() => T;
+                end
+
+                define class IntBox implements BoxApi<int> as
+                  pub get() => int { return 7; }
+                end
+                """)));
+
+        IllegalArgumentException mismatch = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BoxApi<T> as
+                          fnc get() => T;
+                        end
+
+                        define class BadBox implements BoxApi<int> as
+                          pub get() => String { return "wrong"; }
+                        end
+                        """)));
+        assertTrue(mismatch.getMessage().contains("does not implement interface"));
+    }
+    @Test
+    void aggregateFieldAssignmentRespectsValConstAndLet() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct MutablePoint {
+                  let int x;
+                }
+
+                fnc move(MutablePoint mut point) => MutablePoint {
+                  point.x = 9;
+                  return point;
+                }
+                """)));
+
+        IllegalArgumentException structVal = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Point {
+                          int x;
+                        }
+
+                        fnc bad(Point mut point) => void {
+                          point.x = 9;
+                          return;
+                        }
+                        """)));
+        assertTrue(structVal.getMessage().contains("cannot be assigned"));
+
+        IllegalArgumentException classConst = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Config as
+                          pub const int version = 1;
+                        end
+
+                        fnc bad(Config mut config) => void {
+                          config.version = 2;
+                          return;
+                        }
+                        """)));
+        assertTrue(classConst.getMessage().contains("cannot be assigned"));
+    }
+    @Test
+    void aggregateFieldAssignmentRequiresLetBindingKind() {
+        IllegalArgumentException valField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Point {
+                          val int x;
+                        }
+
+                        fnc bad(Point p) => void {
+                          p.x = 2;
+                          return;
+                        }
+                        """)));
+        assertTrue(valField.getMessage().contains("cannot be assigned"));
+
+        IllegalArgumentException constField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          const int limit = 10;
+
+                          pub set() => void {
+                            self.limit = 20;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(constField.getMessage().contains("cannot be assigned"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct MutablePoint {
+                  let int x;
+                }
+
+                fnc ok(MutablePoint mut p) => void {
+                  p.x = 2;
+                  return;
+                }
+                """)));
+    }
 }

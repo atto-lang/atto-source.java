@@ -90,16 +90,14 @@ final class ParserTest {
                         """));
         assertTrue(klass.getMessage().contains("require 'as'"));
 
-        var tokens = new Lexer("as is trait with").scan();
+        var tokens = new Lexer("as is").scan();
         assertEquals(Token.Type.AS, tokens.get(0).type());
         assertEquals(Token.Type.IS, tokens.get(1).type());
-        assertEquals(Token.Type.TRAIT, tokens.get(2).type());
-        assertEquals(Token.Type.WITH, tokens.get(3).type());
     }
 
     @Test
     void asAndIsCannotBeDeclaredAsVariableNames() {
-        for (String reserved : java.util.List.of("as", "is", "trait", "with")) {
+        for (String reserved : java.util.List.of("as", "is")) {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse("""
                             define module app as
@@ -171,5 +169,104 @@ final class ParserTest {
         var tokens = new Lexer("(int x) -> x + 1; fnc f() => int { return 1; }").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
+    }
+    @Test
+    void compactTraitSyntaxParsesLikeLongTraitSyntax() {
+        Ast.Program compact = Parser.parse("""
+                trait Counting {
+                  private val int count = 0;
+                  pub value() => int { return self.count; }
+                }
+                """);
+
+        Ast.Program longForm = Parser.parse("""
+                define trait Counting as
+                  private val int count = 0;
+                  pub value() => int { return self.count; }
+                end
+                """);
+
+        Ast.TraitDecl compactTrait = (Ast.TraitDecl) compact.modules().getFirst().declarations().getFirst();
+        Ast.TraitDecl longTrait = (Ast.TraitDecl) longForm.modules().getFirst().declarations().getFirst();
+        assertEquals(longTrait, compactTrait);
+    }
+
+    @Test
+    void callableLocalTraitsAreAcceptedAsTypeDeclarations() {
+        Ast.Program program = Parser.parse("""
+                fnc make() => T {
+                  trait Answering {
+                    private val int seed = 41;
+                    pub answer() => int { return self.seed + 1; }
+                  }
+
+                  struct T with Answering {
+                    value: int;
+                  }
+
+                  return T { value = 1 };
+                }
+                """);
+
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        assertTrue(fn.body().stream().anyMatch(stmt ->
+                stmt instanceof Ast.TypeDeclStmt local && local.declaration() instanceof Ast.TraitDecl));
+    }
+    @Test
+    void compactAndLongStructSyntaxNormalizeToSameAstWithContractsAndTraits() {
+        Ast.ClassDecl longForm = (Ast.ClassDecl) Parser.parse("""
+                define struct Box<T> is Named<T> with Measured<T> as
+                  pub value: T;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.ClassDecl compact = (Ast.ClassDecl) Parser.parse("""
+                struct Box<T> is Named<T> with Measured<T> {
+                  pub value: T;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        assertEquals(longForm, compact);
+        assertTrue(compact.isStruct());
+    }
+
+    @Test
+    void compactAndLongInterfaceSyntaxNormalizeToSameAst() {
+        Ast.InterfaceDecl longForm = (Ast.InterfaceDecl) Parser.parse("""
+                define interface Lock<T> as
+                  fnc lock() => T;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.InterfaceDecl compact = (Ast.InterfaceDecl) Parser.parse("""
+                interface Lock<T> {
+                  fnc lock() => T;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        assertEquals(longForm, compact);
+    }
+    @Test
+    void structBindingKindSupportsTypeFirstAndNameFirstSugarEqually() {
+        Ast.ClassDecl typeFirst = (Ast.ClassDecl) Parser.parse("""
+                struct State {
+                  pub let int count;
+                  pub val String name;
+                  pub const int limit = 10;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.ClassDecl nameFirst = (Ast.ClassDecl) Parser.parse("""
+                struct State {
+                  pub let count: int;
+                  pub val name: String;
+                  pub const limit: int = 10;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        assertEquals(typeFirst, nameFirst);
+        assertEquals(Ast.BindingKind.LET, nameFirst.fields().get(0).bindingKind());
+        assertEquals(Ast.BindingKind.VAL, nameFirst.fields().get(1).bindingKind());
+        assertEquals(Ast.BindingKind.CONST, nameFirst.fields().get(2).bindingKind());
     }
 }

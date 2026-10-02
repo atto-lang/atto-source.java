@@ -11,28 +11,22 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class TraitCompositionTest {
     @Test
-    void interfaceDataMembersAreRequirementsNotStorage() {
-        assertDoesNotThrow(() -> Parser.parse("""
-                define interface HasState as
-                  val int state;
-                end
-                """));
-
+    void interfacesAreStorageFreeContracts() {
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
                         define interface Bad as
-                          val int state = 1;
+                          val int state;
                         end
                         """));
 
-        assertTrue(error.getMessage().contains("cannot have an initializer")
-                || error.getMessage().contains("interface data requirement"));
+        assertTrue(error.getMessage().contains("storage-free contracts"));
     }
 
     @Test
@@ -476,5 +470,268 @@ final class TraitCompositionTest {
                         """)));
 
         assertTrue(hiddenDependency.getMessage().contains("undeclared self member"));
+    }
+    @Test
+    void callableLocalStructsComposeTraitsAndInitializeTraitOwnedState() throws Exception {
+        String program = """
+                define module app as
+                  define trait Answering as
+                    private val int seed = 41;
+
+                    pub answer() => int {
+                      return self.seed + 1;
+                    }
+                  end
+
+                  fnc make() => T {
+                    struct T with Answering {
+                      pub name: string;
+                    }
+                    return obj{name: "local"};
+                  }
+
+                  pub fnc main() => void {
+                    val value = make();
+                    stdio.stdout.write(value.answer());
+                    return;
+                  }
+                end
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "local-traits.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("42"));
+    }
+
+    @Test
+    void callersCannotInjectComposedTraitStateIntoStructLiterals() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define trait Secret as
+                            private val int hidden = 7;
+                          end
+
+                          fnc bad() => T {
+                            struct T with Secret {
+                              pub name: string;
+                            }
+                            return T { name = "x", hidden = 99 };
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("trait-owned struct field"));
+    }
+
+    @Test
+    void traitsCannotMasqueradeAsRuntimeValueTypes() {
+        IllegalArgumentException parameter = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define trait Stateful as
+                            private val int state = 1;
+                          end
+
+                          fnc bad(Stateful value) => void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(parameter.getMessage().contains("no runtime/value type identity"));
+
+        IllegalArgumentException allocation = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define trait Stateful as
+                            private val int state = 1;
+                          end
+
+                          fnc bad() => void {
+                            val value = new Stateful();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(allocation.getMessage().contains("no runtime/value type identity"));
+    }
+
+    @Test
+    void aggregateContractTraitAndAliasNamesShareOneTypeNamespace() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define trait Thing as
+                            private val int state = 1;
+                          end
+
+                          struct Thing {
+                            value: int;
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("share one namespace"));
+    }
+    @Test
+    void privateTraitMethodsRemainOwnedByTheirTraitAfterComposition() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  define trait SecretMath as
+                    private helper() => int {
+                      return 41;
+                    }
+
+                    pub answer() => int {
+                      return self.helper() + 1;
+                    }
+                  end
+
+                  define class Good with SecretMath as
+                  end
+                end
+                """)));
+
+        IllegalArgumentException leak = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define trait SecretMath as
+                            private helper() => int {
+                              return 41;
+                            }
+                          end
+
+                          define class Bad with SecretMath as
+                            pub leak() => int {
+                              return self.helper();
+                            }
+                          end
+                        end
+                        """)));
+
+        assertTrue(leak.getMessage().contains("private to that trait"));
+    }
+    @Test
+    void callableLocalTraitsComposeLexicallyAndAreErased() {
+        Ast.Program checked = TypeChecker.check(Parser.parse("""
+                define module app as
+                  fnc make() => T {
+                    trait Answering {
+                      private val int seed = 41;
+                      pub answer() => int { return self.seed + 1; }
+                    }
+
+                    struct T with Answering {
+                      pub value: int;
+                    }
+
+                    return T { value = 1 };
+                  }
+                end
+                """));
+
+        Ast.FunctionDecl make = checked.modules().getFirst().declarations().stream()
+                .filter(Ast.FunctionDecl.class::isInstance)
+                .map(Ast.FunctionDecl.class::cast)
+                .filter(fn -> fn.name().equals("make"))
+                .findFirst().orElseThrow();
+
+        assertFalse(make.body().stream().anyMatch(stmt ->
+                stmt instanceof Ast.TypeDeclStmt local && local.declaration() instanceof Ast.TraitDecl));
+
+        Ast.ClassDecl localStruct = make.body().stream()
+                .filter(Ast.TypeDeclStmt.class::isInstance)
+                .map(Ast.TypeDeclStmt.class::cast)
+                .map(Ast.TypeDeclStmt::declaration)
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst().orElseThrow();
+
+        assertTrue(localStruct.traits().isEmpty(), "local traits must be flattened before later compiler passes");
+        assertTrue(localStruct.methods().stream().anyMatch(method -> method.name().equals("answer")));
+        assertTrue(localStruct.fields().stream().anyMatch(field -> field.name().equals("seed") && field.composed()));
+    }
+
+    @Test
+    void callableLocalTraitScopeDoesNotLeakAcrossFunctions() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc first() => A {
+                          trait Local {
+                            pub value() => int { return 1; }
+                          }
+                          struct A with Local {}
+                          return A {};
+                        }
+
+                        fnc second() => B {
+                          struct B with Local {}
+                          return B {};
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("unknown trait 'Local'"));
+    }
+
+    @Test
+    void callableLocalTraitNamesShareTheLocalTypeNamespace() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc make() => T {
+                          trait Same {
+                            pub value() => int { return 1; }
+                          }
+
+                          struct Same {
+                            value: int;
+                          }
+
+                          struct T with Same {
+                            value: int;
+                          }
+                          return T { value = 1 };
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("callable-local type name 'Same'"));
+    }
+
+    @Test
+    void callableLocalTraitsCannotBeUsedAsRuntimeValues() {
+        IllegalArgumentException parameter = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          trait Local {
+                            pub value() => int { return 1; }
+                          }
+
+                          let Local value = 1;
+                          return;
+                        }
+                        """)));
+        assertTrue(parameter.getMessage().contains("trait 'Local'"));
+
+        IllegalArgumentException initializer = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          trait Local {
+                            pub value() => int { return 1; }
+                          }
+
+                          val value = Local {};
+                          return;
+                        }
+                        """)));
+        assertTrue(initializer.getMessage().contains("cannot be"));
     }
 }

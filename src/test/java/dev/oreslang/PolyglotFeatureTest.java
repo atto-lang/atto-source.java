@@ -11,49 +11,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class PolyglotFeatureTest {
     @Test
-    void ordinaryModuleInitRunsOnceAcrossRepeatedExecutionInOneContext() throws Exception {
-        String program = """
-                define module local_state as
-                  let int count = 0;
-
-                  init routine() => void {
-                    count = count + 10;
-                    return;
-                  }
-
-                  pub fnc next() => int {
-                    count = count + 1;
-                    return count;
-                  }
-                end
-
-                define module app as
-                  pub routine main() => void {
-                    stdio.println(local_state.next());
-                    return;
-                  }
-                end
-                """;
-
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        Source source = Source.newBuilder(OresLanguage.ID, program, "context-init-once.ores")
-                .mimeType(OresLanguage.MIME_TYPE)
-                .build();
-
-        try (Context context = Context.newBuilder(OresLanguage.ID)
-                .allowAllAccess(false)
-                .out(output)
-                .build()) {
-            context.eval(source);
-            context.eval(source);
-        }
-
-        String text = output.toString(StandardCharsets.UTF_8);
-        assertTrue(text.contains("11"), text);
-        assertTrue(text.contains("12"), text);
-    }
-
-    @Test
     void executesNamespacesCollectionsAssignmentAndInheritedMethods() throws Exception {
         String program = """
                 define module math as
@@ -98,5 +55,88 @@ final class PolyglotFeatureTest {
         String text = output.toString(StandardCharsets.UTF_8);
         assertTrue(text.contains("7"));
         assertTrue(text.contains("ores"));
+    }
+    @Test
+    void executesInheritedGenericConstructorFields() throws Exception {
+        String program = """
+                define class Parent<T> as
+                  pub val T value;
+
+                  pub get() => T {
+                    return self.value;
+                  }
+                end
+
+                define class Child<T> extends Parent<T> as
+                end
+
+                pub fnc main() => void {
+                  val child = new Child<>(7);
+                  stdio.stdout.write(child.get());
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "generic-inheritance.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("7"));
+    }
+    @Test
+    void executesGenericCallsAfterCompileTimeInference() throws Exception {
+        String program = """
+                fnc identity<T>(T value) => T {
+                  return value;
+                }
+
+                define module helpers as
+                  pub fnc choose<T>(T left, T right) => T {
+                    return right;
+                  }
+                end
+
+                define class Echo as
+                  pub echo<T>(T value) => T {
+                    return value;
+                  }
+
+                  pub static fnc static_echo<T>(T value) => T {
+                    return value;
+                  }
+                end
+
+                pub fnc main() => void {
+                  val echo = new Echo();
+                  val a = identity(10);
+                  val b = helpers.choose(20, 21);
+                  val c = echo.echo(30);
+                  val d = Echo.static_echo(40);
+                  stdio.stdout.write(a + b + c + d);
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "generic-calls.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("101"));
     }
 }

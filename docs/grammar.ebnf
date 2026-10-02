@@ -7,6 +7,7 @@ import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
                 | "module" import_names
                 | "class" import_names
+                | "struct" import_names
                 | "fnc" import_names ;
 import_names    = IDENT
                 | "{" IDENT { "," IDENT } "}"
@@ -16,6 +17,7 @@ top_level_item  = annotated_module_decl
                 | init_decl
                 | callable_decl
                 | class_decl
+                | struct_decl
                 | trait_decl
                 | interface_decl
                 | type_decl
@@ -27,6 +29,7 @@ annotated_module_decl = { annotation } "define" [ "singleton" ] "module" IDENT "
 module_member   = init_decl
                 | callable_decl
                 | class_decl
+                | struct_decl
                 | trait_decl
                 | interface_decl
                 | type_decl
@@ -47,10 +50,29 @@ class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "with" type_ref { "," type_ref } ]
                   "as" { class_member } "end" ;
 
-trait_decl      = "define" "trait" IDENT [ generic_params ]
+struct_decl     = "struct" IDENT [ generic_params ]
                   [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
                   [ "with" type_ref { "," type_ref } ]
-                  "as" { trait_member } "end" ;
+                  "{" { struct_member } "}"
+                | "define" "struct" IDENT [ generic_params ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
+                  "as" { struct_member } "end" ;
+
+struct_member   = struct_field_decl
+                | method_decl
+                | static_function_decl ;
+
+struct_field_decl
+                = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator
+                | visibility binding_kind IDENT ":" type_ref [ "=" expression ] struct_field_terminator
+                | visibility type_ref IDENT [ "=" expression ] stmt_terminator
+                | visibility IDENT ":" type_ref [ "=" expression ] struct_field_terminator ;
+
+trait_decl      = [ "define" ] "trait" IDENT [ generic_params ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
+                  ( "{" { trait_member } "}" | "as" { trait_member } "end" ) ;
 
 trait_member    = field_decl
                 | method_decl ;
@@ -81,9 +103,7 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | [ "as" ] { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
-                | IDENT ":" type_ref member_terminator
-                | [ binding_kind ] type_ref IDENT member_terminator ;
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
@@ -102,7 +122,8 @@ destructure_stmt= "[" destructure_item { "," destructure_item } "]" "=" expressi
 destructure_item= binding_kind IDENT ;
 
 block           = "{" { statement } "}" ;
-statement       = binding_decl
+statement       = local_type_decl
+                | binding_decl
                 | destructure_stmt
                 | return_stmt
                 | if_stmt
@@ -110,6 +131,19 @@ statement       = binding_decl
                 | defer_stmt
                 | for_stmt
                 | expression stmt_terminator ;
+
+local_type_decl = [ "define" ] "struct" IDENT [ generic_params ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
+                  ( "{" { struct_member } "}" | "as" { struct_member } "end" )
+                | [ "define" ] "trait" IDENT [ generic_params ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
+                  ( "{" { trait_member } "}" | "as" { trait_member } "end" )
+                | [ "define" ] "interface" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  interface_body
+                | "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
@@ -149,6 +183,8 @@ primary         = literal
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
+                | named_struct_literal
+                | anonymous_struct_literal
                 | lambda
                 | tuple_literal
                 | array_literal
@@ -166,6 +202,9 @@ tuple_literal   = "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
+named_struct_literal = type_ref "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+anonymous_struct_literal = "struct" "{" [ struct_value_field { "," struct_value_field } ] "}" ;
+struct_value_field = IDENT ( "=" | ":" ) expression ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
@@ -200,6 +239,7 @@ qualified_name  = IDENT { "." IDENT } ;
 
 stmt_terminator   = ";" | SAFE_STRUCTURAL_BOUNDARY ;
 member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
+struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_BOUNDARY ;
 
 (* Semantic restrictions:
    - Each source file is a separately versioned compilation/code unit and is the
@@ -209,11 +249,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      contain modules.
    - "define singleton module X as" declares exactly one actor-backed module
      state cell per OS process.
-   - "define module X as", "define class Y ... as", and "define trait T ... as"
+   - "define module X as", "define class Y ... as", "define struct S ... as", and "define trait T ... as"
      use "as" as the body marker. "as", "is", "with", and "trait" are reserved.
-   - Interfaces are storage-free contracts. They may declare function signatures
-     and data-member requirements, but data requirements have no initializer,
-     allocate no storage, and contribute no object layout.
+   - Interfaces are storage-free contracts: they declare function signatures only.
+     They never allocate fields or contribute object layout.
    - Stateful reusable composition uses traits. A class satisfies interfaces with
      "is" and composes traits with "with". "implements"/"impl" remain migration
      aliases for "is".

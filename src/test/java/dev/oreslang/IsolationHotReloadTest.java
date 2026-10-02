@@ -163,12 +163,17 @@ final class IsolationHotReloadTest {
     void allExplicitStructuralParameterSpellingsWork() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub interface Bar {
-                  marker: 'brand'
+                  fnc marker() => String;
                 }
 
                 pub interface Foo extends Bar {
-                  markerBrand: 'marking/branding'
+                  fnc markerBrand() => String;
                 }
+
+                define class Branded as
+                  pub marker() => String { return "brand"; }
+                  pub markerBrand() => String { return "marking/branding"; }
+                end
 
                 fnc first(y structural Foo) => void {
                   return;
@@ -184,7 +189,7 @@ final class IsolationHotReloadTest {
                 }
 
                 pub routine main() => void {
-                  val branded = obj{marker: "brand", markerBrand: "marking/branding"};
+                  val branded = new Branded();
                   first(branded);
                   second(branded);
                   third(branded);
@@ -197,13 +202,17 @@ final class IsolationHotReloadTest {
     void structuralPermissionIsNotImplicit() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub interface Foo {
-                  marker: 'brand'
+                  fnc marker() => String;
                 }
+
+                define class Branded as
+                  pub marker() => String { return "brand"; }
+                end
 
                 fnc nominal(Foo y) => void { return; }
 
                 pub routine main() => void {
-                  val branded = obj{marker: "brand"};
+                  val branded = new Branded();
                   nominal(branded);
                   return;
                 }
@@ -251,5 +260,24 @@ final class IsolationHotReloadTest {
             context.eval(source);
         }
         return output.toString(StandardCharsets.UTF_8);
+    }
+    @Test
+    void capabilityAdmissionInspectsMethodsInsideCallableLocalStructs() {
+        var program = TypeChecker.check(Parser.parse("""
+                define module app as
+                  fnc make() => T {
+                    struct T {
+                      pub context() => string {
+                        return process.context_id;
+                      }
+                    }
+                    return T {};
+                  }
+                end
+                """));
+
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(denied.getMessage().contains("PROCESS_INFO"));
     }
 }
