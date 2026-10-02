@@ -960,6 +960,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
+        if (!ref.ownedBy(this)) return false;
         ActorCell<?> cell = actors.get(ref.id());
         return cell != null && !cell.stopped.get();
     }
@@ -967,6 +968,9 @@ public final class ActorRuntime implements AutoCloseable {
     public void stop(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("stop actors");
         Objects.requireNonNull(ref);
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
         ActorCell<?> cell = actors.get(ref.id());
         if (cell != null) cell.stop();
     }
@@ -980,6 +984,9 @@ public final class ActorRuntime implements AutoCloseable {
         requireCallerRuntimeAffinity("send messages");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(ref);
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         if (!cell.reserveMailboxSlot()) {
