@@ -1185,12 +1185,25 @@ public final class TypeChecker {
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
             List<Ast.FieldDecl> constructorFields = fields.stream().filter(field -> !field.composed()).toList();
             if (created.arguments().size() > constructorFields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
-            Type nominal = concreteClassType(klass, created.type(), generics, self);
+
+            List<Type> argumentTypes = created.arguments().stream()
+                    .map(argument -> typeOf(argument, env, generics, self))
+                    .toList();
+            Type nominal;
+            if (created.type().inferArguments()) {
+                List<Ast.TypeRef> declaredInputs = constructorFields.subList(0, argumentTypes.size()).stream()
+                        .map(Ast.FieldDecl::type)
+                        .toList();
+                nominal = inferClassType(klass, declaredInputs, argumentTypes, "constructor for " + klass.name());
+            } else {
+                nominal = concreteClassType(klass, created.type(), generics, self);
+            }
+
             Map<String, Type> substitutions = classGenericSubstitutions(klass, nominal);
             int argumentIndex = 0;
             for (Ast.FieldDecl field : fields) {
-                if (!field.composed() && argumentIndex < created.arguments().size()) {
-                    requireAssignable(typeOf(created.arguments().get(argumentIndex++), env, generics, self),
+                if (!field.composed() && argumentIndex < argumentTypes.size()) {
+                    requireAssignable(argumentTypes.get(argumentIndex++),
                             instantiateClassType(field.type(), klass, substitutions, nominal), "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
@@ -1229,7 +1242,24 @@ public final class TypeChecker {
                 }
             }
 
-            Type nominal = concreteClassType(struct, created.type(), generics, self);
+            LinkedHashMap<String, Type> suppliedTypes = new LinkedHashMap<>();
+            for (Map.Entry<String, Ast.Expr> entry : supplied.entrySet()) {
+                suppliedTypes.put(entry.getKey(), typeOf(entry.getValue(), env, generics, self));
+            }
+
+            Type nominal;
+            if (created.type().inferArguments()) {
+                List<Ast.TypeRef> declaredInputs = new ArrayList<>();
+                List<Type> actualInputs = new ArrayList<>();
+                for (Map.Entry<String, Type> entry : suppliedTypes.entrySet()) {
+                    declaredInputs.add(callerFields.get(entry.getKey()).type());
+                    actualInputs.add(entry.getValue());
+                }
+                nominal = inferClassType(struct, declaredInputs, actualInputs, "struct initializer for " + struct.name());
+            } else {
+                nominal = concreteClassType(struct, created.type(), generics, self);
+            }
+
             Map<String, Type> substitutions = classGenericSubstitutions(struct, nominal);
             for (Ast.FieldDecl field : struct.fields()) {
                 if (field.composed()) {
@@ -1238,9 +1268,9 @@ public final class TypeChecker {
                     }
                     continue;
                 }
-                Ast.Expr value = supplied.get(field.name());
+                Type value = suppliedTypes.get(field.name());
                 if (value != null) {
-                    requireAssignable(typeOf(value, env, generics, self),
+                    requireAssignable(value,
                             instantiateClassType(field.type(), struct, substitutions, nominal),
                             "struct field " + struct.name() + "." + field.name());
                 } else if (field.initializer() == null) {
@@ -1911,18 +1941,112 @@ public final class TypeChecker {
             Ast.TypeRef use,
             Set<String> surroundingGenerics,
             Type self) {
-        List<Type> arguments;
         if (use.inferArguments()) {
-            arguments = klass.genericParameters().stream().map(ignored -> (Type) Unknown.INSTANCE).toList();
-        } else {
-            if (use.arguments().size() != klass.genericParameters().size()) {
-                throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
-                        + "' expects " + klass.genericParameters().size() + " type argument(s), got "
-                        + use.arguments().size() + "; use <> for inference");
+            throw new IllegalArgumentException("internal error: inferred aggregate type must be resolved from constructor inputs");
+        }
+        if (use.arguments().size() != klass.genericParameters().size()) {
+            throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
+                    + "' expects " + klass.genericParameters().size() + " type argument(s), got "
+                    + use.arguments().size() + "; use <> for inference");
+        }
+        List<Type> arguments = use.arguments().stream()
+                .map(arg -> resolve(arg, surroundingGenerics, self))
+                .toList();
+        return new Named(qualifiedClassName(klass), arguments);
+    }
+
+    private Type inferClassType(
+            Ast.ClassDecl klass,
+            List<Ast.TypeRef> declaredInputs,
+            List<Type> actualInputs,
+            String where) {
+        if (declaredInputs.size() != actualInputs.size()) {
+            throw new IllegalArgumentException("internal generic inference arity mismatch in " + where);
+        }
+        if (klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
+                    + "' is not generic; omit <>");
+        }
+
+        LinkedHashMap<String, Type> inferred = new LinkedHashMap<>();
+        Set<String> genericNames = Set.copyOf(klass.genericParameters());
+        Type genericSelf = nominalClassType(klass);
+        for (int i = 0; i < declaredInputs.size(); i++) {
+            Type pattern = resolve(declaredInputs.get(i), genericNames, genericSelf);
+            inferGenericBindings(pattern, actualInputs.get(i), inferred, where);
+        }
+
+        List<Type> arguments = new ArrayList<>(klass.genericParameters().size());
+        for (String generic : klass.genericParameters()) {
+            Type inferredType = inferred.get(generic);
+            if (inferredType == null || inferredType == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(where + " cannot infer generic '" + generic
+                        + "'; provide explicit type arguments");
             }
-            arguments = use.arguments().stream().map(arg -> resolve(arg, surroundingGenerics, self)).toList();
+            arguments.add(inferredType);
         }
         return new Named(qualifiedClassName(klass), arguments);
+    }
+
+    private void inferGenericBindings(
+            Type pattern,
+            Type actual,
+            Map<String, Type> inferred,
+            String where) {
+        actual = widenInferenceType(actual);
+        if (actual == Unknown.INSTANCE) return;
+
+        if (pattern instanceof Generic generic) {
+            Type previous = inferred.get(generic.name());
+            if (previous == null) {
+                inferred.put(generic.name(), actual);
+                return;
+            }
+            Type merged = commonType(previous, actual);
+            if (merged == Unknown.INSTANCE && !previous.equals(actual)) {
+                throw new IllegalArgumentException(where + " infers incompatible types for generic '"
+                        + generic.name() + "': " + previous + " and " + actual);
+            }
+            inferred.put(generic.name(), merged == Unknown.INSTANCE ? actual : merged);
+            return;
+        }
+
+        if (pattern instanceof Borrow expectedBorrow && actual instanceof Borrow actualBorrow) {
+            if (expectedBorrow.mutable() != actualBorrow.mutable()) return;
+            inferGenericBindings(expectedBorrow.target(), actualBorrow.target(), inferred, where);
+            return;
+        }
+        if (pattern instanceof ListType expectedList && actual instanceof ListType actualList) {
+            inferGenericBindings(expectedList.element(), actualList.element(), inferred, where);
+            return;
+        }
+        if (pattern instanceof Tuple expectedTuple && actual instanceof Tuple actualTuple
+                && expectedTuple.elements().size() == actualTuple.elements().size()) {
+            for (int i = 0; i < expectedTuple.elements().size(); i++) {
+                inferGenericBindings(expectedTuple.elements().get(i), actualTuple.elements().get(i), inferred, where);
+            }
+            return;
+        }
+        if (pattern instanceof Named expectedNamed && actual instanceof Named actualNamed
+                && expectedNamed.name().equals(actualNamed.name())
+                && expectedNamed.arguments().size() == actualNamed.arguments().size()) {
+            for (int i = 0; i < expectedNamed.arguments().size(); i++) {
+                inferGenericBindings(expectedNamed.arguments().get(i), actualNamed.arguments().get(i), inferred, where);
+            }
+            return;
+        }
+        if (pattern instanceof Function expectedFunction && actual instanceof Function actualFunction
+                && expectedFunction.parameters().size() == actualFunction.parameters().size()) {
+            for (int i = 0; i < expectedFunction.parameters().size(); i++) {
+                inferGenericBindings(expectedFunction.parameters().get(i), actualFunction.parameters().get(i), inferred, where);
+            }
+            inferGenericBindings(expectedFunction.result(), actualFunction.result(), inferred, where);
+        }
+    }
+
+    private Type widenInferenceType(Type type) {
+        if (type instanceof StringLiteral) return Primitive.STRING;
+        return type;
     }
 
     private Map<String, Type> classGenericSubstitutions(Ast.ClassDecl klass, Type nominal) {
