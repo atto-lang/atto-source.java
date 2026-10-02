@@ -479,22 +479,11 @@ public final class OwnershipChecker {
                     VarState state = requireState(scope, name.name());
                     requireUsable(state, name.name(), mutable);
 
-                    if (state.kind == ValueKind.IMM_BORROW) {
-                        if (mutable) {
-                            throw error(callable + " argument " + (i + 1)
-                                    + " requires exclusive mutable access but '" + name.name()
-                                    + "' is a read borrow");
-                        }
-                        continue; // shared reborrow
-                    }
-                    if (state.kind == ValueKind.MUT_BORROW) {
-                        continue; // reborrow from an already exclusive callee view
-                    }
                     if (!mutable && state.kind == ValueKind.COPY) {
                         continue; // Copy values cross ordinary parameters by copy.
                     }
 
-                    beginPersistentBorrow(state, mutable);
+                    beginTemporaryBorrow(state, mutable, callable, i + 1, name.name());
                     temporaryBorrows.add(new TemporaryBorrow(state, mutable));
                     continue;
                 }
@@ -514,6 +503,42 @@ public final class OwnershipChecker {
                 else temporary.owner().immutableBorrows--;
             }
         }
+    }
+
+    private void beginTemporaryBorrow(
+            VarState state,
+            boolean mutable,
+            String callable,
+            int position,
+            String name) {
+        if (state.kind == ValueKind.IMM_BORROW) {
+            if (mutable) {
+                throw error(callable + " argument " + position
+                        + " requires exclusive mutable access but '" + name + "' is a read borrow");
+            }
+            if (state.mutableBorrowed) {
+                throw error("cannot read-borrow '" + name + "' while an exclusive reborrow is active");
+            }
+            state.immutableBorrows++;
+            return;
+        }
+
+        if (state.kind == ValueKind.MUT_BORROW) {
+            if (mutable) {
+                if (state.mutableBorrowed || state.immutableBorrows > 0) {
+                    throw error("cannot exclusively reborrow '" + name + "' while another reborrow is active");
+                }
+                state.mutableBorrowed = true;
+            } else {
+                if (state.mutableBorrowed) {
+                    throw error("cannot read-borrow '" + name + "' while an exclusive reborrow is active");
+                }
+                state.immutableBorrows++;
+            }
+            return;
+        }
+
+        beginPersistentBorrow(state, mutable);
     }
 
     private void checkAssignmentTarget(Ast.Expr target, Scope scope) {
@@ -556,7 +581,7 @@ public final class OwnershipChecker {
             if (state.kind == ValueKind.IMM_BORROW) {
                 throw error("cannot mutate " + what + " through read borrow '" + name.name() + "'");
             }
-            if (state.kind != ValueKind.MUT_BORROW && (state.immutableBorrows > 0 || state.mutableBorrowed)) {
+            if (state.immutableBorrows > 0 || state.mutableBorrowed) {
                 throw error("cannot mutate '" + name.name() + "' while borrowed");
             }
             return;
@@ -818,10 +843,10 @@ public final class OwnershipChecker {
     private void requireUsable(VarState state, String name, boolean write) {
         if (state.moved) throw error("use of moved value '" + name + "'");
         if (write) {
-            if (state.mutableBorrowed && state.kind != ValueKind.MUT_BORROW) throw error("cannot mutate '" + name + "' while mutably borrowed");
+            if (state.mutableBorrowed) throw error("cannot mutate '" + name + "' while mutably borrowed/reborrowed");
             if (state.immutableBorrows > 0) throw error("cannot mutate '" + name + "' while immutably borrowed");
-        } else if (state.mutableBorrowed && state.kind != ValueKind.MUT_BORROW) {
-            throw error("cannot read '" + name + "' while it is mutably borrowed");
+        } else if (state.mutableBorrowed) {
+            throw error("cannot read '" + name + "' while it is mutably borrowed/reborrowed");
         }
     }
 
