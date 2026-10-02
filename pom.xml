@@ -111,7 +111,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>-p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
+                  <commandlineArgs>-p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true --initialize-at-build-time=dev.oreslang.OresLanguageProvider -Dtruffle.UseFallbackRuntime=true --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
@@ -136,7 +136,7 @@
                 <configuration>
                   <executable>${env.JAVA_HOME}/bin/native-image</executable>
                   <classpathScope>runtime</classpathScope>
-                  <commandlineArgs>-p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-hybrid</commandlineArgs>
+                  <commandlineArgs>-p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true --initialize-at-build-time=dev.oreslang.OresLanguageProvider --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-hybrid</commandlineArgs>
                 </configuration>
               </execution>
             </executions>
