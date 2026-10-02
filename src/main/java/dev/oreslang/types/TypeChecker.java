@@ -149,7 +149,8 @@ public final class TypeChecker {
     private Record moduleShape(Ast.ModuleDecl module) {
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
-            if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
+            if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
+                    && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
                         fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
                 mergeMember(members, fn.name(), signature, "module " + module.name());
@@ -191,6 +192,10 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
+        }
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -216,10 +221,20 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("built-in inheritance marker '" + parent.name() + "' does not take type arguments");
                 }
                 resolveClassParent(parent, klass);
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("actor '" + klass.name()
+                            + "' cannot extend built-in class '" + parent.name()
+                            + "'; actor inheritance must preserve the actor isolation domain");
+                }
                 continue;
             }
             resolve(parent, classGenerics, self);
-            resolveClassParent(parent, klass);
+            Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
+            if (resolvedParent != null && klass.actorKind() != resolvedParent.actorKind()) {
+                throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
+                        + klass.name() + " is " + klass.actorKind() + " but parent "
+                        + resolvedParent.name() + " is " + resolvedParent.actorKind());
+            }
         }
 
         Set<String> localMethodSignatures = new HashSet<>();
@@ -234,8 +249,12 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
-            Type fieldType = resolve(field.type(), classGenerics, self);
-            if (field.initializer() != null) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
+                        + "' cannot be public; expose state through mailbox-dispatched methods");
+            }
+            Type fieldType = classFieldType(klass, field);
+            if (field.initializer() != null && field.type() != null) {
                 Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
                 requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
             }
@@ -423,6 +442,10 @@ public final class TypeChecker {
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
+                if (fn.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("actor fnc '" + fn.name()
+                            + "' is an actor entry point, not an ordinary function value; spawn it through the actor runtime");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException(
                             "generic callable '" + fn.name()
@@ -508,6 +531,10 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
+                    if (target.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException("actor fnc '" + target.name()
+                                + "' cannot execute as an ordinary synchronous call; spawn it through the actor runtime");
+                    }
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     return checkGenericCallable(
@@ -526,6 +553,10 @@ public final class TypeChecker {
                     && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
                 if (target != null) {
+                    if (target.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException("actor fnc '" + namespace.name() + "." + target.name()
+                                + "' cannot execute as an ordinary synchronous call; spawn it through the actor runtime");
+                    }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     return checkGenericCallable(
@@ -691,7 +722,7 @@ public final class TypeChecker {
                 if (klass != null) {
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
-                        Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
+                        Type pattern = classFieldType(field.owner(), field.field());
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
@@ -725,6 +756,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("actor '" + klass.name()
+                        + "' cannot be constructed with new; actor instances must be created through the actor runtime");
+            }
 
             Named nominal;
             if (created.type().inferArguments()) {
@@ -746,7 +781,7 @@ public final class TypeChecker {
                 ResolvedField resolvedField = fields.get(i);
                 Ast.FieldDecl field = resolvedField.field();
                 if (i < created.arguments().size()) {
-                    Type fieldPattern = resolve(field.type(), Set.copyOf(resolvedField.owner().genericParameters()), resolvedField.ownerType());
+                    Type fieldPattern = classFieldType(resolvedField.owner(), field);
                     Type expected = substituteGenerics(fieldPattern, classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
                     requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
                             expected, "constructor field " + field.name());
@@ -977,6 +1012,7 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) return false;
+        if (klass.actorKind() != Ast.ActorKind.NONE) return false;
         if (!seen.add(klass)) return true;
 
         try {
@@ -1151,7 +1187,7 @@ public final class TypeChecker {
         }
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
-        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members,
@@ -1181,7 +1217,7 @@ public final class TypeChecker {
         Set<String> generics = Set.copyOf(klass.genericParameters());
         Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
+            if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), classFieldType(klass, field), "class " + klass.name());
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
@@ -1295,6 +1331,17 @@ public final class TypeChecker {
         Type concrete = substituteGenerics(parentPattern, classGenericBindings(child, childType));
         if (!(concrete instanceof Named named)) throw new IllegalArgumentException("parent class must resolve to a named type");
         return named;
+    }
+
+    private Type classFieldType(Ast.ClassDecl klass, Ast.FieldDecl field) {
+        Set<String> generics = Set.copyOf(klass.genericParameters());
+        Type self = nominalClassType(klass);
+        if (field.type() != null) return resolve(field.type(), generics, self);
+        if (field.initializer() == null) {
+            throw new IllegalArgumentException("inferred field '" + klass.name() + "." + field.name()
+                    + "' requires an initializer");
+        }
+        return typeOf(field.initializer(), new Env(null), generics, self);
     }
 
     private List<ResolvedField> effectiveFieldTargets(Ast.ClassDecl klass, Named concreteType, Set<Ast.ClassDecl> stack) {
@@ -1894,6 +1941,14 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (expected instanceof Generic expectedGeneric) {
+            return actual instanceof Generic actualGeneric
+                    && actualGeneric.name().equals(expectedGeneric.name());
+        }
+        if (actual instanceof Generic actualGeneric) {
+            return expected instanceof Generic expectedGeneric
+                    && actualGeneric.name().equals(expectedGeneric.name());
+        }
         if (actual instanceof Union source) {
             return source.options().stream().allMatch(option -> assignable(option, expected));
         }
