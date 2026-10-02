@@ -1110,7 +1110,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final SingletonState singletonState;
         private final boolean singletonStorage;
-        private final Map<String, Slot> slots = new HashMap<>();
+        private final Map<String, Slot> slots = new LinkedHashMap<>();
         private final Map<String, Ast.ClassDecl> localTypes = new HashMap<>();
 
         private Env(Env parent) {
