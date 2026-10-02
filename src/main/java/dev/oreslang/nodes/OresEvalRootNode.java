@@ -353,6 +353,11 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.AwaitExpr awaited) {
                 return AwaitSupport.await(eval(awaited.expression(), env));
             }
+            if (expr instanceof Ast.ChannelExpr || expr instanceof Ast.ChannelOpExpr) {
+                throw new IllegalStateException(
+                        "channel send/receive syntax requires scheduler-aware lowering; "
+                                + "the reference interpreter refuses ordinary-call fallback");
+            }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
