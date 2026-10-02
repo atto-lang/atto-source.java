@@ -1007,63 +1007,53 @@ public final class TypeChecker {
         }
     }
 
+    /**
+     * Performs simultaneous, capture-avoiding generic substitution.
+     *
+     * A replacement value belongs to the caller's generic scope, not to the
+     * declaration whose type parameter is being replaced. Therefore a matched
+     * Generic is replaced exactly once and the replacement is not recursively
+     * re-substituted through the same binding map. This matters for cases such
+     * as Child<T> extends Parent<Mutex<T>> where the inner T is Child.T, not
+     * Parent.T.
+     */
     private Type resolveSharedGeneric(Type type, Map<String, Type> bindings) {
-        return resolveSharedGeneric(type, bindings, new LinkedHashSet<>());
-    }
-
-    private Type resolveSharedGeneric(
-            Type type,
-            Map<String, Type> bindings,
-            Set<String> resolvingGenerics) {
         if (type instanceof Generic generic) {
             Type bound = bindings.get(generic.name());
-            if (bound == null || bound.equals(type)) return type;
-            if (!resolvingGenerics.add(generic.name())) {
-                throw new IllegalArgumentException(
-                        "generic substitution cycle involving '" + generic.name() + "'");
-            }
-            try {
-                return resolveSharedGeneric(bound, bindings, resolvingGenerics);
-            } finally {
-                resolvingGenerics.remove(generic.name());
-            }
+            return bound == null ? type : bound;
         }
         if (type instanceof Named named) {
             return new Named(named.name(), named.arguments().stream()
-                    .map(argument -> resolveSharedGeneric(argument, bindings, resolvingGenerics))
+                    .map(argument -> resolveSharedGeneric(argument, bindings))
                     .toList());
         }
         if (type instanceof Borrow borrow) {
-            return new Borrow(
-                    resolveSharedGeneric(borrow.target(), bindings, resolvingGenerics),
-                    borrow.mutable());
+            return new Borrow(resolveSharedGeneric(borrow.target(), bindings), borrow.mutable());
         }
         if (type instanceof Function function) {
             return new Function(
                     function.parameters().stream()
-                            .map(parameter -> resolveSharedGeneric(parameter, bindings, resolvingGenerics))
+                            .map(parameter -> resolveSharedGeneric(parameter, bindings))
                             .toList(),
-                    resolveSharedGeneric(function.result(), bindings, resolvingGenerics));
+                    resolveSharedGeneric(function.result(), bindings));
         }
         if (type instanceof ListType list) {
-            return new ListType(resolveSharedGeneric(list.element(), bindings, resolvingGenerics));
+            return new ListType(resolveSharedGeneric(list.element(), bindings));
         }
         if (type instanceof Tuple tuple) {
             return new Tuple(tuple.elements().stream()
-                    .map(element -> resolveSharedGeneric(element, bindings, resolvingGenerics))
+                    .map(element -> resolveSharedGeneric(element, bindings))
                     .toList());
         }
         if (type instanceof Union union) {
             return Types.unionOf(union.options().stream()
-                    .map(option -> resolveSharedGeneric(option, bindings, resolvingGenerics))
+                    .map(option -> resolveSharedGeneric(option, bindings))
                     .toList());
         }
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Type> entry : record.members().entrySet()) {
-                members.put(
-                        entry.getKey(),
-                        resolveSharedGeneric(entry.getValue(), bindings, resolvingGenerics));
+                members.put(entry.getKey(), resolveSharedGeneric(entry.getValue(), bindings));
             }
             return new Record(members);
         }
