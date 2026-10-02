@@ -16,7 +16,10 @@ public final class CapabilityChecker {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) {
                     IsolatePolicy actorPolicy = fn.actorKind() == Ast.ActorKind.PRIVATE
-                            ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
+                            ? policy.withoutCapabilities(
+                                    IsolatePolicy.Capability.SHARED_MEMORY,
+                                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                                    IsolatePolicy.Capability.PROCESS_GC)
                             : policy;
                     if (fn.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
@@ -25,7 +28,10 @@ public final class CapabilityChecker {
                     checkStatements(fn.body(), actorPolicy);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
                     IsolatePolicy actorPolicy = klass.actorKind() == Ast.ActorKind.PRIVATE
-                            ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
+                            ? policy.withoutCapabilities(
+                                    IsolatePolicy.Capability.SHARED_MEMORY,
+                                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                                    IsolatePolicy.Capability.PROCESS_GC)
                             : policy;
                     if (klass.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor " + klass.name());
@@ -122,6 +128,7 @@ public final class CapabilityChecker {
             if (path != null) {
                 if (path.startsWith("stdio.") || path.equals("stdio")) require(policy, IsolatePolicy.Capability.STDOUT, path);
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
+                if (path.equals("process.gc")) require(policy, IsolatePolicy.Capability.PROCESS_GC, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
                 if (path.equals("SharedMutex") || path.startsWith("SharedMutex.")) require(policy, IsolatePolicy.Capability.SHARED_MEMORY, path);
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
