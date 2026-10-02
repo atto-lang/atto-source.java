@@ -786,12 +786,14 @@ final class ActorRuntimeTest {
                 exhausted.add(context.runtime().chargeActorOperations(1));
                 exhausted.add(context.runtime().chargeActorOperations(1));
                 exhausted.add(context.runtime().chargeActorOperations(1));
+                exhausted.add(context.runtime().chargeActorOperations(1));
                 checked.countDown();
             });
 
             ref.send("tick");
             assertTrue(checked.await(2, TimeUnit.SECONDS));
-            assertEquals(java.util.List.of(false, false, true), exhausted);
+            assertEquals(java.util.List.of(false, false, true, true), exhausted,
+                    "once the operation quantum is exhausted it stays exhausted until dispatcher re-entry");
             assertEquals(64, runtime.dispatcherConfig().throughput());
             assertEquals(3, runtime.dispatcherConfig().operationBudget());
         }
