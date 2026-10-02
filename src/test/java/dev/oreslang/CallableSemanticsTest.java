@@ -199,6 +199,51 @@ final class CallableSemanticsTest {
     }
 
     @Test
+    void guestCatchHandlesOreslangRuntimeErrors() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  try {
+                    val ignored = 1 / 0;
+                  } catch (err) {
+                    stdio.stdout.write("arithmetic");
+                  } finally {
+                    stdio.stdout.write(":finally");
+                  }
+
+                  val values = arr["only"];
+                  try {
+                    stdio.stdout.write(values[9]);
+                  } catch (err) {
+                    stdio.stdout.write(":bounds");
+                  } finally {
+                    stdio.stdout.write(":done");
+                  }
+                  return;
+                }
+                """);
+
+        assertEquals("arithmetic:finally:bounds:done", output);
+    }
+
+    @Test
+    void guestCatchDoesNotTurnStaticOrHostBugsIntoApplicationControlFlow() {
+        IllegalArgumentException staticFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main() => void {
+                          try {
+                            unknown_name();
+                          } catch (err) {
+                            stdio.stdout.write("must-not-run");
+                          } finally {
+                          }
+                          return;
+                        }
+                        """)));
+        assertTrue(staticFailure.getMessage().contains("unknown name"));
+    }
+
+    @Test
     void routineAndFncRemainSemanticallyDistinct() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
