@@ -276,9 +276,10 @@ public final class TypeChecker {
     }
 
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
+        Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+        rejectLocalTypeGenericCollisions(fn.body(), generics);
         pushLocalTypeScope(fn.body());
         try {
-            Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
             Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
             for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(fn.returnType(), generics, null);
@@ -741,6 +742,7 @@ public final class TypeChecker {
                 for (String generic : method.genericParameters()) {
                     if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
                 }
+                rejectLocalTypeGenericCollisions(method.body(), generics);
 
                 if (method.explicitReceiverType() != null) {
                     Ast.TypeRef receiverRef = method.explicitReceiverType();
@@ -798,6 +800,7 @@ public final class TypeChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
+        rejectLocalTypeGenericCollisions(body, generics);
         pushLocalTypeScope(body);
         try {
             Env env = new Env(parent);
@@ -1859,6 +1862,7 @@ public final class TypeChecker {
         try {
             Set<String> generics = new HashSet<>(klass.genericParameters());
             generics.addAll(method.genericParameters());
+            rejectLocalTypeGenericCollisions(method.body(), generics);
             Function signature = functionType(method.parameters(), method.returnType(), generics, self);
             if (self instanceof Named named && named.arguments().size() == klass.genericParameters().size()) {
                 signature = (Function) substituteGenerics(signature, classGenericSubstitutions(klass, named));
@@ -2282,6 +2286,23 @@ public final class TypeChecker {
         return null;
     }
 
+    private void rejectLocalTypeGenericCollisions(List<Ast.Stmt> body, Set<String> generics) {
+        if (generics.isEmpty()) return;
+        for (Ast.Stmt stmt : body) {
+            if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
+            String name = switch (local.declaration()) {
+                case Ast.ClassDecl struct -> struct.name();
+                case Ast.InterfaceDecl iface -> iface.name();
+                case Ast.TypeAliasDecl alias -> alias.name();
+                default -> null;
+            };
+            if (name != null && generics.contains(name)) {
+                throw new IllegalArgumentException("callable-local type '" + name
+                        + "' collides with an in-scope generic type parameter");
+            }
+        }
+    }
+
     private void pushLocalTypeScope(List<Ast.Stmt> body) {
         Map<String, Ast.ClassDecl> classesHere = new LinkedHashMap<>();
         Map<String, Ast.InterfaceDecl> interfacesHere = new LinkedHashMap<>();
@@ -2317,9 +2338,10 @@ public final class TypeChecker {
     }
 
     private Function declaredFunctionType(Ast.FunctionDecl fn) {
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+        rejectLocalTypeGenericCollisions(fn.body(), generics);
         pushLocalTypeScope(fn.body());
         try {
-            Set<String> generics = Set.copyOf(fn.genericParameters());
             return functionType(fn.parameters(), fn.returnType(), generics, null);
         } finally {
             popLocalTypeScope();
