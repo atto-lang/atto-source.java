@@ -449,6 +449,53 @@ final class GpuExecutionTest {
     }
 
     @Test
+    void gpuLoweringPreservesExactScalarWidthsAndContextualizesLiterals() {
+        var i32 = OresCompiler.compile("""
+                gpu fnc inc(i32 x) => i32 {
+                  return x + 1;
+                }
+                """).gpuProgram();
+        assertTrue(i32.source().contains("((int)1L)"));
+        assertFalse(i32.source().contains("double"));
+
+        var f32 = OresCompiler.compile("""
+                gpu fnc bump(f32 x) => f32 {
+                  return x + 1.0;
+                }
+                """).gpuProgram();
+        assertTrue(f32.source().contains("((float)((double)1.0))"));
+
+        IllegalArgumentException narrowing = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc bad(i64 x) => i32 {
+                          return x;
+                        }
+                        """));
+        assertTrue(narrowing.getMessage().contains("implicit GPU numeric conversion"));
+
+        IllegalArgumentException mixedSign = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc bad(i32 x, u32 y) => i32 {
+                          return x + y;
+                        }
+                        """));
+        assertTrue(mixedSign.getMessage().contains("mixed-width/sign arithmetic"));
+    }
+
+    @Test
+    void gpuAssignmentsCannotImplicitlyNarrowDeviceValues() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc bad(i64 x) => void {
+                          let i32 y = x;
+                          return;
+                        }
+                        """));
+        assertTrue(failure.getMessage().contains("GPU binding 'y'"));
+        assertTrue(failure.getMessage().contains("implicit GPU numeric conversion"));
+    }
+
+    @Test
     void generatedGpuProgramsPassARealOpenClFrontendWhenValidationIsEnabled() throws Exception {
         if (!"1".equals(System.getenv("ORES_GPU_VALIDATE_OPENCL"))) return;
 
