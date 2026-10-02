@@ -669,7 +669,41 @@ public final class ChannelRuntime {
         final Set<SelectNode> registrations = new LinkedHashSet<>();
     }
 
-    private final class WaitFuture<V> extends CompletableFuture<V> {
+    private abstract static class RuntimeFuture<V> extends CompletableFuture<V> {
+        @Override
+        public final boolean complete(V value) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
+        @Override
+        public final boolean completeExceptionally(Throwable failure) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
+        @Override
+        public final void obtrudeValue(V value) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
+        @Override
+        public final void obtrudeException(Throwable failure) {
+            throw new UnsupportedOperationException("channel completion is runtime-owned");
+        }
+
+        final boolean completeDirect(V value) {
+            return super.complete(value);
+        }
+
+        final boolean completeExceptionallyDirect(Throwable failure) {
+            return super.completeExceptionally(failure);
+        }
+
+        final boolean cancelDirect() {
+            return super.cancel(false);
+        }
+    }
+
+    private final class WaitFuture<V> extends RuntimeFuture<V> {
         private final BooleanSupplier cancelAction;
 
         private WaitFuture(BooleanSupplier cancelAction) {
@@ -680,17 +714,9 @@ public final class ChannelRuntime {
         public boolean cancel(boolean mayInterruptIfRunning) {
             return cancelAction.getAsBoolean();
         }
-
-        private boolean cancelDirect() {
-            return super.cancel(false);
-        }
-
-        private boolean completeDirect(V value) {
-            return super.complete(value);
-        }
     }
 
-    private final class SelectFuture extends CompletableFuture<SelectResult> {
+    private final class SelectFuture extends RuntimeFuture<SelectResult> {
         private final SelectTicket ticket;
 
         private SelectFuture(SelectTicket ticket) {
@@ -700,14 +726,6 @@ public final class ChannelRuntime {
         @Override
         public boolean cancel(boolean mayInterruptIfRunning) {
             return cancelSelect(ticket);
-        }
-
-        private boolean cancelDirect() {
-            return super.cancel(false);
-        }
-
-        private boolean completeDirect(SelectResult value) {
-            return super.complete(value);
         }
     }
 
