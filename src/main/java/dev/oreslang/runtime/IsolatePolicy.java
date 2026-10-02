@@ -35,6 +35,7 @@ public record IsolatePolicy(
         FILESYSTEM_WRITE,
         ENVIRONMENT,
         HOT_CODE_LOAD,
+        GPU,
         FFI,
         NATIVE,
         REFLECTION,
