@@ -1293,7 +1293,7 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("no public singleton proxy method '" + member.member()
                                 + "' with arity " + call.arguments().size() + " on " + proxy.target().name());
                     }
-                    Function signature = methodFunctionType(method, klass, proxy.target());
+                    Function signature = methodFunctionTypeForReceiver(method, klass, proxy.target());
                     for (int i = 0; i < call.arguments().size(); i++) {
                         Type expected = signature.parameters().get(i);
                         validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
@@ -1321,7 +1321,7 @@ public final class TypeChecker {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
                         requireTraitMethodAccessible(method, named.name() + "." + member.member());
-                        Function signature = methodFunctionType(method, klass, named);
+                        Function signature = methodFunctionTypeForReceiver(method, klass, named);
                         for (int i = 0; i < call.arguments().size(); i++) {
                             Type expected = signature.parameters().get(i);
                             validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
@@ -1426,7 +1426,7 @@ public final class TypeChecker {
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
                         requireTraitMethodAccessible(method, named.name() + "." + member.member());
-                        return methodFunctionType(method, klass, named);
+                        return methodFunctionTypeForReceiver(method, klass, named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -1801,7 +1801,7 @@ public final class TypeChecker {
             if (klass != null) {
                 Ast.MethodDecl iterator = findMethod(klass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator != null) {
-                    Type result = resolve(iterator.returnType(), Set.copyOf(iterator.genericParameters()), named);
+                    Type result = methodFunctionTypeForReceiver(iterator, klass, named).result();
                     if (result instanceof ListType list) return list.element();
                     if (result instanceof Tuple tuple) return iterableElementType(tuple);
                     throw new IllegalArgumentException("[Symbol.iterator]() must return Array<T>, List<T>, or a tuple in v0");
@@ -2184,6 +2184,68 @@ public final class TypeChecker {
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
         return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
+    }
+
+    private record MethodOwner(Ast.ClassDecl klass, Type receiverType) { }
+
+    private Function methodFunctionTypeForReceiver(
+            Ast.MethodDecl method,
+            Ast.ClassDecl receiverClass,
+            Type receiverType) {
+        MethodOwner owner = findMethodOwner(
+                receiverClass,
+                method,
+                receiverType,
+                new LinkedHashSet<>());
+        if (owner == null) {
+            throw new IllegalArgumentException(
+                    "internal error: cannot determine declaring aggregate for method '"
+                            + method.name() + "' on " + receiverClass.name());
+        }
+        return methodFunctionType(method, owner.klass(), owner.receiverType());
+    }
+
+    private MethodOwner findMethodOwner(
+            Ast.ClassDecl current,
+            Ast.MethodDecl target,
+            Type currentType,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(current)) return null;
+
+        for (Ast.MethodDecl candidate : current.methods()) {
+            if (candidate == target) {
+                seen.remove(current);
+                return new MethodOwner(current, currentType);
+            }
+        }
+
+        Type currentSelf = currentType == null ? nominalClassType(current) : currentType;
+        Map<String, Type> substitutions = currentSelf instanceof Named named
+                && named.arguments().size() == current.genericParameters().size()
+                ? classGenericSubstitutions(current, named)
+                : Map.of();
+
+        for (Ast.TypeRef parentRef : current.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, current);
+            if (parent == null) continue;
+
+            Type parentType = resolve(
+                    parentRef,
+                    Set.copyOf(current.genericParameters()),
+                    nominalClassType(current));
+            if (!substitutions.isEmpty()) {
+                parentType = substituteGenerics(parentType, substitutions);
+            }
+
+            MethodOwner found = findMethodOwner(parent, target, parentType, seen);
+            if (found != null) {
+                seen.remove(current);
+                return found;
+            }
+        }
+
+        seen.remove(current);
+        return null;
     }
 
     private Function methodFunctionType(Ast.MethodDecl method, Ast.ClassDecl klass, Type self) {
