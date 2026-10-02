@@ -186,6 +186,7 @@ public final class TypeChecker {
 
     private void checkInit(Ast.ModuleDecl module, Ast.InitDecl init) {
         Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
+        validateSingletonTransportStatements(init.body(), module.name());
         checkBlock(init.body(), env, Set.of(), Primitive.VOID, null);
     }
 
