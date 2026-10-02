@@ -914,4 +914,31 @@ The generated artifact contains kernel symbols, helper symbols, source-level nam
 
 The current device ABI is deliberately conservative. GPU parameters may be scalar values or flat `Array<T>`/`List<T>` buffers of supported scalar element types. Device scalar widths/signs are preserved exactly (`i32` is distinct from `i64`, `u32` from `i32`, and `f32` from `f64`). GPU lowering rejects implicit narrowing or mixed-width/sign arithmetic; numeric literals may be contextually represented in the surrounding exact device type only when the literal value fits that type. GPU callables and lambdas return a scalar or `void`; array results must be written through a mutable buffer parameter. Generics, structural parameters, tuples in the device ABI, complex arithmetic, strings, bigint/decimal, classes/objects, records, `Option`, nested host-list layouts, host borrows/references, host/global captures, list/tuple allocation, destructuring, `for-of`, `await`, `defer`, `try/catch`, object allocation, nested closures, dynamic calls, recursion, and calls to non-`gpu` functions are rejected.
 
+## Quantum execution placement
+
+`quantum` is a reserved execution-placement keyword for callables whose whole body must execute through a quantum-processing backend rather than the ordinary CPU evaluator or the GPU backend. Unmarked callables remain CPU-targeted by default.
+
+```ores
+quantum fnc phase_estimate(i32 shots) => i32 {
+  return shots;
+}
+```
+
+Static class functions use the canonical long-form class body syntax:
+
+```ores
+define class QuantumOps as
+  quantum static fnc solve(i32 shots) => i32 {
+    return shots;
+  }
+end
+```
+
+In the canonical declaration model, class/module bodies use `as`, interface conformance uses `is`, and trait composition uses `with`. Quantum placement is orthogonal to those declaration relationships.
+
+`quantum` is mutually exclusive with `gpu` and `async`. Quantum routines, instance methods, and abstract methods are rejected. Public ABI fingerprints preserve CPU/GPU/quantum placement so changing the target invalidates dependent compiled artifacts.
+
+There is deliberately no `quantum parallel` or `quantum core(N)` surface. Quantum hardware does not map to GPU-style lanes or stable numbered cores. Future QPU work should add explicit circuit/register/qubit/measurement concepts and backend/device policy without weakening the execution-target contract.
+
+
 Ordinary compilation now runs parsing, type/ownership checking, GPU admission, and GPU lowering. Incremental code units retain the generated GPU artifact. The reference runtime still has no physical GPU launcher wired into Truffle; invoking GPU-targeted code there fails closed instead of executing the GPU body on the CPU.

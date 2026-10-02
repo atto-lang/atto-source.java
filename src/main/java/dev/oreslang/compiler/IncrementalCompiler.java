@@ -136,6 +136,8 @@ public final class IncrementalCompiler {
             if (fn.visibility() != Ast.Visibility.PUBLIC) return;
             abi.append(fn.kind()).append(" pub ");
             if (Ast.hasGpuPlacement(fn.annotations())) abi.append("gpu ");
+            else if (Ast.hasQuantumPlacement(fn.annotations())) abi.append("quantum ");
+            else if (Ast.hasQuantumPlacement(fn.annotations())) abi.append("quantum ");
             abi.append(fn.name());
             appendGenerics(abi, fn.genericParameters());
             appendParams(abi, fn.parameters());
@@ -159,6 +161,8 @@ public final class IncrementalCompiler {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
                 abi.append(method.isStatic() ? " static-fnc " : " method ");
                 if (Ast.hasGpuPlacement(method.annotations())) abi.append("gpu ");
+                else if (Ast.hasQuantumPlacement(method.annotations())) abi.append("quantum ");
+                else if (Ast.hasQuantumPlacement(method.annotations())) abi.append("quantum ");
                 abi.append(method.name());
                 appendGenerics(abi, method.genericParameters());
                 appendParams(abi, method.parameters());

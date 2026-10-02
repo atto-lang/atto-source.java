@@ -104,6 +104,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
+            if (Ast.hasQuantumPlacement(fn.annotations())) throw quantumBackendUnavailable("function " + fn.name());
             if (Ast.hasGpuPlacement(fn.annotations())) throw gpuBackendUnavailable("function " + fn.name());
             if (args.size() != fn.parameters().size()) {
                 if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
@@ -121,6 +122,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (Ast.hasQuantumPlacement(method.annotations())) throw quantumBackendUnavailable("method " + method.name());
             if (Ast.hasGpuPlacement(method.annotations())) throw gpuBackendUnavailable("method " + method.name());
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
@@ -532,6 +534,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
+            if (Ast.hasQuantumPlacement(fn.annotations())) throw quantumBackendUnavailable("static function " + klass.name() + "." + fn.name());
             if (Ast.hasGpuPlacement(fn.annotations())) throw gpuBackendUnavailable("static function " + klass.name() + "." + fn.name());
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env env = new Env(null);
@@ -670,6 +673,10 @@ public final class OresEvalRootNode extends RootNode {
 
         private IllegalStateException gpuBackendUnavailable(String target) {
             return new IllegalStateException(target + " is GPU-targeted, but no GPU lowering/backend is configured; Oreslang never falls back to CPU for 'gpu' code");
+        }
+
+        private IllegalStateException quantumBackendUnavailable(String target) {
+            return new IllegalStateException(target + " is quantum-targeted, but no quantum lowering/backend is configured; Oreslang never falls back to CPU or GPU for 'quantum' code");
         }
 
         private List<?> iterableValues(Object value) {

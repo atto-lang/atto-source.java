@@ -42,19 +42,19 @@ public final class Parser {
             if (match(DEFINE)) {
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.isStatic || modifiers.isAbstract || modifiers.gpu) {
-                        throw error(previous(), "modules do not accept function/class/gpu modifiers");
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.isStatic || modifiers.isAbstract || modifiers.gpu || modifiers.quantum) {
+                        throw error(previous(), "modules do not accept function/class/execution-target modifiers");
                     }
                     modules.add(parseModule(annotations));
                     continue;
                 }
                 if (match(CLASS)) {
-                    if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not classes");
+                    if (modifiers.gpu || modifiers.quantum) throw error(previous(), "execution-target modifiers may modify callables, not classes");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
-                    if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not interfaces");
+                    if (modifiers.gpu || modifiers.quantum) throw error(previous(), "execution-target modifiers may modify callables, not interfaces");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -126,11 +126,11 @@ public final class Parser {
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
-                if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not classes");
+                if (modifiers.gpu || modifiers.quantum) throw error(previous(), "execution-target modifiers may modify callables, not classes");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
             if (match(INTERFACE)) {
-                if (modifiers.gpu) throw error(previous(), "'gpu' may modify callables, not interfaces");
+                if (modifiers.gpu || modifiers.quantum) throw error(previous(), "execution-target modifiers may modify callables, not interfaces");
                 return parseInterface(modifiers.visibility);
             }
             throw error(previous(), "expected class or interface after 'define'");
@@ -144,7 +144,7 @@ public final class Parser {
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
-        if (modifiers.gpu) throw error(peek(), "'gpu' may modify a callable, not a type/interface/binding declaration");
+        if (modifiers.gpu || modifiers.quantum) throw error(peek(), "execution-target modifiers may modify a callable, not a type/interface/binding declaration");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
@@ -154,10 +154,13 @@ public final class Parser {
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
+        if (modifiers.quantum && kind != Ast.CallableKind.FNC) {
+            throw error(previous(), "'quantum' is supported on fnc, not routine");
+        }
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
-        List<Ast.Annotation> callableAnnotations = withGpuPlacement(annotations, modifiers.gpu);
+        List<Ast.Annotation> callableAnnotations = withExecutionPlacement(annotations, modifiers.gpu, modifiers.quantum);
         java.util.Set<String> structuralNames = structuralAnnotationNames(callableAnnotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), callableAnnotations);
         consume(RPAREN, "expected ')' after parameters");
@@ -172,6 +175,10 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+        // Canonical long-form class syntax uses 'as'. The declaration-syntax stack
+        // makes this mandatory globally; accept it here so accelerator placement
+        // composes cleanly while this PR remains stacked on the GPU branch.
+        match(AS);
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
 
@@ -179,7 +186,7 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isBindingKind(peek().type())) {
-                if (mods.gpu) throw error(peek(), "'gpu' may modify a callable, not a class field");
+                if (mods.gpu || mods.quantum) throw error(peek(), "execution-target modifiers may modify a callable, not a class field");
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
                 continue;
@@ -206,7 +213,10 @@ public final class Parser {
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
             parseAnnotations();
-            parseModifiers();
+            Modifiers memberModifiers = parseModifiers();
+            if (memberModifiers.gpu || memberModifiers.quantum) {
+                throw error(previous(), "interface signatures cannot declare an execution target");
+            }
 
             if (match(FNC)) {
                 String memberName = consume(IDENT, "expected interface function name").lexeme();
@@ -271,6 +281,9 @@ public final class Parser {
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
+        if (mods.quantum && !mods.isStatic) {
+            throw error(peek(), "quantum instance methods are not supported; use 'quantum static fnc'");
+        }
         String name = parseMethodName();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after method name");
@@ -289,11 +302,11 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
-        List<Ast.Annotation> callableAnnotations = withGpuPlacement(annotations, mods.gpu);
+        List<Ast.Annotation> callableAnnotations = withExecutionPlacement(annotations, mods.gpu, mods.quantum);
         Ast.TypeRef returnType = parseReturnType(callableAnnotations);
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
-            if (mods.gpu) throw error(previous(), "abstract methods cannot be gpu callables");
+            if (mods.gpu || mods.quantum) throw error(previous(), "abstract methods cannot declare an execution target");
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
@@ -345,6 +358,7 @@ public final class Parser {
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean gpu = false;
+        boolean quantum = false;
         boolean progress;
         do {
             progress = true;
@@ -356,16 +370,24 @@ public final class Parser {
             else if (match(GPU)) {
                 if (gpu) throw error(previous(), "duplicate 'gpu' modifier");
                 gpu = true;
+            } else if (match(QUANTUM)) {
+                if (quantum) throw error(previous(), "duplicate 'quantum' modifier");
+                quantum = true;
             } else progress = false;
         } while (progress);
+        if (gpu && quantum) {
+            throw error(previous(), "'gpu' and 'quantum' are mutually exclusive execution targets");
+        }
         if (gpu && async) throw error(previous(), "'gpu' and 'async' cannot be combined; GPU dispatch is an explicit execution target");
-        return new Modifiers(visibility, async, isStatic, isAbstract, gpu);
+        if (quantum && async) throw error(previous(), "'quantum' and 'async' cannot be combined; quantum dispatch is an explicit execution target");
+        return new Modifiers(visibility, async, isStatic, isAbstract, gpu, quantum);
     }
 
-    private List<Ast.Annotation> withGpuPlacement(List<Ast.Annotation> annotations, boolean gpu) {
-        if (!gpu) return annotations;
+    private List<Ast.Annotation> withExecutionPlacement(List<Ast.Annotation> annotations, boolean gpu, boolean quantum) {
+        if (!gpu && !quantum) return annotations;
         ArrayList<Ast.Annotation> result = new ArrayList<>(annotations);
-        result.add(new Ast.Annotation(Ast.GPU_ANNOTATION, List.of()));
+        if (gpu) result.add(new Ast.Annotation(Ast.GPU_ANNOTATION, List.of()));
+        if (quantum) result.add(new Ast.Annotation(Ast.QUANTUM_ANNOTATION, List.of()));
         return List.copyOf(result);
     }
 
@@ -1102,5 +1124,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract, boolean gpu) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract, boolean gpu, boolean quantum) { }
 }

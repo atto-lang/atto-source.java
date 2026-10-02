@@ -29,7 +29,7 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "gpu" ;
+callable_modifier = "abstract" | "async" | "gpu" | "quantum" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -53,7 +53,7 @@ method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list 
 explicit_receiver = "self" type_ref ;
 
 static_function_decl
-                = { annotation } visibility { "static" | "gpu" } "fnc" IDENT [ generic_params ]
+                = { annotation } visibility { "static" | "gpu" | "quantum" } "fnc" IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
@@ -244,6 +244,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      plus mutable owner access.
    - gpu is a reserved execution-placement keyword. On a named fnc/static fnc it
      targets the entire body. In expression position, gpu requires a direct lambda.
+   - quantum is a reserved whole-callable execution target for fnc/static fnc.
+     It is mutually exclusive with gpu and async and never implies CPU/GPU fallback.
+   - Canonical class/module long-form bodies use "as"; interface conformance uses
+     "is"; trait composition uses "with" in the declaration-syntax/trait stack.
    - gpu parallel is a contextual batch form over a non-empty list/tuple literal
      or List.of(...) containing only direct lambda literals. "parallel" remains a
      contextual word rather than a globally reserved identifier.
