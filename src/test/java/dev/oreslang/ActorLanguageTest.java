@@ -272,6 +272,30 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void shareIntrinsicIsAReadOnlyCapabilityCheckedAlias() throws Exception {
+        String output = run("""
+                fnc worker(Array<String> message) => void {
+                  stdio.stdout.write(message[0]);
+                  return;
+                }
+
+                pub routine main() => void {
+                  let values = arr["shared"];
+                  val shared = share(values);
+                  val worker_ref = actor.spawn(worker);
+                  actor.send(worker_ref, shared);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(values[0]);
+                  actor.stop(worker_ref);
+                  actor.join(worker_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("shared:shared", output);
+    }
+
+    @Test
     void readonlySharedValuesAreTypedAndDoNotConsumeTheOriginal() throws Exception {
         String output = run("""
                 fnc worker(Array<String> message) => void {
