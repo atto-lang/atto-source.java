@@ -201,7 +201,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
-            IfStmt, TryStmt, ForOfStmt, ForStmt, ReceiveLoopStmt, SelectStmt { }
+            IfStmt, TryStmt, ForOfStmt, ForStmt, ReceiveLoopStmt, ReceivePatternLoopStmt, SelectStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) { }
@@ -251,6 +251,65 @@ public final class Ast {
         public ReceiveLoopStmt { body = List.copyOf(body); }
     }
 
+    /** Pattern vocabulary shared by receive dispatch and future general match forms. */
+    public sealed interface Pattern permits WildcardPattern, BindingPattern, TypedBindingPattern,
+            LiteralPattern, TuplePattern, ListPattern { }
+
+    public record WildcardPattern() implements Pattern { }
+
+    public record BindingPattern(BindingKind kind, String name) implements Pattern {
+        public BindingPattern {
+            if (name == null || name.isBlank() || "_".equals(name)) {
+                throw new IllegalArgumentException("pattern binding name must be a non-discard identifier");
+            }
+        }
+    }
+
+    /**
+     * Explicitly typed capture: `value: int`, `let value: int`, etc.
+     * The type is checked statically and re-guarded at dynamic interop edges.
+     */
+    public record TypedBindingPattern(BindingKind kind, TypeRef type, String name) implements Pattern {
+        public TypedBindingPattern {
+            if (type == null) throw new IllegalArgumentException("typed pattern binding requires a type");
+            if (name == null || name.isBlank() || "_".equals(name)) {
+                throw new IllegalArgumentException("pattern binding name must be a non-discard identifier");
+            }
+        }
+    }
+
+    public record LiteralPattern(Object value) implements Pattern { }
+
+    public record TuplePattern(List<Pattern> elements) implements Pattern {
+        public TuplePattern { elements = List.copyOf(elements); }
+    }
+
+    public record ListPattern(List<Pattern> elements) implements Pattern {
+        public ListPattern { elements = List.copyOf(elements); }
+    }
+
+    public record ReceiveCase(Pattern pattern, List<Stmt> body) {
+        public ReceiveCase {
+            if (pattern == null) throw new IllegalArgumentException("receive case requires a pattern");
+            body = List.copyOf(body);
+        }
+    }
+
+    /**
+     * FIFO receive followed by local pattern dispatch. Pattern matching never
+     * scans past the mailbox head looking for a later matching message.
+     */
+    public record ReceivePatternLoopStmt(
+            ReceiveLoopMode mode,
+            List<ReceiveCase> cases,
+            List<Stmt> defaultBody) implements Stmt {
+        public ReceivePatternLoopStmt {
+            cases = List.copyOf(cases);
+            defaultBody = List.copyOf(defaultBody);
+            if (cases.isEmpty()) throw new IllegalArgumentException("pattern receive loop requires at least one case");
+        }
+    }
+
     public record SelectCase(
             ChannelOpExpr operation,
             TypeRef bindingType,
@@ -272,6 +331,16 @@ public final class Ast {
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
+
+    /**
+     * Source-level symbol literal payload. Runtime evaluation materializes this
+     * as an OresSymbol; no global atom/intern table is involved.
+     */
+    public record Symbol(String name) {
+        public Symbol {
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("symbol name cannot be blank");
+        }
+    }
     public record NameExpr(String name) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
