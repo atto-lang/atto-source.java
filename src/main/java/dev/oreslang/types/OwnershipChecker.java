@@ -304,9 +304,10 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            checkExpr(indexed.receiver(), scope, false);
+            ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
-            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            Ast.TypeRef indexedType = indexedOwnershipType(receiver.type, indexed.index());
+            return new ValueInfo(indexedType, kindOfType(indexedType), null);
         }
         if (expr instanceof Ast.NewExpr created) {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
@@ -336,7 +337,7 @@ public final class OwnershipChecker {
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
         if (call.callee() instanceof Ast.MemberExpr builtin
                 && builtin.receiver() instanceof Ast.NameExpr namespace
-                && builtinCollectionNamespaceAvailable(namespace.name())
+                && builtinCollectionNamespaceAvailable(namespace.name(), scope)
                 && namespace.name().equals("List")
                 && builtin.member().equals("of")) {
             List<Ast.TypeRef> itemTypes = new ArrayList<>();
@@ -347,7 +348,7 @@ public final class OwnershipChecker {
         }
         if (call.callee() instanceof Ast.MemberExpr builtin
                 && builtin.receiver() instanceof Ast.NameExpr namespace
-                && builtinCollectionNamespaceAvailable(namespace.name())
+                && builtinCollectionNamespaceAvailable(namespace.name(), scope)
                 && namespace.name().equals("Map")
                 && builtin.member().equals("of")) {
             Map<String, Ast.TypeRef> members = new LinkedHashMap<>();
@@ -692,8 +693,8 @@ public final class OwnershipChecker {
         return typeAliases.get(name);
     }
 
-    private boolean builtinCollectionNamespaceAvailable(String name) {
-        return !modules.contains(name) && findClass(name) == null;
+    private boolean builtinCollectionNamespaceAvailable(String name, Scope scope) {
+        return scope.lookup(name) == null && !modules.contains(name) && findClass(name) == null;
     }
 
     private void requireUsable(VarState state, String name, boolean write) {
@@ -761,6 +762,28 @@ public final class OwnershipChecker {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
         }
+    }
+
+    private Ast.TypeRef indexedOwnershipType(Ast.TypeRef source, Ast.Expr index) {
+        Ast.TypeRef expanded = expandAliasType(source);
+        if (expanded == null) return Ast.TypeRef.inferred();
+        if (expanded.isBorrow()) expanded = expandAliasType(expanded.borrowedTarget());
+
+        if ((expanded.name().equals("Array") || expanded.name().equals("List")) && expanded.arguments().size() == 1) {
+            return expandAliasType(expanded.arguments().getFirst());
+        }
+        if (expanded.isTupleType()) {
+            if (index instanceof Ast.LiteralExpr literal && literal.value() instanceof Long raw) {
+                try {
+                    int slot = Math.toIntExact(raw);
+                    if (slot >= 0 && slot < expanded.arguments().size()) return expandAliasType(expanded.arguments().get(slot));
+                } catch (ArithmeticException ignored) {
+                    // TypeChecker produces the user-facing index error.
+                }
+            }
+            if (!expanded.arguments().isEmpty()) return Ast.TypeRef.union(expanded.arguments());
+        }
+        return Ast.TypeRef.inferred();
     }
 
     private Ast.TypeRef destructureBindingType(Ast.DestructureStmt destructure, Ast.TypeRef source, int index, String name) {
