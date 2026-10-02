@@ -389,6 +389,8 @@ In the current Java reference runtime, `process.gc()` is a **rate-limited JVM co
 
 An isolate is stricter than an actor and is intended as a FaaS/tenant security boundary. Strict isolate contexts deny host reflection, native access, arbitrary filesystem/IO, child-process creation, guest-created threads, environment access, and unrestricted polyglot access unless an explicit capability is granted by the host.
 
+Resource ceilings are part of the isolate contract, not advisory metadata: `maxHeapBytes`, `maxMailboxMessages`, `maxActors`, and `maxWallTime` are propagated into the guest context. Actor creation reserves an isolate actor slot atomically before publication, so concurrent spawns cannot race past `maxActors`; termination releases the slot. Child actor policies may narrow but never widen the parent ceiling.
+
 Actors may run inside an isolate. Actor semantics never weaken isolate policy.
 
 ## Built-in globals
