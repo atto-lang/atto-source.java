@@ -514,10 +514,13 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public static long estimatedFrozenBytes(Object value) {
-        return estimatedFrozenBytes(value, 0);
+        return estimatedFrozenBytes(value, new IdentityHashMap<>(), 0);
     }
 
-    private static long estimatedFrozenBytes(Object value, int depth) {
+    private static long estimatedFrozenBytes(
+            Object value,
+            IdentityHashMap<Object, Boolean> path,
+            int depth) {
         if (depth > MAX_FREEZE_DEPTH) return Long.MAX_VALUE;
         if (value == null) return 8L;
         if (value instanceof Shared<?>) return SHARED_HANDLE_BYTES;
@@ -525,30 +528,58 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Boolean || value instanceof Byte) return 16L;
         if (value instanceof Character || value instanceof Short) return 16L;
         if (value instanceof Integer || value instanceof Float) return 16L;
-        if (value instanceof Long || value instanceof Double || value instanceof UUID || value instanceof ActorId || value instanceof MonitorRef) return 32L;
+        if (value instanceof Long || value instanceof Double || value instanceof UUID
+                || value instanceof ActorId || value instanceof MonitorRef) return 32L;
         if (value instanceof BigInteger integer) return safeAdd(32L, integer.bitLength() / 8L + 1L);
-        if (value instanceof BigDecimal decimal) return safeAdd(48L, estimatedFrozenBytes(decimal.unscaledValue(), depth + 1));
+        if (value instanceof BigDecimal decimal) {
+            return safeAdd(48L, estimatedFrozenBytes(decimal.unscaledValue(), path, depth + 1));
+        }
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRef<?>) return SHARED_HANDLE_BYTES;
-        if (value instanceof List<?> list) {
-            long total = 24L;
-            for (Object item : list) total = safeAdd(total, estimatedFrozenBytes(item, depth + 1));
-            return total;
+
+        boolean composite = value instanceof List<?>
+                || value instanceof Set<?>
+                || value instanceof Map<?, ?>
+                || value.getClass().isArray();
+        if (composite && path.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic mutable graphs cannot cross actor boundaries");
         }
-        if (value instanceof Set<?> set) {
-            long total = 48L;
-            for (Object item : set) total = safeAdd(total, estimatedFrozenBytes(item, depth + 1));
-            return total;
-        }
-        if (value instanceof Map<?, ?> map) {
-            long total = 64L;
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                total = safeAdd(total, estimatedFrozenBytes(entry.getKey(), depth + 1));
-                total = safeAdd(total, estimatedFrozenBytes(entry.getValue(), depth + 1));
+
+        try {
+            if (value instanceof List<?> list) {
+                long total = 24L;
+                for (Object item : list) {
+                    total = safeAdd(total, estimatedFrozenBytes(item, path, depth + 1));
+                }
+                return total;
             }
-            return total;
+            if (value instanceof Set<?> set) {
+                long total = 48L;
+                for (Object item : set) {
+                    total = safeAdd(total, estimatedFrozenBytes(item, path, depth + 1));
+                }
+                return total;
+            }
+            if (value instanceof Map<?, ?> map) {
+                long total = 64L;
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    total = safeAdd(total, estimatedFrozenBytes(entry.getKey(), path, depth + 1));
+                    total = safeAdd(total, estimatedFrozenBytes(entry.getValue(), path, depth + 1));
+                }
+                return total;
+            }
+            if (value.getClass().isArray()) {
+                long total = 24L;
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    total = safeAdd(total, estimatedFrozenBytes(Array.get(value, i), path, depth + 1));
+                }
+                return total;
+            }
+            return 64L;
+        } finally {
+            if (composite) path.remove(value);
         }
-        return 64L;
     }
 
     private static long safeAdd(long left, long right) {
