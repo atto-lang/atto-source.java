@@ -29,6 +29,7 @@ import java.util.function.Supplier;
 public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final Object lifecycleLock = new Object();
     private static final int MAX_FREEZE_DEPTH = 256;
     private static final int MAX_FREEZE_NODES = 100_000;
 
@@ -180,22 +181,24 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
-        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        requireWithinCeiling(policy);
-        ActorId id = ActorId.create();
-        ActorRef<M> ref = new ActorRef<>(id);
-        ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
-        boolean backendStarted = false;
-        try {
-            garbageCollector.actorStarted(id, policy);
-            backendStarted = true;
-            actors.put(id, cell);
-            cell.start();
-            return ref;
-        } catch (RuntimeException | Error failure) {
-            actors.remove(id, cell);
-            if (backendStarted) safeActorExit(id);
-            throw failure;
+        synchronized (lifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            requireWithinCeiling(policy);
+            ActorId id = ActorId.create();
+            ActorRef<M> ref = new ActorRef<>(id);
+            ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
+            boolean backendStarted = false;
+            try {
+                garbageCollector.actorStarted(id, policy);
+                backendStarted = true;
+                actors.put(id, cell);
+                cell.start();
+                return ref;
+            } catch (RuntimeException | Error failure) {
+                actors.remove(id, cell);
+                if (backendStarted) safeActorExit(id);
+                throw failure;
+            }
         }
     }
 
@@ -427,9 +430,16 @@ public final class ActorRuntime implements AutoCloseable {
 
     @Override
     public void close() {
-        if (!closed.compareAndSet(false, true)) return;
-        for (ActorCell<?> cell : actors.values()) cell.stop();
-        actors.clear();
+        synchronized (lifecycleLock) {
+            if (!closed.compareAndSet(false, true)) return;
+            /*
+             * Do not clear the registry here. A stopped actor remains registered
+             * until its execution thread reaches finally, where its backend heap
+             * is released and the cell removes itself. This prevents shutdown
+             * from pretending actor memory is gone while code is still running.
+             */
+            for (ActorCell<?> cell : List.copyOf(actors.values())) cell.stop();
+        }
     }
 
     private final class ActorCell<M> {
