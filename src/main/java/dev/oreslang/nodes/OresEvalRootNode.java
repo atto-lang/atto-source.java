@@ -126,7 +126,12 @@ public final class OresEvalRootNode extends RootNode {
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
             if (stmt instanceof Ast.BindingStmt binding) {
-                env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                if (binding.initializer() instanceof Ast.LambdaExpr) {
+                    env.reserve(binding.name(), binding.kind());
+                    env.initialize(binding.name(), eval(binding.initializer(), env));
+                } else {
+                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                }
                 return;
             }
             if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -443,6 +448,14 @@ public final class OresEvalRootNode extends RootNode {
         private Env(Env parent) { this.parent = parent; }
         private void define(String name, Object value, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+        }
+        private void reserve(String name, Ast.BindingKind kind) {
+            if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
+        }
+        private void initialize(String name, Object value) {
+            Slot slot = slots.get(name);
+            if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
+            slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
