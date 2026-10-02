@@ -111,6 +111,7 @@ public final class TypeChecker {
         // types differ can fail later as a generic structural conflict before
         // the language's arity-only overload rule is diagnosed.
         for (Ast.ClassDecl klass : classOwners.keySet()) validateLocalClassOverloads(klass);
+        for (Ast.ClassDecl klass : classOwners.keySet()) validateInheritedClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
@@ -206,6 +207,89 @@ public final class TypeChecker {
                         + "; overload identity is name + arity only; parameter types and return types do not participate");
             }
         }
+    }
+
+    private void validateInheritedClassOverloads(Ast.ClassDecl klass) {
+        validateInheritedClassOverloads(klass, false);
+        validateInheritedClassOverloads(klass, true);
+    }
+
+    private void validateInheritedClassOverloads(Ast.ClassDecl klass, boolean staticNamespace) {
+        Set<Ast.MethodArity> locallyResolved = new HashSet<>();
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic() == staticNamespace) locallyResolved.add(method.overloadIdentity());
+        }
+
+        Map<Ast.MethodArity, List<Ast.ClassDecl>> inherited =
+                inheritedMethodOrigins(klass, staticNamespace, new LinkedHashSet<>());
+
+        for (Map.Entry<Ast.MethodArity, List<Ast.ClassDecl>> entry : inherited.entrySet()) {
+            if (locallyResolved.contains(entry.getKey())) continue;
+            List<Ast.ClassDecl> origins = mostSpecificMethodOrigins(entry.getValue());
+            if (origins.size() <= 1) continue;
+
+            String label = staticNamespace ? "static function" : "method";
+            String owners = origins.stream().map(this::qualifiedClassName).sorted().reduce((a, b) -> a + ", " + b).orElse("");
+            throw new IllegalArgumentException("ambiguous inherited " + label + " '" + klass.name() + "."
+                    + entry.getKey().name() + "' with arity " + entry.getKey().arity()
+                    + " from " + owners
+                    + "; add an explicit child declaration for this name + arity slot; argument and return types never select an overload");
+        }
+    }
+
+    private Map<Ast.MethodArity, List<Ast.ClassDecl>> inheritedMethodOrigins(
+            Ast.ClassDecl klass, boolean staticNamespace, Set<Ast.ClassDecl> stack) {
+        Map<Ast.MethodArity, List<Ast.ClassDecl>> result = new LinkedHashMap<>();
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            mergeMethodOrigins(result, effectiveMethodOrigins(parent, staticNamespace, stack));
+        }
+        return result;
+    }
+
+    private Map<Ast.MethodArity, List<Ast.ClassDecl>> effectiveMethodOrigins(
+            Ast.ClassDecl klass, boolean staticNamespace, Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
+        try {
+            Map<Ast.MethodArity, List<Ast.ClassDecl>> result =
+                    inheritedMethodOrigins(klass, staticNamespace, stack);
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.isStatic() != staticNamespace) continue;
+                result.put(method.overloadIdentity(), new ArrayList<>(List.of(klass)));
+            }
+            return result;
+        } finally {
+            stack.remove(klass);
+        }
+    }
+
+    private void mergeMethodOrigins(
+            Map<Ast.MethodArity, List<Ast.ClassDecl>> target,
+            Map<Ast.MethodArity, List<Ast.ClassDecl>> source) {
+        for (Map.Entry<Ast.MethodArity, List<Ast.ClassDecl>> entry : source.entrySet()) {
+            List<Ast.ClassDecl> origins = target.computeIfAbsent(entry.getKey(), ignored -> new ArrayList<>());
+            for (Ast.ClassDecl candidate : entry.getValue()) {
+                boolean alreadyPresent = origins.stream().anyMatch(existing -> existing == candidate);
+                if (!alreadyPresent) origins.add(candidate);
+            }
+        }
+    }
+
+    private List<Ast.ClassDecl> mostSpecificMethodOrigins(List<Ast.ClassDecl> origins) {
+        List<Ast.ClassDecl> result = new ArrayList<>();
+        for (Ast.ClassDecl candidate : origins) {
+            boolean shadowedByMoreSpecificOrigin = false;
+            for (Ast.ClassDecl other : origins) {
+                if (other == candidate) continue;
+                if (classExtends(other, candidate, new LinkedHashSet<>())) {
+                    shadowedByMoreSpecificOrigin = true;
+                    break;
+                }
+            }
+            if (!shadowedByMoreSpecificOrigin) result.add(candidate);
+        }
+        return result;
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
