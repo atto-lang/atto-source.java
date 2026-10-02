@@ -332,6 +332,71 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("use of moved value 'box'"));
     }
 
+    @Test
+    void returnedBorrowKeepsOriginalOwnerBorrowedAcrossCallBoundary() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc identity(&Bar value) => &Bar {
+                          return value;
+                        }
+
+                        fnc consume(Bar value) => void { return; }
+
+                        fnc bad() => void {
+                          let Bar value = new Bar();
+                          val &Bar read = identity(&value);
+                          consume(value);
+                          stdio.println(read.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("cannot move"));
+    }
+
+    @Test
+    void returnedBorrowLifetimeEndsWithLexicalBindingScope() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Bar
+                  pub let String foo = "start";
+                end
+
+                fnc identity(&Bar value) => &Bar {
+                  return value;
+                }
+
+                fnc consume(Bar value) => void { return; }
+
+                fnc ok() => void {
+                  let Bar value = new Bar();
+                  if true; do
+                    val &Bar read = identity(&value);
+                    stdio.println(read.foo);
+                  fi
+                  consume(value);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void ambiguousReturnedBorrowRequiresFutureExplicitLifetimeSyntax() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc choose(&Bar left, &Bar right) => &Bar {
+                          return left;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("ambiguous returned-borrow lifetime"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
