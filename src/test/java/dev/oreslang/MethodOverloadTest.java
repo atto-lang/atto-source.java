@@ -366,6 +366,95 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void inheritedGenericMethodUsesConcreteParentBindingAfterAritySelection() throws Exception {
+        String output = run("""
+                define module m
+                  define class Base<T>
+                    pub pick(T value) => T { return value; }
+                  end
+
+                  define class Child extends Base<int>
+                  end
+                end
+
+                pub routine main() => void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.pick(7));
+                }
+                """);
+
+        assertEquals("7", output);
+
+        assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Base<T>
+                            pub pick(T value) => T { return value; }
+                          end
+
+                          define class Child extends Base<int>
+                          end
+                        end
+
+                        fnc bad(m.Child child) => void {
+                          child.pick("wrong");
+                          return;
+                        }
+                        """)));
+    }
+
+    @Test
+    void sameGenericDiamondViewOfOneDeclarationIsSafe() throws Exception {
+        String output = run("""
+                define module m
+                  define class Base<T>
+                    pub pick(T value) => T { return value; }
+                  end
+
+                  define class Left extends Base<int>
+                  end
+
+                  define class Right extends Base<int>
+                  end
+
+                  define class Child extends Left, Right
+                  end
+                end
+
+                pub routine main() => void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.pick(9));
+                }
+                """);
+
+        assertEquals("9", output);
+    }
+
+    @Test
+    void conflictingGenericDiamondViewsRequireExplicitChildResolution() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Base<T>
+                            pub pick(T value) => T { return value; }
+                          end
+
+                          define class Left extends Base<int>
+                          end
+
+                          define class Right extends Base<String>
+                          end
+
+                          define class Child extends Left, Right
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("ambiguous inherited method 'Child.pick' with arity 1"));
+        assertTrue(error.getMessage().contains("m.Base"));
+    }
+
+    @Test
     void interfacesAndImplementationsUseArityOnlyMethodSlots() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub interface Lookup {
