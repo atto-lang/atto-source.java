@@ -243,6 +243,15 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - constructor(...) { ... } has implicit self, no declared return type, cannot
      be static/abstract/async, and may overload by arity. Explicit constructors
      must initialize every instance field that lacks a field initializer.
+   - An uninitialized val instance field may be assigned exactly once through
+     self during constructor execution. const fields require declaration
+     initializers. Constructor-only initialization authority never escapes into
+     lambdas.
+   - Static field types cannot reference class type parameters because static
+     storage is shared by the class namespace rather than specialized per T.
+   - Until super(...) chaining exists, explicit constructor semantics cannot be
+     combined with class inheritance, and subclasses cannot bypass an ancestor
+     constructor.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.
    - "=>" belongs to named callable return declarations.

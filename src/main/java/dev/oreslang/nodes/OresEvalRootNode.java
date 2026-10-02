@@ -396,7 +396,11 @@ public final class OresEvalRootNode extends RootNode {
             if (singletonState != null) ProcessSingletonRegistry.checkExecutionBudget();
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env lexical = classLexicalModuleState(dispatchClass, singletonState);
-            Env env = new Env(lexical, singletonState);
+            Env env = new Env(
+                    lexical,
+                    singletonState,
+                    false,
+                    isConstructor(method) ? receiver : null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
                 Ast.Param param = method.parameters().get(i);
@@ -548,11 +552,16 @@ public final class OresEvalRootNode extends RootNode {
                         if (field == null || !object.fields.containsKey(target.member())) {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
-                        if (field.bindingKind() != Ast.BindingKind.LET) {
-                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
-                                    + target.member() + "' is immutable");
-                        }
                         Object previous = object.fields.get(target.member());
+                        boolean initializingVal = field.bindingKind() == Ast.BindingKind.VAL
+                                && field.initializer() == null
+                                && previous == Env.MISSING
+                                && env.constructorTarget == object;
+                        if (field.bindingKind() != Ast.BindingKind.LET && !initializingVal) {
+                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                                    + target.member()
+                                    + "' is immutable; val fields may be initialized only once by their constructor");
+                        }
                         object.fields.put(target.member(), value);
                         try {
                             if (env.singletonState != null) env.singletonState.validateStorageGraph();
@@ -1263,20 +1272,42 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final SingletonState singletonState;
         private final boolean singletonStorage;
+        private final OresObject constructorTarget;
         private final Map<String, Slot> slots = new HashMap<>();
 
         private Env(Env parent) {
-            this(parent, parent == null ? null : parent.singletonState, false);
+            this(
+                    parent,
+                    parent == null ? null : parent.singletonState,
+                    false,
+                    parent == null ? null : parent.constructorTarget);
         }
 
         private Env(Env parent, SingletonState singletonState) {
-            this(parent, singletonState, false);
+            this(
+                    parent,
+                    singletonState,
+                    false,
+                    parent == null ? null : parent.constructorTarget);
         }
 
         private Env(Env parent, SingletonState singletonState, boolean singletonStorage) {
+            this(
+                    parent,
+                    singletonState,
+                    singletonStorage,
+                    parent == null ? null : parent.constructorTarget);
+        }
+
+        private Env(
+                Env parent,
+                SingletonState singletonState,
+                boolean singletonStorage,
+                OresObject constructorTarget) {
             this.parent = parent;
             this.singletonState = singletonState;
             this.singletonStorage = singletonStorage;
+            this.constructorTarget = constructorTarget;
         }
 
         private void define(String name, Object value, Ast.BindingKind kind) {
@@ -1339,7 +1370,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Env snapshot() {
-            Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState, singletonStorage);
+            // Closures never retain constructor-only initialization authority.
+            // They can capture self as a value, but a later callback cannot
+            // initialize or reinitialize a val field.
+            Env cp = new Env(
+                    parent == null ? null : parent.snapshot(),
+                    singletonState,
+                    singletonStorage,
+                    null);
             cp.slots.putAll(slots);
             return cp;
         }

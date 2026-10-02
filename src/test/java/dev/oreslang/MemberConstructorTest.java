@@ -233,6 +233,107 @@ final class MemberConstructorTest {
         assertEquals("7", output);
     }
 
+    @Test
+    void constructorMayInitializeValExactlyOnce() throws Exception {
+        String output = run("""
+                define class ImmutableName as
+                  pub val name: String;
+
+                  constructor(String name) {
+                    self.name = name;
+                  }
+                end
+
+                pub routine main() => void {
+                  val ImmutableName value = new ImmutableName("ores");
+                  stdio.stdout.write(value.name);
+                  return;
+                }
+                """);
+
+        assertEquals("ores", output);
+    }
+
+    @Test
+    void constructorCannotInitializeTheSameValTwice() {
+        RuntimeException failure = assertThrows(RuntimeException.class, () -> run("""
+                define class Broken as
+                  val name: String;
+
+                  constructor(String name) {
+                    self.name = name;
+                    self.name = "again";
+                  }
+                end
+
+                pub routine main() => void {
+                  val Broken value = new Broken("first");
+                  return;
+                }
+                """));
+
+        assertTrue(causeChainContains(failure, "val fields may be initialized only once"), String.valueOf(failure));
+    }
+
+    @Test
+    void initializedValCannotBeOverwrittenByConstructor() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class AlreadyInitialized as
+                          val name: String = "seed";
+
+                          constructor(String name) {
+                            self.name = name;
+                          }
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("cannot reassign val field"), failure.getMessage());
+    }
+
+    @Test
+    void constFieldsRequireDeclarationInitializers() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Constants as
+                          const token: String;
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("requires a declaration initializer"), failure.getMessage());
+    }
+
+    @Test
+    void staticFieldsCannotDependOnClassTypeParameters() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box<T> as
+                          static value: T;
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("static storage is shared across all instances"), failure.getMessage());
+    }
+
+    @Test
+    void inheritanceCannotBypassAnExplicitParentConstructor() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Base as
+                          value: String;
+
+                          constructor(String value) {
+                            self.value = value;
+                          }
+                        end
+
+                        define class Child extends Base as
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("until super(...) is supported"), failure.getMessage());
+    }
+
     private static boolean causeChainContains(Throwable failure, String text) {
         Throwable current = failure;
         while (current != null) {

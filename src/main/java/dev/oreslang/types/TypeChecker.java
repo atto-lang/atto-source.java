@@ -686,9 +686,15 @@ public final class TypeChecker {
         Type self = nominalClassType(klass);
 
         Set<String> parentNames = new HashSet<>();
+        boolean declaresConstructors = klass.methods().stream().anyMatch(this::isConstructor);
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
-            resolveClassParent(parent, klass);
+            Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
+            if (resolvedParent != null
+                    && (declaresConstructors || hasConstructorInHierarchy(resolvedParent, new LinkedHashSet<>()))) {
+                throw new IllegalArgumentException("class '" + klass.name()
+                        + "' cannot combine explicit constructor semantics with inheritance until super(...) is supported");
+            }
         }
 
         Set<String> localMethodSignatures = new HashSet<>();
@@ -711,6 +717,14 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) {
             if (!localFieldNames.add(field.name())) {
                 throw new IllegalArgumentException("duplicate data member '" + klass.name() + "." + field.name() + "'");
+            }
+            if (field.isStatic() && referencesClassGeneric(field.type(), classGenerics)) {
+                throw new IllegalArgumentException("static field '" + klass.name() + "." + field.name()
+                        + "' cannot reference class type parameters because static storage is shared across all instances");
+            }
+            if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() == null) {
+                throw new IllegalArgumentException("const field '" + klass.name() + "." + field.name()
+                        + "' requires a declaration initializer");
             }
             Type fieldSelf = field.isStatic() ? null : self;
             Type fieldType = resolve(field.type(), classGenerics, fieldSelf);
@@ -753,7 +767,7 @@ public final class TypeChecker {
             }
 
             Type callableSelf = method.isStatic() ? null : self;
-            Env env = new Env(classModuleEnv);
+            Env env = new Env(classModuleEnv, classModuleEnv.moduleName, isConstructor(method) ? klass : null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
@@ -1220,7 +1234,10 @@ public final class TypeChecker {
             return new Record(members);
         }
         if (expr instanceof Ast.LambdaExpr lambda) {
-            Env lambdaEnv = new Env(env);
+            // Constructor initialization authority is lexical/dynamic to the
+            // constructor body. A closure may capture self as a value, but it
+            // never inherits permission to initialize val fields later.
+            Env lambdaEnv = new Env(env, env.moduleName, null);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
                 Type type = resolveParam(param, generics, self);
@@ -1249,7 +1266,7 @@ public final class TypeChecker {
         if (lambda.parameters().size() != expected.parameters().size()) {
             throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
         }
-        Env lambdaEnv = new Env(parent);
+        Env lambdaEnv = new Env(parent, parent.moduleName, null);
         for (int i = 0; i < lambda.parameters().size(); i++) {
             Ast.Param param = lambda.parameters().get(i);
             Type expectedParam = expected.parameters().get(i);
@@ -1427,7 +1444,8 @@ public final class TypeChecker {
             if (klass != null) {
                 Ast.FieldDecl field = findInstanceField(klass, member.member(), new LinkedHashSet<>());
                 if (field != null) {
-                    if (field.bindingKind() != Ast.BindingKind.LET) {
+                    if (field.bindingKind() != Ast.BindingKind.LET
+                            && !canInitializeValField(member, klass, field, env)) {
                         throw new IllegalArgumentException("cannot reassign " + field.bindingKind().name().toLowerCase()
                                 + " field '" + klass.name() + "." + field.name() + "'");
                     }
@@ -1616,6 +1634,38 @@ public final class TypeChecker {
             if (isConstructor(method) && method.arity() == arity) return method;
         }
         return null;
+    }
+
+    private boolean hasConstructorInHierarchy(Ast.ClassDecl klass, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return false;
+        if (klass.methods().stream().anyMatch(this::isConstructor)) return true;
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null && hasConstructorInHierarchy(parent, seen)) return true;
+        }
+        return false;
+    }
+
+    private boolean canInitializeValField(
+            Ast.MemberExpr member,
+            Ast.ClassDecl klass,
+            Ast.FieldDecl field,
+            Env env) {
+        return field.bindingKind() == Ast.BindingKind.VAL
+                && field.initializer() == null
+                && member.receiver() instanceof Ast.NameExpr name
+                && name.name().equals("self")
+                && env.constructorClass == klass;
+    }
+
+    private boolean referencesClassGeneric(Ast.TypeRef type, Set<String> classGenerics) {
+        if (type == null) return false;
+        if (type.isBorrow()) return referencesClassGeneric(type.borrowedTarget(), classGenerics);
+        if (classGenerics.contains(type.name())) return true;
+        for (Ast.TypeRef argument : type.arguments()) {
+            if (referencesClassGeneric(argument, classGenerics)) return true;
+        }
+        return false;
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
@@ -2024,15 +2074,23 @@ public final class TypeChecker {
     private static final class Env {
         private final Env parent;
         private final String moduleName;
+        private final Ast.ClassDecl constructorClass;
         private final Map<String, Binding> bindings = new HashMap<>();
 
         private Env(Env parent) {
-            this(parent, parent == null ? null : parent.moduleName);
+            this(parent,
+                    parent == null ? null : parent.moduleName,
+                    parent == null ? null : parent.constructorClass);
         }
 
         private Env(Env parent, String moduleName) {
+            this(parent, moduleName, parent == null ? null : parent.constructorClass);
+        }
+
+        private Env(Env parent, String moduleName, Ast.ClassDecl constructorClass) {
             this.parent = parent;
             this.moduleName = moduleName;
+            this.constructorClass = constructorClass;
         }
         private void define(String name, Type type, Ast.BindingKind kind) {
             if (bindings.putIfAbsent(name, new Binding(type, kind)) != null) throw new IllegalArgumentException("duplicate binding '" + name + "'");

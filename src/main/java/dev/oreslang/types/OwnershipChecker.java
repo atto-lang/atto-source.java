@@ -119,12 +119,14 @@ public final class OwnershipChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             Scope moduleScope = new Scope(null);
             seedModuleState(module, moduleScope);
-            Scope scope = new Scope(moduleScope);
+            boolean constructor = isConstructor(method);
+            Scope scope = new Scope(moduleScope, constructor ? klass : null);
             if (!method.isStatic()) {
                 // Normal method receivers are immutable. A constructor owns an
                 // exclusive initialization borrow so it can populate mutable
-                // fields before the instance becomes observable.
-                ValueKind receiverKind = method.name().equals("constructor")
+                // fields and perform the one permitted initialization write to
+                // an uninitialized val field before the instance is observable.
+                ValueKind receiverKind = constructor
                         ? ValueKind.MUT_BORROW
                         : ValueKind.IMM_BORROW;
                 scope.define("self", new VarState(
@@ -456,8 +458,10 @@ public final class OwnershipChecker {
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
                 if (field == null) throw error("unknown field '" + member.member() + "' on " + klass.name());
-                if (field.bindingKind() != Ast.BindingKind.LET) {
-                    throw error("field '" + klass.name() + "." + member.member() + "' is immutable; declare the field with let to permit mutation");
+                if (field.bindingKind() != Ast.BindingKind.LET
+                        && !canInitializeValField(scope, member, klass, field)) {
+                    throw error("field '" + klass.name() + "." + member.member()
+                            + "' is immutable; only an uninitialized val may be assigned once through self in its constructor");
                 }
             }
             ensureMutableReceiver(member.receiver(), scope, "field '" + member.member() + "'");
@@ -676,21 +680,36 @@ public final class OwnershipChecker {
         return null;
     }
 
+    private boolean isConstructor(Ast.MethodDecl method) {
+        return !method.isStatic() && method.name().equals("constructor");
+    }
+
     private Ast.MethodDecl findConstructor(Ast.ClassDecl klass, int arity) {
         for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic()
-                    && method.name().equals("constructor")
-                    && method.parameters().size() == arity) {
+            if (isConstructor(method) && method.parameters().size() == arity) {
                 return method;
             }
         }
         return null;
     }
 
+    private boolean canInitializeValField(
+            Scope scope,
+            Ast.MemberExpr member,
+            Ast.ClassDecl klass,
+            Ast.FieldDecl field) {
+        return field.bindingKind() == Ast.BindingKind.VAL
+                && field.initializer() == null
+                && member.receiver() instanceof Ast.NameExpr name
+                && name.name().equals("self")
+                && scope.constructorClass == klass;
+    }
+
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+            if (!method.isStatic() && !isConstructor(method)
+                    && method.name().equals(name) && method.parameters().size() == arity) {
                 seen.remove(klass);
                 return method;
             }
@@ -849,10 +868,18 @@ public final class OwnershipChecker {
 
     private static final class Scope {
         private final Scope parent;
+        private final Ast.ClassDecl constructorClass;
         private final Map<String,VarState> locals = new LinkedHashMap<>();
         private boolean closed;
 
-        private Scope(Scope parent) { this.parent = parent; }
+        private Scope(Scope parent) {
+            this(parent, parent == null ? null : parent.constructorClass);
+        }
+
+        private Scope(Scope parent, Ast.ClassDecl constructorClass) {
+            this.parent = parent;
+            this.constructorClass = constructorClass;
+        }
 
         private void define(String name, VarState state) {
             if (locals.putIfAbsent(name, state) != null) throw new IllegalArgumentException("Oreslang ownership error: duplicate binding '" + name + "'");

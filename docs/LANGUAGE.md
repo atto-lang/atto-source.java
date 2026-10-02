@@ -234,7 +234,20 @@ Constructors are explicit and use `constructor(...)`. They have implicit
 `self`, do not declare a return type, cannot be static/abstract/async, and may
 overload by arity. When a class declares any explicit constructor, `new C(...)`
 selects one by arity and the constructor must leave every instance field
-initialized. Classes without explicit constructors retain the current
+initialized. An uninitialized `val field: T` may be assigned exactly once as
+`self.field = ...` during its constructor; after that it is immutable.
+`const` fields always require a declaration initializer and can never be
+constructor-assigned. Constructor initialization authority is not captured by
+lambdas.
+
+Static fields have one class-namespace storage cell per owning module state, so
+their type may not reference a class type parameter such as `T`; Oreslang does
+not create one static cell per generic specialization.
+
+Until explicit `super(...)` constructor chaining is implemented, explicit
+constructor semantics and class inheritance may not be mixed. This prevents a
+subclass or the positional compatibility path from silently bypassing a parent
+constructor. Classes without explicit constructors retain the current
 positional-field construction behavior as a compatibility path.
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
