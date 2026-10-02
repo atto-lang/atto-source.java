@@ -362,6 +362,79 @@ final class OwnershipIntrinsicsHardeningTest {
     }
 
     @Test
+    void nestedBorrowReturningCallsPreserveLocalProvenance() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+                        end
+
+                        fnc identity(&Buffer value) => &Buffer {
+                          return value;
+                        }
+
+                        fnc again(&Buffer value) => &Buffer {
+                          return value;
+                        }
+
+                        fnc bad() => &Buffer {
+                          let Buffer local = new Buffer(7);
+                          return again(identity(borrow(local)));
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("outlive its owner"));
+    }
+
+    @Test
+    void borrowReturningCallCanBeConsumedTemporarilyWithoutExtendingBorrow() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Buffer as
+                  pub let int value = 0;
+                end
+
+                fnc identity(&Buffer value) => &Buffer {
+                  return value;
+                }
+
+                fnc inspect(&Buffer value) => int {
+                  return value.value;
+                }
+
+                fnc ok() => void {
+                  let Buffer local = new Buffer(7);
+                  stdio.println(inspect(identity(borrow(local))));
+                  local.value = 9;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void borrowReturningMethodViewKeepsReceiverBorrowedWhenPersisted() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+
+                          pub view() => &Buffer {
+                            return &self;
+                          }
+                        end
+
+                        fnc bad() => void {
+                          let Buffer local = new Buffer(7);
+                          val &Buffer view = local.view();
+                          local.value = 9;
+                          stdio.println(view.value);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("borrow"));
+    }
+
+    @Test
     void borrowReturningMethodCannotLaunderTemporaryReceiver() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
