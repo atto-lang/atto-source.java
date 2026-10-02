@@ -278,6 +278,8 @@ Exceptions raised by an async task complete its future exceptionally and are re-
 
 The scheduler and Java execution mechanism are intentionally separate from the source contract. In particular, an async call does **not** mean “one Java virtual thread per call.” A backend may use virtual threads for blocking host adapters where appropriate, but Oreslang async guest code is lowered as tasks/continuations so suspension can release the carrier without changing ownership semantics.
 
+The program entrypoint `main` is deliberately synchronous. It launches async work explicitly; it is not itself an implicit top-level future. This keeps launcher/lifecycle semantics deterministic and prevents an unobserved `Future<void>` entrypoint.
+
 ## Actors
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
