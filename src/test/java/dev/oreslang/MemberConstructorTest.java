@@ -118,6 +118,33 @@ final class MemberConstructorTest {
     }
 
     @Test
+    void moduleInitCanInitializeAnUninitializedClassStatic() throws Exception {
+        String output = run("""
+                define class Flags as
+                  pub static ready: bool;
+                end
+
+                define module state as
+                  init routine() => void {
+                    Flags.ready = true;
+                    return;
+                  }
+
+                  pub fnc read() => bool {
+                    return Flags.ready;
+                  }
+                end
+
+                pub routine main() => void {
+                  stdio.stdout.write(state.read());
+                  return;
+                }
+                """);
+
+        assertEquals("true", output);
+    }
+
+    @Test
     void explicitConstructorMustInitializeEveryInstanceFieldAtRuntime() {
         RuntimeException failure = assertThrows(RuntimeException.class, () -> run("""
                 define class Broken as
