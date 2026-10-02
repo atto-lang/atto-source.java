@@ -42,6 +42,58 @@ final class MemberConstructorTest {
     }
 
     @Test
+    void preservesAnnotationsOnNameFirstStaticAndInstanceMembers() {
+        Ast.Program program = Parser.parse("""
+                define class MyBlob as
+                  @FromJson("foo")
+                  foo: String
+
+                  @Wire("bar")
+                  static bar: bool = false
+                end
+                """);
+
+        Ast.ClassDecl klass = program.modules().getFirst().declarations().stream()
+                .filter(Ast.ClassDecl.class::isInstance)
+                .map(Ast.ClassDecl.class::cast)
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals("FromJson", klass.fields().get(0).annotations().getFirst().name());
+        assertFalse(klass.fields().get(0).isStatic());
+        assertEquals("Wire", klass.fields().get(1).annotations().getFirst().name());
+        assertTrue(klass.fields().get(1).isStatic());
+    }
+
+    @Test
+    void moduleMembersPreserveAnnotationsToo() {
+        Ast.Program program = Parser.parse("""
+                define module config as
+                  @Config("endpoint")
+                  endpoint: String = "local"
+
+                  @Config("ready")
+                  static ready: bool = true
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().stream()
+                .filter(m -> m.name().equals("config"))
+                .findFirst()
+                .orElseThrow();
+        var fields = module.declarations().stream()
+                .filter(Ast.FieldDecl.class::isInstance)
+                .map(Ast.FieldDecl.class::cast)
+                .toList();
+
+        assertEquals(2, fields.size());
+        assertEquals("Config", fields.get(0).annotations().getFirst().name());
+        assertFalse(fields.get(0).isStatic());
+        assertEquals("Config", fields.get(1).annotations().getFirst().name());
+        assertTrue(fields.get(1).isStatic());
+    }
+
+    @Test
     void constructorsInitializeInstancesAndStaticFieldsLiveOnClassNamespace() throws Exception {
         String output = run("""
                 define class MyBlob as
