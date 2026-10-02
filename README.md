@@ -32,3 +32,8 @@ The language is intentionally opinionated:
 - generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.
 
 The first implementation is developed on a feature branch and will land with an executable Truffle skeleton, grammar/specification, examples, tests, and CI.
+
+
+## Design hardening
+
+See `docs/WART_AVOIDANCE.md` for the cross-language Erlang/Rust/Go/Java wart-avoidance contract used to review new language/runtime features.
