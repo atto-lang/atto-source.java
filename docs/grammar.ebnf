@@ -123,9 +123,25 @@ statement       = binding_decl
                 | expression stmt_terminator ;
 
 receive_loop_stmt
-                = "receive" "loop" "(" [ type_ref ] IDENT ")" block ;
+                = "receive" "loop" ( "(" [ type_ref ] IDENT ")" block
+                                   | receive_pattern_block ) ;
 try_receive_loop_stmt
-                = "try_receive" "loop" "(" [ type_ref ] IDENT ")" block ;
+                = "try_receive" "loop" ( "(" [ type_ref ] IDENT ")" block
+                                       | receive_pattern_block ) ;
+
+receive_pattern_block
+                = "{" receive_case { receive_case } [ receive_default ] "}" ;
+receive_case    = "case" receive_pattern "=>" block [ "," | ";" ] ;
+receive_default = "default" "=>" block [ "," | ";" ] ;
+
+receive_pattern = "_"
+                | [ binding_kind ] IDENT [ ":" type_ref ]
+                | symbol_literal
+                | pattern_literal
+                | "(" receive_pattern "," receive_pattern { "," receive_pattern } ")"
+                | "[" [ receive_pattern { "," receive_pattern } ] "]" ;
+pattern_literal = INT_LITERAL | FLOAT_LITERAL | STRING_LITERAL | "true" | "false" ;
+symbol_literal  = ":" IDENT ;
 
 select_stmt     = "select" "{" { select_case } [ select_default ] "}" ;
 select_case     = "case" select_operation [ "as" [ type_ref ] IDENT ] "=>" block ;
@@ -169,6 +185,7 @@ index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
 primary         = literal
+                | symbol_literal
                 | channel_expr
                 | IDENT
                 | "self"
@@ -249,6 +266,12 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      scheduling/ownership lowering; they are not normalized into ordinary calls.
    - receive loop is a suspending actor-mailbox loop. try_receive loop drains
      immediately available mailbox messages and does not wait when empty.
+   - the pattern form dequeues exactly one FIFO message and then dispatches it
+     locally through case arms; it never scans ahead for a later match. Because
+     the mailbox protocol is open until Protocol<M> lowering is wired, pattern
+     receive requires default or an irrefutable case.
+   - :name is a Symbol literal. Symbols are immutable GC-able values and are
+     never backed by an unbounded process-global atom/intern table.
    - blocking send/receive/select suspension hoists live actor locals into a
      continuation frame; actor state is not encoded as recursive loop arguments.
    - every actor statement/backedge and concurrency operation consumes a separate
