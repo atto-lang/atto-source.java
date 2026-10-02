@@ -13,16 +13,18 @@ import_names    = IDENT
                 | "*" "as" IDENT ;
 
 top_level_item  = annotated_module_decl
+                | init_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
 
-annotated_module_decl = { annotation } "define" [ "singleton" ] "module" IDENT
+annotated_module_decl = { annotation } "define" [ "singleton" ] "module" IDENT "as"
                         { module_member } "end" ;
 
-module_member   = callable_decl
+module_member   = init_decl
+                | callable_decl
                 | class_decl
                 | interface_decl
                 | type_decl
@@ -35,10 +37,12 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
 
+init_decl       = "init" "routine" "(" ")" "=>" "void" block ;
+
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
-                  { class_member } "end" ;
+                  "as" { class_member } "end" ;
 
 class_member    = field_decl
                 | method_decl
@@ -192,10 +196,18 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Source namespaces are flat: namespace a.b; is illegal.
    - Modules are flat: module names are single identifiers and modules may not
      contain modules.
-   - "define singleton module X" declares exactly one actor-backed module
-     instance per OS process. Its bindings are actor-private; external access is
-     through public functions lowered to request/reply messages.
-   - Public singleton-module fields are illegal. Singleton state fields require
+   - "define singleton module X as" declares exactly one actor-backed module
+     state cell per OS process.
+   - "define module X as" and "define class Y ... as" require the "as" body marker.
+     "as" and "is" are reserved keywords.
+   - "init routine() => void { ... }" is a lifecycle declaration, not an ordinary
+     callable. At file/root or ordinary-module scope it runs once per actor-local
+     module state. Inside a singleton module it runs exactly once when the
+     process singleton state cell is first created. Classes cannot declare it.
+   - Singleton bindings are actor-private by default. A public val/const class
+     instance may be exported as a typed proxy capability; the raw object never
+     crosses the singleton actor boundary and its method calls are request/reply.
+   - Other public singleton-module fields are illegal. Singleton state fields require
      explicit process-stable types and context-free initializers.
    - Public singleton functions are actor transport boundaries: generic/async
      exports, mut/structural parameters, borrows, classes, and function/closure
