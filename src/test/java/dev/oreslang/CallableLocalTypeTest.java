@@ -599,6 +599,66 @@ final class CallableLocalTypeTest {
         assertEquals("module:ok", output);
     }
 
+    @Test
+    void localAliasToLocalStructPreservesNominalRuntimeCoercion() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  fnc make() => Result {
+                    type Result = Local;
+
+                    struct Local {
+                      pub value: int;
+
+                      pub doubled() => int {
+                        return self.value * 2;
+                      }
+                    }
+
+                    return obj{value: 21};
+                  }
+
+                  pub fnc main() => void {
+                    val result = make();
+                    stdio.stdout.write(result.doubled());
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("42", output);
+    }
+
+    @Test
+    void moduleAliasToStructPreservesRuntimeCoercion() throws Exception {
+        String output = runProgram("""
+                define module model as
+                  struct Box {
+                    pub value: int;
+
+                    pub read() => int {
+                      return self.value;
+                    }
+                  }
+
+                  type PublicBox = Box;
+
+                  pub fnc make() => PublicBox {
+                    return obj{value: 9};
+                  }
+                end
+
+                define module app as
+                  pub fnc main() => void {
+                    val value = model.make();
+                    stdio.stdout.write(value.read());
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("9", output);
+    }
+
     private static String runProgram(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callable-local-types.ores")
