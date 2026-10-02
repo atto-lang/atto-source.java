@@ -170,6 +170,36 @@ final class OwnershipAndClosureTest {
     }
 
     @Test
+    void copyWorksForStaticallyCopyScalarsWithoutConsumingTheSource() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val int x = 21;
+                  val int y = copy(x);
+                  stdio.stdout.write(x + y);
+                  return;
+                }
+                """);
+        assertEquals("42", output);
+    }
+
+    @Test
+    void malformedBorrowTypesGetCompilerDiagnostics() {
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Borrow value) => void { return; }
+                        """)));
+        assertTrue(missing.getMessage().contains("exactly one"));
+
+        IllegalArgumentException extra = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(BorrowMut<String, String> value) => void { return; }
+                        """)));
+        assertTrue(extra.getMessage().contains("exactly one"));
+    }
+
+    @Test
     void useAfterMoveIsRejected() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
