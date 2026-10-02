@@ -429,6 +429,23 @@ final class ActorRuntimeHardeningTest {
     }
 
     @Test
+    void frozenMapsPreserveSourceIterationOrderDeterministically() {
+        java.util.LinkedHashMap<String, Integer> source = new java.util.LinkedHashMap<>();
+        source.put("zeta", 1);
+        source.put("alpha", 2);
+        source.put("middle", 3);
+
+        Object frozen = ActorRuntime.freeze(source);
+        assertInstanceOf(Map.class, frozen);
+        assertEquals(
+                List.of("zeta", "alpha", "middle"),
+                new ArrayList<>(((Map<?, ?>) frozen).keySet()));
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> ((Map<Object, Object>) frozen).put("later", 4));
+    }
+
+    @Test
     void frozenMapRejectsKeyCollisionsIntroducedBySendableProjection() {
         ActorRuntime.Sendable left = (freezer, readOnlyShared) -> "same-key";
         ActorRuntime.Sendable right = (freezer, readOnlyShared) -> "same-key";
