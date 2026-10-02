@@ -76,8 +76,6 @@ public final class HotReloadManager implements AutoCloseable {
                     executionProfile,
                     this::onGenerationClosed);
             generations.put(id, generation);
-            activeByCodeUnit.put(codeUnitId, generation);
-            active.set(generation);
             return generation;
         } catch (RuntimeException failure) {
             context.close(true);
@@ -88,10 +86,32 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
         generation.start();
+        activate(generation);
         return generation;
     }
 
-    /** Last generation staged, retained for compatibility with the single-unit API. */
+    /**
+     * Routes a successfully started staged generation to new work. Replacing
+     * the same code unit retires the previous generation; existing leases keep
+     * that old context alive until they drain.
+     */
+    public synchronized void activate(Generation generation) {
+        java.util.Objects.requireNonNull(generation, "generation");
+        if (generations.get(generation.id()) != generation) {
+            throw new IllegalArgumentException("generation is not staged by this HotReloadManager");
+        }
+        if (!generation.started()) throw new IllegalStateException("generation must be started before activation");
+        if (generation.closed() || generation.retired()) {
+            throw new IllegalStateException("generation is closed or retired");
+        }
+
+        generation.markActivated();
+        Generation previous = activeByCodeUnit.put(generation.codeUnitId(), generation);
+        active.set(generation);
+        if (previous != null && previous != generation) previous.retire();
+    }
+
+    /** Last generation activated, retained for compatibility with the single-unit API. */
     public Generation active() { return active.get(); }
 
     /** Active generation for one independently compiled code unit. */
@@ -158,6 +178,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionProfile executionProfile;
         private final BiConsumer<Long, Generation> onClosed;
         private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean activated = new AtomicBoolean();
         private final AtomicBoolean retired = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicLong leases = new AtomicLong();
@@ -186,6 +207,7 @@ public final class HotReloadManager implements AutoCloseable {
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
         public boolean started() { return started.get(); }
+        public boolean activated() { return activated.get(); }
         public boolean retired() { return retired.get(); }
         public boolean closed() { return closed.get(); }
         public long leaseCount() { return leases.get(); }
@@ -195,15 +217,22 @@ public final class HotReloadManager implements AutoCloseable {
          * leases but does not close the context until all existing leases drain.
          */
         public Lease acquire() {
-            if (retired.get() || closed.get()) {
-                throw new IllegalStateException("generation is retired or closed");
+            if (!activated.get() || retired.get() || closed.get()) {
+                throw new IllegalStateException("generation is not active, or is retired/closed");
             }
             leases.incrementAndGet();
-            if (retired.get() || closed.get()) {
+            if (!activated.get() || retired.get() || closed.get()) {
                 releaseLease();
-                throw new IllegalStateException("generation retired while lease was being acquired");
+                throw new IllegalStateException("generation stopped being active while lease was being acquired");
             }
             return new Lease(this);
+        }
+
+        private void markActivated() {
+            if (!started.get() || retired.get() || closed.get()) {
+                throw new IllegalStateException("only a started live generation can be activated");
+            }
+            activated.set(true);
         }
 
         private void releaseLease() {
@@ -216,6 +245,7 @@ public final class HotReloadManager implements AutoCloseable {
         }
 
         private void retire() {
+            activated.set(false);
             if (retired.compareAndSet(false, true) && leases.get() == 0L) close();
         }
 
@@ -234,6 +264,7 @@ public final class HotReloadManager implements AutoCloseable {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
+                activated.set(false);
                 retired.set(true);
                 context.close(true);
                 onClosed.accept(id, this);
