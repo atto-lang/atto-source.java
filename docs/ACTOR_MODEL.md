@@ -28,6 +28,8 @@ The JVM backend currently adapts:
 
 A pending backend wait is forbidden from blocking an actor dispatcher carrier. Generated async/actor code must suspend the Oreslang continuation and resume it when the completion fires. This keeps virtual threads and CompletableFuture as backend choices rather than language semantics.
 
+`await` removes exactly one awaitable layer. `await Future<T>` produces `T`; `await Future<Future<T>>` produces `Future<T>`, not `T`. Recursive flattening is never implicit because it would hide ownership, cancellation, and failure boundaries.
+
 ## Receive without Erlang selective-mailbox scans
 
 Every actor mailbox is FIFO and bounded. There are two receive modes at the runtime/lowering boundary:
@@ -48,6 +50,30 @@ Rules:
 This intentionally rejects Erlang's "scan old messages until one pattern matches" cost model. When selective routing is needed, Oreslang should use statically typed protocol tags and indexed/channelized submailboxes so dispatch is O(1)/indexed rather than O(mailbox length).
 
 The source front-end should expose the receive surface only when it can carry the actor's message protocol type through the type checker. Until that lowering exists, the host runtime primitive is implemented but the compiler should fail closed rather than invent an untyped `Any` mailbox API.
+
+### Source receive loops
+
+No additional `receive_loop` keyword is required. Ordinary loop syntax composes with the two mailbox operations:
+
+```ores
+// Suspends the actor continuation until each next FIFO message arrives.
+for (;;) {
+  val Message msg = await receive();
+  handle(msg);
+}
+
+// Never waits: drain only messages that are immediately available.
+for (;;) {
+  match try_receive() {
+    Some(msg) => handle(msg),
+    None => break,
+  }
+}
+```
+
+At source level `receive() => Future<M>` and `try_receive() => Option<M>`, where `M` is the statically known actor protocol message type. The Java runtime's `ReceiveResult<M>` is an implementation detail used to preserve empty-vs-null host interop; Oreslang source has no ambient null and therefore uses `Option<M>`.
+
+A non-blocking drain loop must still hit compiler-inserted scheduler safepoints / throughput quanta so an actor with a perpetually non-empty mailbox cannot monopolize a dispatcher worker. Cancellation of a pending receive removes that waiter atomically; the cancelled waiter must not steal the next message. A future `receive_for(Duration)` should return an explicit timeout result rather than encoding timeout as a synthetic mailbox message.
 
 ## Bounded queues and backpressure
 
