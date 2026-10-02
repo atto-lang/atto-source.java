@@ -313,7 +313,7 @@ public final class TypeChecker {
             if (stmt instanceof Ast.StopStmt) {
                 if (!actorContext) {
                     throw new IllegalArgumentException(
-                            "'stop' is only valid inside an actor body; use return for an ordinary callable");
+                            "'stop' requires actor context; use it inside an actor body or behind actor.inActor()/actor.in_actor()");
                 }
                 continue;
             }
@@ -336,7 +336,8 @@ public final class TypeChecker {
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     validateActorStopExpr(branch.condition(), actorContext);
-                    validateActorStopBlock(branch.body(), actorContext);
+                    boolean branchActorContext = actorContext || isActorContextPredicate(branch.condition());
+                    validateActorStopBlock(branch.body(), branchActorContext);
                 }
                 validateActorStopBlock(conditional.elseBody(), actorContext);
             } else if (stmt instanceof Ast.TryStmt attempted) {
@@ -353,6 +354,13 @@ public final class TypeChecker {
                 validateActorStopBlock(loop.body(), actorContext);
             }
         }
+    }
+
+    private boolean isActorContextPredicate(Ast.Expr expr) {
+        if (!(expr instanceof Ast.CallExpr call) || !call.arguments().isEmpty()) return false;
+        if (!(call.callee() instanceof Ast.MemberExpr member)) return false;
+        if (!(member.receiver() instanceof Ast.NameExpr name) || !name.name().equals("actor")) return false;
+        return member.member().equals("inActor") || member.member().equals("in_actor");
     }
 
     private void validateActorStopHandler(Ast.Expr expr, boolean actorContext) {
@@ -835,7 +843,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -971,6 +979,12 @@ public final class TypeChecker {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) return Unknown.INSTANCE;
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
+                return switch (member.member()) {
+                    case "inActor", "in_actor" -> new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException("unknown actor runtime member '" + member.member() + "'");
+                };
+            }
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
