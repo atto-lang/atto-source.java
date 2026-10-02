@@ -357,7 +357,20 @@ define struct Point as
 end
 ```
 
-Struct fields support the compact name-first form (`x: f64`) as well as the existing type-first forms. A bare struct field is immutable (`val`) unless `let` is written explicitly.
+Struct fields support both type-first and name-first forms. Binding kinds may be written in either form, and all equivalent spellings normalize to the same field AST:
+
+```ores
+let f64 x;
+let x: f64;
+
+val String name;
+val name: String;
+
+const int limit = 10;
+const limit: int = 10;
+```
+
+A bare field such as `x: f64` or `f64 x` defaults to immutable `val`. Use `let` explicitly for mutable aggregate state.
 
 Anonymous struct values are structural:
 
@@ -365,9 +378,9 @@ Anonymous struct values are structural:
 val p = struct { x = 3, y = 4 };
 ```
 
-An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. That conversion requires the exact field set and assignable field types; arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
+An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. Every caller-supplied field must be declared by the struct and type-compatible; required host fields must be present, defaulted host fields may be omitted, and trait-owned composed state is never caller-supplied. Arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
 
-Struct equality is value equality within the same named struct identity. Structs are move-only under the current ownership model until a dedicated `Copy` facility is introduced.
+Struct equality is value equality within the same named struct identity. Copy semantics are derived structurally: a struct is Copy when all of its fields are Copy (including composed trait state); otherwise it is move-only. This keeps small data structs inexpensive while resource-owning structs retain move safety.
 
 
 ## Inline values
