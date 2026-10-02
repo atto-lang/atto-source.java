@@ -74,6 +74,70 @@ final class ParserTest {
     }
 
     @Test
+    void classAndModuleDeclarationsRequireAsAndIsIsReserved() {
+        IllegalArgumentException module = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define module app
+                          pub fnc main() => void { return; }
+                        end
+                        """));
+        assertTrue(module.getMessage().contains("require 'as'"));
+
+        IllegalArgumentException klass = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Box
+                        end
+                        """));
+        assertTrue(klass.getMessage().contains("require 'as'"));
+
+        var tokens = new Lexer("as is").scan();
+        assertEquals(Token.Type.AS, tokens.get(0).type());
+        assertEquals(Token.Type.IS, tokens.get(1).type());
+    }
+
+    @Test
+    void parsesFileAndModuleInitRoutinesAsLifecycleDeclarations() {
+        Ast.Program program = Parser.parse("""
+                init routine() => void {
+                  return;
+                }
+
+                define module app as
+                  init routine() => void {
+                    return;
+                  }
+
+                  pub fnc main() => void {
+                    return;
+                  }
+                end
+                """);
+
+        Ast.ModuleDecl root = program.modules().stream()
+                .filter(module -> module.name().equals(Parser.ROOT_MODULE))
+                .findFirst().orElseThrow();
+        Ast.ModuleDecl app = program.modules().stream()
+                .filter(module -> module.name().equals("app"))
+                .findFirst().orElseThrow();
+
+        assertEquals(1, root.declarations().stream().filter(Ast.InitDecl.class::isInstance).count());
+        assertEquals(1, app.declarations().stream().filter(Ast.InitDecl.class::isInstance).count());
+    }
+
+    @Test
+    void classesCannotDeclareLifecycleInitRoutines() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Box as
+                          init routine() => void {
+                            return;
+                          }
+                        end
+                        """));
+        assertTrue(error.getMessage().contains("classes cannot declare init routine"));
+    }
+
+    @Test
     void lexerRecognizesLambdaAndFatReturnArrows() {
         var tokens = new Lexer("(int x) -> x + 1; fnc f() => int { return 1; }").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
