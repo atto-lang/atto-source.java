@@ -107,7 +107,11 @@ public final class OwnershipChecker {
                 rejectStoredBorrow(stored, "module field '" + module.name() + "." + field.name() + "'");
                 requireDetachedStoredBorrow(field.type(), stored,
                         "module field '" + module.name() + "." + field.name() + "'");
-                if (stored.kind == ValueKind.SHARED) detachedSharedModuleFields.add(field);
+                if (stored.kind == ValueKind.SHARED) {
+                    detachedSharedModuleFields.add(field);
+                    VarState state = scope.lookup(field.name());
+                    if (state != null) state.kind = ValueKind.SHARED;
+                }
             }
         } finally {
             scope.close();
@@ -550,7 +554,8 @@ public final class OwnershipChecker {
             return projectionValue(projected, indexed.receiver(), receiverValue, scope);
         }
         if (expr instanceof Ast.NewExpr created) {
-            Ast.ClassDecl klass = findClass(resolveOwnershipAlias(created.type(), new LinkedHashSet<>()).name());
+            Ast.TypeRef concreteCreated = resolveOwnershipAlias(created.type(), new LinkedHashSet<>());
+            Ast.ClassDecl klass = findClass(concreteCreated.name());
             List<Ast.FieldDecl> constructorFields = klass == null
                     ? List.of()
                     : effectiveFields(klass, new LinkedHashSet<>()).stream()
@@ -562,16 +567,17 @@ public final class OwnershipChecker {
                 rejectStoredBorrow(stored, where);
                 if (i < constructorFields.size()) {
                     Ast.TypeRef expected = substituteClassGenerics(
-                            constructorFields.get(i).type(), klass, created.type());
+                            constructorFields.get(i).type(), klass, concreteCreated);
                     requireDetachedStoredBorrow(expected, stored, where);
                 }
             }
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.StructInitExpr created) {
-            Ast.ClassDecl struct = created.type() == null
+            Ast.TypeRef concreteStruct = created.type() == null
                     ? null
-                    : findClass(resolveOwnershipAlias(created.type(), new LinkedHashSet<>()).name());
+                    : resolveOwnershipAlias(created.type(), new LinkedHashSet<>());
+            Ast.ClassDecl struct = concreteStruct == null ? null : findClass(concreteStruct.name());
             for (Ast.ObjectField supplied : created.fields()) {
                 ValueInfo stored = checkExpr(supplied.value(), scope, true);
                 String where = "struct field '" + supplied.name() + "'";
@@ -579,7 +585,7 @@ public final class OwnershipChecker {
                 if (struct != null) {
                     Ast.FieldDecl field = findField(struct, supplied.name(), new LinkedHashSet<>());
                     if (field != null) {
-                        Ast.TypeRef expected = substituteClassGenerics(field.type(), struct, created.type());
+                        Ast.TypeRef expected = substituteClassGenerics(field.type(), struct, concreteStruct);
                         requireDetachedStoredBorrow(expected, stored, where);
                     }
                 }
