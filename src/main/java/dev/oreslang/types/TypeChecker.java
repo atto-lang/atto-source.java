@@ -444,7 +444,14 @@ public final class TypeChecker {
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
-            if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+            if (fn != null) {
+                if (!fn.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "generic callable '" + fn.name()
+                                    + "' must be specialized by a direct call; polymorphic function values are not supported yet");
+                }
+                return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+            }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -524,6 +531,24 @@ public final class TypeChecker {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
                     String label = "function " + functionName.name();
+                    validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+                    return checkGenericCallable(
+                            target.genericParameters(),
+                            target.parameters(),
+                            target.returnType(),
+                            call.arguments(),
+                            env, generics, self,
+                            null,
+                            explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
+                            label);
+                }
+            }
+            if (call.callee() instanceof Ast.MemberExpr qualifiedCall
+                    && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
+                    && modules.containsKey(namespace.name())) {
+                Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
+                if (target != null) {
+                    String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
                     return checkGenericCallable(
                             target.genericParameters(),
@@ -635,6 +660,15 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
+                Ast.FunctionDecl moduleFunction = functions.get(namespace.name() + "." + member.member());
+                if (moduleFunction != null) {
+                    if (!moduleFunction.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "generic callable '" + namespace.name() + "." + member.member()
+                                        + "' must be specialized by a direct call; polymorphic function values are not supported yet");
+                    }
+                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), Set.of(), null);
+                }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
             }
@@ -658,7 +692,12 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                    if (!fn.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "generic static function '" + klass.name() + "." + fn.name()
+                                        + "' must be specialized by a direct call; polymorphic function values are not supported yet");
+                    }
+                    return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -680,6 +719,11 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
+                        if (!method.genericParameters().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "generic method '" + klass.name() + "." + method.name()
+                                            + "' must be specialized by a direct call; polymorphic bound-method values are not supported yet");
+                        }
                         ResolvedMethod target = findMethodTarget(klass, named, member.member(), method.arity(), new LinkedHashSet<>());
                         if (target == null) throw new IllegalArgumentException("cannot resolve method owner for '" + member.member() + "'");
                         Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
