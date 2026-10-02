@@ -5,6 +5,13 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
+    /** Internal marker emitted only by the parser for the reserved {@code gpu} modifier. */
+    public static final String GPU_ANNOTATION = "$ores_gpu$";
+
+    public static boolean hasGpuPlacement(List<Annotation> annotations) {
+        return annotations.stream().anyMatch(annotation -> GPU_ANNOTATION.equals(annotation.name()));
+    }
+
     public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
@@ -286,7 +293,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr, GpuExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -329,4 +336,13 @@ public final class Ast {
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
         }
     }
+
+    /**
+     * Compile-time GPU placement. SINGLE targets one callable expression; PARALLEL targets a
+     * statically enumerable collection of direct lambdas so a backend can lower them as an
+     * independent GPU work batch without repeating {@code gpu} on every lambda.
+     */
+    public enum GpuMode { SINGLE, PARALLEL }
+
+    public record GpuExpr(GpuMode mode, Expr expression) implements Expr { }
 }
