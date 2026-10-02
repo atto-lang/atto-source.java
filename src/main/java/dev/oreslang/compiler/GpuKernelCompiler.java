@@ -36,6 +36,14 @@ public final class GpuKernelCompiler {
             boolean buffer,
             boolean mutable) { }
 
+    public enum HiddenPurpose { BUFFER_LENGTH, RESULT, ERROR_SLOTS }
+
+    public record GpuHiddenParameter(
+            String name,
+            String abiType,
+            HiddenPurpose purpose,
+            String sourceParameter) { }
+
     public record GpuKernel(
             String sourceName,
             String helperSymbol,
@@ -46,10 +54,12 @@ public final class GpuKernelCompiler {
             String batchId,
             int batchIndex,
             List<GpuParameter> parameters,
+            List<GpuHiddenParameter> hiddenParameters,
             String resultType,
             String launchExtentExpression) {
         public GpuKernel {
             parameters = List.copyOf(parameters);
+            hiddenParameters = List.copyOf(hiddenParameters);
         }
     }
 
