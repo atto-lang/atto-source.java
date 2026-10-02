@@ -1189,6 +1189,10 @@ public final class TypeChecker {
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
+                if (!fn.genericParameters().isEmpty()) {
+                    throw new IllegalArgumentException("generic callable '" + fn.name()
+                            + "' must be invoked directly; polymorphic function values are not supported yet");
+                }
                 String ownerName = functionOwners.get(fn);
                 Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
                 if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
@@ -1270,19 +1274,59 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
+            if (call.callee() instanceof Ast.NameExpr name) {
+                Ast.FunctionDecl target = findFunction(name.name());
+                if (target != null && !target.genericParameters().isEmpty()) {
+                    List<Type> actualTypes = call.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList();
+                    Function signature = instantiateCallableGenerics(
+                            declaredFunctionType(target),
+                            target.genericParameters(),
+                            actualTypes,
+                            "call to " + target.name());
+                    validateCallArguments(call.arguments(), actualTypes, signature, env, generics, self, "argument");
+                    return signature.result();
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr member) {
+                if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
+                    Ast.ModuleDecl module = modules.get(namespace.name());
+                    Ast.FunctionDecl target = module.declarations().stream()
+                            .filter(Ast.FunctionDecl.class::isInstance)
+                            .map(Ast.FunctionDecl.class::cast)
+                            .filter(fn -> fn.visibility() == Ast.Visibility.PUBLIC
+                                    && fn.name().equals(member.member()))
+                            .findFirst().orElse(null);
+                    if (target != null && !target.genericParameters().isEmpty()) {
+                        List<Type> actualTypes = call.arguments().stream()
+                                .map(argument -> typeOf(argument, env, generics, self))
+                                .toList();
+                        Function signature = instantiateCallableGenerics(
+                                declaredFunctionType(target),
+                                target.genericParameters(),
+                                actualTypes,
+                                "call to " + module.name() + "." + target.name());
+                        validateCallArguments(call.arguments(), actualTypes, signature, env, generics, self, "argument");
+                        return signature.result();
+                    }
+                }
+
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
-                    Function signature = methodFunctionType(fn, klass, null);
-                    for (int i = 0; i < call.arguments().size(); i++) {
-                        Type expected = signature.parameters().get(i);
-                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
-                    }
+                    List<Type> actualTypes = call.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList();
+                    Function signature = instantiateCallableGenerics(
+                            methodFunctionType(fn, klass, null),
+                            fn.genericParameters(),
+                            actualTypes,
+                            "call to " + klass.name() + "." + fn.name());
+                    validateCallArguments(call.arguments(), actualTypes, signature, env, generics, self, "argument");
                     return signature.result();
                 }
                 if (receiver instanceof SingletonProxy proxy) {
@@ -1293,13 +1337,15 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("no public singleton proxy method '" + member.member()
                                 + "' with arity " + call.arguments().size() + " on " + proxy.target().name());
                     }
-                    Function signature = methodFunctionTypeForReceiver(method, klass, proxy.target());
-                    for (int i = 0; i < call.arguments().size(); i++) {
-                        Type expected = signature.parameters().get(i);
-                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
-                                "singleton proxy argument " + (i + 1));
-                    }
+                    List<Type> actualTypes = call.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList();
+                    Function signature = instantiateCallableGenerics(
+                            methodFunctionTypeForReceiver(method, klass, proxy.target()),
+                            method.genericParameters(),
+                            actualTypes,
+                            "singleton proxy call " + klass.name() + "." + method.name());
+                    validateCallArguments(call.arguments(), actualTypes, signature, env, generics, self, "singleton proxy argument");
                     return new Named("Future", List.of(signature.result()));
                 }
                 if (receiver instanceof Record record) {
@@ -1308,12 +1354,18 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("no structural method '" + member.member()
                                 + "' with arity " + call.arguments().size());
                     }
-                    for (int i = 0; i < fn.parameters().size(); i++) {
-                        validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self),
-                                fn.parameters().get(i), "structural argument " + (i + 1));
-                    }
-                    return fn.result();
+                    List<Type> actualTypes = call.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList();
+                    LinkedHashSet<String> inferable = collectGenericNames(fn);
+                    inferable.removeAll(generics);
+                    Function signature = instantiateCallableGenerics(
+                            fn,
+                            List.copyOf(inferable),
+                            actualTypes,
+                            "structural call " + member.member());
+                    validateCallArguments(call.arguments(), actualTypes, signature, env, generics, self, "structural argument");
+                    return signature.result();
                 }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
@@ -1321,12 +1373,15 @@ public final class TypeChecker {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
                         requireTraitMethodAccessible(method, named.name() + "." + member.member());
-                        Function signature = methodFunctionTypeForReceiver(method, klass, named);
-                        for (int i = 0; i < call.arguments().size(); i++) {
-                            Type expected = signature.parameters().get(i);
-                            validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
-                        }
+                        List<Type> actualTypes = call.arguments().stream()
+                                .map(argument -> typeOf(argument, env, generics, self))
+                                .toList();
+                        Function signature = instantiateCallableGenerics(
+                                methodFunctionTypeForReceiver(method, klass, named),
+                                method.genericParameters(),
+                                actualTypes,
+                                "call to " + named.name() + "." + method.name());
+                        validateCallArguments(call.arguments(), actualTypes, signature, env, generics, self, "argument");
                         return signature.result();
                     }
 
@@ -1392,6 +1447,18 @@ public final class TypeChecker {
                     }
                 }
             }
+            if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
+                Ast.ModuleDecl module = modules.get(namespace.name());
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (declaration instanceof Ast.FunctionDecl fn
+                            && fn.visibility() == Ast.Visibility.PUBLIC
+                            && fn.name().equals(member.member())
+                            && !fn.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException("generic callable '" + module.name() + "." + fn.name()
+                                + "' must be invoked directly; polymorphic function values are not supported yet");
+                    }
+                }
+            }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
@@ -1423,6 +1490,10 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
+                    if (!fn.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException("generic static function '" + klass.name() + "." + fn.name()
+                                + "' must be invoked directly; polymorphic function values are not supported yet");
+                    }
                     return methodFunctionType(fn, klass, null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
@@ -1443,6 +1514,10 @@ public final class TypeChecker {
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
                         requireTraitMethodAccessible(method, named.name() + "." + member.member());
+                        if (!method.genericParameters().isEmpty()) {
+                            throw new IllegalArgumentException("generic method '" + named.name() + "." + method.name()
+                                    + "' must be invoked directly; polymorphic method values are not supported yet");
+                        }
                         return methodFunctionTypeForReceiver(method, klass, named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
@@ -2234,6 +2309,149 @@ public final class TypeChecker {
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
         return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
+    }
+
+    private Function instantiateCallableGenerics(
+            Function raw,
+            List<String> genericParameters,
+            List<Type> actualArguments,
+            String where) {
+        if (raw.parameters().size() != actualArguments.size()) {
+            throw new IllegalArgumentException(where + " arity mismatch: expected "
+                    + raw.parameters().size() + " argument(s), got " + actualArguments.size());
+        }
+        if (genericParameters.isEmpty()) return raw;
+
+        LinkedHashSet<String> inferable = new LinkedHashSet<>(genericParameters);
+        LinkedHashMap<String, Type> inferred = new LinkedHashMap<>();
+        for (int i = 0; i < raw.parameters().size(); i++) {
+            inferGenericBindingsRestricted(
+                    raw.parameters().get(i),
+                    actualArguments.get(i),
+                    inferable,
+                    inferred,
+                    where);
+        }
+
+        for (String generic : genericParameters) {
+            Type type = inferred.get(generic);
+            if (type == null || type == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(where + " cannot infer generic '" + generic
+                        + "' from call arguments");
+            }
+        }
+        return (Function) substituteGenerics(raw, inferred);
+    }
+
+    private void inferGenericBindingsRestricted(
+            Type pattern,
+            Type actual,
+            Set<String> inferable,
+            Map<String, Type> inferred,
+            String where) {
+        actual = widenInferenceType(actual);
+        if (actual == Unknown.INSTANCE) return;
+
+        if (pattern instanceof Generic generic) {
+            if (!inferable.contains(generic.name())) return;
+            Type previous = inferred.get(generic.name());
+            if (previous == null) {
+                inferred.put(generic.name(), actual);
+                return;
+            }
+            Type merged = commonType(previous, actual);
+            if (merged == Unknown.INSTANCE && !previous.equals(actual)) {
+                throw new IllegalArgumentException(where + " infers incompatible types for generic '"
+                        + generic.name() + "': " + previous + " and " + actual);
+            }
+            inferred.put(generic.name(), merged == Unknown.INSTANCE ? actual : merged);
+            return;
+        }
+
+        if (pattern instanceof Borrow p && actual instanceof Borrow a) {
+            if (p.mutable() == a.mutable()) {
+                inferGenericBindingsRestricted(p.target(), a.target(), inferable, inferred, where);
+            }
+            return;
+        }
+        if (pattern instanceof ListType p && actual instanceof ListType a) {
+            inferGenericBindingsRestricted(p.element(), a.element(), inferable, inferred, where);
+            return;
+        }
+        if (pattern instanceof Tuple p && actual instanceof Tuple a
+                && p.elements().size() == a.elements().size()) {
+            for (int i = 0; i < p.elements().size(); i++) {
+                inferGenericBindingsRestricted(p.elements().get(i), a.elements().get(i), inferable, inferred, where);
+            }
+            return;
+        }
+        if (pattern instanceof Named p && actual instanceof Named a
+                && p.name().equals(a.name())
+                && p.arguments().size() == a.arguments().size()) {
+            for (int i = 0; i < p.arguments().size(); i++) {
+                inferGenericBindingsRestricted(p.arguments().get(i), a.arguments().get(i), inferable, inferred, where);
+            }
+            return;
+        }
+        if (pattern instanceof Function p && actual instanceof Function a
+                && p.parameters().size() == a.parameters().size()) {
+            for (int i = 0; i < p.parameters().size(); i++) {
+                inferGenericBindingsRestricted(p.parameters().get(i), a.parameters().get(i), inferable, inferred, where);
+            }
+            inferGenericBindingsRestricted(p.result(), a.result(), inferable, inferred, where);
+            return;
+        }
+        if (pattern instanceof Record p && actual instanceof Record a) {
+            for (Map.Entry<String, Type> entry : p.members().entrySet()) {
+                Type actualMember = a.members().get(entry.getKey());
+                if (actualMember != null) {
+                    inferGenericBindingsRestricted(entry.getValue(), actualMember, inferable, inferred, where);
+                }
+            }
+        }
+    }
+
+    private LinkedHashSet<String> collectGenericNames(Type type) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        collectGenericNames(type, result);
+        return result;
+    }
+
+    private void collectGenericNames(Type type, Set<String> result) {
+        if (type instanceof Generic generic) {
+            result.add(generic.name());
+        } else if (type instanceof Borrow borrow) {
+            collectGenericNames(borrow.target(), result);
+        } else if (type instanceof ListType list) {
+            collectGenericNames(list.element(), result);
+        } else if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) collectGenericNames(element, result);
+        } else if (type instanceof Named named) {
+            for (Type argument : named.arguments()) collectGenericNames(argument, result);
+        } else if (type instanceof Function function) {
+            for (Type parameter : function.parameters()) collectGenericNames(parameter, result);
+            collectGenericNames(function.result(), result);
+        } else if (type instanceof Record record) {
+            for (Type member : record.members().values()) collectGenericNames(member, result);
+        }
+    }
+
+    private void validateCallArguments(
+            List<Ast.Expr> expressions,
+            List<Type> actualTypes,
+            Function signature,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String label) {
+        if (signature.parameters().size() != actualTypes.size()) {
+            throw new IllegalArgumentException("call arity mismatch");
+        }
+        for (int i = 0; i < actualTypes.size(); i++) {
+            Type expected = signature.parameters().get(i);
+            validateLambdaArgument(expressions.get(i), expected, env, generics, self);
+            requireAssignable(actualTypes.get(i), expected, label + " " + (i + 1));
+        }
     }
 
     private record MethodOwner(Ast.ClassDecl klass, Type receiverType) { }
