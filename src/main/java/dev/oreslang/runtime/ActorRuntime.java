@@ -77,7 +77,7 @@ public final class ActorRuntime implements AutoCloseable {
      */
     @SuppressWarnings("unchecked")
     public <T> T currentActorLocal(Object key, Supplier<? extends T> initializer) {
-        if (closed.get()) throw new CancellationException("actor runtime is closing");
+        if (closed.get()) throw new ExecutionTerminated("actor runtime is closing");
         java.util.Objects.requireNonNull(key, "key");
         java.util.Objects.requireNonNull(initializer, "initializer");
         ActorExecution execution = CURRENT_ACTOR.get();
@@ -200,13 +200,13 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
-        if (Thread.currentThread().isInterrupted()) throw new CancellationException("actor execution interrupted");
+        if (Thread.currentThread().isInterrupted()) throw new ExecutionTerminated("actor execution interrupted");
 
         ActorExecution execution = CURRENT_ACTOR.get();
         Long deadline = CURRENT_ACTOR_DEADLINE_NANOS.get();
         if (execution != null && execution.runtime == this && deadline != null
                 && System.nanoTime() - deadline >= 0) {
-            throw new CancellationException("actor message wall-time budget exceeded");
+            throw new ExecutionTerminated("actor message wall-time budget exceeded");
         }
         Thread.yield();
     }
