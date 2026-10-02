@@ -550,6 +550,15 @@ final class GpuExecutionTest {
                 """).gpuProgram());
 
         validateOpenCl(OresCompiler.compile("""
+                gpu fnc scale_resident(GpuArray<f32> mut xs, i64 n, f32 factor) => void {
+                  for (let i64 i = 0; i < n; i = i + 1) {
+                    xs[i] = xs[i] * factor;
+                  }
+                  return;
+                }
+                """).gpuProgram());
+
+        validateOpenCl(OresCompiler.compile("""
                 gpu fnc load(Array<f32> xs, i64 i) => f32 {
                   return xs[i];
                 }
