@@ -1,6 +1,9 @@
 package dev.oreslang;
 
+import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
@@ -36,6 +39,21 @@ final class GarbageCollectionLanguageTest {
             PolyglotException error = assertThrows(PolyglotException.class, () -> context.eval(source));
             assertTrue(error.getMessage().contains("actor.gc() requires execution inside an actor"));
         }
+    }
+
+    @Test
+    void strictFaasRejectsProcessGcDuringCapabilityAdmission() {
+        var program = TypeChecker.check(Parser.parse("""
+                pub fnc main() => void {
+                  process.gc();
+                  return;
+                }
+                """));
+
+        SecurityException error = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(error.getMessage().contains("GC_CONTROL"));
     }
 
     @Test
