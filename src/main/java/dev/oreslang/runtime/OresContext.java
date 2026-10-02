@@ -10,7 +10,9 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 public final class OresContext implements AutoCloseable {
     private static final ContextReference<OresContext> REFERENCE = ContextReference.create(OresLanguage.class);
@@ -22,6 +24,7 @@ public final class OresContext implements AutoCloseable {
     private final ActorRuntime actors;
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
+    private final Map<Object, Object> contextLocals = new ConcurrentHashMap<>();
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
     private final boolean graalIsolated;
@@ -71,6 +74,21 @@ public final class OresContext implements AutoCloseable {
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
+    /**
+     * Context-lifetime storage used when code executes outside an actor. This
+     * is deliberately separate from actor-local state so ordinary module state
+     * cannot leak between actor identities.
+     */
+    @SuppressWarnings("unchecked")
+    public <K, V> V contextLocal(K key, Supplier<? extends V> factory) {
+        java.util.Objects.requireNonNull(key, "context-local key");
+        java.util.Objects.requireNonNull(factory, "context-local factory");
+        return (V) contextLocals.computeIfAbsent(
+                key,
+                ignored -> java.util.Objects.requireNonNull(
+                        factory.get(), "context-local factory returned null"));
+    }
+
     private static long codeGenerationFromApplicationArguments(String[] args) {
         for (String arg : args) {
             if (!arg.startsWith("--ores-code-generation=")) continue;
@@ -95,6 +113,7 @@ public final class OresContext implements AutoCloseable {
     @Override
     public void close() {
         actors.close();
+        contextLocals.clear();
         output.flush();
     }
 }
