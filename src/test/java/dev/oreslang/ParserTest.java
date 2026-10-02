@@ -79,4 +79,51 @@ final class ParserTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
+    @Test
+    void compactAndLongInterfaceSyntaxNormalizeToTheSameAst() {
+        Ast.InterfaceDecl longForm = (Ast.InterfaceDecl) Parser.parse("""
+                define interface Lock<T> as
+                  fnc lock() => T;
+                  String name;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.InterfaceDecl compact = (Ast.InterfaceDecl) Parser.parse("""
+                interface Lock<T> {
+                  fnc lock() => T;
+                  String name;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        assertEquals(longForm, compact);
+    }
+
+    @Test
+    void compactAndLongStructSyntaxNormalizeToTheSameAst() {
+        Ast.ClassDecl longForm = (Ast.ClassDecl) Parser.parse("""
+                define struct Point as
+                  f64 x;
+                  f64 y;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.ClassDecl compact = (Ast.ClassDecl) Parser.parse("""
+                struct Point {
+                  f64 x;
+                  f64 y;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        assertTrue(longForm.isStruct());
+        assertEquals(Ast.AggregateKind.STRUCT, compact.kind());
+        assertEquals(longForm, compact);
+        assertEquals(Ast.BindingKind.VAL, compact.fields().getFirst().bindingKind());
+    }
+
+    @Test
+    void lexerReservesStructAndIs() {
+        var tokens = new Lexer("struct Point is Named {}").scan();
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.STRUCT));
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.IS));
+    }
 }
