@@ -11,6 +11,10 @@
 7. Hot reload never requires loading executable native libraries.
 8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
 9. `self` cannot be rebound.
+10. An actor has one mailbox and never executes two mailbox turns concurrently.
+11. Private and shared actors use separate dispatcher thread pools.
+12. Private actor transport rejects synchronized shared-memory cells.
+13. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks.
 
 ## Deployment matrix
 
@@ -42,3 +46,17 @@ The strict production direction is:
 ## Receiver implementation
 
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
+
+
+## Actor dispatchers
+
+The host actor runtime follows the same scheduling shape as Akka's event-based dispatcher: many actors share an executor, each actor has its own mailbox, and a scheduled actor drains only a bounded number of messages before yielding back to the executor. The configured throughput bound prevents one hot mailbox from monopolizing a worker.
+
+Oreslang deliberately uses two executors:
+
+- **private dispatcher** — private actors, isolation-copy message transport;
+- **shared dispatcher** — shared actors, immutable sharing plus explicit `SyncCell<T>` shared state.
+
+A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
+
+The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors.
