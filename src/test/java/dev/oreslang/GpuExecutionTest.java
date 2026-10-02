@@ -228,6 +228,9 @@ final class GpuExecutionTest {
         GpuKernelCompiler.GpuKernel kernel = compilation.gpuProgram().kernels().getFirst();
         assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, kernel.executionShape());
         assertEquals("n", kernel.launchExtentExpression());
+        assertEquals("n", kernel.launchPlan().globalWorkItemsExpression());
+        assertEquals("n", kernel.launchPlan().errorSlotsExpression());
+        assertEquals("0", kernel.launchPlan().resultSlotsExpression());
         String source = compilation.gpuProgram().source();
         assertTrue(source.contains("__global float* restrict ores_v_xs"));
         assertTrue(source.contains("ulong __ores_len_xs"));
@@ -275,6 +278,9 @@ final class GpuExecutionTest {
         assertEquals(3, batch.workItems());
         assertEquals(GpuKernelCompiler.BatchExecutionPolicy.CONCURRENT_KERNELS, batch.preferredPolicy());
         assertTrue(batch.hasDispatcher());
+        assertEquals("3", batch.fallbackDispatcherLaunchPlan().globalWorkItemsExpression());
+        assertEquals("3", batch.fallbackDispatcherLaunchPlan().errorSlotsExpression());
+        assertEquals("0", batch.fallbackDispatcherLaunchPlan().resultSlotsExpression());
         assertTrue(compilation.gpuProgram().manifest().contains("CONCURRENT_KERNELS"));
         assertTrue(compilation.gpuProgram().source().contains("__kernel void " + batch.dispatcherSymbol()));
         assertTrue(compilation.gpuProgram().source().contains("switch (__ores_task)"));
