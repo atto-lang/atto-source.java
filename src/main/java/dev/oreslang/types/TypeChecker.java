@@ -68,6 +68,9 @@ public final class TypeChecker {
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
+                    if (imported.kind() == Ast.ImportKind.CLASS && RESERVED_COLLECTION_TYPES.contains(name)) {
+                        throw new IllegalArgumentException("imported class name '" + name + "' conflicts with an Oreslang core collection type");
+                    }
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                     if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
                 }
@@ -428,10 +431,19 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                requireAssignable(index, Primitive.INT, "array/list index");
-                if (receiver instanceof ListType list) targetType = list.element();
-                else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                else throw new IllegalArgumentException("indexed assignment requires an array/list or tuple");
+                if (receiver instanceof ListType list) {
+                    requireAssignable(index, Primitive.INT, "array/list index");
+                    targetType = list.element();
+                } else {
+                    Type mapKey = builtinMapKey(receiver);
+                    if (mapKey != null) {
+                        requireAssignable(index, mapKey, "map index");
+                        targetType = builtinMapValue(receiver);
+                    } else if (receiver instanceof Tuple tuple) {
+                        requireAssignable(index, Primitive.INT, "tuple index");
+                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                    } else throw new IllegalArgumentException("indexed assignment requires an array/list, map, or tuple");
+                }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
             Type value = typeOf(assignment.value(), env, generics, self);
