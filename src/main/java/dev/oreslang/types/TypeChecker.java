@@ -129,7 +129,7 @@ public final class TypeChecker {
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                 else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
-                else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+                else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(module, field);
             }
         }
     }
@@ -928,6 +928,7 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) {
             Type fieldType = resolve(field.type(), classGenerics, self);
             if (field.initializer() != null) {
+                validateSingletonTransportExpr(field.initializer(), module);
                 Type actual = typeOf(field.initializer(), new Env(classModuleEnv), classGenerics, self);
                 requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
             }
@@ -977,9 +978,10 @@ public final class TypeChecker {
         }
     }
 
-    private void checkModuleBinding(Ast.FieldDecl field) {
+    private void checkModuleBinding(Ast.ModuleDecl module, Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
-        Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
+        validateSingletonTransportExpr(field.initializer(), module.name());
+        Type actual = typeOf(field.initializer(), new Env(null, module.name()), Set.of(), null);
         if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
             throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
