@@ -14,7 +14,7 @@ import java.util.Set;
  */
 final class ReservedIdentifierValidator {
     private static final Set<String> RESERVED = Set.of(
-            "of", "is", "as", "actor", "isolate", "recover", "panic");
+            "of", "is", "as", "actor", "isolate", "recover", "panic", "throw", "raise", "stop");
 
     private ReservedIdentifierValidator() { }
 
@@ -141,6 +141,8 @@ final class ReservedIdentifierValidator {
             expression(recover.handler());
         } else if (stmt instanceof Ast.PanicStmt panic) {
             expression(panic.value());
+        } else if (stmt instanceof Ast.ThrowStmt thrown) {
+            expression(thrown.value());
         } else if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 expression(branch.condition());
@@ -185,8 +187,14 @@ final class ReservedIdentifierValidator {
             expression(call.callee());
             for (Ast.Expr argument : call.arguments()) expression(argument);
         } else if (expr instanceof Ast.MemberExpr member) {
-            expression(member.receiver());
-            name(member.member(), "member");
+            boolean actorRuntimeNamespace = member.receiver() instanceof Ast.NameExpr named
+                    && named.name().equals("actor")
+                    && (member.member().equals("inActor") || member.member().equals("in_actor"));
+            if (!actorRuntimeNamespace) expression(member.receiver());
+
+            // `stop` is a contextual selector for Actor/ActorTask.stop(); it
+            // remains forbidden as a declaration identifier everywhere else.
+            if (!member.member().equals("stop")) name(member.member(), "member");
         } else if (expr instanceof Ast.IndexExpr index) {
             expression(index.receiver());
             expression(index.index());
