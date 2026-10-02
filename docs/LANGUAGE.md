@@ -195,6 +195,13 @@ The explicit forms `let foo: String`, `val foo: String`, and
 as `val String foo` remains accepted during migration, but new code should use
 `name: Type`.
 
+Annotations are part of the field declaration and are preserved in the AST,
+including on static fields and module members. This gives compile-time macros
+such as `@FromJson("foo")` one stable member representation to consume. An
+annotation defines its own legality rules: for example, JSON-deserialization
+macros should reject static fields unless static wire-state semantics are
+explicitly defined rather than treating class state as instance JSON data.
+
 A class `static` field belongs to the class namespace and is reached as
 `MyBlob.bar`. Its storage is owned by the same actor-local module state (or
 singleton-module service actor) that owns the class. It is therefore not a
