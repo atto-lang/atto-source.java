@@ -1020,8 +1020,8 @@ public final class TypeChecker {
                     Function signature = methodFunctionType(fn, klass, null);
                     for (int i = 0; i < call.arguments().size(); i++) {
                         Type expected = signature.parameters().get(i);
-                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                        validateArgumentAgainstExpected(call.arguments().get(i), expected, env, generics, self,
+                                "argument " + (i + 1));
                     }
                     return signature.result();
                 }
@@ -1036,8 +1036,7 @@ public final class TypeChecker {
                     Function signature = methodFunctionType(method, klass, proxy.target());
                     for (int i = 0; i < call.arguments().size(); i++) {
                         Type expected = signature.parameters().get(i);
-                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
+                        validateArgumentAgainstExpected(call.arguments().get(i), expected, env, generics, self,
                                 "singleton proxy argument " + (i + 1));
                     }
                     return new Named("Future", List.of(signature.result()));
@@ -1049,9 +1048,8 @@ public final class TypeChecker {
                                 + "' with arity " + call.arguments().size());
                     }
                     for (int i = 0; i < fn.parameters().size(); i++) {
-                        validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self),
-                                fn.parameters().get(i), "structural argument " + (i + 1));
+                        validateArgumentAgainstExpected(call.arguments().get(i), fn.parameters().get(i), env, generics, self,
+                                "structural argument " + (i + 1));
                     }
                     return fn.result();
                 }
@@ -1064,8 +1062,8 @@ public final class TypeChecker {
                         Function signature = methodFunctionType(method, klass, named);
                         for (int i = 0; i < call.arguments().size(); i++) {
                             Type expected = signature.parameters().get(i);
-                            validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
-                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                            validateArgumentAgainstExpected(call.arguments().get(i), expected, env, generics, self,
+                                    "argument " + (i + 1));
                         }
                         return signature.result();
                     }
@@ -1075,8 +1073,8 @@ public final class TypeChecker {
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
             for (int i = 0; i < fn.parameters().size(); i++) {
-                validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                requireAssignable(typeOf(call.arguments().get(i), env, generics, self), fn.parameters().get(i), "argument " + (i + 1));
+                validateArgumentAgainstExpected(call.arguments().get(i), fn.parameters().get(i), env, generics, self,
+                        "argument " + (i + 1));
             }
             return fn.result();
         }
@@ -1334,6 +1332,18 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private void validateArgumentAgainstExpected(
+            Ast.Expr argument,
+            Type expected,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String where) {
+        validateLambdaArgument(argument, expected, env, generics, self);
+        Type actual = typeOf(argument, env, generics, self);
+        requireAssignableExpression(argument, actual, expected, where);
     }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
