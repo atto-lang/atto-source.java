@@ -16,10 +16,15 @@ jobs:
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@v1
         with:
+          version: '25.3'
           java-version: '25'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: GraalVM diagnostics
+        run: |
+          java --version
+          native-image --version
       - name: Verify JIT/JVM profile
         run: mvn -B -ntp verify
       - name: Run showcase
@@ -34,10 +39,15 @@ jobs:
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@v1
         with:
+          version: '25.3'
           java-version: '25'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: GraalVM diagnostics
+        run: |
+          java --version
+          native-image --version
       - name: Build interpreter-only AOT image
         run: mvn -B -ntp -Pnative-aot -DskipTests package
       - name: Run AOT image
@@ -50,10 +60,15 @@ jobs:
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@v1
         with:
+          version: '25.3'
           java-version: '25'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
+      - name: GraalVM diagnostics
+        run: |
+          java --version
+          native-image --version
       - name: Build AOT host with guest JIT
         run: mvn -B -ntp -Pnative-hybrid -DskipTests package
       - name: Run hybrid image
