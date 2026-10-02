@@ -18,7 +18,8 @@
 14. Actor `self` and move-only actor-owned state cannot escape a mailbox turn as ordinary mutable aliases.
 15. Synchronized shared memory requires `SHARED_MEMORY`; strict FaaS does not grant it by default.
 16. Private slices and synchronized shared cells compete for one parent actor-memory ceiling.
-17. Actor message graphs are cycle-checked and nesting-depth bounded before transport.
+17. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
+18. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
 
 ## Deployment matrix
 
@@ -54,14 +55,53 @@ Method code is stored once per class declaration. Direct calls dispatch to that 
 
 ## Truffle thread boundary
 
-`ActorRuntime` is the host scheduling substrate. Its private/shared executors must not be confused with permission to execute Ores guest ASTs concurrently inside one Truffle language context.
+`ActorRuntime` owns host dispatcher threads; guest code still receives no ambient thread-creation authority. A dispatcher carrier is marked by the runtime, explicitly enters/leaves the associated `TruffleContext` for each actor batch, and only marked actor carriers are accepted for concurrent context access.
 
-Oreslang currently keeps `TruffleLanguage.isThreadAccessAllowed(...)` in single-threaded mode. A carrier may change when access remains sequential, but concurrent guest execution in one context is intentionally denied. Source-level actor lowering must therefore introduce an explicit Truffle execution strategy before actor declarations become runnable:
+Non-adversarial contexts may therefore execute independent actor turns concurrently. Strict/adversarial contexts currently serialize guest actor turns with a fair context-level lock even though private/shared dispatcher pools remain separate. This preserves the strict one-guest-thread sandbox contract until isolated/private actor execution is backed by per-actor inner/polyglot/native contexts.
 
-- either enter a context from host-owned dispatcher threads and opt the language into Truffle multi-threading after auditing AST/context state for concurrency; or
-- map actor memory domains to separate inner/polyglot/native contexts and enter the correct context for each mailbox turn.
+The guest `THREAD_CREATE` capability is separate from host/runtime dispatcher scheduling. Denying guest-created threads is never bypassed merely because the runtime owns carrier pools.
 
-The guest `THREAD_CREATE` capability is separate from host/runtime dispatcher scheduling. Denying guest-created threads must not be bypassed merely because the actor runtime itself owns worker pools.
+
+## Mutex and shared-memory model
+
+Oreslang has two deliberately different mutex domains:
+
+- `Mutex<T>` is actor/private-domain state. It owns the protected value, uses no JVM lock, is non-reentrant, and is confined to the creating semantic actor/execution domain. Shared actors may migrate between JVM workers without changing that domain.
+- `SharedMutex<T>` is an explicit same-OS-process shared-memory capability within one `ActorRuntime`. It is non-reentrant and uses acquire/release synchronization. Only shared actors may receive/use it; private actors reject it even when the parent runtime is otherwise trusted. Sender and receiver must have `SHARED_MEMORY`. It binds transactionally to the first runtime that successfully publishes it, and later cross-runtime transport is rejected.
+- The payload and declared type argument of `SharedMutex<T>` must be **SharedSafe**: concrete owned data whose reachable field graph contains no borrows, actor-local `Mutex`, `MutexGuard`, pending `Future`, closure/function values, or unresolved dynamic/generic state. This applies to signatures/fields/aliases as well as `SharedMutex.new(...)`. Until Oreslang has an explicit SharedSafe generic bound, unconstrained `SharedMutex<T>` is rejected conservatively. The type checker recursively validates class fields (including inherited generic substitutions), and the interpreter repeats runtime admission checks as defense in depth.
+- `MutexGuard<T>` is a lexical linear capability. The runtime releases it on normal scope exit and poisons a shared mutex on abnormal scope exit. Guest code may call `guard.release()` for early release; there is intentionally no `mutex.unlock()`. A released guard can no longer expose its protected value.
+- Guard access is deliberately non-escaping. Copy-like fields may be read, mutable fields may be replaced, and methods may be invoked directly when they return `void` or a copy-like value. Move-only nested fields and bound method values cannot be extracted through a guard. For compound mutation, use `with_lock(|state| -> { ... })`.
+- `with_lock` and `recover` require an inline one-argument, `void` lambda. The callback parameter is treated as a lexical exclusive `&mut T`: it may mutate protected state but cannot move or return that state, escape it through a closure, or suspend with `await`.
+- `await` while a guard is live and closure capture of a guard are compile-time ownership errors. Guard-bearing results must be bound once with `val`; they cannot be discarded, reassigned, stored in aggregates, passed through arbitrary calls, or hidden inside another mutex.
+- Blocking `SharedMutex.lock()`/timed acquisition is rejected while executing an actor. `lock_async()` returns a future and is the nonblocking acquisition primitive. Acquisitions reserve the semantic actor/execution domain before waiting, so recursive async acquisition fails instead of self-deadlocking even if an actor migrates JVM workers. Async waiter admission is bounded by the current actor mailbox policy, an 8,192-waiter ceiling per mutex, and a 32,768 process-wide ceiling. On the virtual-thread actor runtime, awaiting it does not pin an OS worker. When integrated with the bounded shared-actor platform-thread pool, the language `await` lowering must suspend/resume the actor turn rather than synchronously join the future; until that continuation lowering is in place, actor-backed singleton/mailbox serialization is preferred over contended shared-memory locking from shared actors.
+- A poisoned `SharedMutex<T>` rejects ordinary acquisition until `recover(...)` repairs invariants and clears poison. `recover` is not an ordinary lock operation: it is rejected when the mutex is healthy. Inside actor execution recovery is nonblocking; if another recovery owns the permit, the actor must retry on a later mailbox turn rather than park.
+
+Example:
+
+```ores
+val state = Mutex.new(new Counter());
+val guard = state.lock();
+guard.count = guard.count + 1;
+guard.release();
+
+val shared = SharedMutex.new(new Cache());
+val shared_guard = await shared.lock_async();
+shared_guard.increment_hits();
+shared_guard.release();
+
+shared.with_lock(|cache| -> {
+  cache.put("key", "value");
+  return;
+});
+```
+
+A process-wide `singleton module` is **not** raw shared memory. It is owned by one hidden singleton actor and accessed through its typed mailbox/proxy, so its mutable state is serialized by actor execution and normally requires no mutex. Do not wrap singleton-module state in `SharedMutex<T>` merely because multiple actors can call it. Use `SharedMutex<T>` only when code deliberately opts into a writable same-process memory object that multiple actor/execution domains may dereference directly.
+
+When the private-arena/`isoactor` runtime is stacked with this work, isolated actors must run without `SHARED_MEMORY` authority. An `isoactor` may receive copied/frozen messages, but it must not receive a `SharedMutex<T>` or any other writable JVM-heap alias; otherwise the language would no longer be able to claim true actor memory isolation.
+
+The current reference runtime uses a one-permit JVM semaphore for `SharedMutex<T>`. Java semaphore release/acquire provides the required memory-ordering edge and, unlike a thread-owned `ReentrantLock`, allows an asynchronously acquired guard to be resumed and released by the actor execution context.
+
+Actor transport is independently hardened from mutex synchronization. Ordinary messages are recursively frozen with cycle detection and hard depth/node/byte budgets (256 levels, 100,000 nodes, 16 MiB estimated frozen size). Read-only shared wrappers are runtime-constructed and revalidated on every boundary. `ActorRef` capabilities may cross only inside their owning `ActorRuntime`; a wrapper cannot be used to smuggle a foreign actor reference into another runtime. Arbitrary host-controlled `Sendable` callbacks are not part of the transport boundary. Runtime-owned capabilities have explicit cases, while ordinary message graphs are recursively frozen/copied and validated.
 
 ## Actor dispatchers
 
