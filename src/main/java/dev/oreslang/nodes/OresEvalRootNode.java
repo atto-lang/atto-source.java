@@ -104,7 +104,9 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (fn.gpu()) {
                 String module = functionOwners.getOrDefault(fn, "__root__");
-                return context.gpu().dispatch(program, module + "." + fn.name(), fn, args);
+                String callable = module + "." + fn.name();
+                context.requireCapability(IsolatePolicy.Capability.GPU, "gpu callable " + callable);
+                return context.gpu().dispatch(callable, fn.kind().name().toLowerCase(), args);
             }
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
