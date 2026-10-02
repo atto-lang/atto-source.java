@@ -272,6 +272,8 @@ The static GPU verifier is deliberately conservative. GPU callables may compose 
 
 CPU code may call a GPU callable; that call is the explicit CPU-to-GPU dispatch boundary. GPU code may not call an ordinary CPU callable. The `gpu` effect is included in exported ABI fingerprints so changing a public callable between CPU and GPU execution invalidates dependent compilation units.
 
+GPU device access is capability-gated. An isolate must be created with the explicit `GPU` capability before a GPU callable can be admitted or dispatched. The strict FaaS policy does not grant GPU access by default. Embedding hosts install an accelerator implementation through the exported `dev.oreslang.gpu.GpuRuntime.Backend` SPI; the reference frontend therefore does not hard-code CUDA, SPIR-V, Metal, or another vendor backend.
+
 Class instance methods and `static fnc` members are not GPU entrypoints in v0.7; `gpu` is currently restricted to top-level/module `fnc` and `routine` declarations.
 
 ## Actors
@@ -471,7 +473,7 @@ Security is layered. Oreslang uses a deny-by-default language capability policy 
 
 An isolate policy can independently allow or deny:
 
-`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `GPU`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
 
 The trusted compiler API can reject forbidden API usage before execution:
 
