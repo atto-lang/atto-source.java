@@ -110,6 +110,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            return callInstanceMethod(receiver, method, args);
+        }
+
+        private Object callInstanceMethod(Object receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -235,19 +239,41 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    throw new IllegalArgumentException("member assignment requires a class instance");
+                    if (receiver instanceof BuiltinCollectionValue collection && collection.map != null) {
+                        collection.putMapValue(target.member(), value);
+                        return value;
+                    }
+                    if (receiver instanceof Map<?, ?> raw) {
+                        @SuppressWarnings("unchecked") Map<Object,Object> map = (Map<Object,Object>) raw;
+                        map.put(target.member(), value);
+                        return value;
+                    }
+                    throw new IllegalArgumentException("member assignment requires a class/object/map instance");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
-                    int i = Math.toIntExact(number.longValue());
+                    if (receiver instanceof BuiltinCollectionValue collection) {
+                        if (collection.list != null) {
+                            int i = integerIndex(index);
+                            collection.list.set(i, value);
+                        } else {
+                            collection.putMapValue(index, value);
+                        }
+                        return value;
+                    }
                     if (receiver instanceof List<?> raw) {
+                        int i = integerIndex(index);
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
                         list.set(i, value);
                         return value;
                     }
-                    throw new IllegalArgumentException("indexed assignment requires a mutable array/list");
+                    if (receiver instanceof Map<?, ?> raw) {
+                        @SuppressWarnings("unchecked") Map<Object,Object> map = (Map<Object,Object>) raw;
+                        map.put(index, value);
+                        return value;
+                    }
+                    throw new IllegalArgumentException("indexed assignment requires a mutable array/list/map");
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -276,6 +302,9 @@ public final class OresEvalRootNode extends RootNode {
                     if (receiver instanceof OresObject object) {
                         return invokeMethod(object, methodCall.member(), args);
                     }
+                    if (receiver instanceof BuiltinCollectionValue collection) {
+                        return invokeBuiltinCollection(collection, methodCall.member(), args);
+                    }
                     if (receiver instanceof ClassFacade klass) {
                         return invokeStaticFunction(klass.klass(), methodCall.member(), args);
                     }
@@ -292,15 +321,40 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
-                int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
-                if (receiver instanceof Object[] array) return array[i];
+                if (receiver instanceof BuiltinCollectionValue collection) {
+                    if (collection.list != null) return collection.list.get(integerIndex(index));
+                    return collection.map.get(index);
+                }
+                if (receiver instanceof List<?> list) return list.get(integerIndex(index));
+                if (receiver instanceof Map<?, ?> map) return map.get(index);
+                if (receiver instanceof Object[] array) return array[integerIndex(index)];
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
-                Ast.ClassDecl klass = findClass(created.type().name());
-                if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                String typeName = created.type().name();
+                if (isBuiltinListName(typeName)) {
+                    List<Object> values = typeName.equals("LinkedList") ? new java.util.LinkedList<>() : new ArrayList<>();
+                    for (Ast.Expr argument : created.arguments()) values.add(eval(argument, env));
+                    return BuiltinCollectionValue.list(typeName, values, anonymousMethods(created.methods()));
+                }
+                if (isBuiltinMapName(typeName)) {
+                    Map<Object,Object> values = typeName.equals("HashMap") ? new HashMap<>() : new LinkedHashMap<>();
+                    BuiltinCollectionValue result = BuiltinCollectionValue.map(typeName, values, anonymousMethods(created.methods()));
+                    for (Ast.ObjectField entry : created.entries()) result.putMapValue(entry.name(), eval(entry.value(), env));
+                    return result;
+                }
+                if (typeName.equals("Object")) {
+                    LinkedHashMap<Object,Object> result = new LinkedHashMap<>();
+                    for (Ast.ObjectField entry : created.entries()) {
+                        if (result.putIfAbsent(entry.name(), eval(entry.value(), env)) != null) {
+                            throw new IllegalArgumentException("duplicate Object initializer field " + entry.name());
+                        }
+                    }
+                    return result;
+                }
+
+                Ast.ClassDecl klass = findClass(typeName);
+                if (klass == null) throw new IllegalArgumentException("unknown class " + typeName);
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
                 if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
@@ -313,7 +367,7 @@ public final class OresEvalRootNode extends RootNode {
                     else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
                     fields.put(field.name(), value);
                 }
-                return new OresObject(klass, fields);
+                return new OresObject(klass, fields, anonymousMethods(created.methods()));
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -331,7 +385,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.ObjectField field : object.fields()) {
                     if (result.putIfAbsent(field.name(), eval(field.value(), env)) != null) throw new IllegalArgumentException("duplicate obj field " + field.name());
                 }
-                return Map.copyOf(result);
+                return result;
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 Env captured = env.snapshot();
@@ -388,6 +442,10 @@ public final class OresEvalRootNode extends RootNode {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
                 return new BoundMethod(object, name);
             }
+            if (receiver instanceof BuiltinCollectionValue collection) {
+                if (collection.map != null && collection.map.containsKey(name)) return collection.map.get(name);
+                return (Invokable) args -> invokeBuiltinCollection(collection, name, args);
+            }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
                 return map.get(name);
@@ -396,9 +454,50 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
-            Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
+            Ast.MethodDecl method = receiver.overrides.get(methodKey(name, args.size()));
+            if (method == null) method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
             return callMethod(receiver, method, args);
+        }
+
+        private Object invokeBuiltinCollection(BuiltinCollectionValue receiver, String name, List<Object> args) {
+            Ast.MethodDecl override = receiver.overrides.get(methodKey(name, args.size()));
+            if (override != null) return callInstanceMethod(receiver, override, args);
+
+            if (receiver.list != null) {
+                return switch (name) {
+                    case "get" -> { requireArity(args, 1, name); yield receiver.list.get(integerIndex(args.getFirst())); }
+                    case "set" -> { requireArity(args, 2, name); receiver.list.set(integerIndex(args.get(0)), args.get(1)); yield null; }
+                    case "add", "push" -> { requireArity(args, 1, name); receiver.list.add(args.getFirst()); yield null; }
+                    case "remove_at" -> { requireArity(args, 1, name); yield receiver.list.remove(integerIndex(args.getFirst())); }
+                    case "size", "length" -> { requireArity(args, 0, name); yield (long) receiver.list.size(); }
+                    default -> throw new IllegalArgumentException("unknown builtin list method " + name);
+                };
+            }
+
+            return switch (name) {
+                case "get", "find" -> {
+                    requireArity(args, 1, name);
+                    Object key = args.getFirst();
+                    yield receiver.map.containsKey(key) ? new OptionValue(true, receiver.map.get(key)) : new OptionValue(false, null);
+                }
+                case "put" -> {
+                    requireArity(args, 2, name);
+                    receiver.putMapValue(args.get(0), args.get(1));
+                    yield null;
+                }
+                case "remove" -> {
+                    requireArity(args, 1, name);
+                    Object key = args.getFirst();
+                    if (!receiver.map.containsKey(key)) yield new OptionValue(false, null);
+                    yield new OptionValue(true, receiver.map.remove(key));
+                }
+                case "contains_key" -> { requireArity(args, 1, name); yield receiver.map.containsKey(args.getFirst()); }
+                case "size" -> { requireArity(args, 0, name); yield (long) receiver.map.size(); }
+                case "keys" -> { requireArity(args, 0, name); yield new ArrayList<>(receiver.map.keySet()); }
+                case "values" -> { requireArity(args, 0, name); yield new ArrayList<>(receiver.map.values()); }
+                default -> throw new IllegalArgumentException("unknown builtin map method " + name);
+            };
         }
 
         private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
@@ -532,6 +631,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private List<?> iterableValues(Object value) {
+            if (value instanceof BuiltinCollectionValue collection && collection.list != null) return collection.list;
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
@@ -541,6 +641,36 @@ public final class OresEvalRootNode extends RootNode {
                 return iterableValues(produced);
             }
             throw new IllegalArgumentException("value is not iterable");
+        }
+
+        private static boolean isBuiltinListName(String name) {
+            return name.equals("Array") || name.equals("Arrays") || name.equals("List") || name.equals("LinkedList");
+        }
+
+        private static boolean isBuiltinMapName(String name) {
+            return name.equals("Map") || name.equals("HashMap") || name.equals("JsonMap");
+        }
+
+        private static String methodKey(String name, int arity) { return name + "$arity" + arity; }
+
+        private static Map<String, Ast.MethodDecl> anonymousMethods(List<Ast.MethodDecl> methods) {
+            LinkedHashMap<String, Ast.MethodDecl> result = new LinkedHashMap<>();
+            for (Ast.MethodDecl method : methods) {
+                String key = methodKey(method.name(), method.arity());
+                if (result.putIfAbsent(key, method) != null) throw new IllegalArgumentException("duplicate anonymous method " + method.name() + "/" + method.arity());
+            }
+            return Map.copyOf(result);
+        }
+
+        private static int integerIndex(Object value) {
+            if (!(value instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
+            long raw = number.longValue();
+            if (number.doubleValue() != raw) throw new IllegalArgumentException("index must be an integer");
+            return Math.toIntExact(raw);
+        }
+
+        private static void requireArity(List<?> args, int expected, String name) {
+            if (args.size() != expected) throw new IllegalArgumentException(name + " expects " + expected + " argument(s), got " + args.size());
         }
 
         private Object binary(String op, Object left, Object right) {
@@ -649,9 +779,79 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject {
-        private final Ast.ClassDecl klass; private final Map<String,Object> fields;
-        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){this.klass=klass;this.fields=fields;}
+        private final Ast.ClassDecl klass;
+        private final Map<String,Object> fields;
+        private final Map<String,Ast.MethodDecl> overrides;
+        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields) {
+            this(klass, fields, Map.of());
+        }
+        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields, Map<String,Ast.MethodDecl> overrides) {
+            this.klass=klass; this.fields=fields; this.overrides=overrides;
+        }
         @Override public String toString(){return klass.name()+fields;}
+    }
+
+    private static final class BuiltinCollectionValue {
+        private final String kind;
+        private final List<Object> list;
+        private final Map<Object,Object> map;
+        private final Map<String,Ast.MethodDecl> overrides;
+
+        private BuiltinCollectionValue(String kind, List<Object> list, Map<Object,Object> map, Map<String,Ast.MethodDecl> overrides) {
+            this.kind = kind; this.list = list; this.map = map; this.overrides = overrides;
+        }
+
+        private static BuiltinCollectionValue list(String kind, List<Object> values, Map<String,Ast.MethodDecl> overrides) {
+            return new BuiltinCollectionValue(kind, values, null, overrides);
+        }
+
+        private static BuiltinCollectionValue map(String kind, Map<Object,Object> values, Map<String,Ast.MethodDecl> overrides) {
+            return new BuiltinCollectionValue(kind, null, values, overrides);
+        }
+
+        private void putMapValue(Object key, Object value) {
+            if (map == null) throw new IllegalArgumentException(kind + " is not map-like");
+            if (kind.equals("JsonMap")) {
+                if (!(key instanceof String)) throw new IllegalArgumentException("JsonMap keys must be strings");
+                if (!jsonCompatible(value, new java.util.IdentityHashMap<>(), 0)) {
+                    throw new IllegalArgumentException("JsonMap values must be JSON-compatible");
+                }
+            }
+            map.put(key, value);
+        }
+
+        private static boolean jsonCompatible(Object value, java.util.IdentityHashMap<Object,Boolean> seen, int depth) {
+            if (depth > 128) return false;
+            if (value == null || value instanceof String || value instanceof Boolean || value instanceof Number) return true;
+            if (seen.put(value, Boolean.TRUE) != null) return false;
+            try {
+                if (value instanceof BuiltinCollectionValue collection) {
+                    if (collection.list != null) {
+                        for (Object item : collection.list) if (!jsonCompatible(item, seen, depth + 1)) return false;
+                        return true;
+                    }
+                    for (Map.Entry<Object,Object> entry : collection.map.entrySet()) {
+                        if (!(entry.getKey() instanceof String) || !jsonCompatible(entry.getValue(), seen, depth + 1)) return false;
+                    }
+                    return true;
+                }
+                if (value instanceof List<?> list) {
+                    for (Object item : list) if (!jsonCompatible(item, seen, depth + 1)) return false;
+                    return true;
+                }
+                if (value instanceof Map<?,?> map) {
+                    for (Map.Entry<?,?> entry : map.entrySet()) {
+                        if (!(entry.getKey() instanceof String) || !jsonCompatible(entry.getValue(), seen, depth + 1)) return false;
+                    }
+                    return true;
+                }
+                return false;
+            } finally {
+                seen.remove(value);
+            }
+        }
+
+        @Override public String toString() { return kind + (list != null ? list : map); }
     }
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
