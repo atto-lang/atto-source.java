@@ -397,7 +397,10 @@ public final class OwnershipChecker {
                 if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW) {
                     throw error("copy(...) requires an owned value, not a borrow");
                 }
-                return new ValueInfo(source.type, kindOfType(source.type), null);
+                if (source.kind != ValueKind.COPY) {
+                    throw error("copy(...) requires a type proven Copy; classes are not implicitly copyable and must opt into the class-copy contract");
+                }
+                return new ValueInfo(source.type, ValueKind.COPY, null);
             }
             if (intrinsic.name().equals("share")) {
                 throw error("share(...) is reserved for explicit shared capabilities; ordinary ownership cannot be converted to shared mutable state implicitly");
