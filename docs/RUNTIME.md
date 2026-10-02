@@ -46,7 +46,7 @@ or recoverable runtime exception terminates only that actor cell. The actor thre
 its failure onto the spawning/main thread, and sibling actors continue running.
 
 `ActorRef.join()` waits for termination but completes normally even when the actor failed.
-Failure is observable through `failed()` / `failure()`; escalation is therefore explicit
+Failure is observable through `failed()` / `failure()` and the language-level `failure_trace`; escalation is therefore explicit
 supervisor policy rather than an ambient exception leak. The current actor thread is recorded on
 its ref so `self.join()` is rejected immediately; an actor can never deadlock by waiting for its
 own termination.
@@ -57,11 +57,16 @@ while defer/recovery stacks are strictly per-turn.
 
 `stop;` and `ActorRef.stop()` intentionally have different semantics.
 
-The language statement `stop;` is immediate clean actor termination. It uses a
-stackless internal control signal, runs lexical `finally` and callable defers,
-bypasses guest catch/recover, abandons queued mailbox work, and never marks the
-actor failed. The signal is recognized only by the actor boundary; outside actor
-source the type checker rejects `stop;`.
+The language statement `stop;` is structured actor-tree termination. The current actor
+immediately stops accepting new messages, recursively requests graceful/FIFO shutdown of
+its descendants, prevents stopping descendants from spawning new children, runs lexical
+`finally` and callable defers, bypasses guest catch/recover, waits for descendants to
+terminate, and never marks the current actor failed. The current actor abandons its own
+queued messages; child actors drain already accepted work.
+
+Outside a statically known actor body, `stop;` is admitted only in a branch guarded by
+`actor.in_actor()` / `actor.inActor()`. Runtime admission checks the current actor
+execution again, so root/supervisor code cannot stop itself accidentally.
 
 Explicit `ActorRef.stop()` / `self.stop()` is graceful and ordered:
 
@@ -84,7 +89,13 @@ JVM process; `ISOLATE` is also the backend contract for mapping that actor to a 
 Graal/native isolate. The interpreter does not claim physical address-space separation when the
 host has not supplied an isolate backend.
 
-## Panic and recovery frames
+## Throw, panic, raise, and recovery frames
+
+The runtime keeps distinct guest failure channels:
+
+- `throw value` is catch-oriented. Lexical `try/catch` may consume it; callable `recover` does not.
+- `panic value` is recover-oriented. Callable `recover` may consume it; lexical `try/catch` does not.
+- `raise;` re-propagates the exact failure currently handled by catch/recover and preserves its logical trace.
 
 Each callable invocation owns a recovery stack in addition to its defer stack.
 
@@ -98,16 +109,43 @@ When a recoverable failure escapes the callable:
 2. body/defer failures are combined using the existing primary/suppressed policy;
 3. recover handlers are invoked LIFO with the pending failure value;
 4. a handler that returns normally consumes the failure and supplies the callable result;
-5. a handler that panics/throws replaces the pending failure and unwind continues to the next
+5. a handler that creates a new panic replaces the pending panic and unwind continues to the next
    older recover handler;
-6. if no recover handler consumes it, the failure propagates to the caller.
+6. `raise;` preserves the pending failure unchanged;
+7. if no recover handler consumes a panic/runtime failure, it propagates to the caller.
 
-For `panic value`, handlers and guest `catch` blocks observe the panic payload rather than the
-internal Java control object. Ordinary runtime exceptions are passed as exception values.
+`throw` bypasses this recovery frame entirely. Guest catch/recover handlers observe the guest
+payload for explicit throw/panic signals rather than internal Java control objects. Ordinary
+runtime exceptions are passed as exception values.
 
-Scheduler/runtime cancellation is deliberately non-recoverable. Defers still run during
-cancellation unwind, but neither guest `recover` nor lexical `catch` can swallow cancellation
-and prevent actor/runtime shutdown.
+Scheduler/runtime cancellation and actor-stop control are deliberately non-recoverable.
+Defers still run during unwind, but neither guest `recover` nor lexical `catch` can swallow
+those control signals and prevent actor/runtime shutdown.
+
+## Logical stack traces
+
+Oreslang diagnostics use a logical call trace rather than treating the JVM carrier-thread
+stack as language truth. Frames record the Ores callable/boundary kind, callable name,
+current actor id when present, and carrier thread for debugging.
+
+Actor sends capture the sender logical context into the mailbox envelope. The receiving actor
+installs that context before executing the turn, then adds its own actor/callable frames. This
+preserves causality across actor and JVM-thread boundaries and puts actor ids directly in
+failure traces.
+
+`OresTrace.captureBoundary(...)` / `install(...)` and the provided wrapper helpers are the
+runtime convergence point for async tasks, virtual threads, CompletionStage callbacks, and
+event-loop dispatchers. Async lowering must capture before scheduling and restore before
+resuming guest code; it must not reconstruct traces from Java thread stacks after the fact.
+
+`@NoStackTrace` on a callable suppresses that callable's logical frame in normal mode. Host
+configuration controls the policy with `ORES_STACK_TRACE`:
+
+- `auto` (default): respect `@NoStackTrace`;
+- `full` / `on`: force logical frames even for annotated callables;
+- `off` / `none`: disable logical stack-trace capture process-wide.
+
+This variable is host/runtime configuration and does not grant guest environment access.
 
 ## Receiver implementation
 
