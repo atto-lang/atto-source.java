@@ -677,7 +677,7 @@ public final class OresEvalRootNode extends RootNode {
                     else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
                     fields.put(field.name(), value);
                 }
-                return new OresObject(klass, runtimeClassId(klass), fields);
+                return new OresObject(runtimeClassId(klass), fields);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -774,10 +774,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Ast.ClassDecl runtimeDispatchClass(OresObject receiver, SingletonState singletonState) {
-            if (singletonState == null) return receiver.klass;
             Ast.ClassDecl current = findClass(receiver.classId);
             if (current == null) {
-                throw new IllegalStateException("singleton-owned class '" + receiver.classId
+                String kind = singletonState == null ? "runtime" : "singleton-owned";
+                throw new IllegalStateException(kind + " class '" + receiver.classId
                         + "' no longer exists in the active code generation");
             }
             return current;
@@ -1153,7 +1153,7 @@ public final class OresEvalRootNode extends RootNode {
 
         if (value instanceof OresObject object) {
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-            OresObject copy = new OresObject(object.klass, object.classId, fields);
+            OresObject copy = new OresObject(object.classId, fields);
             copies.put(value, copy);
             for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
                 fields.put(entry.getKey(), copySingletonValue(entry.getValue(), copies));
@@ -1383,12 +1383,10 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject {
-        private final Ast.ClassDecl klass;
         private final String classId;
         private final Map<String,Object> fields;
 
-        private OresObject(Ast.ClassDecl klass, String classId, Map<String,Object> fields) {
-            this.klass = klass;
+        private OresObject(String classId, Map<String,Object> fields) {
             this.classId = classId;
             this.fields = fields;
         }
