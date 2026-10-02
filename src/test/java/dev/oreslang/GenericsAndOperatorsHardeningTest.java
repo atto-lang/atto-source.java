@@ -308,9 +308,9 @@ final class GenericsAndOperatorsHardeningTest {
                   fnc takeParentInt(Parent<int> value) => void { return; }
                   fnc takeValueInt(HasValue<int> value) => void { return; }
 
-                  fnc ok(Child<int> value) => void {
-                    takeParentInt(value);
-                    takeValueInt(value);
+                  fnc ok(Child<int> parentValue, Child<int> interfaceValue) => void {
+                    takeParentInt(parentValue);
+                    takeValueInt(interfaceValue);
                     return;
                   }
                 end
