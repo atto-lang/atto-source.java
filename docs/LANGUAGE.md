@@ -485,6 +485,52 @@ pub routine main() => void {
 
 Qualified names such as `x.y` retain their module namespace.
 
+## Reserved lifecycle callable names: `main` and `init`
+
+`main` and `init` are **scope-reserved callable names** at the file/root and module
+declaration levels. They are not lexer keywords.
+
+At those declaration scopes, the names may only be used by `fnc` or `routine`
+declarations:
+
+```ores
+fnc init() => void {
+  return;
+}
+
+pub routine main() => void {
+  return;
+}
+
+define module worker
+  fnc init() => void {
+    return;
+  }
+end
+```
+
+A file/module binding, type, class, interface, or unqualified import may not occupy
+`main` or `init`, because doing so would shadow a lifecycle entrypoint name.
+
+Neither lifecycle callable may be an actor:
+
+```ores
+actor fnc init() => void {     // compile-time error
+  return;
+}
+
+pub actor routine main() => void { // compile-time error
+  return;
+}
+```
+
+This applies equally to shared and isolate actor callables. Lifecycle hooks belong to
+their file/module execution context rather than being detached into a child actor.
+
+The reservation is intentionally scoped. Local bindings and class members named
+`main` or `init` remain legal, so these names do not pollute every identifier
+namespace in the language.
+
 ## `fnc` versus `routine`
 
 `fnc` is the recursive/function form. It may participate in recursive call graphs. Tail-position calls from `fnc` are optimization-eligible, but v0.3 deliberately does **not** promise that every recursive `fnc` executes in constant stack space yet.
