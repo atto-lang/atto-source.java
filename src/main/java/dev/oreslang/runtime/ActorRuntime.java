@@ -50,6 +50,14 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
 
+    private void requireCallerRuntimeAffinity(String operation) {
+        ActorRuntime caller = CURRENT_ACTOR_RUNTIME.get();
+        if (caller != null && caller != this) {
+            throw new SecurityException(
+                    "actor cannot " + operation + " through another ActorRuntime");
+        }
+    }
+
     /** True only while the current JVM thread is executing an actor behavior. */
     public static boolean inActorExecution() {
         return CURRENT_ACTOR_POLICY.get() != null;
@@ -158,6 +166,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
+        requireCallerRuntimeAffinity("spawn actors");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         java.util.Objects.requireNonNull(policy, "policy");
         java.util.Objects.requireNonNull(behaviorFactory, "behaviorFactory");
@@ -197,6 +206,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
+        requireCallerRuntimeAffinity("send messages");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         if (ref == null || !ref.belongsTo(this)) {
             throw new IllegalArgumentException("ActorRef belongs to another ActorRuntime");
