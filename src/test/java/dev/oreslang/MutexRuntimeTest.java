@@ -215,6 +215,39 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void sharedMutexCannotBeClosureCapturedAcrossActorRuntimes() throws Exception {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            var shared = OresMutex.shared(new int[]{0});
+            CountDownLatch bound = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var owner = runtimeA.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+                // The send itself binds the SharedMutex to runtimeA.
+                assertFalse(mutex.isPoisoned());
+                bound.countDown();
+            });
+            owner.send(shared);
+            assertTrue(bound.await(2, TimeUnit.SECONDS));
+
+            var foreign = runtimeB.<String>spawn(() -> (message, context) -> {
+                try {
+                    shared.tryLock();
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    checked.countDown();
+                }
+            });
+            foreign.send("check");
+
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(OresMutex.WrongMutexDomainException.class, failure.get());
+        }
+    }
+
+    @Test
     void actorCanRecoverPoisonedSharedMutexWithoutBlocking() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var shared = OresMutex.shared(new int[]{0});
