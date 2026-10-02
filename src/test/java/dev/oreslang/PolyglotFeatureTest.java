@@ -127,6 +127,24 @@ final class PolyglotFeatureTest {
                     stdio.println([1, 2] == (1, 2) ? "bad-reverse-shape" : "reverse-shape-distinct");
                     stdio.println([(1, 2)] == [[1, 2]] ? "bad-nested-shape" : "nested-shape-distinct");
                     stdio.println((1, 2) == (1, 2) ? "tuple-equal" : "bad-tuple");
+
+                    match 1.0 {
+                      1 => {
+                        stdio.println("numeric-pattern-equal");
+                      }
+                      _ => {
+                        stdio.println("bad-numeric-pattern");
+                      }
+                    }
+
+                    match [1.0, (2.0, 3)] {
+                      [1, (2, 3.0)] => {
+                        stdio.println("nested-numeric-pattern-equal");
+                      }
+                      _ => {
+                        stdio.println("bad-nested-numeric-pattern");
+                      }
+                    }
                     return;
                   }
                 end
@@ -150,11 +168,15 @@ final class PolyglotFeatureTest {
         assertTrue(text.contains("reverse-shape-distinct"));
         assertTrue(text.contains("nested-shape-distinct"));
         assertTrue(text.contains("tuple-equal"));
+        assertTrue(text.contains("numeric-pattern-equal"));
+        assertTrue(text.contains("nested-numeric-pattern-equal"));
         assertTrue(!text.contains("bad-imag"));
         assertTrue(!text.contains("bad-shape"));
         assertTrue(!text.contains("bad-reverse-shape"));
         assertTrue(!text.contains("bad-nested-shape"));
         assertTrue(!text.contains("bad-tuple"));
+        assertTrue(!text.contains("bad-numeric-pattern"));
+        assertTrue(!text.contains("bad-nested-numeric-pattern"));
     }
 
     @Test
