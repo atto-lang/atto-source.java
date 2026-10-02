@@ -776,6 +776,27 @@ stdio.stdout.write(value);
 stdio.stdout.println(value);
 ```
 
+## Environment variables
+
+Guest code reads environment variables through the capability-gated `env` facade rather than
+through host/JVM APIs:
+
+```ores
+val db_url = env.get("DATABASE_URL");        // Option<String>
+val region = env.require("REGION");          // String or runtime error
+val debug = env.bool("DEBUG");               // Option<bool>
+val workers = env.int("WORKERS");            // Option<int>
+val present = env.has("DATABASE_URL");       // bool
+```
+
+`ENVIRONMENT` must be granted by the host/isolate policy. Without it, capability admission
+fails before guest execution, and the runtime facade checks again defensively. Oreslang does
+not expose an unrestricted host `System.getenv` escape hatch to guest code.
+
+Runtime configuration for the language implementation itself is separate from guest env access.
+For example, `ORES_STACK_TRACE=auto|full|off` is read by the host runtime and does not imply
+that guest code has the `ENVIRONMENT` capability.
+
 
 ## Execution profiles: JIT, AOT, and hybrid
 
