@@ -9,13 +9,13 @@ A source file may contain multiple named modules. A normal module is a namespace
 A process-wide singleton module is declared with `define singleton module`. It has exactly one runtime instance per canonical module identity per OS process, implemented as a hidden actor with its own mutable state and mailbox. Every caller receives only a proxy/handle to that actor; importing or referencing the module never copies its mutable state. Canonical identity includes the defining source code-unit identity, namespace, and module name. This prevents unrelated source files or tenants from colliding even when they choose the same namespace/module spelling, while generations of the same code unit keep the same process singleton.
 
 ```ores
-define module math
+define module math as
   pub fnc add(int a, int b) => int {
     return a + b;
   }
 end
 
-define module app
+define module app as
   pub fnc main() => void {
     val answer = math.add(40, 2);
     stdio.println(answer);
@@ -27,7 +27,7 @@ end
 Singleton state is actor-private, so singleton fields cannot be public. Public functions are the boundary and are asynchronous request/reply calls:
 
 ```ores
-define singleton module counter
+define singleton module counter as
   let int count = 0;
 
   pub fnc next() => int {
@@ -36,7 +36,7 @@ define singleton module counter
   }
 end
 
-define module app
+define module app as
   pub fnc main() => void {
     val int n = await counter.next();
     stdio.println(n);
@@ -70,7 +70,7 @@ Wildcard imports always require a namespace alias. This avoids silently injectin
 Interfaces can describe the structural public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
 
 ```ores
-define module contracts
+define module contracts as
   define interface MathApi
     fnc add(int a, int b) => int;
     String name;
@@ -78,7 +78,7 @@ define module contracts
 end
 
 @AdheresTo(contracts.MathApi)
-define module math
+define module math as
   pub fnc add(int a, int b) => int { return a + b; }
   pub val String name = "math";
 end
@@ -129,7 +129,7 @@ Destructuring carries mutability per element:
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
 
 ```ores
-define class Box<T>
+define class Box<T> as
   val T value;
 
   @Ret<self>
@@ -152,7 +152,7 @@ The receiver variable name is always `self`.
 A class may list multiple parent classes and multiple interfaces:
 
 ```ores
-define class Combined extends Cacheable, Serializable implements HasId, Named
+define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
@@ -161,10 +161,10 @@ Parent order is significant and is the deterministic v0.2 method-resolution orde
 `Object` and `List` are extensible base classes:
 
 ```ores
-define class RecordBag extends Object
+define class RecordBag extends Object as
 end
 
-define class Names extends List
+define class Names extends List as
 end
 ```
 
@@ -204,7 +204,7 @@ define interface Named
   String name;
 end
 
-define class User implements Named
+define class User implements Named as
   pub val String name;
 end
 ```
@@ -316,8 +316,8 @@ The parser and static checker execute no user code.
 Named modules remain the normal namespace unit, but a source file may also contain file-level callables such as an entrypoint. The compiler places those declarations in an internal file-root namespace; that namespace is not written by user code.
 
 ```ores
-define module x
-  define class y
+define module x as
+  define class y as
   end
 end
 
@@ -397,7 +397,7 @@ Explicit `implements` and module `@AdheresTo(...)` checks remain structural conf
 Only methods overload, and only by arity:
 
 ```ores
-define class Lookup
+define class Lookup as
   find() => Option<int> {
     return None;
   }
@@ -441,7 +441,7 @@ for (val item of values) {
 Classes can expose a JavaScript-like iterator symbol:
 
 ```ores
-define class Bag
+define class Bag as
   [Symbol.iterator]() => Array<int> {
     return arr[1, 2, 3];
   }
@@ -626,7 +626,7 @@ A deployment may still aggregate many code units into one Native Image for start
 Instance methods continue to omit `fnc`:
 
 ```ores
-define class Counter
+define class Counter as
   read() => int {
     return self.value;
   }
@@ -636,7 +636,7 @@ end
 Class-level functions are not methods. They are declared with the explicit `static fnc` form:
 
 ```ores
-define class Counter
+define class Counter as
   pub static fnc twice(int value) => int {
     return value * 2;
   }
