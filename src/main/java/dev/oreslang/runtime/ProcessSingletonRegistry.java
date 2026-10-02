@@ -190,7 +190,14 @@ public final class ProcessSingletonRegistry {
             CompletableFuture<Object> reply = new CompletableFuture<>();
             if (waitEdge != null) reply.whenComplete((ignored, failure) -> waitEdge.close());
 
-            long deadline = deadlineAfter(callerWallTime);
+            Duration effectiveWallTime = inheritedWallTime(callerWallTime);
+            if (effectiveWallTime.isZero() || effectiveWallTime.isNegative()) {
+                if (waitEdge != null) waitEdge.close();
+                return CompletableFuture.failedFuture(
+                        new TimeoutException("singleton call inherited an expired parent deadline"));
+            }
+
+            long deadline = deadlineAfter(effectiveWallTime);
             Request request = new Request(
                     List.copyOf(frozen),
                     (state, args) -> operation.apply(cast(state), args),
@@ -225,7 +232,7 @@ public final class ProcessSingletonRegistry {
              */
             long timeoutMillis;
             try {
-                timeoutMillis = Math.max(1L, callerWallTime.toMillis());
+                timeoutMillis = Math.max(1L, effectiveWallTime.toMillis());
             } catch (ArithmeticException overflow) {
                 timeoutMillis = Long.MAX_VALUE;
             }
@@ -296,6 +303,10 @@ public final class ProcessSingletonRegistry {
 
         private void timeoutTask(ScheduledFuture<?> task) {
             this.timeoutTask = task;
+            // A very fast request can complete between scheduling and this
+            // assignment. Cancel here as well as in the completion callback so
+            // completed requests do not retain delayed timeout tasks.
+            if (reply.isDone()) task.cancel(false);
         }
 
         private void cancelTimeoutTask() {
@@ -488,6 +499,22 @@ public final class ProcessSingletonRegistry {
     private static String diagnosticId(String key) {
         if (key == null) return "unknown";
         return Integer.toUnsignedString(key.hashCode(), 16);
+    }
+
+    private static Duration inheritedWallTime(Duration requested) {
+        Long parentDeadline = CURRENT_DEADLINE_NANOS.get();
+        if (parentDeadline == null) return requested;
+
+        long remaining = parentDeadline - System.nanoTime();
+        if (remaining <= 0) return Duration.ZERO;
+
+        long requestedNanos;
+        try {
+            requestedNanos = requested.toNanos();
+        } catch (ArithmeticException overflow) {
+            requestedNanos = Long.MAX_VALUE / 4;
+        }
+        return Duration.ofNanos(Math.min(remaining, Math.max(1L, requestedNanos)));
     }
 
     private static long deadlineAfter(Duration duration) {
