@@ -324,6 +324,105 @@ final class OwnershipIntrinsicsHardeningTest {
     }
 
     @Test
+    void ordinaryBorrowCannotEscapeLocalViaIntrinsic() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+                        end
+
+                        fnc bad() => &Buffer {
+                          let Buffer local = new Buffer(7);
+                          return borrow(local);
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("outlive its owner"));
+    }
+
+    @Test
+    void ordinaryBorrowCannotBeHiddenInsideOwningContainer() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+                        end
+
+                        fnc bad() => void {
+                          let Buffer local = new Buffer(7);
+                          val values = arr[borrow(local)];
+                          stdio.println(values);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot store an ordinary borrow"));
+    }
+
+    @Test
+    void sharedSnapshotCanBeStoredAndCapturedBecauseItIsDetached() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Buffer as
+                  pub let int value = 0;
+
+                  pub copy() => Buffer {
+                    return new Buffer(self.value);
+                  }
+                end
+
+                fnc ok() => (() -> int) {
+                  let Buffer local = new Buffer(7);
+                  val &Buffer detached = share(local);
+                  val values = arr[detached];
+                  return || -> {
+                    return detached.value;
+                  };
+                }
+                """)));
+    }
+
+    @Test
+    void immutableBorrowAliasesKeepOwnerBorrowedUntilAllAliasesLeaveScope() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+                        end
+
+                        fnc bad() => void {
+                          let Buffer local = new Buffer(7);
+                          val &Buffer first = borrow(local);
+                          val &Buffer second = first;
+                          local.value = 9;
+                          stdio.println(second.value);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("borrow"));
+    }
+
+    @Test
+    void immutableBorrowAliasCountsReleaseAtLexicalScopeEnd() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Buffer as
+                  pub let int value = 0;
+                end
+
+                fnc ok(bool condition) => void {
+                  let Buffer local = new Buffer(7);
+                  if condition; do
+                    val &Buffer first = borrow(local);
+                    val &Buffer second = first;
+                    stdio.println(second.value);
+                  fi
+                  local.value = 9;
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void shareSnapshotMayEscapeSourceLocalLifetime() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Buffer as
