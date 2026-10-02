@@ -281,7 +281,7 @@ define class User is Named as
 end
 ```
 
-Stateful reuse is a distinct construct: `trait`. A trait may contain initialized fields, concrete methods, abstract method requirements, and interface obligations. It cannot be instantiated and contributes no separate runtime object identity.
+Stateful reuse is a distinct construct: `trait`. A trait may contain initialized fields, concrete methods, abstract method requirements, and interface obligations. It cannot be instantiated and contributes no separate runtime object identity. Traits are not nominal runtime types: they cannot be used as parameter, field, return, alias, or generic argument types. Use an interface for a contract and a class for a value type.
 
 ```ores
 define interface CounterApi as
