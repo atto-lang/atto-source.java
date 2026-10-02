@@ -194,6 +194,53 @@ public final class OwnershipChecker {
             checkBlock(attempted.finallyBody(), scope, returnType);
             return;
         }
+        if (stmt instanceof Ast.ReceiveLoopStmt loop) {
+            ensureAwaitSuspensionSafe(scope);
+            Map<VarState,Boolean> before = movedSnapshot(scope);
+            Scope loopScope = new Scope(scope);
+            Ast.TypeRef messageType = loop.bindingType() == null ? Ast.TypeRef.inferred() : loop.bindingType();
+            loopScope.define(loop.bindingName(), new VarState(
+                    messageType,
+                    false,
+                    kindOfType(messageType),
+                    Origin.LOCAL));
+            checkBlock(loop.body(), loopScope, returnType);
+            loopScope.close();
+            rejectLoopMoves(before, scope);
+            return;
+        }
+        if (stmt instanceof Ast.SelectStmt select) {
+            ensureAwaitSuspensionSafe(scope);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+
+            for (Ast.SelectCase branch : select.cases()) {
+                restoreState(base);
+                checkExpr(branch.operation(), scope, false);
+                Scope caseScope = new Scope(scope);
+                if (branch.bindingName() != null) {
+                    Ast.TypeRef bindingType = branch.bindingType() == null
+                            ? Ast.TypeRef.inferred()
+                            : branch.bindingType();
+                    caseScope.define(branch.bindingName(), new VarState(
+                            bindingType,
+                            false,
+                            kindOfType(bindingType),
+                            Origin.LOCAL));
+                }
+                checkBlock(branch.body(), caseScope, returnType);
+                caseScope.close();
+                exits.add(stateSnapshot(scope));
+            }
+
+            if (!select.defaultBody().isEmpty()) {
+                restoreState(base);
+                checkBlock(select.defaultBody(), scope, returnType);
+                exits.add(stateSnapshot(scope));
+            }
+            if (!exits.isEmpty()) mergeBranchState(base, exits);
+            return;
+        }
         if (stmt instanceof Ast.ForOfStmt loop) {
             checkExpr(loop.iterable(), scope, false);
             Map<VarState,Boolean> before = movedSnapshot(scope);
@@ -334,6 +381,29 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.NewExpr created) {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
+        }
+        if (expr instanceof Ast.ChannelExpr channel) {
+            checkExpr(channel.capacity(), scope, false);
+            return new ValueInfo(
+                    new Ast.TypeRef("Channel", List.of(channel.elementType()), false),
+                    ValueKind.MOVE_ONLY,
+                    null);
+        }
+        if (expr instanceof Ast.ChannelOpExpr operation) {
+            // Every channel operation is an operation-budget checkpoint. Even
+            // TRY_* forms may be the point where a compiled actor hands its
+            // continuation back after exhausting its quantum.
+            ensureAwaitSuspensionSafe(scope);
+            if (operation.channel() != null) checkExpr(operation.channel(), scope, false);
+            if (operation.value() != null) checkExpr(operation.value(), scope, true);
+
+            if (operation.kind() == Ast.ChannelOpKind.TRY_RECEIVE) {
+                return new ValueInfo(Ast.TypeRef.simple("Option"), ValueKind.MOVE_ONLY, null);
+            }
+            if (operation.kind() == Ast.ChannelOpKind.TRY_SEND) {
+                return new ValueInfo(Ast.TypeRef.simple("SendResult"), ValueKind.COPY, null);
+            }
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             ensureAwaitSuspensionSafe(scope);
@@ -624,6 +694,11 @@ public final class OwnershipChecker {
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.ChannelExpr e) scanExpr(e.capacity(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.ChannelOpExpr e) {
+            if (e.channel() != null) scanExpr(e.channel(), locals, outer, recursiveBinding, captures, false);
+            if (e.value() != null) scanExpr(e.value(), locals, outer, recursiveBinding, captures, false);
+        }
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
@@ -780,7 +855,7 @@ public final class OwnershipChecker {
             if ((state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW)
                     && !isActorConfinedBorrow(state)) {
                 throw error("borrow '" + state.debugName
-                        + "' is live across await; end the borrow before the suspension point or move/copy owned data into the async task");
+                        + "' is live across a suspension/checkpoint; end the borrow before the checkpoint or keep owned actor-frame state and re-borrow after resume");
             }
         }
     }
