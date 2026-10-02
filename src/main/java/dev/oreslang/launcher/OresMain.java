@@ -56,6 +56,8 @@ public final class OresMain {
         }
 
         Context.Builder builder = policy.restrictedContextBuilder(profile);
+        if (policy.allows(IsolatePolicy.Capability.STDIN)) builder.in(System.in);
+        if (policy.allows(IsolatePolicy.Capability.STDOUT)) builder.out(System.out);
         Source source = Source.newBuilder(OresLanguage.ID, new File(filename))
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
