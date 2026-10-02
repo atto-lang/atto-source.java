@@ -375,13 +375,16 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.NewExpr created) {
+            List<Ast.TypeRef> argumentTypes = new ArrayList<>(created.arguments().size());
             for (Ast.Expr arg : created.arguments()) {
                 ValueInfo info = checkExpr(arg, scope, true);
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot be stored in a constructed object");
                 }
+                argumentTypes.add(info.type);
             }
-            return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
+            Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
+            return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
@@ -830,6 +833,55 @@ public final class OwnershipChecker {
 
     private Ast.TypeRef concreteParentType(Ast.TypeRef parentRef, Ast.ClassDecl child, Ast.TypeRef childType) {
         return substituteType(parentRef, genericBindings(child.genericParameters(), childType.arguments()));
+    }
+
+    private Ast.TypeRef inferConstructedType(Ast.NewExpr created, List<Ast.TypeRef> argumentTypes) {
+        if (!created.type().inferArguments()) return created.type();
+        Ast.ClassDecl klass = findClass(created.type().name());
+        if (klass == null || klass.genericParameters().isEmpty()) return created.type();
+
+        Ast.TypeRef patternType = new Ast.TypeRef(
+                created.type().name(),
+                klass.genericParameters().stream().map(Ast.TypeRef::simple).toList(),
+                false);
+        List<ResolvedField> fields = effectiveFieldTargets(klass, patternType, new LinkedHashSet<>());
+        Map<String, Ast.TypeRef> bindings = new HashMap<>();
+        Set<String> genericNames = Set.copyOf(klass.genericParameters());
+
+        for (int i = 0; i < Math.min(argumentTypes.size(), fields.size()); i++) {
+            ResolvedField target = fields.get(i);
+            Ast.TypeRef fieldPattern = substituteType(
+                    target.field().type(),
+                    genericBindings(target.owner().genericParameters(), target.ownerType().arguments()));
+            inferGenericBindings(fieldPattern, argumentTypes.get(i), genericNames, bindings, Set.of());
+        }
+
+        List<Ast.TypeRef> inferred = new ArrayList<>(klass.genericParameters().size());
+        for (String generic : klass.genericParameters()) {
+            Ast.TypeRef bound = bindings.get(generic);
+            if (bound == null || bound.name().equals("$infer$")) return created.type();
+            inferred.add(bound);
+        }
+        return new Ast.TypeRef(created.type().name(), inferred, false);
+    }
+
+    private List<ResolvedField> effectiveFieldTargets(
+            Ast.ClassDecl klass, Ast.TypeRef concreteType, Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) return List.of();
+        LinkedHashMap<String, ResolvedField> fields = new LinkedHashMap<>();
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = findClass(parentRef.name());
+            if (parent == null) continue;
+            Ast.TypeRef parentType = concreteParentType(parentRef, klass, concreteType);
+            for (ResolvedField field : effectiveFieldTargets(parent, parentType, stack)) {
+                fields.putIfAbsent(field.field().name(), field);
+            }
+        }
+        for (Ast.FieldDecl field : klass.fields()) {
+            fields.put(field.name(), new ResolvedField(klass, concreteType, field));
+        }
+        stack.remove(klass);
+        return List.copyOf(fields.values());
     }
 
     private ResolvedField findFieldTarget(
