@@ -5,6 +5,7 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.ClosureCaptureAnalyzer;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -12,6 +13,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -51,6 +53,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final Map<Ast.LambdaExpr, ClosureCaptureAnalyzer.CapturePlan> capturePlans = new IdentityHashMap<>();
 
         private Evaluator(Ast.Program program, OresContext context) {
             this.program = program;
@@ -334,8 +337,19 @@ public final class OresEvalRootNode extends RootNode {
                 return Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
-                boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
-                Env captured = nonLexical ? null : env.snapshot();
+                boolean inheritedNonLexical = env.descendantsNonLexical();
+                if (lambda.explicitLexical() && inheritedNonLexical) {
+                    throw new IllegalArgumentException("'lex'/'lexical' lambda cannot override an enclosing nlex capture barrier");
+                }
+
+                boolean nonLexical = lambda.nonLexical() || inheritedNonLexical;
+                ClosureCaptureAnalyzer.CapturePlan capturePlan = nonLexical
+                        ? null
+                        : capturePlans.computeIfAbsent(lambda, ClosureCaptureAnalyzer::analyze);
+                Env captured = nonLexical || !capturePlan.requiresEnvironment()
+                        ? null
+                        : env.capture(capturePlan.names());
+
                 return (Invokable) args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured, nonLexical);
@@ -633,10 +647,34 @@ public final class OresEvalRootNode extends RootNode {
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
-        private Env snapshot() {
-            Env cp = new Env(parent == null ? null : parent.snapshot(), descendantsNonLexical);
-            cp.slots.putAll(slots);
-            return cp;
+        /**
+         * Build a flat closure environment containing only activation-local
+         * names that the compiler identified as free variables.
+         *
+         * Immutable slots are copied so the closure does not retain the outer
+         * frame/slot object. Mutable slots and reserved recursive slots are
+         * shared because lexical semantics require later writes/initialization
+         * to remain visible to the closure.
+         */
+        private Env capture(List<String> names) {
+            if (names.isEmpty()) return null;
+
+            Env captured = new Env(null, false);
+            for (String name : names) {
+                Slot source = findSlot(name);
+                if (source == null) continue; // module/global/import/builtin
+                Slot stored = source.kind == Ast.BindingKind.LET || source.value == MISSING
+                        ? source
+                        : new Slot(source.value, source.kind);
+                captured.slots.put(name, stored);
+            }
+            return captured.slots.isEmpty() ? null : captured;
+        }
+
+        private Slot findSlot(String name) {
+            Slot local = slots.get(name);
+            if (local != null) return local;
+            return parent == null ? null : parent.findSlot(name);
         }
     }
 
