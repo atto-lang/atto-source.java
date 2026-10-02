@@ -120,6 +120,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
+    private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
     public ActorRuntime() {
         this(IsolatePolicy.developer(), DispatcherConfig.defaults());
@@ -273,7 +274,7 @@ public final class ActorRuntime implements AutoCloseable {
      * by multiple SHARED actors.
      */
     public final class SyncCell<T> implements AutoCloseable {
-        private final ReentrantLock lock = new ReentrantLock();
+        private final ReentrantLock lock = new ReentrantLock(true);
         private final AtomicBoolean cellClosed = new AtomicBoolean();
         private T value;
         private long reservedBytes;
@@ -292,18 +293,21 @@ public final class ActorRuntime implements AutoCloseable {
 
         public T snapshot() {
             rejectPrivateActorSharedMemoryAccess("SyncCell.snapshot");
+            boolean entered = enterSyncCell(this);
             lock.lock();
             try {
                 requireOpen();
                 return value;
             } finally {
                 lock.unlock();
+                exitSyncCell(entered);
             }
         }
 
         public <R> R read(Function<? super T, ? extends R> reader) {
             Objects.requireNonNull(reader);
             requireSharedActorTurn();
+            boolean entered = enterSyncCell(this);
             lock.lock();
             try {
                 requireOpen();
@@ -314,6 +318,7 @@ public final class ActorRuntime implements AutoCloseable {
                 return result;
             } finally {
                 lock.unlock();
+                exitSyncCell(entered);
             }
         }
 
@@ -321,6 +326,7 @@ public final class ActorRuntime implements AutoCloseable {
         public T update(UnaryOperator<T> updater) {
             Objects.requireNonNull(updater);
             requireSharedActorTurn();
+            boolean entered = enterSyncCell(this);
             lock.lock();
             try {
                 requireOpen();
@@ -335,6 +341,7 @@ public final class ActorRuntime implements AutoCloseable {
                 return value;
             } finally {
                 lock.unlock();
+                exitSyncCell(entered);
             }
         }
 
@@ -345,7 +352,12 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             rejectPrivateActorSharedMemoryAccess("SyncCell.close");
-            closeFromRuntime();
+            boolean entered = enterSyncCell(this);
+            try {
+                closeFromRuntime();
+            } finally {
+                exitSyncCell(entered);
+            }
         }
 
         private void closeFromRuntime() {
@@ -529,6 +541,24 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("actor runtime is closed");
         }
         return cell;
+    }
+
+    private boolean enterSyncCell(SyncCell<?> cell) {
+        SyncCell<?> held = currentSyncCell.get();
+        if (held == null) {
+            currentSyncCell.set(cell);
+            return true;
+        }
+        if (held != cell) {
+            throw new IllegalStateException(
+                    "nested synchronization across different SyncCell values is forbidden; "
+                            + "snapshot values first or use one shared cell");
+        }
+        return false;
+    }
+
+    private void exitSyncCell(boolean entered) {
+        if (entered) currentSyncCell.remove();
     }
 
     private void rejectPrivateActorSharedMemoryAccess(String operation) {
