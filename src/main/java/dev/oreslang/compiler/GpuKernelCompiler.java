@@ -410,9 +410,10 @@ public final class GpuKernelCompiler {
             env.define(initializer.name(), inductionType);
             out.append("  ").append(cScalar(inductionType)).append(' ').append(sanitize(initializer.name()))
                     .append(" = (").append(cScalar(inductionType)).append(")get_global_id(0);\n");
-            launchExtent = renderExpr(target.module, parallelLoop.bound, env);
+            String bound = renderExpr(target.module, parallelLoop.bound, env);
+            launchExtent = parallelLoop.operator.equals("<") ? bound : "(" + bound + " + 1)";
             out.append("  if (!(").append(sanitize(initializer.name())).append(' ')
-                    .append(parallelLoop.operator).append(' ').append(launchExtent).append(")) return;\n");
+                    .append(parallelLoop.operator).append(' ').append(bound).append(")) return;\n");
             emitStatements(out, target.module, parallelLoop.loop.body(), env, "  ");
         } else {
             out.append("  if (get_global_id(0) != 0 || get_global_id(1) != 0 || get_global_id(2) != 0) return;\n");
