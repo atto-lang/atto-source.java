@@ -422,7 +422,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -591,6 +591,14 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
+                if (member.member().equals("gc")) return new Function(List.of(), Unknown.INSTANCE);
+                throw new IllegalArgumentException("unknown actor runtime member '" + member.member() + "'");
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")
+                    && member.member().equals("gc")) {
+                return new Function(List.of(), Unknown.INSTANCE);
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
             Type mutexMember = builtinMutexMember(receiver, member.member());
