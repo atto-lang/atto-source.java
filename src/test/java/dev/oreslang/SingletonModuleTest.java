@@ -1666,6 +1666,50 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void registryRejectsThreeSingletonWaitCycleBeforeDeadlock() {
+        String aKey = "cycle3-a:" + UUID.randomUUID();
+        String bKey = "cycle3-b:" + UUID.randomUUID();
+        String cKey = "cycle3-c:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> a =
+                ProcessSingletonRegistry.getOrCreate(aKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> b =
+                ProcessSingletonRegistry.getOrCreate(bKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> c =
+                ProcessSingletonRegistry.getOrCreate(cKey, Object::new);
+
+        CompletableFuture<Object> call = a.call(
+                List.of(), 8, Duration.ofSeconds(2),
+                (aState, ignored) -> b.call(
+                        List.of(), 8, Duration.ofSeconds(2),
+                        (bState, ignoredB) -> c.call(
+                                List.of(), 8, Duration.ofSeconds(2),
+                                (cState, ignoredC) -> a.call(
+                                        List.of(), 8, Duration.ofSeconds(2),
+                                        (nestedA, finalArgs) -> "unreachable")
+                                        .toCompletableFuture()
+                                        .join())
+                                .toCompletableFuture()
+                                .join())
+                        .toCompletableFuture()
+                        .join())
+                .toCompletableFuture();
+
+        RuntimeException failure = assertThrows(RuntimeException.class, call::join);
+        assertTrue(causeChainContains(failure, "wait cycle"), String.valueOf(failure));
+
+        assertEquals("a-ok", a.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> "a-ok").toCompletableFuture().join());
+        assertEquals("b-ok", b.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> "b-ok").toCompletableFuture().join());
+        assertEquals("c-ok", c.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> "c-ok").toCompletableFuture().join());
+    }
+
+    @Test
     void nestedSingletonCallsInheritTheParentsRemainingDeadline() {
         String aKey = "deadline-a:" + UUID.randomUUID();
         String bKey = "deadline-b:" + UUID.randomUUID();
