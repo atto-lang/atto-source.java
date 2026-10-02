@@ -461,7 +461,7 @@ public final class TypeChecker {
                 } else if (source instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
-                    shape = publicClassShape(klass, new LinkedHashSet<>());
+                    shape = publicClassShape(klass, named, new LinkedHashSet<>());
                 } else if (source == Unknown.INSTANCE) {
                     shape = null;
                 } else {
@@ -1087,54 +1087,84 @@ public final class TypeChecker {
     private Record classShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         Record cached = classShapeCache.get(klass);
         if (cached != null) return cached;
-        if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
-        Map<String, Type> members = new LinkedHashMap<>();
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent != null) {
-                for (Map.Entry<String, Type> inherited : classShape(parent, stack).members().entrySet()) {
-                    mergeMember(members, inherited.getKey(), inherited.getValue(), "multiple inheritance of " + klass.name());
-                }
-            }
-        }
-        Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
-        for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
-        for (Ast.MethodDecl method : klass.methods()) {
-            if (method.isStatic()) continue;
-            mergeMember(members, methodKey(method.name(), method.arity()),
-                    functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
-        }
-        stack.remove(klass);
-        Record result = new Record(members);
+        Record result = classShape(klass, nominalClassType(klass), stack);
         classShapeCache.put(klass, result);
         return result;
     }
 
-    private Record publicClassShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
+    private Record classShape(Ast.ClassDecl klass, Named klassType, Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
-        Map<String, Type> members = new LinkedHashMap<>();
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent != null) {
-                for (Map.Entry<String, Type> inherited : publicClassShape(parent, stack).members().entrySet()) {
+        try {
+            Named canonical = canonicalClassView(klass, klassType);
+            Map<String, Type> bindings = classGenericBindings(klass, canonical);
+            Map<String, Type> members = new LinkedHashMap<>();
+
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Named parentType = resolveParentView(klass, canonical, parentRef, parent);
+                for (Map.Entry<String, Type> inherited : classShape(parent, parentType, stack).members().entrySet()) {
+                    mergeMember(members, inherited.getKey(), inherited.getValue(), "multiple inheritance of " + klass.name());
+                }
+            }
+
+            Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+            for (Ast.FieldDecl field : klass.fields()) {
+                Type raw = resolve(field.type(), classGenerics, canonical);
+                mergeMember(members, field.name(), resolveSharedGeneric(raw, bindings), "class " + klass.name());
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.isStatic()) continue;
+                Set<String> methodGenerics = new HashSet<>(classGenerics);
+                methodGenerics.addAll(method.genericParameters());
+                Type raw = functionType(method.parameters(), method.returnType(), methodGenerics, canonical);
+                mergeMember(members, methodKey(method.name(), method.arity()),
+                        resolveSharedGeneric(raw, bindings), "class " + klass.name());
+            }
+            return new Record(members);
+        } finally {
+            stack.remove(klass);
+        }
+    }
+
+    private Record publicClassShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
+        return publicClassShape(klass, nominalClassType(klass), stack);
+    }
+
+    private Record publicClassShape(Ast.ClassDecl klass, Named klassType, Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
+        try {
+            Named canonical = canonicalClassView(klass, klassType);
+            Map<String, Type> bindings = classGenericBindings(klass, canonical);
+            Map<String, Type> members = new LinkedHashMap<>();
+
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Named parentType = resolveParentView(klass, canonical, parentRef, parent);
+                for (Map.Entry<String, Type> inherited : publicClassShape(parent, parentType, stack).members().entrySet()) {
                     mergeMember(members, inherited.getKey(), inherited.getValue(), "public inheritance of " + klass.name());
                 }
             }
-        }
-        Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
-        for (Ast.FieldDecl field : klass.fields()) {
-            if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
-        }
-        for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
-                mergeMember(members, methodKey(method.name(), method.arity()),
-                        functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+
+            Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.visibility() != Ast.Visibility.PUBLIC) continue;
+                Type raw = resolve(field.type(), classGenerics, canonical);
+                mergeMember(members, field.name(), resolveSharedGeneric(raw, bindings), "class " + klass.name());
             }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) continue;
+                Set<String> methodGenerics = new HashSet<>(classGenerics);
+                methodGenerics.addAll(method.genericParameters());
+                Type raw = functionType(method.parameters(), method.returnType(), methodGenerics, canonical);
+                mergeMember(members, methodKey(method.name(), method.arity()),
+                        resolveSharedGeneric(raw, bindings), "class " + klass.name());
+            }
+            return new Record(members);
+        } finally {
+            stack.remove(klass);
         }
-        stack.remove(klass);
-        return new Record(members);
     }
 
     private Record interfaceShape(Ast.InterfaceDecl iface, Named ifaceType, Set<Ast.InterfaceDecl> stack) {
@@ -1408,7 +1438,13 @@ public final class TypeChecker {
             return interfaceShape(iface, ifaceType, new LinkedHashSet<>());
         }
         Ast.ClassDecl klass = findClass(param.type().name());
-        if (klass != null) return publicClassShape(klass, new LinkedHashSet<>());
+        if (klass != null) {
+            Type resolved = resolve(param.type(), generics, self);
+            if (!(resolved instanceof Named named)) {
+                throw new IllegalArgumentException("@Structural class type must be nominal");
+            }
+            return publicClassShape(klass, canonicalClassView(klass, named), new LinkedHashSet<>());
+        }
         throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
     }
 
@@ -1547,7 +1583,9 @@ public final class TypeChecker {
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
             Ast.ClassDecl klass = findClass(actualNamed.name());
-            return klass != null && Types.isAssignable(publicClassShape(klass, new LinkedHashSet<>()), targetShape);
+            return klass != null && Types.isAssignable(
+                    publicClassShape(klass, canonicalClassView(klass, actualNamed), new LinkedHashSet<>()),
+                    targetShape);
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
