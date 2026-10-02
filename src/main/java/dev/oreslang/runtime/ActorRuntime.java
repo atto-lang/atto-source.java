@@ -17,6 +17,7 @@ import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CancellationException;
 import java.util.function.Supplier;
@@ -30,6 +31,7 @@ import java.util.function.Supplier;
  * Frozen values rather than sharing Java object references.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final Duration MAX_CLOSE_WAIT = Duration.ofSeconds(5);
     private static final int MAX_FREEZE_DEPTH = 256;
     private static final int MAX_FREEZE_NODES = 100_000;
     private static final long MAX_FREEZE_BYTES = 16L * 1024 * 1024;
@@ -75,6 +77,7 @@ public final class ActorRuntime implements AutoCloseable {
      */
     @SuppressWarnings("unchecked")
     public <T> T currentActorLocal(Object key, Supplier<? extends T> initializer) {
+        if (closed.get()) throw new CancellationException("actor runtime is closing");
         java.util.Objects.requireNonNull(key, "key");
         java.util.Objects.requireNonNull(initializer, "initializer");
         ActorExecution execution = CURRENT_ACTOR.get();
@@ -210,6 +213,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
+        if (closed.get()) throw new CancellationException("actor runtime is closing");
         return new Shared<>((T) freezeForThisRuntime(value));
     }
 
@@ -393,7 +397,16 @@ public final class ActorRuntime implements AutoCloseable {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        for (ActorCell<?> cell : actors.values()) cell.stop();
+
+        ActorCell<?>[] snapshot = actors.values().toArray(ActorCell[]::new);
+        for (ActorCell<?> cell : snapshot) cell.stop();
+
+        Duration requested = policyCeiling.maxWallTime();
+        Duration budget = requested.compareTo(MAX_CLOSE_WAIT) > 0 ? MAX_CLOSE_WAIT : requested;
+        long deadline = deadlineAfter(budget);
+        for (ActorCell<?> cell : snapshot) {
+            if (!cell.awaitStopped(deadline)) break;
+        }
         actors.clear();
     }
 
@@ -465,6 +478,29 @@ public final class ActorRuntime implements AutoCloseable {
             mailbox.offer(STOP);
             Thread t = thread;
             if (t != null) t.interrupt();
+        }
+
+        private boolean awaitStopped(long deadlineNanos) {
+            Thread t = thread;
+            if (t == null || t == Thread.currentThread() || !t.isAlive()) return true;
+
+            while (t.isAlive()) {
+                long remaining = deadlineNanos - System.nanoTime();
+                if (remaining <= 0) {
+                    t.interrupt();
+                    return false;
+                }
+                long millis = Math.max(1L, Math.min(
+                        TimeUnit.NANOSECONDS.toMillis(remaining),
+                        250L));
+                try {
+                    t.join(millis);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return true;
         }
     }
 }
