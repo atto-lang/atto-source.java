@@ -745,18 +745,26 @@ public final class ActorRuntime implements AutoCloseable {
             requireCallerRuntimeAffinity("inspect actor groups");
             synchronized (groupLifecycleLock) {
                 requireOpenLocked();
-                ArrayList<ActorRef<M>> snapshot = new ArrayList<>(members.values());
-                snapshot.sort(java.util.Comparator.comparing(ref -> ref.id().value().toString()));
-                return List.copyOf(snapshot);
+                return snapshotMembersLocked();
             }
         }
 
+        private List<ActorRef<M>> snapshotMembersLocked() {
+            ArrayList<ActorRef<M>> snapshot = new ArrayList<>(members.values());
+            snapshot.sort(java.util.Comparator.comparing(ref -> ref.id().value().toString()));
+            return List.copyOf(snapshot);
+        }
+
         public FanoutReceipt broadcast(M message) {
-            requireOpen();
+            requireCallerRuntimeAffinity("broadcast actor groups");
+            final List<ActorRef<M>> snapshot;
+            synchronized (groupLifecycleLock) {
+                requireOpenLocked();
+                snapshot = snapshotMembersLocked();
+            }
+
             validateMessageGraph(message);
             requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
-
-            List<ActorRef<M>> snapshot = members();
             int delivered = 0;
             int terminated = 0;
             int rejected = 0;
