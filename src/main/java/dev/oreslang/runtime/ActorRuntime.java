@@ -1187,7 +1187,16 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
-        public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+        public Optional<Throwable> failure() {
+            ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
+            if (caller != null
+                    && caller.kind() == ActorKind.UNTRUSTED
+                    && !caller.actorId().equals(id)) {
+                throw new SecurityException(
+                        "untrusted actors cannot inspect another actor's raw failure object");
+            }
+            return Optional.ofNullable(terminationCause.get());
+        }
 
         public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
             Objects.requireNonNull(unit);
@@ -1935,7 +1944,14 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private ActorTerminatedException terminated(ActorRef<?> ref) {
-        return new ActorTerminatedException(ref.id(), ref.kind(), ref.terminationCause.get());
+        Throwable cause = ref.terminationCause.get();
+        ActorCell<?> caller = currentActor.get();
+        if (caller != null
+                && caller.kind == ActorKind.UNTRUSTED
+                && !caller.ref.id().equals(ref.id())) {
+            cause = null;
+        }
+        return new ActorTerminatedException(ref.id(), ref.kind(), cause);
     }
 
     @SuppressWarnings("unchecked")
