@@ -45,7 +45,7 @@ public final class OresContext implements AutoCloseable {
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.actors = new ActorRuntime(isolatePolicy);
         this.gc = new GcController(actors);
-        this.asyncPermits = new Semaphore(Math.max(1, isolatePolicy.maxActors()), true);
+        this.asyncPermits = new Semaphore(Math.max(1, isolatePolicy.maxAsyncTasks()), true);
     }
 
     public static OresContext get(Node node) {
@@ -93,7 +93,7 @@ public final class OresContext implements AutoCloseable {
         if (closed.get()) throw new java.util.concurrent.CancellationException("Oreslang context is closed");
         if (!asyncPermits.tryAcquire()) {
             throw new IllegalStateException(
-                    "async task limit exceeded for isolate: maxAsyncTasks=" + isolatePolicy.maxActors());
+                    "async task limit exceeded for isolate: maxAsyncTasks=" + isolatePolicy.maxAsyncTasks());
         }
 
         CompletableFuture<T> future = new CompletableFuture<>();
