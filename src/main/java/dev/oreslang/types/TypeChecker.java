@@ -447,7 +447,12 @@ public final class TypeChecker {
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                     && factoryCall.member().equals("new")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
-                return new Named(factory.name(), List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
+                Type element = typeOf(call.arguments().getFirst(), env, generics, self);
+                if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                }
+                return new Named(factory.name(), List.of(element));
             }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
@@ -694,6 +699,74 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
+    }
+
+    private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
+        if (type == Unknown.INSTANCE || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) return false;
+        if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+        if (type instanceof StringLiteral) return true;
+        if (type instanceof Generic generic) {
+            Type bound = genericBindings.get(generic.name());
+            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
+        }
+        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings)) return false;
+            return true;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings)) return false;
+            return true;
+        }
+        if (!(type instanceof Named named)) return false;
+
+        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) return false;
+        if (named.name().equals("Option") || named.name().equals("SharedMutex")) {
+            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
+        }
+
+        for (Type argument : named.arguments()) {
+            if (!isSharedSafe(argument, seen, genericBindings)) return false;
+        }
+
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null) return false;
+        if (!seen.add(klass)) return true;
+
+        try {
+            Map<String, Type> classBindings = new HashMap<>(genericBindings);
+            for (int i = 0; i < klass.genericParameters().size(); i++) {
+                if (i >= named.arguments().size()) return false;
+                classBindings.put(klass.genericParameters().get(i),
+                        resolveSharedGeneric(named.arguments().get(i), genericBindings));
+            }
+
+            Type nominal = nominalClassType(klass);
+            Set<String> classGenerics = Set.copyOf(klass.genericParameters());
+            for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>())) {
+                Type fieldType = resolve(field.type(), classGenerics, nominal);
+                if (!isSharedSafe(fieldType, seen, classBindings)) return false;
+            }
+            return true;
+        } finally {
+            seen.remove(klass);
+        }
+    }
+
+    private Type resolveSharedGeneric(Type type, Map<String, Type> bindings) {
+        if (type instanceof Generic generic) {
+            Type bound = bindings.get(generic.name());
+            return bound == null || bound == type ? type : resolveSharedGeneric(bound, bindings);
+        }
+        if (type instanceof Named named) {
+            return new Named(named.name(), named.arguments().stream()
+                    .map(argument -> resolveSharedGeneric(argument, bindings)).toList());
+        }
+        if (type instanceof ListType list) return new ListType(resolveSharedGeneric(list.element(), bindings));
+        if (type instanceof Tuple tuple) {
+            return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList());
+        }
+        return type;
     }
 
     private Type builtinMutexMember(Type receiver, String member) {
