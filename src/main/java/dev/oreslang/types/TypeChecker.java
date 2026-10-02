@@ -137,6 +137,11 @@ public final class TypeChecker {
     }
 
     private void validate(Ast.Program program) {
+        // Local overload identity must be validated before class-shape
+        // construction. Otherwise same-name/same-arity declarations whose
+        // types differ can fail later as a generic structural conflict before
+        // the language's arity-only overload rule is diagnosed.
+        for (Ast.ClassDecl klass : classOwners.keySet()) validateLocalClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
@@ -352,6 +357,19 @@ public final class TypeChecker {
         }
     }
 
+    private void validateLocalClassOverloads(Ast.ClassDecl klass) {
+        Set<Ast.MethodArity> instanceMethodOverloads = new HashSet<>();
+        Set<Ast.MethodArity> staticFunctionOverloads = new HashSet<>();
+        for (Ast.MethodDecl method : klass.methods()) {
+            Set<Ast.MethodArity> overloads = method.isStatic() ? staticFunctionOverloads : instanceMethodOverloads;
+            if (!overloads.add(method.overloadIdentity())) {
+                String label = method.isStatic() ? "static function" : "method";
+                throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
+                        + "; overload identity is name + arity only; parameter types and return types do not participate");
+            }
+        }
+    }
+
     private void checkClass(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -395,17 +413,6 @@ public final class TypeChecker {
                         "class member '" + klass.name() + "." + name
                                 + "' cannot be both a field and an instance method across inheritance; "
                                 + "member-value and direct-call syntax must remain unambiguous");
-            }
-        }
-
-        Set<Ast.MethodArity> instanceMethodOverloads = new HashSet<>();
-        Set<Ast.MethodArity> staticFunctionOverloads = new HashSet<>();
-        for (Ast.MethodDecl method : klass.methods()) {
-            Set<Ast.MethodArity> overloads = method.isStatic() ? staticFunctionOverloads : instanceMethodOverloads;
-            if (!overloads.add(method.overloadIdentity())) {
-                String label = method.isStatic() ? "static function" : "method";
-                throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
-                        + "; overload identity is name + arity only; parameter types and return types do not participate");
             }
         }
 
