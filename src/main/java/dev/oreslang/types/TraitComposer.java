@@ -364,8 +364,9 @@ public final class TraitComposer {
                 String previous = names.putIfAbsent(name, kind);
                 if (previous != null) {
                     throw new IllegalArgumentException(
-                            "duplicate callable-local type '" + name + "': declared as both "
-                                    + previous + " and " + kind + " in the same lexical block");
+                            "duplicate callable-local type '" + name + "' (callable-local type name '"
+                                    + name + "'): declared as both " + previous + " and " + kind
+                                    + " in the same lexical block");
                 }
 
                 if (local.declaration() instanceof Ast.TraitDecl trait) {
