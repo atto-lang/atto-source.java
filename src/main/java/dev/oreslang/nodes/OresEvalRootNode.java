@@ -99,7 +99,10 @@ public final class OresEvalRootNode extends RootNode {
                 else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
             }
             Env env = new Env(null);
-            for (int i = 0; i < fn.parameters().size(); i++) env.define(fn.parameters().get(i).name(), args.get(i), Ast.BindingKind.VAL);
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(fn.body(), env);
                 return null;
@@ -109,8 +112,11 @@ public final class OresEvalRootNode extends RootNode {
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) env.define(method.parameters().get(i).name(), args.get(i), Ast.BindingKind.VAL);
+            if (!method.isStatic()) env.define("self", receiver, method.mutableReceiver() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            for (int i = 0; i < method.parameters().size(); i++) {
+                Ast.Param param = method.parameters().get(i);
+                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(method.body(), env);
                 return null;
@@ -304,7 +310,10 @@ public final class OresEvalRootNode extends RootNode {
                 return (Invokable) args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
                     Env local = new Env(captured);
-                    for (int i = 0; i < lambda.parameters().size(); i++) local.define(lambda.parameters().get(i).name(), args.get(i), Ast.BindingKind.VAL);
+                    for (int i = 0; i < lambda.parameters().size(); i++) {
+                        Ast.Param param = lambda.parameters().get(i);
+                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                    }
                     if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
                     try { executeBlock(lambda.blockBody(), local); return null; }
                     catch (ReturnSignal signal) { return signal.value; }
@@ -374,7 +383,10 @@ public final class OresEvalRootNode extends RootNode {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env env = new Env(null);
-            for (int i = 0; i < fn.parameters().size(); i++) env.define(fn.parameters().get(i).name(), args.get(i), Ast.BindingKind.VAL);
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             try {
                 executeBlock(fn.body(), env);
                 return null;
