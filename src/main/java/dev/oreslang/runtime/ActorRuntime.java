@@ -274,10 +274,9 @@ public final class ActorRuntime implements AutoCloseable {
     private void safeActorExit(ActorId actorId) {
         try {
             garbageCollector.actorExited(actorId);
-        } catch (Throwable ignored) {
-            // Actor/runtime cleanup must not be prevented by a backend release
-            // failure. Production backends should surface this through their
-            // own telemetry and make actorExited idempotent.
+        } catch (RuntimeException ignored) {
+            // Actor/runtime cleanup must not be prevented by an ordinary
+            // backend release failure. VM Errors are deliberately not hidden.
         }
     }
 
@@ -484,9 +483,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-            } catch (Throwable failure) {
-                // v0 fail-stop supervision policy. A later supervisor layer will
-                // expose restart/escalation strategies as typed Oreslang APIs.
+            } catch (Exception failure) {
+                // v0 fail-stop supervision policy for ordinary actor failures.
+                // JVM Errors are deliberately not swallowed.
             } finally {
                 mailbox.clear();
                 currentActor.remove();
