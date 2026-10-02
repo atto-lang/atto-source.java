@@ -24,6 +24,8 @@ import java.util.function.Function;
  * acquire/release ordering.</p>
  */
 public final class OresMutex {
+    private static final Object PUBLICATION_LOCK = new Object();
+
     private OresMutex() { }
 
     public static <T> Local<T> local(T value) {
@@ -38,6 +40,47 @@ public final class OresMutex {
                     "SharedMutex.new");
         }
         return new Shared<>(value);
+    }
+
+    /**
+     * Publishes a set of SharedMutex handles to one ActorRuntime atomically
+     * with a caller-supplied admission action.
+     *
+     * The admission action runs before any previously-unbound handle is
+     * committed. If admission fails, no handle is bound. If any handle already
+     * belongs to a different runtime, admission is not attempted.
+     */
+    static boolean publishToRuntime(
+            ActorRuntime runtime,
+            Set<Shared<?>> handles,
+            Runnable admission) {
+        Objects.requireNonNull(runtime, "runtime");
+        Objects.requireNonNull(handles, "handles");
+        Objects.requireNonNull(admission, "admission");
+
+        synchronized (PUBLICATION_LOCK) {
+            for (Shared<?> handle : handles) {
+                ActorRuntime owner = handle.owningRuntime.get();
+                if (owner != null && owner != runtime) return false;
+            }
+
+            admission.run();
+
+            for (Shared<?> handle : handles) {
+                if (handle.owningRuntime.get() == null) {
+                    handle.owningRuntime.set(runtime);
+                }
+            }
+            return true;
+        }
+    }
+
+    private static long saturatedNanos(Duration timeout) {
+        try {
+            return timeout.toNanos();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
     }
 
     /** Runtime marker for futures whose successful value is a lexical MutexGuard. */
@@ -220,11 +263,13 @@ public final class OresMutex {
 
         boolean bindToRuntime(ActorRuntime runtime) {
             Objects.requireNonNull(runtime, "runtime");
-            ActorRuntime existing = owningRuntime.get();
-            if (existing == runtime) return true;
-            if (existing != null) return false;
-            if (owningRuntime.compareAndSet(null, runtime)) return true;
-            return owningRuntime.get() == runtime;
+            synchronized (PUBLICATION_LOCK) {
+                ActorRuntime existing = owningRuntime.get();
+                if (existing == runtime) return true;
+                if (existing != null) return false;
+                owningRuntime.set(runtime);
+                return true;
+            }
         }
 
         private void requireActorAccess() {
@@ -344,7 +389,7 @@ public final class OresMutex {
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
             try {
-                if (!permit.tryAcquire(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+                if (!permit.tryAcquire(saturatedNanos(timeout), TimeUnit.NANOSECONDS)) {
                     releaseDomain(ownerDomain);
                     return Optional.empty();
                 }
