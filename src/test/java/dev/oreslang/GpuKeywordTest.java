@@ -134,6 +134,52 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void gpuBackendCannotMutateGuestCollectionsOrReturnUnknownHostObjects() {
+        java.util.ArrayList<Object> nested = new java.util.ArrayList<>();
+        nested.add(7L);
+        java.util.ArrayList<Object> original = new java.util.ArrayList<>();
+        original.add(nested);
+
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "immutability-test"; }
+
+            @Override
+            public Object invoke(GpuRuntime.Invocation invocation) {
+                assertNotSame(original, invocation.arguments().getFirst());
+                @SuppressWarnings("unchecked")
+                java.util.List<Object> outer = (java.util.List<Object>) invocation.arguments().getFirst();
+                @SuppressWarnings("unchecked")
+                java.util.List<Object> inner = (java.util.List<Object>) outer.getFirst();
+                assertNotSame(nested, inner);
+                assertThrows(UnsupportedOperationException.class, () -> outer.add(9L));
+                assertThrows(UnsupportedOperationException.class, () -> inner.add(9L));
+                return outer;
+            }
+        });
+
+        Object result = new GpuRuntime().dispatch(
+                "test.kernel",
+                GpuRuntime.CallableKind.FNC,
+                java.util.List.of(original));
+
+        assertTrue(result instanceof java.util.List<?>);
+        @SuppressWarnings("unchecked")
+        java.util.List<Object> resultList = (java.util.List<Object>) result;
+        assertThrows(UnsupportedOperationException.class, () -> resultList.add(10L));
+
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "bad-result-test"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) { return new Object(); }
+        });
+
+        assertThrows(GpuRuntime.GpuTransferException.class,
+                () -> new GpuRuntime().dispatch(
+                        "test.kernel",
+                        GpuRuntime.CallableKind.FNC,
+                        java.util.List.of(1L)));
+    }
+
+    @Test
     void gpuNeverSilentlyFallsBackToCpu() {
         PolyglotException failure = assertThrows(PolyglotException.class, () -> run("""
                 pub gpu routine main() => void {
