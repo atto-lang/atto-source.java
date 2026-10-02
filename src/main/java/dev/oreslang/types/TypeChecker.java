@@ -716,9 +716,14 @@ public final class TypeChecker {
 
             if (method.explicitReceiverType() != null) {
                 Ast.TypeRef receiverRef = method.explicitReceiverType();
-                boolean namesEnclosingClass = receiverRef.name().equals(klass.name()) || receiverRef.name().equals(qualifiedClassName(klass)) || receiverRef.name().equals("self");
+                Ast.TypeRef receiverTargetRef = receiverRef.isBorrow()
+                        ? receiverRef.borrowedTarget()
+                        : receiverRef;
+                boolean namesEnclosingClass = receiverTargetRef.name().equals(klass.name())
+                        || receiverTargetRef.name().equals(qualifiedClassName(klass))
+                        || receiverTargetRef.name().equals("self");
                 if (!namesEnclosingClass) {
-                    Type receiver = resolve(receiverRef, generics, self);
+                    Type receiver = resolve(receiverTargetRef, generics, self);
                     requireAssignable(self, receiver, "explicit self receiver in " + klass.name() + "." + method.name());
                 }
             }
