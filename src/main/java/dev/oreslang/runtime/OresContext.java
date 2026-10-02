@@ -46,6 +46,7 @@ public final class OresContext implements AutoCloseable {
     public ActorRuntime actors() { return actors; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
+    public IsolatePolicy effectivePolicy() { return actors.effectivePolicy(); }
     public ExecutionProfile executionProfile() { return executionProfile; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
