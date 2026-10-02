@@ -266,6 +266,41 @@ final class LanguageHardeningTest {
                 end
                 """)));
         assertTrue(tupleAgainstList.getMessage().contains("tuple match pattern"));
+
+        IllegalArgumentException duplicateCapture = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 1) {
+                      (value, value) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(duplicateCapture.getMessage().contains("duplicate capture 'value'"));
+
+        IllegalArgumentException unreachableAfterWildcard = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match ("ok", 1) {
+                      _ => { return; }
+                      ("ok", value) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(unreachableAfterWildcard.getMessage().contains("unreachable match arm"));
+
+        IllegalArgumentException unreachableAfterTupleCapture = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 2) {
+                      (left, right) => { return; }
+                      _ => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(unreachableAfterTupleCapture.getMessage().contains("unreachable match arm"));
     }
 
     @Test
