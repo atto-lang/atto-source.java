@@ -1,4 +1,4 @@
-(* Oreslang v0.4 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
+(* Oreslang v0.5 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
 namespace_decl  = "namespace" IDENT ";" ;
