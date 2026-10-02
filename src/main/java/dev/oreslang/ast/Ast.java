@@ -160,10 +160,25 @@ public final class Ast {
             Visibility visibility,
             BindingKind bindingKind,
             TypeRef type,
+            List<Annotation> annotations,
             boolean isStatic,
             Expr initializer) implements Decl {
+        public FieldDecl {
+            annotations = List.copyOf(annotations);
+        }
+
         public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type, Expr initializer) {
-            this(name, visibility, bindingKind, type, false, initializer);
+            this(name, visibility, bindingKind, type, List.of(), false, initializer);
+        }
+
+        public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
+                         boolean isStatic, Expr initializer) {
+            this(name, visibility, bindingKind, type, List.of(), isStatic, initializer);
+        }
+
+        public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type,
+                         List<Annotation> annotations, Expr initializer) {
+            this(name, visibility, bindingKind, type, annotations, false, initializer);
         }
     }
 
