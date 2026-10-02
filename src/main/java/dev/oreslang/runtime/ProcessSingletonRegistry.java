@@ -368,7 +368,7 @@ public final class ProcessSingletonRegistry {
             stateFactory = null; // do not retain the first isolate/evaluator after initialization
             try {
                 state = Objects.requireNonNull(factory.get(),
-                        "singleton state factory returned null for " + key);
+                        "singleton state factory returned null for " + diagnosticId);
                 initialized = true;
             } catch (Throwable failure) {
                 failTerminal(failure);
