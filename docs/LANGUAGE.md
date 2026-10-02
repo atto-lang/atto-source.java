@@ -1,6 +1,6 @@
-# Oreslang language design (v0.3)
+# Oreslang language design (v0.4)
 
-Oreslang is a statically typed, structurally typed guest language for GraalVM/Truffle. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
+Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
 ## Files, modules, and imports
 
@@ -425,3 +425,117 @@ In addition to `stdio.print` and `stdio.println`, the stream-shaped form is avai
 stdio.stdout.write(value);
 stdio.stdout.println(value);
 ```
+
+
+## Execution profiles: JIT, AOT, and hybrid
+
+The same Oreslang source model supports three deployment profiles:
+
+- **JIT** — normal GraalVM/JVM host with Truffle JIT available.
+- **AOT** — Native Image host with the Truffle interpreter retained and guest JIT disabled. This is the conservative mobile/FaaS profile and still supports source hot reload because new Oreslang source is data consumed by the precompiled interpreter.
+- **HYBRID** — Native Image host plus Truffle guest JIT on targets where executable-code generation is permitted.
+
+The CLI accepts `--mode=jit|aot|hybrid` and `--platform=server|windows|macos|linux|android|ios`. The iOS execution contract is intentionally AOT-only. Source hot reload does not depend on executable dynamic libraries, JNI, or NFI.
+
+Maven profiles:
+- `mvn -Pnative-aot -DskipTests package`
+- `mvn -Pnative-hybrid -DskipTests package`
+
+## Capability-secure isolates
+
+Security is layered. Oreslang uses a deny-by-default language capability policy **in addition to** Graal/Native Image isolation and the host OS/mobile sandbox.
+
+An isolate policy can independently allow or deny:
+
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+
+The trusted compiler API can reject forbidden API usage before execution:
+
+```java
+OresCompiler.validateForIsolate(source, policy);
+```
+
+Runtime facades perform the same check again. A source file therefore cannot grant itself a capability. The launcher/supervisor chooses policy.
+
+The strict FaaS baseline permits only stdout. Host reflection, native access, unrestricted polyglot access, environment access, guest-created threads, and host IO remain disabled at the Graal context boundary.
+
+Actor cells may receive a policy stricter than their parent runtime. Their mailbox capacity is also bounded by that policy.
+
+## Hot reload without FFI
+
+`HotReloadManager` loads each code revision into a new versioned Polyglot context/generation:
+
+1. source arrives as data;
+2. syntax/type/capability checks run;
+3. a fresh restricted guest context is created;
+4. the new generation is evaluated and atomically becomes active;
+5. the previous generation may remain alive while requests/actors drain;
+6. the supervisor explicitly retires it.
+
+Each generation receives a monotonically increasing id and SHA-256 source digest.
+
+This model does not require `dlopen`, `LoadLibrary`, JNI, or Truffle NFI. A production server may additionally map each context to a Graal polyglot/native isolate. On AOT-only targets the precompiled interpreter executes newly loaded Oreslang source; on JIT-capable targets the same source may warm into optimized machine code.
+
+## Explicit structural calls
+
+Structural compatibility is never silently enabled for a nominal parameter. These three spellings are equivalent:
+
+```ores
+pub interface Bar {
+  marker: 'brand'
+}
+
+pub interface Foo extends Bar {
+  markerBrand: 'marking/branding'
+}
+
+fnc a(@Structural Foo y) => void {
+  return;
+}
+
+fnc b(y structural Foo) => void {
+  return;
+}
+
+@AllowStructural(y)
+fnc c(y Foo) => void {
+  return;
+}
+```
+
+All three may accept:
+
+```ores
+val branded = obj{
+  marker: "brand",
+  markerBrand: "marking/branding"
+};
+
+a(branded);
+b(branded);
+c(branded);
+```
+
+Without one of those explicit structural opt-ins, passing that object to a nominal `Foo` parameter is a compile-time error.
+
+`structural` is a contextual keyword, so existing identifiers named `structural` remain legal elsewhere.
+
+## Receiver identity and method values
+
+`self` is injected by the compiler/runtime as an immutable receiver binding. It cannot be declared as a local parameter name or reassigned.
+
+Direct method calls do not create per-instance closures:
+
+```ores
+box.get();
+```
+
+The runtime resolves the shared class method definition and passes the receiver as the hidden first argument.
+
+When a method is extracted as a first-class value:
+
+```ores
+val Fnc<int> callback = box.get;
+```
+
+Oreslang creates a small bound-method value containing only the receiver plus method identity. The underlying method definition remains shared by every instance. Calling `callback()` always uses the original `box`; there is no JavaScript-style dynamic `this` rebinding.
