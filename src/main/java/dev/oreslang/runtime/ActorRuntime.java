@@ -163,6 +163,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public int maxActors() { return maxActors; }
+    public boolean isClosed() { return closed.get(); }
 
     public static SchedulerConfig schedulerConfig() { return PROCESS_SCHEDULERS.config; }
     public static SchedulerSnapshot schedulerSnapshot() { return PROCESS_SCHEDULERS.snapshot(); }
