@@ -8,7 +8,7 @@ A source file may contain multiple named modules. A normal module is a namespace
 
 A process-wide singleton module is declared with `define singleton module NAME as`. Its language-level contract is exactly one runtime state cell per canonical module identity per OS process, owned by a hidden serial actor/service. Every caller receives only a proxy/handle; importing or referencing the module never copies its mutable state. Canonical identity includes the defining source code-unit identity, namespace, and module name. Process-singleton access requires the `PROCESS_SINGLETON` capability.
 
-The local JVM backend can satisfy this contract when callers share the host runtime heap. A spawned Graal isolate has a separate heap, so an isolated deployment must route singleton requests to a trusted host/process coordinator. Oreslang fails closed rather than silently degrading `singleton` to one instance per isolate.
+The local JVM backend satisfies this contract only when callers share the host runtime heap. A spawned Graal isolate has a separate heap, so the current adversarial isolate profile refuses `PROCESS_SINGLETON`. A future/embedding-specific trusted supervisor coordinator must route those requests outside tenant heaps; Oreslang does not silently degrade `singleton` to one instance per isolate.
 
 ```ores
 define module math as
@@ -97,6 +97,8 @@ Its scope determines its lifetime:
 - **singleton module:** once when the OS-process singleton state cell is first created.
 
 Module/file field initializers run first, in declaration order, and the `init routine` runs afterward. A scope may declare at most one init routine. It has no parameters, must explicitly declare `=> void`, cannot be public/async, and classes cannot declare it. Process-global initialization is intentionally not available as a free-floating file hook: it belongs inside a `singleton module`, where ownership and serialization are explicit.
+
+Singleton-module init is deliberately deterministic and context-free: it may derive and assign singleton state from already-declared singleton values, but it cannot use ambient capabilities, arbitrary calls, `await`, object creation, or caller-local state. This prevents whichever tenant first touches the singleton from defining process-global state accidentally.
 
 Hot reload does not rerun an already-created singleton module's process init. Compatible process state is retained; incompatible schema changes require an explicit migration.
 
