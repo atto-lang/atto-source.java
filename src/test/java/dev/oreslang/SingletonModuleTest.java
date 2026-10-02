@@ -1431,6 +1431,35 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonInitializationHasItsOwnCooperativeDeadlineAndCanRetry() {
+        String key = "init-deadline:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> timed =
+                ProcessSingletonRegistry.getOrCreate(
+                        key,
+                        Duration.ofMillis(25),
+                        () -> {
+                            while (true) ProcessSingletonRegistry.checkExecutionBudget();
+                        });
+
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> timed.call(List.of(), (state, ignored) -> 0)
+                        .toCompletableFuture().join());
+        assertTrue(causeChainContains(failure, "wall-time budget"), String.valueOf(failure));
+
+        ProcessSingletonRegistry.Handle<AtomicInteger> recovered =
+                ProcessSingletonRegistry.getOrCreate(
+                        key,
+                        Duration.ofSeconds(1),
+                        AtomicInteger::new);
+        assertNotEquals(timed.instanceId(), recovered.instanceId());
+        assertEquals(1L, ((Number) recovered.call(
+                List.of(),
+                (state, ignored) -> state.incrementAndGet())
+                .toCompletableFuture().join()).longValue());
+    }
+
+    @Test
     void failedInitializationCanBeRetriedBeforeStateEverExists() {
         String key = "init-retry:" + UUID.randomUUID();
 
