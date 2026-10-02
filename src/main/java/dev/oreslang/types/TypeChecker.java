@@ -179,8 +179,15 @@ public final class TypeChecker {
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) {
+            Type parameterType = resolveParam(param, generics, null);
+            if (fn.gpu()) requireGpuTransferType(parameterType, false,
+                    "parameter '" + param.name() + "' of gpu " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "'");
+            env.define(param.name(), parameterType, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        }
         Type returns = resolve(fn.returnType(), generics, null);
+        if (fn.gpu()) requireGpuTransferType(returns, true,
+                "return type of gpu " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "'");
         checkBlock(fn.body(), env, generics, returns, null);
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
@@ -188,6 +195,54 @@ public final class TypeChecker {
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
             throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
         }
+    }
+
+    private void requireGpuTransferType(Type type, boolean allowVoid, String where) {
+        if (type == Unknown.INSTANCE || type instanceof Generic) {
+            // Inferred/generic GPU signatures remain guarded by the runtime transfer boundary.
+            return;
+        }
+        if (type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.NULL) {
+                throw new IllegalArgumentException(where + " cannot be standalone null; use Option<T>");
+            }
+            if (primitive == Primitive.VOID && !allowVoid) {
+                throw new IllegalArgumentException(where + " cannot be void");
+            }
+            return;
+        }
+        if (type instanceof ListType list) {
+            requireGpuTransferType(list.element(), false, where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                requireGpuTransferType(tuple.elements().get(i), false, where + " tuple element " + i);
+            }
+            return;
+        }
+        if (type instanceof Named named && named.name().equals("Option") && named.arguments().size() == 1) {
+            Type element = named.arguments().getFirst();
+            if (element != Primitive.NULL) requireGpuTransferType(element, false, where + " Option value");
+            return;
+        }
+        if (type instanceof Borrow) {
+            throw new IllegalArgumentException(where + " cannot borrow actor-owned memory across the GPU boundary");
+        }
+        if (type instanceof Function) {
+            throw new IllegalArgumentException(where + " cannot transfer a callable across the GPU boundary");
+        }
+        if (type instanceof Record) {
+            throw new IllegalArgumentException(where + " cannot transfer a structural/class object across the GPU boundary");
+        }
+        if (type instanceof ClassNamespace) {
+            throw new IllegalArgumentException(where + " cannot transfer a class namespace across the GPU boundary");
+        }
+        if (type instanceof Named named) {
+            throw new IllegalArgumentException(where + " uses non-transferable named type '" + named.name() + "'");
+        }
+        throw new IllegalArgumentException(where + " is not GPU-transfer-safe: " + type);
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
