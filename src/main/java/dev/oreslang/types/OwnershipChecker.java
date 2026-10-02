@@ -720,6 +720,11 @@ public final class OwnershipChecker {
             validateBorrow(owner, true);
             return;
         }
+        if (receiver instanceof Ast.CallExpr call && isOwnershipIntrinsicCall(call, scope)
+                && call.callee() instanceof Ast.NameExpr intrinsic
+                && (intrinsic.name().equals("copy") || intrinsic.name().equals("take"))) {
+            return;
+        }
 
         VarState state = rootedOwner(receiver, scope);
         if (state == null) {
