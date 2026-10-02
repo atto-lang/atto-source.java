@@ -91,7 +91,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             T value = java.util.Objects.requireNonNull(initializer.get(),
-                    "actor-local initializer returned null for " + key);
+                    "actor-local initializer returned null for " + diagnosticKey(key));
             execution.locals.put(key, value);
             return value;
         } finally {
@@ -199,7 +199,7 @@ public final class ActorRuntime implements AutoCloseable {
      * hook rather than guest-accessible thread control.
      */
     public void schedulerSafepoint() {
-        if (closed.get()) throw new CancellationException("actor runtime is closing");
+        if (closed.get()) throw new ExecutionTerminated("actor runtime is closing");
         if (Thread.currentThread().isInterrupted()) throw new ExecutionTerminated("actor execution interrupted");
 
         ActorExecution execution = CURRENT_ACTOR.get();
@@ -213,7 +213,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
-        if (closed.get()) throw new CancellationException("actor runtime is closing");
+        if (closed.get()) throw new ExecutionTerminated("actor runtime is closing");
         return new Shared<>((T) freezeForThisRuntime(value));
     }
 
