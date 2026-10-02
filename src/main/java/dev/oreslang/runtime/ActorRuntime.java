@@ -36,7 +36,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long SHARED_HANDLE_BYTES = 64L;
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
-    private final Map<String, ActorId> singletonActors = new ConcurrentHashMap<>();
+    private final Map<String, SingletonRegistration> singletonActors = new ConcurrentHashMap<>();
     private final Map<ActorId, ActorFailure> failures = new ConcurrentHashMap<>();
     private final java.util.concurrent.ConcurrentLinkedQueue<ActorId> failureOrder =
             new java.util.concurrent.ConcurrentLinkedQueue<>();
@@ -72,6 +72,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public record ActorFailure(String type, String message) { }
+
+    private record SingletonRegistration(ActorId actorId, String contract) { }
 
     public record MonitorRef(UUID value, ActorId target) {
         public MonitorRef {
@@ -218,35 +220,50 @@ public final class ActorRuntime implements AutoCloseable {
             String name,
             long initialOwnedStateBytes,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawnSingletonOwned(name, initialOwnedStateBytes, null, behaviorFactory);
+    }
+
+    @SuppressWarnings("unchecked")
+    public synchronized <M> ActorRef<M> spawnSingletonOwned(
+            String name,
+            long initialOwnedStateBytes,
+            String contract,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
         validateSingletonName(name);
         requireOwnedStateBytes(policyCeiling, initialOwnedStateBytes);
-        ActorId existingId = singletonActors.get(name);
-        if (existingId != null) {
-            ActorCell<?> existing = actors.get(existingId);
+        SingletonRegistration registration = singletonActors.get(name);
+        if (registration != null) {
+            ActorCell<?> existing = actors.get(registration.actorId());
             if (existing != null
                     && (existing.state == ActorState.STARTING || existing.state == ActorState.RUNNING)) {
+                if (contract != null && registration.contract() != null
+                        && !contract.equals(registration.contract())) {
+                    throw new IllegalStateException(
+                            "singleton actor '" + name + "' already exists with an incompatible runtime contract");
+                }
                 return (ActorRef<M>) existing.ref;
             }
-            singletonActors.remove(name, existingId);
+            singletonActors.remove(name, registration);
         }
 
         ActorRef<M> created = spawnOwned(policyCeiling, initialOwnedStateBytes, behaviorFactory);
-        singletonActors.put(name, created.id());
+        SingletonRegistration createdRegistration = new SingletonRegistration(created.id(), contract);
+        singletonActors.put(name, createdRegistration);
 
         // The virtual thread may fail during behavior construction before the
         // registry insertion above. Remove that stale name immediately; if it
         // exits after this check its normal lifecycle cleanup removes the name.
         if (!actors.containsKey(created.id())) {
-            singletonActors.remove(name, created.id());
+            singletonActors.remove(name, createdRegistration);
         }
         return created;
     }
 
     @SuppressWarnings("unchecked")
     public <M> Optional<ActorRef<M>> lookupSingleton(String name) {
-        ActorId id = singletonActors.get(name);
-        if (id == null) return Optional.empty();
-        ActorCell<?> cell = actors.get(id);
+        SingletonRegistration registration = singletonActors.get(name);
+        if (registration == null) return Optional.empty();
+        ActorCell<?> cell = actors.get(registration.actorId());
         if (cell == null) return Optional.empty();
         return Optional.of((ActorRef<M>) cell.ref);
     }
@@ -819,7 +836,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void removeSingletonMapping() {
-            singletonActors.entrySet().removeIf(entry -> entry.getValue().equals(ref.id()));
+            singletonActors.entrySet().removeIf(entry -> entry.getValue().actorId().equals(ref.id()));
         }
 
         private boolean requestGracefulStop() {
