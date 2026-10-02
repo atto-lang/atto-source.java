@@ -534,7 +534,8 @@ public final class OwnershipChecker {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
                 checkArguments(call.arguments(), fn.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null);
+                return callResultValue(fn.returnType(), call.arguments(), fn.parameters(), null, scope,
+                        "function " + fn.name());
             }
         }
 
@@ -547,13 +548,90 @@ public final class OwnershipChecker {
                     ensureMutableReceiver(member.receiver(), scope, "method '" + method.name() + "' receiver");
                 }
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
-                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                return callResultValue(method.returnType(), call.arguments(), method.parameters(),
+                        member.receiver(), scope, "method " + method.name());
             }
         }
 
         checkExpr(call.callee(), scope, false);
         for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private ValueInfo callResultValue(
+            Ast.TypeRef declaredReturn,
+            List<Ast.Expr> arguments,
+            List<Ast.Param> parameters,
+            Ast.Expr receiver,
+            Scope scope,
+            String callable) {
+        Ast.TypeRef resolvedReturn = resolveOwnershipAlias(declaredReturn, new LinkedHashSet<>());
+        ValueKind resultKind = kindOfType(resolvedReturn);
+        if (!resolvedReturn.isBorrow()) {
+            return new ValueInfo(declaredReturn, resultKind, null);
+        }
+
+        VarState source = null;
+        if (receiver != null) {
+            VarState receiverRoot = rootedOwner(receiver, scope);
+            if (receiverRoot == null) {
+                throw error(callable + " returns a borrow but is invoked on a temporary/unrooted receiver; "
+                        + "bind the receiver first so its lifetime is explicit");
+            }
+            source = effectiveBorrowOwner(receiverRoot);
+        }
+
+        for (int i = 0; i < Math.min(arguments.size(), parameters.size()); i++) {
+            Ast.TypeRef parameterType = resolveOwnershipAlias(parameters.get(i).type(), new LinkedHashSet<>());
+            if (!parameterType.isBorrow()) continue;
+            VarState candidate = borrowArgumentOwner(arguments.get(i), scope);
+            if (candidate == null) continue;
+            candidate = effectiveBorrowOwner(candidate);
+            if (candidate == null) continue;
+            if (source != null && source != candidate) {
+                throw error(callable + " returns a borrow whose lifetime could depend on multiple local owners; "
+                        + "explicit lifetime relationships are not modeled yet");
+            }
+            source = candidate;
+        }
+
+        return new ValueInfo(declaredReturn, resultKind, source);
+    }
+
+    private VarState borrowArgumentOwner(Ast.Expr expression, Scope scope) {
+        if (expression instanceof Ast.NameExpr name) {
+            VarState state = scope.lookup(name.name());
+            if (state == null || state.kind == ValueKind.SHARED) return null;
+            if (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW
+                    || (state.type != null && state.type.isBorrow())) {
+                return state;
+            }
+            return null;
+        }
+        if (expression instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            return rootedOwner(unary.operand(), scope);
+        }
+        if (expression instanceof Ast.CallExpr call && isOwnershipIntrinsicCall(call, scope)) {
+            Ast.NameExpr intrinsic = (Ast.NameExpr) call.callee();
+            if (intrinsic.name().equals("share")) return null;
+            if (intrinsic.name().equals("borrow")) return rootedOwner(call.arguments().getFirst(), scope);
+        }
+        return null;
+    }
+
+    private VarState effectiveBorrowOwner(VarState state) {
+        if (state == null || state.kind == ValueKind.SHARED) return null;
+        if ((state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW)
+                && state.borrowSource != null) {
+            return state.borrowSource;
+        }
+        if ((state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW)
+                && state.origin == Origin.PARAM) {
+            // External borrow parameter: the current function does not own it.
+            return null;
+        }
+        return state;
     }
 
     private boolean requiresMutableReceiver(Ast.MethodDecl method) {
