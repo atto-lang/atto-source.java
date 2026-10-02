@@ -314,9 +314,18 @@ public final class Parser {
 
     private Ast.FieldDecl parseField(Ast.Visibility visibility) {
         Ast.BindingKind kind = parseBindingKind();
-        Ast.TypeRef type = parseTypeRef();
-        String name = consume(IDENT, "expected field name").lexeme();
+        Ast.TypeRef type = null;
+        String name;
+        if (isContextualValueName(peek()) && checkNext(EQUAL)) {
+            name = consumeContextualValueName("expected field name");
+        } else {
+            type = parseTypeRef();
+            name = consumeContextualValueName("expected field name");
+        }
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        if (type == null && initializer == null) {
+            throw error(peek(), "inferred field '" + name + "' requires an initializer");
+        }
         consumeStatementTerminator("field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, initializer);
     }
@@ -325,10 +334,10 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        if (isContextualValueName(peek()) && checkNext(EQUAL)) name = consumeContextualValueName("expected binding name");
         else {
             type = parseTypeRef();
-            name = consume(IDENT, "expected binding name").lexeme();
+            name = consumeContextualValueName("expected binding name");
         }
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
@@ -1084,6 +1093,15 @@ public final class Parser {
         };
     }
 
+    private boolean isContextualValueName(Token token) {
+        return token.type() == IDENT || token.type() == SHARED;
+    }
+
+    private String consumeContextualValueName(String message) {
+        if (isContextualValueName(peek())) return advance().lexeme();
+        throw error(peek(), message);
+    }
+
     private Ast.Expr parsePrimary() {
         if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
         if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
@@ -1103,7 +1121,7 @@ public final class Parser {
             return new Ast.NameExpr("actor");
         }
         if (match(SELF)) return new Ast.NameExpr("self");
-        if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
+        if (match(IDENT, SHARED)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
