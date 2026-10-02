@@ -254,13 +254,42 @@ try {
 
 ## Actors
 
-Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
+Actors own mutable state and communicate through mailboxes. Message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
 
-## Isolates
+Actor memory is an explicit spawn-time policy inside a tenant:
 
-An isolate is stricter than an actor and is intended as a FaaS/tenant security boundary. Strict isolate contexts deny host reflection, native access, arbitrary filesystem/IO, child-process creation, guest-created threads, environment access, and unrestricted polyglot access unless an explicit capability is granted by the host.
+- **shared heap** (default): the actor is semantically isolated but its managed objects live on the tenant Graal isolate's Java heap alongside other shared-heap actors;
+- **private arena**: the runtime creates an `Arena.ofConfined()` on the actor's own virtual Thread and allocates one bounded native `MemorySegment` for that actor. Oreslang arena-backed value representations allocate slices from that block.
 
-Actors may run inside an isolate. Actor semantics never weaken isolate policy.
+A private arena is intentionally **not** another Graal isolate and does not create another Java GC heap. It is an actor-owned off-heap block with deterministic lifetime and thread-confinement checks. The runtime provides a bounded allocator over the block and closes the arena when the actor exits.
+
+The source-level spawn surface will lower to the runtime equivalents of:
+
+```text
+spawn Worker(...)                         # shared heap
+spawn arena(1MiB) Worker(...)             # private actor arena
+```
+
+The exact syntax may evolve, but `SHARED_HEAP` versus `PRIVATE_ARENA` is a runtime semantic distinction, not merely a hint.
+
+## Isolates and tenants
+
+A Graal polyglot isolate is the coarse security/customer boundary. The production host creates **one isolated Graal Engine per tenant**. All Oreslang contexts/code generations opened through that engine share the tenant isolate heap, GC, and JIT domain.
+
+```text
+OS process
+├─ tenant A: isolated Graal Engine
+│  ├─ actor 1: shared heap
+│  ├─ actor 2: shared heap
+│  └─ actor 3: private confined arena
+└─ tenant B: isolated Graal Engine
+   ├─ actor 4: shared heap
+   └─ actor 5: private confined arena
+```
+
+This tenant isolate is stricter than an actor and is intended as a FaaS/customer security boundary. Strict isolate contexts deny host reflection, native access, arbitrary filesystem/IO, child-process creation, guest-created threads, environment access, and unrestricted polyglot access unless an explicit capability is granted by the host.
+
+Actor semantics never weaken tenant isolate policy. A private arena cannot exceed the actor's policy ceiling, and a raw `MemorySegment` is not a sendable actor message.
 
 ## Built-in globals
 
