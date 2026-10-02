@@ -212,9 +212,9 @@ public final class OresMutex {
         public CompletableFuture<Guard<T>> lockAsync() {
             GuardFuture<T> future = new GuardFuture<>();
             try {
-                future.complete(lock());
+                future.completeFromRuntime(lock());
             } catch (Throwable failure) {
-                future.completeExceptionally(failure);
+                future.failFromRuntime(failure);
             }
             return future;
         }
@@ -468,14 +468,14 @@ public final class OresMutex {
 
                 if (poisoned.get()) {
                     releaseDomain(waiter.ownerDomain);
-                    waiter.future.completeExceptionally(new PoisonedMutexException());
+                    waiter.future.failFromRuntime(new PoisonedMutexException());
                     continue;
                 }
 
                 SharedGuard guard = new SharedGuard(
                         waiter.ownerDomain,
                         waiter.enforceOwnerDomain);
-                if (waiter.future.complete(guard)) return;
+                if (waiter.future.completeFromRuntime(guard)) return;
 
                 // Cancellation won after dequeue but before completion.
                 releaseDomain(waiter.ownerDomain);
@@ -592,12 +592,12 @@ public final class OresMutex {
 
             if (poisonedNow) {
                 releaseDomain(ownerDomain);
-                future.completeExceptionally(new PoisonedMutexException());
+                future.failFromRuntime(new PoisonedMutexException());
             } else if (acquired) {
                 SharedGuard guard = new SharedGuard(
                         ownerDomain,
                         enforceOwnerDomain);
-                if (!future.complete(guard)) {
+                if (!future.completeFromRuntime(guard)) {
                     guard.releaseFromRuntime();
                 }
             }
