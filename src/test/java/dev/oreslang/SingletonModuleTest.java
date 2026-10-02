@@ -1176,10 +1176,10 @@ final class SingletonModuleTest {
         ProcessSingletonRegistry.Handle<Object> handle =
                 ProcessSingletonRegistry.getOrCreate(key, Object::new);
 
-        String nineMiB = "x".repeat(9 * 1024 * 1024);
+        String fiveMiB = "x".repeat(5 * 1024 * 1024);
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> handle.call(
-                        List.of(nineMiB, nineMiB),
+                        List.of(fiveMiB, fiveMiB),
                         8,
                         Duration.ofSeconds(1),
                         (state, args) -> args.size()));
