@@ -1078,16 +1078,48 @@ public final class TypeChecker {
                     "actor.singleton name");
         }
 
-        Type handlerType = typeOf(arguments.get(handlerIndex), env, generics, self);
-        if (!(handlerType instanceof Function handler)) {
-            throw new IllegalArgumentException(api + " handler must be a function");
-        }
-
         boolean stateful = arguments.size() == maximum;
         int expectedArity = stateful ? 2 : 1;
-        if (handler.parameters().size() != expectedArity) {
-            throw new IllegalArgumentException(
-                    api + " handler must accept exactly " + expectedArity + " argument(s)");
+        Ast.Expr handlerExpression = arguments.get(handlerIndex);
+
+        final Function handler;
+        if (handlerExpression instanceof Ast.LambdaExpr lambda) {
+            if (!(lambda.nonLexical() || env.descendantsNonLexical())) {
+                throw new IllegalArgumentException(api + " inline lambda handler must be nlex");
+            }
+            if (lambda.parameters().size() != expectedArity) {
+                throw new IllegalArgumentException(
+                        api + " handler must accept exactly " + expectedArity + " argument(s)");
+            }
+            Ast.Param messageParam = lambda.parameters().getFirst();
+            if (messageParam.type().name().equals("$infer$")) {
+                throw new IllegalArgumentException(api + " inline lambda message parameter requires an explicit type");
+            }
+            Type messageParamType = resolveParam(messageParam, generics, self);
+            if (stateful) {
+                Ast.Param stateParam = lambda.parameters().get(1);
+                Type initialType = unwrapShared(typeOf(arguments.get(stateIndex), env, generics, self));
+                Type stateType = stateParam.type().name().equals("$infer$")
+                        ? initialType
+                        : resolveParam(stateParam, generics, self);
+                Function expected = new Function(List.of(messageParamType, stateType), stateType);
+                typeOfWithExpected(handlerExpression, expected, env, generics, self);
+                handler = expected;
+            } else {
+                Function expected = new Function(List.of(messageParamType), Primitive.VOID);
+                typeOfWithExpected(handlerExpression, expected, env, generics, self);
+                handler = expected;
+            }
+        } else {
+            Type handlerType = typeOf(handlerExpression, env, generics, self);
+            if (!(handlerType instanceof Function fn)) {
+                throw new IllegalArgumentException(api + " handler must be a function");
+            }
+            handler = fn;
+            if (handler.parameters().size() != expectedArity) {
+                throw new IllegalArgumentException(
+                        api + " handler must accept exactly " + expectedArity + " argument(s)");
+            }
         }
 
         Type messageType = handler.parameters().getFirst();
