@@ -471,6 +471,28 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void classWithCallableFieldIsRejectedAsActorDataAtCompileTime() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                define class Holder
+                  val Fnc<int, int> callback;
+                end
+
+                fnc consume(Holder holder) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  val ref = actor.spawn(consume);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("callable")
+                || failure.getMessage().contains("Holder.callback"));
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
