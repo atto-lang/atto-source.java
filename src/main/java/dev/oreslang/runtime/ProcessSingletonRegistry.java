@@ -224,6 +224,16 @@ public final class ProcessSingletonRegistry {
                 return reply;
             }
 
+            // Terminal failure can race the pre-enqueue check. If the actor has
+            // already exited, remove this late request immediately rather than
+            // leaving it stranded until the queue timeout fires.
+            terminal = cell.terminalFailure;
+            if (terminal != null && cell.mailbox.remove(request)) {
+                cell.releaseQueuedSlot();
+                request.failBeforeRun(terminal);
+                return reply;
+            }
+
             /*
              * A queued request may time out promptly, but a running request is
              * never completed by the timer thread. Once RUNNING, deadline
