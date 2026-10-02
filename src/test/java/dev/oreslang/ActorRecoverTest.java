@@ -379,6 +379,18 @@ final class ActorRecoverTest {
     }
 
     @Test
+    void mainCannotBeDeclaredAsActor() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub actor routine main() => void {
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("main is the root/process entrypoint"));
+    }
+
+    @Test
     void actorCallableCannotAlsoBeAsync() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
