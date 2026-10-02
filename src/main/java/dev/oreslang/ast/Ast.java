@@ -220,8 +220,8 @@ public final class Ast {
 
         /**
          * Overload identity for class callables is deliberately only name + arity.
-         * Parameter types, parameter names, generic parameters, and return types
-         * never participate in overload selection.
+         * Parameter types, parameter names, generic parameters, return types,
+         * and the implicit/explicit self receiver never participate in overload selection.
          */
         public MethodArity overloadIdentity() { return new MethodArity(name, arity()); }
 
