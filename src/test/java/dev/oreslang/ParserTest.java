@@ -53,24 +53,71 @@ final class ParserTest {
     @Test
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
-                define module model
-                  define class x
-                    @Ret<self>
-                    find() {
-                      return self;
-                    }
+                define class x
+                  @Ret<self>
+                  find() {
+                    return self;
+                  }
 
-                    @Ret<self>
-                    find_with_arg(self x)(int foo) {
-                      return self;
-                    }
-                  end
+                  @Ret<self>
+                  find_with_arg(self x)(int foo) {
+                    return self;
+                  }
                 end
                 """;
         Ast.Program program = Parser.parse(source);
-        Ast.ClassDecl klass = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.ClassDecl klass = (Ast.ClassDecl) program.modules().stream()
+                .filter(module -> module.name().equals(Parser.ROOT_MODULE))
+                .findFirst()
+                .orElseThrow()
+                .declarations()
+                .getFirst();
         assertNull(klass.methods().getFirst().explicitReceiverType());
         assertEquals("x", klass.methods().get(1).explicitReceiverType().name());
+    }
+
+
+    @Test
+    void classesAndModulesMustBeFileTopLevel() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class Bar
+                end
+
+                define module Foo
+                end
+                """));
+
+        IllegalArgumentException nestedModuleInFunction = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc init() => void {
+                  for (let i = 0; i < 10; i = i + 1) {
+                    define module Foo
+                    end
+                  }
+                }
+                """));
+        assertTrue(nestedModuleInFunction.getMessage().contains("must be top-level"));
+
+        IllegalArgumentException nestedClassInFunction = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc init() => void {
+                  define class Bar
+                  end
+                }
+                """));
+        assertTrue(nestedClassInFunction.getMessage().contains("must be top-level"));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module Outer
+                  define class Bar
+                  end
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Outer
+                  define class Inner
+                  end
+                end
+                """));
     }
 
     @Test
