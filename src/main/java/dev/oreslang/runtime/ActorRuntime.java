@@ -97,6 +97,15 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Thread.currentThread() : current.executionDomain();
     }
 
+    /**
+     * Stable actor execution domain for actor-local runtime services, or null
+     * when the caller is not currently inside an actor mailbox turn.
+     */
+    public static Object currentActorExecutionDomain() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        return current == null ? null : current.executionDomain();
+    }
+
     public enum ActorKind { PRIVATE, SHARED }
 
     public record DispatcherConfig(
