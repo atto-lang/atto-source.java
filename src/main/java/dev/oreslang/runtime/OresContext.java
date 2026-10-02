@@ -76,6 +76,8 @@ public final class OresContext implements AutoCloseable {
                 "platform", executionProfile.platform().name(),
                 "scheduler_safepoints", schedulerSafepoints.get(),
                 "active_actors", actors.activeActorCount(),
+                "actor_heap_backend", "logical_jvm",
+                "actor_physical_heap_isolation", false,
                 "manual_gc_requests", gc.requests());
     }
 
