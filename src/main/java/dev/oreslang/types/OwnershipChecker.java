@@ -126,6 +126,23 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            ValueInfo source = checkExpr(matched.value(), scope, true);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+
+            for (Ast.MatchArm arm : matched.arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                definePatternBindings(arm.pattern(), armScope, source.kind);
+                checkBlock(arm.body(), armScope, returnType);
+                armScope.close();
+                exits.add(stateSnapshot(scope));
+            }
+
+            mergeBranchState(base, exits);
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() != null) {
                 if (ret.value() instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
@@ -196,6 +213,25 @@ public final class OwnershipChecker {
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
             rejectLoopMoves(before, scope);
             loopScope.close();
+        }
+    }
+
+    private void definePatternBindings(Ast.Pattern pattern, Scope scope, ValueKind sourceKind) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            ValueKind kind = sourceKind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY;
+            scope.define(binding.name(), new VarState(
+                    Ast.TypeRef.inferred(),
+                    binding.kind() == Ast.BindingKind.LET,
+                    kind,
+                    Origin.LOCAL));
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) definePatternBindings(element, scope, sourceKind);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern element : list.elements()) definePatternBindings(element, scope, sourceKind);
         }
     }
 
@@ -512,6 +548,13 @@ public final class OwnershipChecker {
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
                     if (!binding.isDiscard()) blockLocals.add(binding.name());
                 }
+            } else if (stmt instanceof Ast.MatchStmt matched) {
+                scanExpr(matched.value(), blockLocals, outer, recursiveBinding, captures, false);
+                for (Ast.MatchArm arm : matched.arms()) {
+                    Set<String> armLocals = new HashSet<>(blockLocals);
+                    collectPatternBindings(arm.pattern(), armLocals);
+                    scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
+                }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
@@ -539,6 +582,20 @@ public final class OwnershipChecker {
                 if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             }
+        }
+    }
+
+    private void collectPatternBindings(Ast.Pattern pattern, Set<String> locals) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            locals.add(binding.name());
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) collectPatternBindings(element, locals);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern element : list.elements()) collectPatternBindings(element, locals);
         }
     }
 
