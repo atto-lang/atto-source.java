@@ -205,6 +205,54 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void currentActorUsesItsStricterEffectivePolicy() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            assertTrue(runtime.effectivePolicy().allows(IsolatePolicy.Capability.PROCESS_GC));
+
+            CountDownLatch observed = new CountDownLatch(1);
+            AtomicReference<IsolatePolicy> policy = new AtomicReference<>();
+            var actor = runtime.<String>spawn(IsolatePolicy.strictFaas(), () -> (message, context) -> {
+                policy.set(context.runtime().effectivePolicy());
+                observed.countDown();
+            });
+
+            actor.send("check");
+
+            assertTrue(observed.await(2, TimeUnit.SECONDS));
+            assertNotNull(policy.get());
+            assertFalse(policy.get().allows(IsolatePolicy.Capability.PROCESS_GC));
+            assertEquals(IsolatePolicy.strictFaas().capabilities(), policy.get().capabilities());
+        }
+    }
+
+    @Test
+    void actorRefsCannotCrossRuntimeBoundariesByJavaReference() {
+        try (ActorRuntime left = new ActorRuntime(); ActorRuntime right = new ActorRuntime()) {
+            var leftRef = left.<String>spawn(() -> (message, context) -> { });
+            var rightRef = right.<Object>spawn(() -> (message, context) -> { });
+
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                    () -> rightRef.send(leftRef));
+            assertTrue(failure.getMessage().contains("different actor runtime"));
+        }
+    }
+
+    @Test
+    void actorRefsRemainSendableInsideOneRuntime() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch observed = new CountDownLatch(1);
+            var target = runtime.<String>spawn(() -> (message, context) -> { });
+            var receiver = runtime.<Object>spawn(() -> (message, context) -> {
+                assertSame(target, message);
+                observed.countDown();
+            });
+
+            receiver.send(target);
+            assertTrue(observed.await(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void gcRequestsAreRejectedAfterRuntimeClose() {
         ActorRuntime runtime = new ActorRuntime();
         runtime.close();
