@@ -167,6 +167,38 @@ final class CallableSemanticsTest {
     }
 
     @Test
+    void deferRunsAllCleanupsAndPreservesCleanupFailure() throws Exception {
+        String program = """
+                fnc explode() => int {
+                  return 1 / 0;
+                }
+
+                pub routine main() => void {
+                  defer stdio.stdout.write("A");
+                  defer explode();
+                  defer stdio.stdout.write("B");
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "defer-failure.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            Exception failure = assertThrows(Exception.class, () -> context.eval(source));
+            assertNotNull(failure.getMessage());
+            assertTrue(failure.getMessage().contains("division by zero"));
+        }
+
+        assertEquals("BA", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void routineAndFncRemainSemanticallyDistinct() {
         assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
