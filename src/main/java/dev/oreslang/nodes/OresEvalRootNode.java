@@ -445,7 +445,14 @@ public final class OresEvalRootNode extends RootNode {
                     if (!(args.getFirst() instanceof Invokable callback)) {
                         throw new IllegalArgumentException("Mutex.with_lock expects a one-argument lambda/function");
                     }
-                    return lock.withLock(value -> callback.call(List.of(value)));
+                    return lock.withLock(value -> {
+                        Object result = callback.call(List.of(value));
+                        if (result != null) {
+                            throw new IllegalArgumentException(
+                                    "Mutex.with_lock callback must return void");
+                        }
+                        return null;
+                    });
                 };
                 case "is_poisoned" -> (Invokable) args -> { requireZero(args, "Mutex.is_poisoned"); return lock.isPoisoned(); };
                 case "recover" -> {
@@ -458,7 +465,14 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(args.getFirst() instanceof Invokable callback)) {
                             throw new IllegalArgumentException("SharedMutex.recover expects a one-argument lambda/function");
                         }
-                        return shared.recover(value -> callback.call(List.of(value)));
+                        return shared.recover(value -> {
+                            Object result = callback.call(List.of(value));
+                            if (result != null) {
+                                throw new IllegalArgumentException(
+                                        "SharedMutex.recover callback must return void");
+                            }
+                            return null;
+                        });
                     };
                 }
                 default -> throw new IllegalArgumentException("unknown mutex member " + name);
