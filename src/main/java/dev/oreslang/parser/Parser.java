@@ -695,10 +695,11 @@ public final class Parser {
     private Ast.Stmt parseStatement() {
         if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(true));
         if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
+        if (match(TYPE)) return new Ast.TypeDeclStmt(parseTypeAlias());
         if (match(DEFINE)) {
             if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(false));
             if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
-            throw error(previous(), "callable-local 'define' only supports struct or interface declarations");
+            throw error(previous(), "callable-local 'define' only supports struct or interface declarations; type aliases use 'type Name = ...'");
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
