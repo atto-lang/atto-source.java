@@ -1124,6 +1124,66 @@ let Buffer duplicate = copy(original);
 
 The legacy `&T` / `&mut T` spellings remain accepted during migration. New code can use `borrow(x)` immediately; broader Java-like default parameter borrowing can evolve separately without weakening the ownership invariants.
 
+## Zero-copy and zero-allocation contracts
+
+Oreslang treats copying and allocation as compiler-visible semantic effects. The first hard contracts are:
+
+```ores
+@NoAlloc
+@NoCopy
+fnc checksum(int a, int b) => int {
+  return a + b;
+}
+```
+
+These annotations are compile-time contracts, not optimizer hints:
+
+- `@NoAlloc` rejects any operation that is known or conservatively assumed to allocate runtime storage.
+- `@NoCopy` rejects explicit or transitive value-copy effects.
+- both contracts are transitive across statically resolved Oreslang function and method calls;
+- an unresolved/dynamic/foreign call is conservatively treated as potentially allocating and copying, so a constrained callable cannot silently escape through an opaque callee;
+- contract violations include a call path to the first known effect source.
+
+The ownership intrinsics intentionally have effect semantics:
+
+| operation | allocation effect | copy effect |
+| --- | --- | --- |
+| `borrow(x)` | no | no |
+| `take(x)` | no | no |
+| `copy(x)` | potential allocation | yes |
+| `share(x)` | yes (snapshot materialization) | yes |
+
+This makes ownership-transfer pipelines expressible without hidden copying:
+
+```ores
+@NoAlloc
+@NoCopy
+fnc inspect(&Buffer value) => int {
+  return value.size;
+}
+
+@NoAlloc
+@NoCopy
+fnc pipeline(Buffer value) => int {
+  return inspect(borrow(value));
+}
+```
+
+The current allocation checker treats the following as allocation-producing semantic operations:
+
+- `new T(...)`;
+- array/list, tuple, and object/map literals;
+- closure/lambda creation;
+- `Some(...)` value construction;
+- `Mutex.new(...)` and `SharedMutex.new(...)`;
+- `copy(...)` and `share(...)` materialization;
+- string/potential-string `+` concatenation unless both operands are statically provable numeric expressions;
+- opaque calls whose allocation behavior cannot be proven.
+
+Named struct construction is value construction rather than an intrinsic heap-allocation effect. Backends are therefore free to lower structs inline, on the stack, in registers, or into caller/arena-provided storage while preserving the same source-level contract.
+
+`@NoAlloc` and `@NoCopy` currently take no arguments. Budgeted effects such as bounded allocation counts/bytes and an arena-aware `@NoHeapAlloc` contract are intentionally left as a later extension; the zero forms establish the strict base semantics first.
+
 ## Multi-threaded targets
 
 Actors/isolate message passing remains the primary concurrency model, but the ownership contract is backend-independent.
