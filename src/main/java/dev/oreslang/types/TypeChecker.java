@@ -45,6 +45,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    // Set only while checking a method expanded from a trait.
+    private String activeTraitOwner;
 
     public static Ast.Program check(Ast.Program program) {
         Ast.Program composed = TraitComposer.compose(program);
@@ -701,6 +703,7 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            activeTraitOwner = method.compositionOwner();
             Set<String> generics = new HashSet<>(classGenerics);
             for (String generic : method.genericParameters()) {
                 if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
@@ -726,6 +729,7 @@ public final class TypeChecker {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
             }
+            activeTraitOwner = null;
         }
 
         Set<String> implemented = new HashSet<>();
@@ -1469,6 +1473,16 @@ public final class TypeChecker {
         Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.name().equals(name)) {
+                if (activeTraitOwner != null) {
+                    if (!field.composed() || !activeTraitOwner.equals(field.compositionOwner())) {
+                        throw new IllegalArgumentException(
+                                "trait '" + activeTraitOwner + "' cannot access host or foreign trait state field '" + name + "'");
+                    }
+                } else if (field.composed() && field.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "trait state field '" + field.compositionOwner() + "." + name
+                                    + "' is private to that trait");
+                }
                 seen.remove(klass);
                 return resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
             }
