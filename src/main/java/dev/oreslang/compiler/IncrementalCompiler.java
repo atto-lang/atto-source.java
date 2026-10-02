@@ -208,6 +208,8 @@ public final class IncrementalCompiler {
                 appendGenerics(abi, struct.genericParameters());
                 abi.append(" is ");
                 for (Ast.TypeRef iface : struct.interfaces()) abi.append(typeRef(iface)).append(',');
+                abi.append(" with ");
+                for (Ast.TypeRef trait : struct.traits()) abi.append(typeRef(trait)).append(',');
                 abi.append('\n');
                 for (Ast.FieldDecl field : struct.fields()) {
                     abi.append("  local-field ").append(field.bindingKind()).append(' ')
@@ -224,6 +226,8 @@ public final class IncrementalCompiler {
             } else if (local.declaration() instanceof Ast.InterfaceDecl iface) {
                 abi.append(" local-interface ").append(iface.name());
                 appendGenerics(abi, iface.genericParameters());
+                abi.append(" extends ");
+                for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
                 abi.append('\n');
                 for (Ast.InterfaceMember member : iface.members()) {
                     Ast.InterfaceFunctionDecl method = (Ast.InterfaceFunctionDecl) member;
