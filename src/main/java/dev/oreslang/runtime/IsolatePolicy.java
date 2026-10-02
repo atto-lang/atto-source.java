@@ -103,6 +103,9 @@ public record IsolatePolicy(
         String caps = capabilities.stream().map(Enum::name).sorted().collect(Collectors.joining(","));
         return new String[] {
                 "--ores-capabilities=" + caps,
+                "--ores-max-heap-bytes=" + maxHeapBytes,
+                "--ores-max-mailbox-messages=" + maxMailboxMessages,
+                "--ores-max-wall-ms=" + maxWallTime.toMillis(),
                 "--ores-execution-mode=" + profile.mode().name(),
                 "--ores-platform=" + profile.platform().name()
         };
@@ -110,13 +113,21 @@ public record IsolatePolicy(
 
     public static IsolatePolicy fromApplicationArguments(String[] args) {
         String raw = null;
-        for (String arg : args) if (arg.startsWith("--ores-capabilities=")) raw = arg.substring("--ores-capabilities=".length());
+        long maxHeap = 128L * 1024 * 1024;
+        int maxMailbox = 1024;
+        long maxWallMs = 30_000L;
+        for (String arg : args) {
+            if (arg.startsWith("--ores-capabilities=")) raw = arg.substring("--ores-capabilities=".length());
+            else if (arg.startsWith("--ores-max-heap-bytes=")) maxHeap = Long.parseLong(arg.substring("--ores-max-heap-bytes=".length()));
+            else if (arg.startsWith("--ores-max-mailbox-messages=")) maxMailbox = Integer.parseInt(arg.substring("--ores-max-mailbox-messages=".length()));
+            else if (arg.startsWith("--ores-max-wall-ms=")) maxWallMs = Long.parseLong(arg.substring("--ores-max-wall-ms=".length()));
+        }
         if (raw == null) return developer();
         EnumSet<Capability> caps = EnumSet.noneOf(Capability.class);
         if (!raw.isBlank()) {
             for (String value : raw.split(",")) caps.add(Capability.valueOf(value.trim().toUpperCase(Locale.ROOT)));
         }
-        return new IsolatePolicy(caps, 128L * 1024 * 1024, 1024, Duration.ofSeconds(30));
+        return new IsolatePolicy(caps, maxHeap, maxMailbox, Duration.ofMillis(maxWallMs));
     }
 
     public static ExecutionProfile executionProfileFromApplicationArguments(String[] args) {
