@@ -365,7 +365,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (isRuntimeFacade(name.name())) {
+                throw new IllegalArgumentException("runtime facade '" + name.name()
+                        + "' is namespace-like and cannot be captured as a first-class value");
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -445,7 +448,7 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
-            if (call.callee() instanceof Ast.MemberExpr member) {
+            if (call.callee() instanceof Ast.MemberExpr member && !isDirectRuntimeFacadeMember(member)) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
@@ -494,10 +497,7 @@ public final class TypeChecker {
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
-            }
-            Type receiver = typeOf(member.receiver(), env, generics, self);
-            if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
-                return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+                throw new IllegalArgumentException("unknown stdio member '" + member.member() + "'");
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) {
                 if (member.member().equals("gc")) return new Function(List.of(), Primitive.VOID);
@@ -505,7 +505,12 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
                 if (member.member().equals("gc")) return new Function(List.of(), Primitive.VOID);
-                return Unknown.INSTANCE;
+                throw new IllegalArgumentException("unknown actor member '" + member.member() + "'");
+            }
+
+            Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
+                return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
@@ -682,6 +687,14 @@ public final class TypeChecker {
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
         return Unknown.INSTANCE;
+    }
+
+    private static boolean isRuntimeFacade(String name) {
+        return name.equals("stdio") || name.equals("process") || name.equals("actor");
+    }
+
+    private static boolean isDirectRuntimeFacadeMember(Ast.MemberExpr member) {
+        return member.receiver() instanceof Ast.NameExpr name && isRuntimeFacade(name.name());
     }
 
     private Type numericJoin(Type left, Type right, String op) {
