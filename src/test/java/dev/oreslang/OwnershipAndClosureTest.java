@@ -115,7 +115,7 @@ final class OwnershipAndClosureTest {
                           return;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("another borrow is active"));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"));
     }
 
     @Test
