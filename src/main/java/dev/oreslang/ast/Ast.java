@@ -75,6 +75,7 @@ public final class Ast {
             CallableKind kind,
             Visibility visibility,
             boolean async,
+            boolean gpu,
             List<String> genericParameters,
             List<Param> parameters,
             TypeRef returnType,
@@ -88,7 +89,7 @@ public final class Ast {
         }
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, false, genericParameters, parameters, returnType, annotations, body);
         }
     }
 
