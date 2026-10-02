@@ -719,6 +719,10 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record Complex(double real, double imaginary) {
+        private Complex {
+            if (real == 0.0d) real = 0.0d;
+            if (imaginary == 0.0d) imaginary = 0.0d;
+        }
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
