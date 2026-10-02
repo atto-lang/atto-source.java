@@ -10,11 +10,16 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -227,6 +232,200 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonInitializersAreContextFreeAndStateTypesAreStable() {
+        IllegalArgumentException capabilityInitializer = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module unsafe_init
+                          let String captured = process.context_id;
+                          pub fnc read() => String { return captured; }
+                        end
+                        """)));
+        assertTrue(capabilityInitializer.getMessage().contains("context-free initializer"));
+
+        IllegalArgumentException aliasedState = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module aliased_state
+                          type Count = int;
+                          let Count count = 0;
+                          pub fnc read() => int { return count; }
+                        end
+                        """)));
+        assertTrue(aliasedState.getMessage().contains("type aliases"));
+    }
+
+    @Test
+    void singletonPublicApiMustBeStaticallySendable() {
+        IllegalArgumentException classBoundary = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box
+                          val int value;
+                        end
+
+                        define singleton module class_boundary
+                          pub fnc echo(Box value) => Box {
+                            return value;
+                          }
+                        end
+                        """)));
+        assertTrue(classBoundary.getMessage().contains("not statically Sendable"));
+
+        IllegalArgumentException mutableBoundary = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module mutable_boundary
+                          pub fnc consume(Array<int> mut values) => void {
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(mutableBoundary.getMessage().contains("cannot accept mut parameters"));
+    }
+
+    @Test
+    void crossSingletonCallsMustBeImmediatelyAwaited() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module await_required
+                          pub fnc read() => int { return 1; }
+                        end
+
+                        define module app
+                          pub fnc main() => void {
+                            await_required.read();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("must be immediately awaited"));
+    }
+
+    @Test
+    void singletonStateFlowsThroughClassAndStaticDispatchWithoutSelfMailboxReentry() throws Exception {
+        String output = eval("""
+                define singleton module method_state
+                  let int count = 0;
+
+                  fnc bump() => int {
+                    count = count + 1;
+                    return count;
+                  }
+
+                  define class Helper
+                    pub run() => int {
+                      return bump();
+                    }
+
+                    pub static fnc run_static() => int {
+                      return bump();
+                    }
+                  end
+
+                  pub fnc next() => int {
+                    val helper = new Helper();
+                    val int first = helper.run();
+                    return Helper.run_static() + first;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int result = await method_state.next();
+                    stdio.println(result);
+                    return;
+                  }
+                end
+                """, "singleton-class-dispatch.ores");
+
+        assertTrue(output.contains("3"), output);
+    }
+
+    @Test
+    void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
+        String aKey = "cycle-a:" + UUID.randomUUID();
+        String bKey = "cycle-b:" + UUID.randomUUID();
+        AtomicReference<ProcessSingletonRegistry.Handle<Object>> aRef = new AtomicReference<>();
+        AtomicReference<ProcessSingletonRegistry.Handle<Object>> bRef = new AtomicReference<>();
+
+        aRef.set(ProcessSingletonRegistry.getOrCreate(aKey, Object::new));
+        bRef.set(ProcessSingletonRegistry.getOrCreate(bKey, Object::new));
+
+        CompletableFuture<Object> call = aRef.get().call(
+                List.of(), 8, Duration.ofSeconds(2),
+                (aState, ignored) -> bRef.get().call(
+                        List.of(), 8, Duration.ofSeconds(2),
+                        (bState, ignoredAgain) -> aRef.get().call(
+                                List.of(), 8, Duration.ofSeconds(2),
+                                (nestedA, finalArgs) -> "unreachable")
+                                .toCompletableFuture().join())
+                        .toCompletableFuture().join())
+                .toCompletableFuture();
+
+        RuntimeException failure = assertThrows(RuntimeException.class, call::join);
+        assertTrue(causeChainContains(failure, "wait cycle"), String.valueOf(failure));
+    }
+
+    @Test
+    void registryEnforcesCallerBackpressureAndRecoversAfterTimeout() throws Exception {
+        String key = "backpressure:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<AtomicInteger> handle =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Object> active = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> {
+                    entered.countDown();
+                    release.await(1, TimeUnit.SECONDS);
+                    return state.incrementAndGet();
+                }).toCompletableFuture();
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        CompletableFuture<Object> queued = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+        CompletableFuture<Object> rejected = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+
+        assertTrue(rejected.isCompletedExceptionally());
+        release.countDown();
+        assertEquals(1L, ((Number) active.join()).longValue());
+        assertEquals(2L, ((Number) queued.join()).longValue());
+
+        CompletableFuture<Object> timed = handle.call(
+                List.of(), 8, Duration.ofMillis(25),
+                (state, ignored) -> {
+                    while (true) ProcessSingletonRegistry.checkExecutionBudget();
+                }).toCompletableFuture();
+        assertThrows(RuntimeException.class, timed::join);
+
+        Object afterTimeout = handle.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture().join();
+        assertEquals(3L, ((Number) afterTimeout).longValue());
+    }
+
+    @Test
+    void failedInitializationCanBeRetriedBeforeStateEverExists() {
+        String key = "init-retry:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<AtomicInteger> failed =
+                ProcessSingletonRegistry.getOrCreate(key, () -> {
+                    throw new IllegalStateException("boom");
+                });
+        assertThrows(CompletionException.class,
+                () -> failed.call(List.of(), (state, ignored) -> 0).toCompletableFuture().join());
+
+        ProcessSingletonRegistry.Handle<AtomicInteger> recovered =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+        assertNotEquals(failed.instanceId(), recovered.instanceId());
+
+        Object result = recovered.call(List.of(), (state, ignored) -> state.incrementAndGet())
+                .toCompletableFuture().join();
+        assertEquals(1L, ((Number) result).longValue());
+    }
+
+    @Test
     void registryCreatesOneActorAndSerializesConcurrentCalls() {
         String key = "test:" + UUID.randomUUID();
         AtomicInteger initializations = new AtomicInteger();
@@ -253,6 +452,15 @@ final class SingletonModuleTest {
 
         assertEquals(1, initializations.get());
         assertEquals(64L, ((Number) calls.getLast().join()).longValue());
+    }
+
+    private static boolean causeChainContains(Throwable failure, String text) {
+        Throwable current = failure;
+        while (current != null) {
+            if (String.valueOf(current.getMessage()).contains(text)) return true;
+            current = current.getCause();
+        }
+        return false;
     }
 
     private String eval(String program, String name) throws Exception {
