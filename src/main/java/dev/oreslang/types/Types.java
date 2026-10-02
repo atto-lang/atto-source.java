@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Any, Unknown, ImplicitAny, ImplicitUnknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -41,12 +41,30 @@ public final class Types {
 
     public record StringLiteral(String value) implements Type { }
 
+    /** Explicit source-level `any`: an intentional dynamic escape hatch. */
+    public enum Any implements Type { INSTANCE }
+
+    /** Explicit source-level `unknown`: dynamic data that should be narrowed by callers. */
     public enum Unknown implements Type { INSTANCE }
+
+    /** Compiler-created `any`; rejected when noImplicitAny is enabled. */
+    public enum ImplicitAny implements Type { INSTANCE }
+
+    /** Compiler-created `unknown`; rejected when noImplicitUnknown is enabled. */
+    public enum ImplicitUnknown implements Type { INSTANCE }
+
+    public static boolean isAnyLike(Type type) {
+        return type == Any.INSTANCE || type == ImplicitAny.INSTANCE;
+    }
+
+    public static boolean isUnknownLike(Type type) {
+        return type == Unknown.INSTANCE || type == ImplicitUnknown.INSTANCE;
+    }
 
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
-        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
+        if (isAnyLike(from) || isAnyLike(to) || isUnknownLike(from) || isUnknownLike(to)) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
