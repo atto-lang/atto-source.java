@@ -970,9 +970,11 @@ public final class TypeChecker {
     }
 
     private Function methodFunctionType(Ast.MethodDecl method, Set<String> generics, Type self) {
-        Type returns = methodReturnType(method, generics, self);
+        Set<String> allGenerics = new HashSet<>(generics);
+        allGenerics.addAll(method.genericParameters());
+        Type returns = methodReturnType(method, allGenerics, self);
         return new Function(
-                method.parameters().stream().map(p -> resolveParam(p, generics, self)).toList(),
+                method.parameters().stream().map(p -> resolveParam(p, allGenerics, self)).toList(),
                 returns);
     }
 
