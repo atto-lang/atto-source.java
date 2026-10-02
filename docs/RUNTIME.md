@@ -15,6 +15,8 @@
 11. Private and shared actors use separate dispatcher thread pools.
 12. Private actor transport rejects synchronized shared-memory cells.
 13. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks.
+14. Each private actor starts with a 1 MiB VM commitment and grows only through the runtime memory governor.
+15. Actor-requested and VM-triggered growth are both bounded by per-actor and aggregate runtime ceilings; growth may be denied.
 
 ## Deployment matrix
 
@@ -66,17 +68,32 @@ The runtime does not interrupt a carrier thread to stop one actor because that t
 
 A private actor is assigned an `ActorMemorySlice` when it is created. The slice is keyed by actor identity rather than by dispatcher thread because actor turns may migrate between worker threads.
 
+Memory has three distinct quantities:
+
+- **used bytes** — live mailbox and actor-state reservations;
+- **committed bytes** — capacity currently granted to this actor by the VM;
+- **hard limit** — the actor's `IsolatePolicy.maxHeapBytes()` ceiling.
+
+A private actor starts with **1 MiB committed** by default. Commitment is elastic: the default policy grows geometrically in at-least-1-MiB quanta (1 MiB -> 2 MiB -> 4 MiB -> 8 MiB, and so on) until the actor hard limit or aggregate runtime limit is reached.
+
+Growth is deliberately two-way:
+
+1. **actor initiated** — actor code may request additional capacity through its private memory handle and receives an explicit approved/denied result;
+2. **VM initiated** — an allocation that would cross committed capacity triggers required growth automatically, and crossing the configured high-water mark (80% by default) triggers best-effort proactive growth.
+
+Every growth attempt passes through the host `MemoryGovernor`. The governor may deny growth even when static limits still have room, for example because of process pressure, tenant quotas, supervisor policy, or deployment-specific resource controls. Static per-actor and aggregate runtime ceilings are always enforced in addition to the governor; a governor can make policy stricter but cannot enlarge those ceilings.
+
 Private mailbox admission is:
 
 1. reject explicitly shared mutable handles such as `SyncCell<T>`;
 2. isolation-copy/freeze the message graph;
 3. conservatively estimate its logical Oreslang heap size;
-4. reserve those bytes against the destination actor slice and the parent runtime budget;
-5. enqueue only after both reservations succeed;
+4. ensure the destination actor has enough committed capacity, requesting VM growth when necessary;
+5. reserve the message bytes and enqueue only after memory admission succeeds;
 6. release transient mailbox bytes after the mailbox turn completes.
 
-Persistent generated actor state reserves from the same slice. Actor teardown closes the entire slice, so leaked host-side reservation handles cannot keep a dead actor's memory budget alive.
+Persistent generated actor state reserves from the same slice. Actor teardown releases both live usage accounting and all remaining committed capacity.
 
-The logical size metric intentionally does not claim to equal JVM object layout. It exists to enforce Oreslang memory-domain policy while actors remain multiplexed on one JVM. A hardened backend may replace the accounting implementation with arena/region allocation or a Graal/native isolate without changing source semantics.
+The JVM backend's region is **actor-confined rather than Java-thread-confined**. A private actor may execute different turns on different dispatcher threads, so a single `Arena.ofConfined()` tied to one carrier thread would violate the scheduling model. The current JVM backend therefore enforces actor ownership and capacity in the runtime; a hardened backend may map the same contract to actor-owned region/chunk allocation or to a Graal/native isolate for physical heap separation without changing source semantics.
 
 A private actor's memory owner is its **ActorId**, never its carrier thread. Successive mailbox turns may execute on different private-dispatcher workers. Consequently a future FFM/off-heap backend must not make `Arena.ofConfined()` carrier-thread identity part of Oreslang semantics. It should use a cross-thread-capable region whose access is guarded by the actor owner token, or map the private actor to a true Graal/native isolate when physical heap isolation is required.
