@@ -1040,7 +1040,11 @@ public final class OwnershipChecker {
 
     private static String simpleTypeName(String name) {
         int dot = name.lastIndexOf('.');
-        int dollar = name.lastIndexOf('
+        int dollar = name.lastIndexOf(36);
+        return name.substring(Math.max(dot, dollar) + 1);
+    }
+
+    private ValueKind kindOfType(Ast.TypeRef type) {
         if (type == null) return ValueKind.MOVE_ONLY;
         if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
         return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
