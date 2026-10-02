@@ -26,7 +26,7 @@ The JVM backend currently adapts:
 | raw platform/virtual `Thread` | completion only / `void` |
 | `AwaitSupport.Awaitable<T>` | `T` |
 
-A pending backend wait is forbidden from blocking an actor dispatcher carrier. Generated async/actor code must suspend the Oreslang continuation and resume it when the completion fires. This keeps virtual threads and CompletableFuture as backend choices rather than language semantics.
+A pending backend wait is forbidden from blocking an actor dispatcher carrier. Generated async/actor code must suspend the Oreslang continuation and resume it when the completion fires. `AwaitSupport.toCompletionStage(...)` is the non-blocking JVM convergence path: blocking-only host futures/threads/awaitables are observed from virtual threads and exposed through a read-only completion-stage view. This keeps virtual threads and CompletableFuture as backend choices rather than language semantics.
 
 `await` removes exactly one awaitable layer. `await Future<T>` produces `T`; `await Future<Future<T>>` produces `Future<T>`, not `T`. Recursive flattening is never implicit because it would hide ownership, cancellation, and failure boundaries.
 
@@ -77,7 +77,7 @@ State is not represented by recursive calls. Any local that is live across `rece
 
 ### Typed channels and select
 
-General channels are bounded by construction. `channel<T>(0)` is a rendezvous channel; positive capacities are bounded buffers. There is no implicit unbounded channel. Explicit close semantics are deliberately not baked into v1 yet, avoiding Go's closed-channel zero-value ambiguity; cancellation/endpoint lifecycle is handled separately until a typed close result is specified.
+General channels are bounded by construction. `channel<T>(0)` is a rendezvous channel; positive capacities are bounded buffers. There is no implicit unbounded channel. The reference runtime additionally caps channel capacity, select width, and pending waiter registrations so bounded data buffers cannot be bypassed with unbounded suspended senders/receivers. Explicit close semantics are deliberately not baked into v1 yet, avoiding Go's closed-channel zero-value ambiguity; cancellation/endpoint lifecycle is handled separately until a typed close result is specified.
 
 Blocking channel operations are dedicated suspension syntax:
 
@@ -87,7 +87,7 @@ val Channel<Job> jobs = channel<Job>(64);
 send(jobs, job);          // suspend until admitted, cancelled, or endpoint shutdown
 val job = receive(jobs);  // suspend until a value (or lifecycle cancellation)
 
-val SendResult sent = try_send(jobs, job); // immediate admission result
+val TrySendResult<Job> sent = try_send(jobs, job); // failure retains the unsent value
 val Option<Job> polled = try_receive(jobs); // Some(value) or None when currently empty
 ```
 
@@ -111,7 +111,7 @@ select {
 
 Without `default`, `select` suspends the actor continuation until one operation can commit. With `default`, it is non-blocking. Channel expressions are evaluated once, registrations are installed without lost wakeups, and losing cases must be unregistered without consuming data or capacity. If several cases are simultaneously ready, selection uses per-actor rotating fairness rather than permanent lexical priority; this avoids starvation while keeping tests reproducible.
 
-A `select` registration, committed branch, `receive loop` iteration, `try_receive loop` iteration, and compiler-injected statement/backedge checkpoint all consume actor operation budget.
+A `select` registration, committed branch, `receive loop` iteration, `try_receive loop` iteration, and compiler-injected statement/backedge checkpoint all consume actor operation budget. Exhaustion is sticky for the rest of the actor turn; the budget is replenished only after the continuation returns to and is re-entered by the dispatcher.
 
 
 ## Bounded queues and backpressure
@@ -157,7 +157,7 @@ Before actor/async v1 is declared stable:
 - [x] FIFO logical blocking receive;
 - [x] non-blocking head receive;
 - [x] no selective receive scan;
-- [x] backend-polymorphic JVM await adapter;
+- [x] backend-polymorphic JVM await adapter, including non-blocking CompletionStage convergence;
 - [x] reject pending host waits on actor carriers;
 - [x] actor vs async separation;
 - [x] actor vs isolate distinction;
@@ -166,6 +166,7 @@ Before actor/async v1 is declared stable:
 - [x] statically check explicit channel element types/select bindings and fail closed in the interpreter;
 - [ ] wire actor `Protocol<M>` into source declarations so mailbox receive types no longer need explicit annotations;
 - [ ] continuation lowering for executable source `async`, actor receive/send/select suspension, and actor-frame state hoisting;
-- [ ] typed bounded channels plus atomic/fair select registration;
+- [x] reference bounded-channel runtime with rendezvous/buffered send/receive, atomic fair select, cancellation-safe waiters, waiter/select limits, and runtime-owned completion stages;
+- [ ] wire the reference channel/select runtime into source continuation lowering and actor mailbox backpressure;
 - [ ] structured actor error reports with source-span/correlation metadata;
 - [ ] typed hot-upgrade migration protocol.
