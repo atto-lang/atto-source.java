@@ -164,6 +164,76 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void genericNominalSubtypingPreservesConcreteArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define interface HasValue<T>
+                    value: T;
+                  end
+
+                  define interface ExtendedValue<T> extends HasValue<T>
+                  end
+
+                  define class Parent<T>
+                    pub val T value;
+                  end
+
+                  define class Child<T> extends Parent<T> implements ExtendedValue<T>
+                  end
+
+                  fnc takeParentInt(Parent<int> value) => void { return; }
+                  fnc takeValueInt(HasValue<int> value) => void { return; }
+
+                  fnc ok(Child<int> value) => void {
+                    takeParentInt(value);
+                    takeValueInt(value);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Parent<T>
+                    pub val T value;
+                  end
+
+                  define class Child<T> extends Parent<T>
+                  end
+
+                  fnc takeString(Parent<String> value) => void { return; }
+
+                  fnc bad(Child<int> value) => void {
+                    takeString(value);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define interface HasValue<T>
+                    value: T;
+                  end
+
+                  define interface ExtendedValue<T> extends HasValue<T>
+                  end
+
+                  define class Box<T> implements ExtendedValue<T>
+                    pub val T value;
+                  end
+
+                  fnc takeString(HasValue<String> value) => void { return; }
+
+                  fnc bad(Box<int> value) => void {
+                    takeString(value);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void staticFunctionsOwnTheirGenericParametersAndCannotCaptureClassGenerics() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module model
