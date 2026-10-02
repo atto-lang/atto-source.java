@@ -10,6 +10,7 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.GarbageCollector;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -240,6 +241,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
@@ -421,7 +423,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
+                    case "gc" -> (Invokable) process::gc;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof ActorFacade actor) {
+                return switch (name) {
+                    case "gc" -> (Invokable) actor::gc;
+                    default -> throw new IllegalArgumentException("unknown actor runtime member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -997,6 +1006,10 @@ public final class OresEvalRootNode extends RootNode {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+        private Object gc(List<Object> args){requireZero(args,"process.gc");return context.garbageCollector().request(GarbageCollector.Scope.PROCESS);}
+    }
+    private record ActorFacade(OresContext context) {
+        private Object gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().request(GarbageCollector.Scope.ACTOR);}
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
