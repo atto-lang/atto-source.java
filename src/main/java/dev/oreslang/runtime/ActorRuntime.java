@@ -68,7 +68,22 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
 
-    public record Shared<T>(T value) { }
+    public static final class Shared<T> {
+        private final T value;
+
+        private Shared(T value) {
+            this.value = value;
+        }
+
+        public T value() {
+            return value;
+        }
+
+        @Override
+        public String toString() {
+            return "Shared[readonly]";
+        }
+    }
 
     @FunctionalInterface
     public interface Behavior<M> {
