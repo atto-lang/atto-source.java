@@ -83,8 +83,12 @@ final class GenericsAndOperatorsHardeningTest {
                   }
 
                   fnc use() => void {
-                    val int explicit = identity<int>(42);
-                    val int inferred = identity<>(42);
+                    val explicit = identity<int>(42);
+                    val inferred = identity<>(42);
+                    stdio.println(explicit);
+                    stdio.println(explicit);
+                    stdio.println(inferred);
+                    stdio.println(inferred);
                     return;
                   }
                 end
@@ -132,6 +136,13 @@ final class GenericsAndOperatorsHardeningTest {
 
                   fnc read(Child<int> child) => int {
                     return child.get();
+                  }
+
+                  fnc reuseInheritedGenericResult(Child<int> child) => void {
+                    val value = child.get();
+                    stdio.println(value);
+                    stdio.println(value);
+                    return;
                   }
 
                   fnc readField(IntChild child) => int {
