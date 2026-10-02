@@ -30,6 +30,7 @@ public final class HotReloadManager implements AutoCloseable {
     private final ExecutionProfile executionProfile;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
+    private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
     public HotReloadManager(IsolatePolicy policy, ExecutionProfile executionProfile) {
@@ -67,6 +68,7 @@ public final class HotReloadManager implements AutoCloseable {
                     .buildLiteral();
             Generation generation = new Generation(id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
+            activeByCodeUnit.put(codeUnitId, generation);
             active.set(generation);
             return generation;
         } catch (RuntimeException failure) {
@@ -81,13 +83,24 @@ public final class HotReloadManager implements AutoCloseable {
         return generation;
     }
 
+    /** Last generation staged, retained for compatibility with the single-unit API. */
     public Generation active() { return active.get(); }
+
+    /** Active generation for one independently compiled code unit. */
+    public synchronized Generation active(String codeUnitId) {
+        return activeByCodeUnit.get(codeUnitId);
+    }
+
+    public synchronized Map<String, Generation> activeGenerations() {
+        return Map.copyOf(activeByCodeUnit);
+    }
 
     /** Explicit retirement permits old actors/requests to drain before teardown. */
     public synchronized void retire(long generationId) {
         Generation generation = generations.remove(generationId);
         if (generation != null) {
             active.compareAndSet(generation, null);
+            activeByCodeUnit.remove(generation.codeUnitId(), generation);
             generation.close();
         }
     }
@@ -98,6 +111,7 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized void close() {
         for (Generation generation : generations.values()) generation.close();
         generations.clear();
+        activeByCodeUnit.clear();
         active.set(null);
     }
 
