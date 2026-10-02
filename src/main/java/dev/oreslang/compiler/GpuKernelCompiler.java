@@ -53,20 +53,40 @@ public final class GpuKernelCompiler {
         }
     }
 
+    public record GpuBatch(
+            String id,
+            String dispatcherSymbol,
+            int workItems,
+            List<String> kernelSymbols) {
+        public GpuBatch {
+            kernelSymbols = List.copyOf(kernelSymbols);
+        }
+
+        public boolean hasDispatcher() { return dispatcherSymbol != null; }
+    }
+
     public record GpuProgram(
             String backend,
             String source,
             String sha256,
-            List<GpuKernel> kernels) {
+            List<GpuKernel> kernels,
+            List<GpuBatch> batches,
+            Set<String> requiredExtensions) {
         public GpuProgram {
             kernels = List.copyOf(kernels);
+            batches = List.copyOf(batches);
+            requiredExtensions = Set.copyOf(requiredExtensions);
         }
 
         public boolean hasKernels() { return !kernels.isEmpty(); }
 
+        public GpuProgram(String backend, String source, String sha256, List<GpuKernel> kernels) {
+            this(backend, source, sha256, kernels, List.of(), Set.of());
+        }
+
         public static GpuProgram empty() {
             String source = "// no GPU kernels\n";
-            return new GpuProgram(BACKEND, source, digest(source), List.of());
+            return new GpuProgram(BACKEND, source, digest(source), List.of(), List.of(), Set.of());
         }
     }
 
