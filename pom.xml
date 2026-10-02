@@ -95,26 +95,21 @@
       <build>
         <plugins>
           <plugin>
-            <groupId>org.graalvm.buildtools</groupId>
-            <artifactId>native-maven-plugin</artifactId>
-            <version>${native.maven.plugin.version}</version>
-            <extensions>true</extensions>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.5.0</version>
             <executions>
               <execution>
                 <id>build-native-aot</id>
                 <phase>package</phase>
-                <goals><goal>compile-no-fork</goal></goals>
+                <goals><goal>exec</goal></goals>
+                <configuration>
+                  <executable>${env.JAVA_HOME}/bin/native-image</executable>
+                  <classpathScope>runtime</classpathScope>
+                  <commandlineArgs>-p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true -Dtruffle.UseFallbackRuntime=true --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-aot</commandlineArgs>
+                </configuration>
               </execution>
             </executions>
-            <configuration>
-              <mainClass>dev.oreslang.launcher.OresMain</mainClass>
-              <imageName>ores-aot</imageName>
-              <buildArgs>
-                <buildArg>-Dgraalvm.locatorDisabled=true</buildArg>
-                <buildArg>-Dtruffle.TruffleRuntime=com.oracle.truffle.api.impl.DefaultTruffleRuntime</buildArg>
-                <buildArg>--no-fallback</buildArg>
-              </buildArgs>
-            </configuration>
           </plugin>
         </plugins>
       </build>
@@ -125,25 +120,21 @@
       <build>
         <plugins>
           <plugin>
-            <groupId>org.graalvm.buildtools</groupId>
-            <artifactId>native-maven-plugin</artifactId>
-            <version>${native.maven.plugin.version}</version>
-            <extensions>true</extensions>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.5.0</version>
             <executions>
               <execution>
                 <id>build-native-hybrid</id>
                 <phase>package</phase>
-                <goals><goal>compile-no-fork</goal></goals>
+                <goals><goal>exec</goal></goals>
+                <configuration>
+                  <executable>${env.JAVA_HOME}/bin/native-image</executable>
+                  <classpathScope>runtime</classpathScope>
+                  <commandlineArgs>-p %classpath -H:+ReportExceptionStackTraces -Dgraalvm.locatorDisabled=true --no-fallback -m dev.oreslang/dev.oreslang.launcher.OresMain -o ${project.build.directory}/ores-hybrid</commandlineArgs>
+                </configuration>
               </execution>
             </executions>
-            <configuration>
-              <mainClass>dev.oreslang.launcher.OresMain</mainClass>
-              <imageName>ores-hybrid</imageName>
-              <buildArgs>
-                <buildArg>-Dgraalvm.locatorDisabled=true</buildArg>
-                <buildArg>--no-fallback</buildArg>
-              </buildArgs>
-            </configuration>
           </plugin>
         </plugins>
       </build>
