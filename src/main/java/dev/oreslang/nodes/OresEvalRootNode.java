@@ -256,6 +256,8 @@ public final class OresEvalRootNode extends RootNode {
                     return new OptionValue(true, args.getFirst());
                 };
                 if (name.name().equals("None")) return new OptionValue(false, null);
+                if (name.name().equals("GpuArray")) return new GpuArrayFacade(context);
+                if (name.name().equals("GpuStream")) return new GpuStreamFacade(context);
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) return new ModuleFacade(module);
                 Ast.ClassDecl klass = findClass(name.name());
@@ -288,6 +290,12 @@ public final class OresEvalRootNode extends RootNode {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
                         list.set(i, value);
                         return value;
+                    }
+                    if (receiver instanceof GpuRuntime.ArrayHandle) {
+                        throw new IllegalArgumentException("GpuArray indexed mutation is GPU-only; CPU code must copy_to_cpu() first");
+                    }
+                    if (receiver instanceof GpuRuntime.StreamHandle) {
+                        throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
                     }
                     throw new IllegalArgumentException("indexed assignment requires a mutable array/list");
                 }
@@ -338,6 +346,12 @@ public final class OresEvalRootNode extends RootNode {
                 int i = Math.toIntExact(number.longValue());
                 if (receiver instanceof List<?> list) return list.get(i);
                 if (receiver instanceof Object[] array) return array[i];
+                if (receiver instanceof GpuRuntime.ArrayHandle) {
+                    throw new IllegalArgumentException("GpuArray indexing is GPU-only; CPU code must copy_to_cpu() first");
+                }
+                if (receiver instanceof GpuRuntime.StreamHandle) {
+                    throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
+                }
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
