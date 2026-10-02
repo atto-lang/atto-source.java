@@ -1,15 +1,32 @@
 package dev.oreslang;
 
+import com.oracle.truffle.api.interop.InteropLibrary;
+import dev.oreslang.runtime.OresTuple;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class PolyglotFeatureTest {
+    @Test
+    void tupleRuntimeValueExportsReadOnlyArrayInterop() throws Exception {
+        OresTuple tuple = new OresTuple(List.of("ok", 42L));
+        InteropLibrary interop = InteropLibrary.getUncached();
+
+        assertTrue(interop.hasArrayElements(tuple));
+        assertTrue(interop.isArrayElementReadable(tuple, 0));
+        assertTrue(interop.isArrayElementReadable(tuple, 1));
+        assertTrue(!interop.isArrayElementReadable(tuple, 2));
+        assertTrue(interop.getArraySize(tuple) == 2);
+        assertTrue(interop.readArrayElement(tuple, 0).equals("ok"));
+        assertTrue(interop.readArrayElement(tuple, 1).equals(42L));
+    }
+
     @Test
     void executesTaggedTupleAndFiniteListMatches() throws Exception {
         String program = """
