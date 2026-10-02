@@ -35,6 +35,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
+    private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
 
     public ActorRuntime() {
         this(IsolatePolicy.developer());
@@ -45,6 +46,24 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /**
+     * Returns actor-local state for the currently executing actor, or null when
+     * the caller is running outside an actor. Actor-local values are confined
+     * to the actor's virtual thread and are discarded with the actor cell.
+     */
+    @SuppressWarnings("unchecked")
+    public <K, V> V currentActorLocal(K key, Supplier<? extends V> factory) {
+        java.util.Objects.requireNonNull(key, "actor-local key");
+        java.util.Objects.requireNonNull(factory, "actor-local factory");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) return null;
+        Object existing = cell.locals.get(key);
+        if (existing != null) return (V) existing;
+        V created = java.util.Objects.requireNonNull(factory.get(), "actor-local factory returned null");
+        cell.locals.put(key, created);
+        return created;
+    }
 
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
@@ -326,6 +345,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
+        private final Map<Object, Object> locals = new HashMap<>();
         private volatile Thread thread;
 
         private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
@@ -341,6 +361,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void run() {
+            currentActor.set(this);
             try {
                 final Behavior<M> behavior = java.util.Objects.requireNonNull(
                         behaviorFactory.get(), "actor behavior factory returned null");
@@ -363,6 +384,8 @@ public final class ActorRuntime implements AutoCloseable {
                 // so subsequent sends fail immediately instead of targeting a
                 // dead actor left behind in the runtime registry.
             } finally {
+                currentActor.remove();
+                locals.clear();
                 actors.remove(ref.id(), this);
             }
         }
