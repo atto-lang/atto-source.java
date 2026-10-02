@@ -30,16 +30,16 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     }
 
     /**
-     * Host-owned actor dispatcher workers may enter the context. Guest source
+     * Each actor is exactly one host-owned worker virtual thread. Guest source
      * still has no raw thread-creation authority; that remains controlled by
      * IsolatePolicy and the Polyglot Context builder.
      *
-     * Strict/adversarial contexts serialize actor guest turns in OresContext.
-     * Non-adversarial contexts may execute independent actor turns concurrently.
+     * JVM carrier threads used underneath virtual threads are not Oreslang
+     * workers and have no language identity.
      */
     @Override
     protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
-        return singleThreaded || ActorRuntime.isActorCarrierThread();
+        return singleThreaded || ActorRuntime.isActorWorkerThread();
     }
 
     @Override
