@@ -200,14 +200,14 @@ public final class TypeChecker {
             resolveClassParent(parent, klass);
         }
 
-        Set<String> localMethodSignatures = new HashSet<>();
+        Set<Ast.MethodArity> instanceMethodOverloads = new HashSet<>();
+        Set<Ast.MethodArity> staticFunctionOverloads = new HashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
-            String memberKind = method.isStatic() ? "static:" : "instance:";
-            String signature = memberKind + methodKey(method.name(), method.arity());
-            if (!localMethodSignatures.add(signature)) {
+            Set<Ast.MethodArity> overloads = method.isStatic() ? staticFunctionOverloads : instanceMethodOverloads;
+            if (!overloads.add(method.overloadIdentity())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
-                        + "; class callables may overload only by arity within their own static/instance namespace");
+                        + "; overload identity is name + arity only; parameter types and return types do not participate");
             }
         }
 
@@ -1049,7 +1049,7 @@ public final class TypeChecker {
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+            if (!method.isStatic() && method.matchesArity(name, arity)) {
                 seen.remove(klass);
                 return method;
             }
@@ -1083,7 +1083,7 @@ public final class TypeChecker {
     private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
-            if (method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+            if (method.isStatic() && method.matchesArity(name, arity)) {
                 seen.remove(klass);
                 return method;
             }
