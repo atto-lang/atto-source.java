@@ -308,7 +308,7 @@ try {
 
 ## Async / await
 
-`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
+`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values without exposing Java `CompletionException` wrapper semantics: interruption is preserved as cancellation and the original runtime failure is rethrown when possible. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
 
 ## Actors
 
@@ -388,7 +388,7 @@ Oreslang is ownership/drop first and GC second:
 4. cycles, dynamic graphs, hot-loaded generations, and backing-runtime objects are reclaimed by automatic collection;
 5. `process.gc()` gives trusted/developer code an explicit collection request.
 
-In the current Java reference runtime, `process.gc()` is a **rate-limited JVM collector hint** because the physical backing heap is still JVM-wide. The call is capability-gated by `GC_CONTROL` so adversarial/FaaS guest code cannot force repeated global collection pauses. The API is deliberately shaped so a future actor-local heap collector can implement the same call without changing source programs.
+In the current Java reference runtime, `process.gc()` is a logical collection/telemetry request by default. A JVM-wide `System.gc()` hint is **disabled unless the embedding host explicitly opts in** with `-Doreslang.gc.host-hint=true`; when enabled it remains globally rate-limited. This prevents Java global-GC pauses from becoming Oreslang language semantics. The call remains capability-gated by `GC_CONTROL`.
 
 ## Isolates
 
@@ -866,18 +866,28 @@ Class fields follow the same bias: a field declared with `val` or `const` cannot
 
 ## Ownership, moves, and borrows
 
-Oreslang uses Rust-style affine ownership for mutable/heap-backed values.
+Oreslang uses affine ownership for mutable/heap-backed values, but deliberately does **not** copy Rust's pointer-looking `&` / `&mut` surface or user-written lifetime annotations. Borrows are explicit language values:
+
+- `Borrow<T>` — shared immutable borrow, created with `borrow(value)`;
+- `BorrowMut<T>` — exclusive mutable borrow, created with `borrow_mut(value)`;
+- `take(value)` — makes an ownership transfer explicit;
+- `copy(value)` — duplicates only values that are statically guaranteed `Copy`;
+- `share(value)` — creates a capability-gated immutable `Shared<T>` transport handle.
+
+The lexer rejects `&` as borrow/reference syntax. Oreslang does not expose raw pointers or require lifetime parameter syntax.
 
 The initial `Copy` family is:
 
 - integer types;
 - floating/decimal/complex scalar types;
 - booleans;
-- immutable strings.
+- immutable strings;
+- copyable runtime capability handles such as `ActorRef`, `MonitorRef`, and `Shared`;
+- composite `Option`/tuple/record values only when all contained values are themselves statically Copy.
 
-Class instances, arrays/lists, object records, and closures are move-only by default.
+Class instances, mutable arrays/lists, and closures are move-only by default. `copy(classValue)` therefore fails closed until that class participates in a future explicit copy contract; the compiler never guesses that a heap object is safely cloneable.
 
-A by-value binding, argument, or return consumes a non-`Copy` value:
+A by-value binding, argument, or return consumes a non-`Copy` value. `take` can make that intent visible:
 
 ```ores
 fnc consume(Bar value) => void {
@@ -886,32 +896,39 @@ fnc consume(Bar value) => void {
 
 fnc example() => void {
   let Bar b = new Bar();
-  consume(b);
+  consume(take(b));
   // b.foo; // compile-time error: use of moved value
   return;
 }
 ```
 
-Shared immutable borrowing uses `&T`:
+Shared immutable borrowing:
 
 ```ores
-fnc inspect(&Bar value) => void {
+fnc inspect(Borrow<Bar> value) => void {
   stdio.println(value.foo);
+  return;
+}
+
+fnc example() => void {
+  let Bar b = new Bar();
+  inspect(borrow(b));
+  stdio.println(b.foo);
   return;
 }
 ```
 
-Exclusive mutable borrowing uses `&mut T`:
+Exclusive mutable borrowing:
 
 ```ores
-fnc change(&mut Bar value) => void {
+fnc change(BorrowMut<Bar> value) => void {
   value.foo = "changed";
   return;
 }
 
 fnc example() => void {
   let Bar b = new Bar();
-  change(&mut b);
+  change(borrow_mut(b));
   stdio.println(b.foo); // owner is usable again after the call
   return;
 }
@@ -923,12 +940,13 @@ Borrow rules:
 - a mutable borrow is exclusive;
 - mutation/move of the owner is forbidden while any borrow is active;
 - reading the owner is forbidden while an exclusive mutable borrow is active;
-- mutable borrowing requires a mutable owner;
+- `borrow_mut` requires a mutable owner;
 - a borrow of a local value may not escape the owner's lifetime;
 - temporary call borrows end at the call boundary;
-- borrows stored in local bindings remain active until that binding's lexical scope ends.
+- borrows stored in local bindings remain active until that binding's lexical scope ends;
+- lifetime checking is compiler-inferred; programs do not spell lifetime names.
 
-The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
+The checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL-style analysis may accept more programs without changing source syntax or weakening these invariants.
 
 Structural parameters remain read-only views and therefore do not consume the supplied value.
 
@@ -938,10 +956,10 @@ Actors/isolate message passing remains the primary concurrency model, but the ow
 
 The same compiled program can target a secondary multi-threaded runtime because:
 
-- mutable state has one owner unless temporarily accessed through an exclusive `&mut` borrow;
+- mutable state has one owner unless temporarily accessed through an exclusive `BorrowMut<T>`;
 - shared aliases are immutable;
 - move-only values cannot remain accessible from both sides of an ownership transfer;
-- closures cannot smuggle an outstanding stack borrow into a longer-lived task;
-- actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
+- closures cannot smuggle an outstanding borrow into a longer-lived task;
+- actor messages continue to cross actor boundaries only through the frozen/sendable contract.
 
-When explicit thread/task spawning is added, cross-thread transfer will require move semantics and a `Send`-equivalent capability; shared cross-thread references will additionally require a `Sync`-equivalent guarantee. Those marker traits are intentionally a future surface feature—the current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
+When explicit thread/task spawning is added, cross-thread transfer will require an Oreslang sendability bound and shared cross-thread references will require an Oreslang share-safety bound. Those bounds must be source-level guarantees, not Java-style erased generics or implicit Go-style concurrency permission. The current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
