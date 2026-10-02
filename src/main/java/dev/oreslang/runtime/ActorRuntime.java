@@ -84,7 +84,18 @@ public final class ActorRuntime implements AutoCloseable {
      * normally, not reporting an error.
      */
     public static final class StopActorSignal extends RuntimeException {
-        public StopActorSignal() { super(null, null, false, false); }
+        private final List<CompletableFuture<Void>> descendantTerminations;
+
+        private StopActorSignal(List<CompletableFuture<Void>> descendantTerminations) {
+            super(null, null, false, false);
+            this.descendantTerminations = List.copyOf(descendantTerminations);
+        }
+
+        private void awaitDescendants() {
+            for (CompletableFuture<Void> terminated : descendantTerminations) {
+                terminated.join();
+            }
+        }
     }
 
     @FunctionalInterface
@@ -244,7 +255,7 @@ public final class ActorRuntime implements AutoCloseable {
      * stop requests. The caller then unwinds its own finally/defer frames and
      * terminates through StopActorSignal.
      */
-    public void beginCurrentActorTreeStop() {
+    public StopActorSignal beginCurrentActorTreeStop() {
         ActorExecution current = CURRENT_ACTOR.get();
         if (current == null || current.runtime() != this) {
             throw new IllegalStateException("stop requires an active actor execution");
@@ -253,28 +264,33 @@ public final class ActorRuntime implements AutoCloseable {
         if (self == null) {
             throw new IllegalStateException("current actor is no longer registered");
         }
+
         self.beginImmediateStop();
-        stopDescendantsGracefully(current.actorId(), new java.util.HashSet<>());
+        ArrayList<CompletableFuture<Void>> terminations = new ArrayList<>();
+        stopDescendantsGracefully(
+                current.actorId(),
+                new java.util.HashSet<>(),
+                terminations);
+        return new StopActorSignal(terminations);
     }
 
-    private void stopDescendantsGracefully(ActorId parentId, Set<ActorId> visited) {
+    private void stopDescendantsGracefully(
+            ActorId parentId,
+            Set<ActorId> visited,
+            List<CompletableFuture<Void>> terminations) {
         if (!visited.add(parentId)) return;
         Set<ActorId> snapshot = children.get(parentId);
         if (snapshot == null || snapshot.isEmpty()) return;
         for (ActorId childId : List.copyOf(snapshot)) {
             ActorCell<?> child = actors.get(childId);
             if (child == null) continue;
-            child.stop();
-            stopDescendantsGracefully(childId, visited);
-        }
-    }
 
-    private void awaitDescendantsTermination(ActorId parentId) {
-        Set<ActorId> snapshot = children.get(parentId);
-        if (snapshot == null || snapshot.isEmpty()) return;
-        for (ActorId childId : List.copyOf(snapshot)) {
-            ActorCell<?> child = actors.get(childId);
-            if (child != null) child.ref.join();
+            // Mark the child stopping before traversing its children. spawn()
+            // checks this flag, so the descendant set becomes stable while we
+            // snapshot the rest of the tree.
+            child.stop();
+            terminations.add(child.ref.terminated);
+            stopDescendantsGracefully(childId, visited, terminations);
         }
     }
 
@@ -406,10 +422,10 @@ public final class ActorRuntime implements AutoCloseable {
                     if (stopRequested.get() && mailbox.isEmpty()) return;
                 }
             } catch (StopActorSignal stopped) {
-                // The current actor exits immediately after its own unwind, but
-                // descendants were asked to stop gracefully. Do not publish this
-                // parent's termination until those child actors have drained.
-                awaitDescendantsTermination(ref.id());
+                // The signal carries the exact descendant termination futures
+                // captured while recursively stopping the tree, so unlink races
+                // cannot make parent.join() return early.
+                stopped.awaitDescendants();
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } catch (CancellationException cancellation) {
