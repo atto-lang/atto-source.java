@@ -253,6 +253,39 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void backendActorHeapLifecycleRunsOnStartAndExit() throws Exception {
+        AtomicInteger started = new AtomicInteger();
+        AtomicInteger exited = new AtomicInteger();
+        CountDownLatch released = new CountDownLatch(1);
+
+        ActorRuntime.GarbageCollector collector = new ActorRuntime.GarbageCollector() {
+            @Override public void actorStarted(ActorRuntime.ActorId actorId, IsolatePolicy policy) {
+                started.incrementAndGet();
+            }
+
+            @Override public void collectActor(ActorRuntime.ActorId actorId) { }
+
+            @Override public void actorExited(ActorRuntime.ActorId actorId) {
+                exited.incrementAndGet();
+                released.countDown();
+            }
+
+            @Override public void collectProcess() { }
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), collector)) {
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                throw new IllegalStateException("stop");
+            });
+            actor.send("stop");
+
+            assertTrue(released.await(2, TimeUnit.SECONDS));
+            assertEquals(1, started.get());
+            assertEquals(1, exited.get());
+        }
+    }
+
+    @Test
     void gcRequestsAreRejectedAfterRuntimeClose() {
         ActorRuntime runtime = new ActorRuntime();
         runtime.close();
