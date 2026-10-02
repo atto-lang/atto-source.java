@@ -6,7 +6,8 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
@@ -179,8 +180,9 @@ public final class OresMutex {
      */
     public static final class Shared<T> implements Lock<T>, ActorRuntime.Sendable {
         private final T value;
-        private final ReentrantLock lock = new ReentrantLock();
+        private final Semaphore permit = new Semaphore(1, true);
         private final AtomicBoolean poisoned = new AtomicBoolean();
+        private final AtomicReference<Thread> synchronousOwner = new AtomicReference<>();
 
         private Shared(T value) {
             this.value = value;
@@ -194,30 +196,42 @@ public final class OresMutex {
         }
 
         private void rejectRecursiveAcquisition() {
-            if (lock.isHeldByCurrentThread()) throw new RecursiveLockException("SharedMutex<T>");
+            if (synchronousOwner.get() == Thread.currentThread()) {
+                throw new RecursiveLockException("SharedMutex<T>");
+            }
         }
 
-        private Guard<T> checkedGuardAfterAcquire() {
+        private Guard<T> checkedGuardAfterAcquire(Thread syncOwner) {
             if (poisoned.get()) {
-                lock.unlock();
+                if (syncOwner != null) synchronousOwner.compareAndSet(syncOwner, null);
+                permit.release();
                 throw new PoisonedMutexException();
             }
-            return new SharedGuard();
+            return new SharedGuard(syncOwner);
         }
 
         @Override
         public Guard<T> lock() {
             rejectBlockingActorAcquisition();
             rejectRecursiveAcquisition();
-            lock.lock();
-            return checkedGuardAfterAcquire();
+            try {
+                permit.acquire();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException("SharedMutex lock wait interrupted");
+            }
+            Thread owner = Thread.currentThread();
+            synchronousOwner.set(owner);
+            return checkedGuardAfterAcquire(owner);
         }
 
         @Override
         public Optional<Guard<T>> tryLock() {
             rejectRecursiveAcquisition();
-            if (!lock.tryLock()) return Optional.empty();
-            return Optional.of(checkedGuardAfterAcquire());
+            if (!permit.tryAcquire()) return Optional.empty();
+            Thread owner = Thread.currentThread();
+            synchronousOwner.set(owner);
+            return Optional.of(checkedGuardAfterAcquire(owner));
         }
 
         @Override
@@ -227,8 +241,10 @@ public final class OresMutex {
             rejectBlockingActorAcquisition();
             rejectRecursiveAcquisition();
             try {
-                if (!lock.tryLock(timeout.toNanos(), TimeUnit.NANOSECONDS)) return Optional.empty();
-                return Optional.of(checkedGuardAfterAcquire());
+                if (!permit.tryAcquire(timeout.toNanos(), TimeUnit.NANOSECONDS)) return Optional.empty();
+                Thread owner = Thread.currentThread();
+                synchronousOwner.set(owner);
+                return Optional.of(checkedGuardAfterAcquire(owner));
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 throw new java.util.concurrent.CancellationException("SharedMutex lock wait interrupted");
@@ -240,8 +256,9 @@ public final class OresMutex {
             CompletableFuture<Guard<T>> future = new CompletableFuture<>();
             Thread waiter = Thread.ofVirtual().name("ores-shared-mutex-waiter").unstarted(() -> {
                 try {
-                    lock.lockInterruptibly();
-                    future.complete(checkedGuardAfterAcquire());
+                    permit.acquire();
+                    Guard<T> guard = checkedGuardAfterAcquire(null);
+                    if (!future.complete(guard)) guard.release();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     future.completeExceptionally(new java.util.concurrent.CancellationException("SharedMutex async wait cancelled"));
@@ -274,7 +291,14 @@ public final class OresMutex {
             Objects.requireNonNull(repair, "repair");
             rejectBlockingActorAcquisition();
             rejectRecursiveAcquisition();
-            lock.lock();
+            try {
+                permit.acquire();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException("SharedMutex recovery wait interrupted");
+            }
+            Thread owner = Thread.currentThread();
+            synchronousOwner.set(owner);
             try {
                 R result = repair.apply(value);
                 poisoned.set(false);
@@ -283,7 +307,8 @@ public final class OresMutex {
                 poisoned.set(true);
                 throw failure;
             } finally {
-                lock.unlock();
+                synchronousOwner.compareAndSet(owner, null);
+                permit.release();
             }
         }
 
@@ -299,18 +324,24 @@ public final class OresMutex {
         }
 
         private final class SharedGuard implements Guard<T> {
+            private final Thread synchronousAcquirer;
             private final AtomicBoolean released = new AtomicBoolean();
+
+            private SharedGuard(Thread synchronousAcquirer) {
+                this.synchronousAcquirer = synchronousAcquirer;
+            }
 
             @Override public T value() { return value; }
             @Override public boolean released() { return released.get(); }
 
             @Override
             public void release() {
-                if (!released.compareAndSet(false, true)) return;
-                if (!lock.isHeldByCurrentThread()) {
-                    throw new IllegalMonitorStateException("SharedMutex guard must be released by the execution thread that acquired it");
+                if (synchronousAcquirer != null && Thread.currentThread() != synchronousAcquirer) {
+                    throw new IllegalMonitorStateException("synchronously acquired SharedMutex guard must be released by its acquiring execution thread");
                 }
-                lock.unlock();
+                if (!released.compareAndSet(false, true)) return;
+                if (synchronousAcquirer != null) synchronousOwner.compareAndSet(synchronousAcquirer, null);
+                permit.release();
             }
 
             @Override
@@ -321,4 +352,5 @@ public final class OresMutex {
             }
         }
     }
+
 }
