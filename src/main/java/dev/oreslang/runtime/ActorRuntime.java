@@ -332,6 +332,8 @@ public final class ActorRuntime implements AutoCloseable {
                 requireOpen();
                 Object frozen = freeze(updater.apply(value));
                 rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
+                requireOpen();
+                if (closed.get()) throw new IllegalStateException("actor runtime is closed");
                 long nextBytes = estimateFrozenBytes(frozen);
                 long delta = nextBytes - reservedBytes;
                 if (delta > 0) reserveSharedRuntimeBytes(delta, "shared SyncCell update");
@@ -372,6 +374,11 @@ public final class ActorRuntime implements AutoCloseable {
             } finally {
                 lock.unlock();
             }
+        }
+
+        private void invalidateFromRuntime() {
+            cellClosed.set(true);
+            syncCells.remove(this);
         }
     }
 
@@ -595,6 +602,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void reserveSharedRuntimeBytes(long bytes, String purpose) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         if (bytes < 0) throw new IllegalArgumentException("shared memory reservation cannot be negative");
         if (bytes == 0) return;
         synchronized (memoryBudgetLock) {
@@ -616,7 +624,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void releaseSharedRuntimeBytes(long bytes) {
-        if (bytes == 0) return;
+        if (bytes == 0 || closed.get()) return;
         long remaining = sharedMemoryBytes.addAndGet(-bytes);
         if (remaining < 0) {
             sharedMemoryBytes.set(0);
@@ -978,14 +986,24 @@ public final class ActorRuntime implements AutoCloseable {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
+
         for (ActorCell<?> cell : actors.values()) cell.stop();
         actors.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.closeFromRuntime();
+
+        // Interrupt carrier workers before touching shared-cell lifecycle. A
+        // user callback may currently hold a SyncCell lock; runtime teardown
+        // must not wait indefinitely for user code.
+        privateDispatcher.shutdownNow();
+        sharedDispatcher.shutdownNow();
+
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
-        privateDispatcher.shutdownNow();
-        sharedDispatcher.shutdownNow();
+
+        // Runtime-owned shared handles are now invalid. Late releases from an
+        // interrupted actor are ignored once closed=true, so this is stable.
+        sharedMemoryBytes.set(0L);
     }
 
     private ExecutorService dispatcherFor(ActorKind kind) {
