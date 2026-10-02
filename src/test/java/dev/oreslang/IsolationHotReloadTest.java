@@ -1,5 +1,7 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.IncrementalCompiler;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -398,6 +401,81 @@ final class IsolationHotReloadTest {
     void generationDoesNotExposeRawGraalContext() {
         assertThrows(NoSuchMethodException.class,
                 () -> HotReloadManager.Generation.class.getMethod("context"));
+    }
+
+    @Test
+    void forgedCompiledUnitCannotValidateOneProgramAndExecuteDifferentSource() {
+        IsolatePolicy hotLoadOnly = new IsolatePolicy(
+                Set.of(
+                        IsolatePolicy.Capability.HOT_CODE_LOAD,
+                        IsolatePolicy.Capability.STDOUT),
+                64L * 1024 * 1024,
+                32,
+                Duration.ofSeconds(2));
+
+        String maliciousSource = """
+                pub routine main() => void {
+                  stdio.stdout.write(process.context_id);
+                }
+                """;
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        IncrementalCompiler.CompiledUnit malicious =
+                compiler.compile(Map.of("forged.ores", maliciousSource))
+                        .units()
+                        .get("forged.ores");
+
+        var benignProgram = OresCompiler.parseAndTypeCheck("""
+                pub routine main() => void { return; }
+                """);
+
+        var forged = new IncrementalCompiler.CompiledUnit(
+                malicious.unitId(),
+                malicious.packageId(),
+                malicious.namespace(),
+                malicious.sourceDigest(),
+                malicious.abiDigest(),
+                malicious.dependencies(),
+                malicious.sourceText(),
+                benignProgram);
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(hotLoadOnly, ExecutionProfile.serverJit())) {
+            SecurityException denied = assertThrows(SecurityException.class,
+                    () -> hot.load(forged));
+            assertTrue(denied.getMessage().contains("PROCESS_INFO"), denied.getMessage());
+            assertEquals(0, hot.liveGenerations());
+            assertNull(hot.active());
+        }
+    }
+
+    @Test
+    void compiledUnitDigestMismatchIsRejectedBeforeStaging() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        IncrementalCompiler.CompiledUnit valid =
+                compiler.compile(Map.of(
+                                "digest.ores",
+                                "pub routine main() => void { return; }"))
+                        .units()
+                        .get("digest.ores");
+
+        var forged = new IncrementalCompiler.CompiledUnit(
+                valid.unitId(),
+                valid.packageId(),
+                valid.namespace(),
+                "0".repeat(64),
+                valid.abiDigest(),
+                valid.dependencies(),
+                valid.sourceText(),
+                valid.program());
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(IsolatePolicy.developer(), ExecutionProfile.serverJit())) {
+            IllegalArgumentException mismatch = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.load(forged));
+            assertTrue(mismatch.getMessage().contains("digest mismatch"), mismatch.getMessage());
+            assertEquals(0, hot.liveGenerations());
+        }
     }
 
     @Test
