@@ -230,6 +230,15 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Source namespaces are flat: namespace a.b; is illegal.
    - Modules are flat: module names are single identifiers and modules may not
      contain modules.
+   - file/root and module scopes may declare a private init lifecycle hook as
+     either fnc init() => void or routine init() => void.
+   - init hooks are synchronous, lexical, non-actor, non-generic, zero-arity,
+     return void, and cannot be called directly by guest code.
+   - all reachable code units are parsed and linked before any init hook runs.
+   - circular imports are legal; strongly connected import components are load
+     barriers, not compile errors.
+   - main/program entry is unavailable until required init barriers succeed.
+   - unrecovered init failure leaves startup failed and prevents main.
    - fnc declarations may recurse; routines may not participate in a call cycle.
    - nlex on a fnc/routine is a capture barrier inherited by lambdas created
      inside it; an explicit nlex lambda establishes the same barrier.
