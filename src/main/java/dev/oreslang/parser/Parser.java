@@ -722,8 +722,8 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
-            if (check(IDENT) && checkNext(OF)) {
-                String name = advance().lexeme();
+            if (isContextualValueName(peek()) && checkNext(OF)) {
+                String name = consumeContextualValueName("expected loop binding name");
                 consume(OF, "expected 'of' in for-of loop");
                 Ast.Expr iterable = parseExpression();
                 consume(RPAREN, "expected ')' after for-of header");
@@ -732,10 +732,10 @@ public final class Parser {
 
             Ast.TypeRef type = null;
             String name;
-            if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+            if (isContextualValueName(peek()) && checkNext(EQUAL)) name = consumeContextualValueName("expected loop initializer binding name");
             else {
                 type = parseTypeRef();
-                name = consume(IDENT, "expected loop initializer binding name").lexeme();
+                name = consumeContextualValueName("expected loop initializer binding name");
             }
             consume(EQUAL, "for initializer binding requires '='");
             Ast.Expr initializer = parseExpression();
@@ -748,8 +748,8 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseBlock());
         }
 
-        if (check(IDENT) && checkNext(OF)) {
-            String name = advance().lexeme();
+        if (isContextualValueName(peek()) && checkNext(OF)) {
+            String name = consumeContextualValueName("expected loop binding name");
             consume(OF, "expected 'of' in for-of loop");
             Ast.Expr iterable = parseExpression();
             consume(RPAREN, "expected ')' after for-of header");
@@ -770,10 +770,10 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        if (isContextualValueName(peek()) && checkNext(EQUAL)) name = consumeContextualValueName("expected binding name");
         else {
             type = parseTypeRef();
-            name = consume(IDENT, "expected binding name").lexeme();
+            name = consumeContextualValueName("expected binding name");
         }
         consume(EQUAL, "binding requires initializer");
         Ast.Expr initializer = parseExpression();
