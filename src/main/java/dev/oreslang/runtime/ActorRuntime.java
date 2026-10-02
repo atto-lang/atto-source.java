@@ -1131,7 +1131,15 @@ public final class ActorRuntime implements AutoCloseable {
                 true);
 
         try {
-            send(ref, message);
+            try {
+                send(ref, message);
+            } catch (ActorTerminatedException terminatedBeforeDelivery) {
+                Throwable startupFailure = ref.terminationCause.get();
+                if (startupFailure instanceof RuntimeException runtime) throw runtime;
+                if (startupFailure instanceof Error error) throw error;
+                if (startupFailure != null) throw new RuntimeException(startupFailure);
+                throw terminatedBeforeDelivery;
+            }
             long timeoutNanos;
             try {
                 timeoutNanos = policy.maxWallTime().toNanos();
