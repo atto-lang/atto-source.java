@@ -210,11 +210,69 @@ Numeric widening is loss-aware; real values can widen toward complex values, but
 
 ## Lambdas
 
-Lambdas use `->`:
+Lambdas are lexical closures by default and use `->`. The canonical block
+form keeps returns explicit:
 
 ```ores
-val Fnc<int, int> inc = (int x) -> x + 1;
+val Fnc<int, int> inc = |int x| -> {
+  return x + 1;
+};
 ```
+
+A normal lambda may capture activation-local bindings from its enclosing
+function or block. Captured mutable state remains part of the closure.
+
+## Non-lexical callables (`nlex`)
+
+`nlex` is an opt-in **capture barrier**, not a ban on global/module lookup.
+It means that a callable cannot capture bindings owned by an enclosing runtime
+activation. The compiler/runtime can therefore build lambdas in that region
+without retaining or snapshotting an outer local environment.
+
+```ores
+define module math
+  pub fnc offset(int x) => int {
+    return x + 10;
+  }
+end
+
+pub routine main() => void {
+  val int outer_bias = 100;
+
+  val Fnc<int, int> lexical = |int x| -> {
+    return x + outer_bias;          // allowed: normal lexical capture
+  };
+
+  val Fnc<int, int> isolated = nlex |int x| -> {
+    val int outer_bias = 1;         // local shadows the outer name
+    return math.offset(x) + outer_bias;
+  };
+}
+```
+
+Inside an `nlex` region:
+
+- parameters and locals declared inside the callable are available normally;
+- a local binding shadows a module/global/import binding with the same name;
+- module members, imported symbols, top-level functions/classes, and built-ins
+  such as `stdio`, `process`, and `print` remain available;
+- an enclosing activation-local binding is not available for capture;
+- lambdas created inside an `nlex fnc`, `nlex routine`, or `nlex` lambda
+  inherit the capture barrier recursively.
+
+For named top-level/module `fnc` and `routine` declarations, `nlex` is
+mainly a compile-time guarantee about any closures created in their bodies:
+those named callables already begin with their own invocation frame. The
+runtime benefit is at lambda creation. Ordinary lambdas snapshot/retain the
+lexical environment they need; an `nlex` lambda takes the no-environment
+path and skips that closure-environment snapshot.
+
+This distinction also resolves the import question. JavaScript/TypeScript
+imports are presented as lexical module bindings, while Java imports/static
+members are modeled differently, but neither requires retaining a particular
+function invocation. Oreslang classifies capture eligibility by **storage
+lifetime**, not merely source nesting: module/import/global bindings are
+code-unit bindings, while outer locals belong to an activation frame.
 
 ## Conditionals
 
