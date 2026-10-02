@@ -176,6 +176,8 @@ public record IsolatePolicy(
         return Engine.newBuilder(OresLanguage.ID)
                 .sandbox(tenantPolicy)
                 .spawnIsolate(true)
+                .out(new ByteArrayOutputStream())
+                .err(new ByteArrayOutputStream())
                 .option("engine.MaxIsolateMemory", bytes(maxHeapBytes));
     }
 
