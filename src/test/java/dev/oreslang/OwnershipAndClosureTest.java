@@ -169,6 +169,90 @@ final class OwnershipAndClosureTest {
                 """)));
     }
 
+
+    @Test
+    void multipleImmutableBorrowsMayCoexist() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Bar
+                  pub let String foo = "start";
+                end
+
+                fnc ok() => void {
+                  let Bar b = new Bar();
+                  val &Bar first = &b;
+                  val &Bar second = &b;
+                  stdio.println(first.foo);
+                  stdio.println(second.foo);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void secondMutableBorrowIsRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val &mut Bar first = &mut b;
+                          val &mut Bar second = &mut b;
+                          stdio.println(first.foo);
+                          stdio.println(second.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"));
+    }
+
+    @Test
+    void moveWhileBorrowedIsRejected() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc consume(Bar b) => void { return; }
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val &Bar read = &b;
+                          consume(b);
+                          stdio.println(read.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("cannot move"));
+    }
+
+    @Test
+    void lexicalScopeEndsStoredBorrow() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Bar
+                  pub let String foo = "start";
+                end
+
+                fnc mutate(&mut Bar b) => void {
+                  b.foo = "changed";
+                  return;
+                }
+
+                fnc ok() => void {
+                  let Bar b = new Bar();
+                  if true; do
+                    val &Bar read = &b;
+                    stdio.println(read.foo);
+                  fi
+                  mutate(&mut b);
+                  return;
+                }
+                """)));
+    }
+
     @Test
     void immutableFieldStaysImmutableEvenThroughMutOwner() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
