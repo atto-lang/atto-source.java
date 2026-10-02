@@ -74,6 +74,7 @@ public final class TypeChecker {
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
+                    requireNotOwnershipIntrinsicBinding(name, "import");
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                     importedNames.add(name);
                     if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
@@ -87,6 +88,7 @@ public final class TypeChecker {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
+                    requireNotOwnershipIntrinsicBinding(fn.name(), "callable");
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
@@ -282,7 +284,10 @@ public final class TypeChecker {
     private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = module.singleton() ? singletonModuleEnv(module) : moduleBindingEnv(module);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) {
+            requireNotOwnershipIntrinsicBinding(param.name(), "parameter");
+            env.define(param.name(), resolveParam(param, generics, null), Ast.BindingKind.VAL);
+        }
         Type returns = resolve(fn.returnType(), generics, null);
         validateSingletonTransportStatements(fn.body(), module.name());
         checkBlock(fn.body(), env, generics, returns, null);
@@ -972,7 +977,10 @@ public final class TypeChecker {
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(classModuleEnv);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), Ast.BindingKind.VAL);
+            for (Ast.Param param : method.parameters()) {
+                requireNotOwnershipIntrinsicBinding(param.name(), "method parameter");
+                env.define(param.name(), resolveParam(param, generics, callableSelf), Ast.BindingKind.VAL);
+            }
             Type returns = resolve(method.returnType(), generics, callableSelf);
             validateSingletonTransportStatements(method.body(), module);
             checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -1103,6 +1111,7 @@ public final class TypeChecker {
     }
 
     private void checkModuleBinding(Ast.FieldDecl field) {
+        requireNotOwnershipIntrinsicBinding(field.name(), "module binding");
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
         if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
@@ -1118,6 +1127,7 @@ public final class TypeChecker {
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
+            requireNotOwnershipIntrinsicBinding(binding.name(), "local binding");
             Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
             boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
             if (recursiveLambda && declaredAhead instanceof Function) {
@@ -1146,10 +1156,14 @@ public final class TypeChecker {
                 if (tuple.elements().size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
                 for (int i = 0; i < destructure.bindings().size(); i++) {
                     Ast.DestructureBinding binding = destructure.bindings().get(i);
+                    requireNotOwnershipIntrinsicBinding(binding.name(), "destructure binding");
                     env.define(binding.name(), tuple.elements().get(i), binding.kind());
                 }
             } else if (source instanceof ListType list) {
-                for (Ast.DestructureBinding binding : destructure.bindings()) env.define(binding.name(), list.element(), binding.kind());
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    requireNotOwnershipIntrinsicBinding(binding.name(), "destructure binding");
+                    env.define(binding.name(), list.element(), binding.kind());
+                }
             } else throw new IllegalArgumentException("destructuring requires a tuple or array/list value");
             return;
         }
@@ -1574,6 +1588,7 @@ public final class TypeChecker {
             Env lambdaEnv = new Env(env);
             List<Type> parameters = new ArrayList<>();
             for (Ast.Param param : lambda.parameters()) {
+                requireNotOwnershipIntrinsicBinding(param.name(), "lambda parameter");
                 Type type = resolveParam(param, generics, self);
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, Ast.BindingKind.VAL);
@@ -2036,6 +2051,20 @@ public final class TypeChecker {
             throw new IllegalArgumentException("conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
         }
         members.put(name, type);
+    }
+
+    private boolean isOwnershipIntrinsicName(String name) {
+        return name.equals("borrow")
+                || name.equals("take")
+                || name.equals("copy")
+                || name.equals("share");
+    }
+
+    private void requireNotOwnershipIntrinsicBinding(String name, String where) {
+        if (isOwnershipIntrinsicName(name)) {
+            throw new IllegalArgumentException(
+                    where + " cannot bind reserved ownership intrinsic name '" + name + "'");
+        }
     }
 
     private void requireExtractableOwnership(List<Ast.Param> params, String callable) {
