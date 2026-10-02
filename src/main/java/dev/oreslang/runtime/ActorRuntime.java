@@ -11,6 +11,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
@@ -114,6 +115,7 @@ public final class ActorRuntime implements AutoCloseable {
         long usedBytes();
         boolean closed();
         MemoryReservation reserve(long bytes);
+        default MemoryReservation reserveHeap(long bytes) { return reserve(bytes); }
     }
 
     public static final class MemoryLimitExceededException extends IllegalStateException {
@@ -484,6 +486,14 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<M> cell = new ActorCell<>(ref, kind, policy, behaviorFactory);
         actors.put(id, cell);
         return ref;
+    }
+
+    public long privateMemoryBytes() {
+        long total = 0L;
+        for (ActorCell<?> cell : actors.values()) {
+            if (cell.memory instanceof PrivateMemorySlice) total += cell.memory.usedBytes();
+        }
+        return total;
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
