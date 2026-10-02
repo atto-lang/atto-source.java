@@ -377,6 +377,38 @@ let Fnc<int, int> fact = |int n| -> {
 };
 ```
 
+## Reserved keywords
+
+`of`, `is`, and `as` are **globally reserved** Oreslang keywords. The lexer never
+emits them as ordinary identifiers, so they cannot be used as variable, parameter,
+function, routine, module, class, interface, field, method, type-alias, generic,
+namespace, import-alias, or member names.
+
+```ores
+val is = 1;             // compile-time parse error
+fnc as() => void { }    // compile-time parse error
+define class of         // compile-time parse error
+end
+```
+
+Their keyword roles remain available. For example, `of` is used by iterator loops and
+`as` by import aliases:
+
+```ores
+import * as deps from "./deps.ores";
+
+for (val item of values) {
+  consume(item);
+}
+```
+
+`is` is reserved for language grammar evolution even though no general `is`
+expression/operator is exposed yet. Reserving it now prevents future source-breaking
+identifier collisions.
+
+This is intentionally different from contextual words such as `structural`, which are
+only special in specific grammar positions and may remain legal identifiers elsewhere.
+
 ## Semicolons
 
 Semicolons are strongly recommended. They remain the canonical formatter output.
