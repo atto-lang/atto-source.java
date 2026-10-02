@@ -210,6 +210,25 @@ public final class IncrementalCompiler {
     private static String typeRef(Ast.TypeRef ref) {
         if (ref == null) return "<inferred>";
         if (ref.isStringLiteral()) return "'" + ref.stringLiteralValue() + "'";
+        if (ref.isBorrow()) return "&" + (ref.mutableBorrow() ? "mut " : "") + typeRef(ref.borrowedTarget());
+        if (ref.isUnion()) {
+            return ref.arguments().stream()
+                    .map(IncrementalCompiler::typeRef)
+                    .sorted()
+                    .distinct()
+                    .collect(java.util.stream.Collectors.joining("|"));
+        }
+        if (ref.isTuple()) {
+            return "[" + ref.arguments().stream()
+                    .map(IncrementalCompiler::typeRef)
+                    .collect(java.util.stream.Collectors.joining(",")) + "]";
+        }
+        if (ref.isRecord()) {
+            return "{" + ref.recordMembers().entrySet().stream()
+                    .sorted(Map.Entry.comparingByKey())
+                    .map(entry -> entry.getKey() + ":" + typeRef(entry.getValue()))
+                    .collect(java.util.stream.Collectors.joining(",")) + "}";
+        }
         StringBuilder out = new StringBuilder(ref.name());
         if (ref.inferArguments()) return out.append("<>").toString();
         if (!ref.arguments().isEmpty()) {
