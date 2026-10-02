@@ -442,7 +442,8 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
             }
 
-            Ast.TypeRef fieldType = typeInAggregateLexicalScope(klass, field.type());
+            Ast.TypeRef ownerType = receiverType(member.receiver(), scope);
+            Ast.TypeRef fieldType = fieldTypeForReceiver(klass, ownerType, field);
             ValueKind fieldKind = kindOfType(fieldType);
             if (consuming
                     && fieldKind != ValueKind.COPY
@@ -515,7 +516,9 @@ public final class OwnershipChecker {
                     checkExpr(member.receiver(), scope, false);
                 }
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
-                return callableReturnValue(method.returnType(), method.body());
+                Ast.TypeRef ownerType = receiverType(member.receiver(), scope);
+                Ast.TypeRef returnType = specializeAggregateType(klass, ownerType, method.returnType());
+                return callableReturnValue(returnType, method.body());
             }
             checkExpr(member.receiver(), scope, false);
         }
@@ -822,7 +825,8 @@ public final class OwnershipChecker {
             Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
             if (owner == null) return null;
             Ast.FieldDecl field = findField(owner, member.member(), new LinkedHashSet<>());
-            return field == null ? null : typeInAggregateLexicalScope(owner, field.type());
+            Ast.TypeRef ownerType = receiverType(member.receiver(), scope);
+            return field == null ? null : fieldTypeForReceiver(owner, ownerType, field);
         }
         if (receiver instanceof Ast.CallExpr call) {
             if (call.callee() instanceof Ast.NameExpr name) {
@@ -833,7 +837,10 @@ public final class OwnershipChecker {
                 Ast.ClassDecl owner = classOfReceiver(member.receiver(), scope);
                 if (owner == null) return null;
                 Ast.MethodDecl method = findMethod(owner, member.member(), call.arguments().size(), new LinkedHashSet<>());
-                return method == null ? null : callableReturnType(method.returnType(), method.body());
+                if (method == null) return null;
+                Ast.TypeRef ownerType = receiverType(member.receiver(), scope);
+                Ast.TypeRef returnType = specializeAggregateType(owner, ownerType, method.returnType());
+                return callableReturnType(returnType, method.body());
             }
         }
         if (receiver instanceof Ast.AwaitExpr awaited) {
@@ -1099,6 +1106,33 @@ public final class OwnershipChecker {
         } finally {
             popLocalTypeScope();
         }
+    }
+
+    private Ast.TypeRef fieldTypeForReceiver(
+            Ast.ClassDecl owner,
+            Ast.TypeRef ownerType,
+            Ast.FieldDecl field) {
+        return typeInAggregateLexicalScope(
+                owner,
+                specializeAggregateType(owner, ownerType, field.type()));
+    }
+
+    private Ast.TypeRef specializeAggregateType(
+            Ast.ClassDecl owner,
+            Ast.TypeRef ownerType,
+            Ast.TypeRef memberType) {
+        if (memberType == null || ownerType == null) return memberType;
+        Ast.TypeRef concreteOwner = ownerType.isBorrow() ? ownerType.borrowedTarget() : ownerType;
+        if (owner.genericParameters().isEmpty()
+                || concreteOwner.arguments().size() != owner.genericParameters().size()) {
+            return memberType;
+        }
+
+        Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+        for (int i = 0; i < owner.genericParameters().size(); i++) {
+            substitutions.put(owner.genericParameters().get(i), concreteOwner.arguments().get(i));
+        }
+        return substituteOwnershipType(memberType, substitutions);
     }
 
     private Ast.TypeRef typeInAggregateLexicalScope(Ast.ClassDecl owner, Ast.TypeRef type) {
