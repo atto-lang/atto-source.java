@@ -256,6 +256,14 @@ try {
 
 Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
 
+Explicit collection is available when code needs a deterministic collection point:
+
+```ores
+actor.gc();
+```
+
+`actor.gc()` always means **the current actor only**. It is valid only while actor behavior is executing and it never escalates to whole-process GC. Normal code should not need to call it: automatic reclamation and ownership-based lifetime elimination remain the default. Actor termination drops the actor cell, mailbox, and actor-owned reachable state as one reclamation boundary.
+
 ## Isolates
 
 An isolate is stricter than an actor and is intended as a FaaS/tenant security boundary. Strict isolate contexts deny host reflection, native access, arbitrary filesystem/IO, child-process creation, guest-created threads, environment access, and unrestricted polyglot access unless an explicit capability is granted by the host.
@@ -265,6 +273,15 @@ Actors may run inside an isolate. Actor semantics never weaken isolate policy.
 ## Built-in globals
 
 `process` is an Oreslang runtime descriptor/capability facade, not unrestricted OS process access. `stdio` is capability-scoped standard IO. `print(value)` is shorthand for the output facade.
+
+Manual GC has intentionally different scopes:
+
+```ores
+actor.gc();   // current actor heap only
+process.gc(); // whole Oreslang runtime / host-process collection request
+```
+
+`process.gc()` is an expensive explicit hint and requires the `PROCESS_GC` capability. The strict FaaS profile denies it. `actor.gc()` does not grant process-wide authority.
 
 ## Compiler pipeline
 
@@ -449,7 +466,7 @@ Security is layered. Oreslang uses a deny-by-default language capability policy 
 
 An isolate policy can independently allow or deny:
 
-`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `PROCESS_GC`, `ACTOR_SHARE_READONLY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
 
 The trusted compiler API can reject forbidden API usage before execution:
 
