@@ -1469,6 +1469,26 @@ public final class TypeChecker {
     }
 
     private void validateSingletonTransportExpr(Ast.Expr expr, String currentModule) {
+        if (expr instanceof Ast.NameExpr name) {
+            Ast.ModuleDecl module = modules.get(name.name());
+            if (module != null && module.singleton() && !module.name().equals(currentModule)) {
+                throw new IllegalArgumentException("singleton module handles cannot be extracted; access and await "
+                        + module.name() + " members directly");
+            }
+
+            Ast.FunctionDecl function = findFunction(name.name());
+            if (function != null) {
+                String ownerName = functionOwners.get(function);
+                Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
+                if (owner != null && owner.singleton() && !owner.name().equals(currentModule)
+                        && function.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException("singleton service function values cannot be extracted; call and await "
+                            + owner.name() + "." + function.name() + "(...) directly");
+                }
+            }
+            return;
+        }
+
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (awaited.expression() instanceof Ast.CallExpr call && isExternalSingletonCall(call, currentModule)) {
                 validateSingletonTransportCallChildren(call, currentModule);
@@ -1502,6 +1522,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("singleton service function values cannot be extracted; call and await "
                         + ((Ast.NameExpr) member.receiver()).name() + "." + member.member() + "(...) directly");
             }
+            if (isExternalSingletonProxyFieldMember(member, currentModule)) {
+                throw new IllegalArgumentException("singleton object proxy handles cannot be extracted; call and await a method on "
+                        + ((Ast.NameExpr) member.receiver()).name() + "." + member.member() + " directly");
+            }
             validateSingletonTransportExpr(member.receiver(), currentModule);
         } else if (expr instanceof Ast.IndexExpr indexed) {
             validateSingletonTransportExpr(indexed.receiver(), currentModule);
@@ -1528,6 +1552,21 @@ public final class TypeChecker {
             validateSingletonTransportExpr(call.callee(), currentModule);
         }
         for (Ast.Expr argument : call.arguments()) validateSingletonTransportExpr(argument, currentModule);
+    }
+
+    private boolean isExternalSingletonProxyFieldMember(Ast.MemberExpr member, String currentModule) {
+        if (!(member.receiver() instanceof Ast.NameExpr namespace)) return false;
+        Ast.ModuleDecl owner = modules.get(namespace.name());
+        if (owner == null || !owner.singleton() || owner.name().equals(currentModule)) return false;
+        for (Ast.Decl decl : owner.declarations()) {
+            if (decl instanceof Ast.FieldDecl field
+                    && field.visibility() == Ast.Visibility.PUBLIC
+                    && field.name().equals(member.member())
+                    && singletonProxyClass(field) != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isExternalSingletonFunctionMember(Ast.MemberExpr member, String currentModule) {
