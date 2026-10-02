@@ -547,7 +547,6 @@ final class MutexRuntimeTest {
         assertEquals(3, mutex.withLock(value -> value[0]).intValue());
     }
 
-@Test
     @Test
     void queuedBlockingHostWaiterIsNotBargedByNewAsyncRequest() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
