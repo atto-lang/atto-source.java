@@ -187,17 +187,17 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id);
             ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
-            boolean backendStarted = false;
+            boolean backendStartAttempted = false;
             try {
+                backendStartAttempted = true;
                 garbageCollector.actorStarted(id, policy);
-                backendStarted = true;
                 if (closed.get()) throw new IllegalStateException("actor runtime closed during actor startup");
                 actors.put(id, cell);
                 cell.start();
                 return ref;
             } catch (RuntimeException | Error failure) {
                 actors.remove(id, cell);
-                if (backendStarted) safeActorExit(id);
+                if (backendStartAttempted) safeActorExit(id);
                 throw failure;
             }
         }
