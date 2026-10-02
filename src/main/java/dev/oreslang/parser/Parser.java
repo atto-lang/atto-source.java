@@ -541,15 +541,22 @@ public final class Parser {
             consumeStatementTerminator("defer statement should end with ';'");
 
             if (expression instanceof Ast.LambdaExpr lambda) {
-                return new Ast.DeferStmt(lambda, List.of());
+                if (!lambda.parameters().isEmpty()) {
+                    throw error(deferToken,
+                            "a bare deferred lambda must have arity 0; invoke parameterized lambdas explicitly");
+                }
+                return new Ast.DeferStmt(Ast.DeferKind.CALLABLE_VALUE, lambda, List.of());
             }
             if (expression instanceof Ast.CallExpr call && call.callee() instanceof Ast.LambdaExpr lambda) {
-                return new Ast.DeferStmt(lambda, call.arguments());
+                return new Ast.DeferStmt(Ast.DeferKind.EXPLICIT_LAMBDA_CALL, lambda, call.arguments());
+            }
+            if (expression instanceof Ast.CallExpr) {
+                return new Ast.DeferStmt(Ast.DeferKind.CALLABLE_VALUE, expression, List.of());
             }
 
             throw error(deferToken,
-                    "defer requires an explicit lambda: use 'defer || -> { ... };' "
-                            + "or 'defer |T x| -> { ... }(value);'; plain deferred calls are forbidden");
+                    "defer accepts an arity-0 lambda, an explicitly-invoked lambda, "
+                            + "or a call whose result is an arity-0 function");
         }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
