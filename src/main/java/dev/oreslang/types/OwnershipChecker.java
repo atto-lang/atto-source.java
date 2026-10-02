@@ -1310,6 +1310,7 @@ public final class OwnershipChecker {
 
     private boolean isCopyType(Ast.TypeRef type) {
         if (type == null || type.isBorrow()) return false;
+        if (type.isStringLiteral()) return true;
         if (type.name().equals("Option") && type.arguments().size() == 1) {
             Ast.TypeRef inner = type.arguments().getFirst();
             return inner.name().equals("null") || isCopyType(inner);
