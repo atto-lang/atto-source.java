@@ -289,10 +289,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 try { executeBlock(tried.body(), env); }
                 catch (ReturnSignal signal) { throw signal; }
-                catch (RuntimeException failure) {
-                    if (failure instanceof CancellationException || failure instanceof SecurityException) {
-                        throw failure;
-                    }
+                catch (OresRuntimeException failure) {
                     Env catchEnv = new Env(env);
                     try {
                         catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
@@ -372,7 +369,7 @@ public final class OresEvalRootNode extends RootNode {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresObject object) {
                         if (object.readOnlyShared) {
-                            throw new IllegalStateException("cannot mutate a process.share_readonly class value");
+                            throw new OresRuntimeException("cannot mutate a process.share_readonly class value");
                         }
                         if (!object.fields.containsKey(target.member())) throw new IllegalArgumentException("unknown field " + target.member());
                         object.fields.put(target.member(), value);
@@ -382,15 +379,23 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
-                    Object index = eval(target.index(), env);
-                    if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
-                    int i = Math.toIntExact(number.longValue());
+                    int index = checkedIndex(eval(target.index(), env));
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
-                        list.set(i, value);
-                        return value;
+                        try {
+                            list.set(index, value);
+                            return value;
+                        } catch (IndexOutOfBoundsException bounds) {
+                            throw new OresRuntimeException(
+                                    "list index out of bounds: " + index,
+                                    bounds);
+                        } catch (UnsupportedOperationException readonly) {
+                            throw new OresRuntimeException(
+                                    "cannot mutate a read-only/shared list",
+                                    readonly);
+                        }
                     }
-                    throw new IllegalArgumentException("indexed assignment requires a mutable array/list");
+                    throw new OresRuntimeException("indexed assignment requires a mutable array/list");
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -433,12 +438,16 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member());
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
-                Object index = eval(indexed.index(), env);
-                if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
-                int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
-                if (receiver instanceof Object[] array) return array[i];
-                throw new IllegalArgumentException("value is not indexable: " + receiver);
+                int index = checkedIndex(eval(indexed.index(), env));
+                try {
+                    if (receiver instanceof List<?> list) return list.get(index);
+                    if (receiver instanceof Object[] array) return array[index];
+                } catch (IndexOutOfBoundsException bounds) {
+                    throw new OresRuntimeException(
+                            "index out of bounds: " + index,
+                            bounds);
+                }
+                throw new OresRuntimeException("value is not indexable");
             }
             if (expr instanceof Ast.NewExpr created) {
                 Ast.ClassDecl klass = findClass(created.type().name());
@@ -485,6 +494,36 @@ public final class OresEvalRootNode extends RootNode {
                 return new LambdaValue(lambda, captured, nonLexical);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
+        }
+
+        private int checkedIndex(Object value) {
+            if (!(value instanceof Byte || value instanceof Short
+                    || value instanceof Integer || value instanceof Long)) {
+                throw new OresRuntimeException("index must be an integer");
+            }
+            long raw = ((Number) value).longValue();
+            try {
+                return Math.toIntExact(raw);
+            } catch (ArithmeticException outOfRange) {
+                throw new OresRuntimeException(
+                        "index is outside the supported collection range: " + raw,
+                        outOfRange);
+            }
+        }
+
+        private <T> T guestRuntimeBoundary(
+                String api,
+                java.util.function.Supplier<T> operation) {
+            try {
+                return operation.get();
+            } catch (OresRuntimeException | SecurityException | CancellationException failure) {
+                throw failure;
+            } catch (IllegalArgumentException | IllegalStateException failure) {
+                String detail = failure.getMessage();
+                throw new OresRuntimeException(
+                        detail == null || detail.isBlank() ? api + " failed" : api + ": " + detail,
+                        failure);
+            }
         }
 
         private Object member(Object receiver, String name) {
