@@ -798,6 +798,78 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void symbolMethodsUseTheSameNameAndArityOverloadIdentity() throws Exception {
+        String output = run("""
+                define module m
+                  define class Bag
+                    [Symbol.iterator]() => Array<int> {
+                      return arr[4, 5];
+                    }
+
+                    [Symbol.iterator](int value) => Array<int> {
+                      return arr[value];
+                    }
+                  end
+                end
+
+                pub routine main() => void {
+                  val bag = new m.Bag();
+                  for (val item of bag) {
+                    stdio.stdout.write(item);
+                  }
+                }
+                """);
+
+        assertEquals("45", output);
+    }
+
+    @Test
+    void duplicateSymbolMethodWithSameArityIsRejectedRegardlessOfTypes() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Bag
+                            [Symbol.iterator]() => Array<int> {
+                              return arr[1];
+                            }
+
+                            [Symbol.iterator]() => Array<String> {
+                              return arr["x"];
+                            }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("already has arity 0"));
+    }
+
+    @Test
+    void inheritedSymbolMethodCollisionRequiresExplicitArityResolution() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Left
+                            [Symbol.iterator]() => Array<int> {
+                              return arr[1];
+                            }
+                          end
+
+                          define class Right
+                            [Symbol.iterator]() => Array<int> {
+                              return arr[2];
+                            }
+                          end
+
+                          define class Child extends Left, Right
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains(
+                "ambiguous inherited method 'Child.Symbol.iterator' with arity 0"));
+    }
+
+    @Test
     void overloadedMethodValueRequiresCallArityForSelection() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
