@@ -175,7 +175,7 @@ pub fnc use_it() => void {
 
 The name `T` is not visible in `use_it`. The compiler gives the escaped local struct an internal nominal identity and carries its shape through the return type, so callers may infer the result and use its fields/methods without adding `T` to shared file/module scope. Two unrelated callables may each declare a different local `T` without collision.
 
-Nested block type declarations remain block-scoped. Local interfaces are still storage-free method contracts. Generic local structs are supported with concrete type arguments at aggregate construction boundaries; generic callable-local interfaces remain intentionally unsupported until their escaping/identity rules are specified.
+Nested block type declarations remain block-scoped. Local interfaces are still storage-free method contracts. Generic local structs and generic local interfaces are supported with explicit type arguments. Callable-local `type` aliases are also supported; aliases erase to their resolved type when they escape, so the alias name itself never enters module/file scope.
 
 Both compact and long forms are accepted:
 
@@ -198,6 +198,34 @@ define interface Readable as
   fnc read() => string;
 end
 ```
+
+
+Local aliases use the normal alias syntax and are hoisted within their lexical block:
+
+```ores
+pub fnc answer() => Answer {
+  type Answer = int;
+  return 42;
+}
+
+pub fnc boxed() => View<int> {
+  interface View<T> {
+    fnc get() => T;
+  }
+
+  struct Box is View<int> {
+    value: int;
+
+    pub get() => int {
+      return self.value;
+    }
+  }
+
+  return Box { value = 7 };
+}
+```
+
+Callers may infer and use the resolved return shapes, but names such as `Answer`, `View`, and `Box` are not visible outside the declaring callable. A nested block may shadow an outer local type name; the shadow ends with that block.
 
 
 ## Bindings
