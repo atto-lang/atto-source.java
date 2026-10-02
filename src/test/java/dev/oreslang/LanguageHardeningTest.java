@@ -310,6 +310,59 @@ final class LanguageHardeningTest {
     }
 
     @Test
+    void declaredGenericTypesRequireConcreteArityAndInterfacesSubstituteArguments() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface ValueApi<T> as
+                  fnc value() => T;
+                end
+
+                define class IntBox implements ValueApi<int> as
+                  pub value() => int { return 7; }
+                end
+
+                fnc use(IntBox box) => ValueApi<int> {
+                  return box;
+                }
+                """)));
+
+        IllegalArgumentException diamondType = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad(Box<> value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(diamondType.getMessage().contains("explicit type arguments"));
+
+        IllegalArgumentException rawType = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Box<T> {
+                          value: T;
+                        }
+
+                        fnc bad(Box value) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(rawType.getMessage().contains("expects 1 type argument"));
+
+        IllegalArgumentException wrongInterface = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc value() => T;
+                        end
+
+                        define class Bad implements ValueApi<int> as
+                          pub value() => String { return "wrong"; }
+                        end
+                        """)));
+        assertTrue(wrongInterface.getMessage().contains("does not implement interface"));
+    }
+
+    @Test
     void privateAggregateMembersAreLexicalNotReceiverBased() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Secret as
