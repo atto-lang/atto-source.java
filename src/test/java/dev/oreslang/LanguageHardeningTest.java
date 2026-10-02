@@ -366,4 +366,48 @@ final class LanguageHardeningTest {
         }
     }
 
+
+    @Test
+    void awaitRequiresAsyncOrActorDispatchedCallableContext() {
+        var ordinary = Parser.parse("""
+                define module app
+                  fnc bad(Future<int> value) => int {
+                    return await value;
+                  }
+                end
+                """);
+        IllegalArgumentException ordinaryError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(ordinary));
+        assertTrue(ordinaryError.getMessage().contains("await is only valid"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  actor fnc worker(Future<int> value) => void {
+                    val result = await value;
+                    stdio.println(result);
+                    return;
+                  }
+                end
+                """)));
+
+        var nestedLambda = Parser.parse("""
+                define module app
+                  async fnc outer(Future<int> value) => void {
+                    val callback = || -> {
+                      val result = await value;
+                      stdio.println(result);
+                      return;
+                    };
+                    stdio.println(callback);
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException lambdaError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(nestedLambda));
+        assertTrue(lambdaError.getMessage().contains("await is only valid"));
+    }
+
 }
