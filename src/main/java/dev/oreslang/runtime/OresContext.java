@@ -95,7 +95,9 @@ public final class OresContext implements AutoCloseable {
             existing = contextLocals.get(key);
             if (existing != null) return (T) existing;
             T value = java.util.Objects.requireNonNull(
-                    initializer.get(), "context-local initializer returned null for " + key);
+                    initializer.get(), "context-local initializer returned null for "
+                            + key.getClass().getSimpleName() + "#"
+                            + Integer.toUnsignedString(key.hashCode(), 16));
             Object raced = contextLocals.putIfAbsent(key, value);
             return raced == null ? value : (T) raced;
         } finally {
