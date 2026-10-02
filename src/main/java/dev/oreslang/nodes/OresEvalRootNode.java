@@ -204,7 +204,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Env initializeOrdinaryModuleState(Ast.ModuleDecl module) {
-            Env state = new Env(null);
+            Env state = new Env(null, null, false, true);
             predeclareModuleTypeAliases(module, state);
             for (Ast.Decl decl : module.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)) continue;
@@ -1558,22 +1558,32 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final SingletonState singletonState;
         private final boolean singletonStorage;
+        private final boolean sharedState;
         private final Map<String, Slot> slots = new LinkedHashMap<>();
         private final Map<String, Ast.ClassDecl> localTypes = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> localTypeAliases = new HashMap<>();
 
         private Env(Env parent) {
-            this(parent, parent == null ? null : parent.singletonState, false);
+            this(parent, parent == null ? null : parent.singletonState, false, false);
         }
 
         private Env(Env parent, SingletonState singletonState) {
-            this(parent, singletonState, false);
+            this(parent, singletonState, false, false);
         }
 
         private Env(Env parent, SingletonState singletonState, boolean singletonStorage) {
+            this(parent, singletonState, singletonStorage, singletonStorage);
+        }
+
+        private Env(
+                Env parent,
+                SingletonState singletonState,
+                boolean singletonStorage,
+                boolean sharedState) {
             this.parent = parent;
             this.singletonState = singletonState;
             this.singletonStorage = singletonStorage;
+            this.sharedState = sharedState;
         }
 
         private void define(String name, Object value, Ast.BindingKind kind) {
@@ -1669,13 +1679,29 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Env snapshot() {
-            Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState, singletonStorage);
+            Env capturedParent;
+            if (parent == null) {
+                capturedParent = null;
+            } else if (parent.sharedState) {
+                capturedParent = parent;
+            } else {
+                capturedParent = parent.snapshot();
+            }
+
+            Env cp = new Env(capturedParent, singletonState, false, false);
             for (Map.Entry<String, Slot> entry : slots.entrySet()) {
                 Slot slot = entry.getValue();
-                cp.slots.put(entry.getKey(), new Slot(
-                        slot.value == MISSING ? MISSING : copyStructValue(slot.value),
-                        slot.kind,
-                        slot.declaredType));
+                if (slot.value == MISSING) {
+                    // Recursive lambda bindings reserve a self-cell before the
+                    // closure is created. The closure must see that exact cell
+                    // after initialization.
+                    cp.slots.put(entry.getKey(), slot);
+                } else {
+                    cp.slots.put(entry.getKey(), new Slot(
+                            copyStructValue(slot.value),
+                            slot.kind,
+                            slot.declaredType));
+                }
             }
             cp.localTypes.putAll(localTypes);
             cp.localTypeAliases.putAll(localTypeAliases);
