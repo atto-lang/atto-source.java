@@ -895,7 +895,7 @@ public final class ActorRuntime implements AutoCloseable {
             int current = actorCount.get();
             if (current >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
-                        "actor runtime limit exceeded: " + dispatcherConfig.maxActors());
+                        "actor limit exceeded: runtime maximum " + dispatcherConfig.maxActors());
             }
             if (actorCount.compareAndSet(current, current + 1)) return;
         }
