@@ -630,6 +630,7 @@ public final class OresMutex {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
             rejectBlockingActorAcquisition();
+            if (timeout.isZero()) return tryLock();
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
             try {
