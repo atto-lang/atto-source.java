@@ -54,6 +54,15 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
 
+    /**
+     * Effective policy for the current execution. Actor code inherits the
+     * actor's stricter policy; non-actor execution uses the runtime ceiling.
+     */
+    public IsolatePolicy effectivePolicy() {
+        ActorCell<?> cell = currentActor.get();
+        return cell == null ? policyCeiling : cell.policy;
+    }
+
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
@@ -137,6 +146,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return id; }
 
+        private ActorRuntime owner() { return ActorRuntime.this; }
+
         public void send(M message) {
             ActorRuntime.this.send(this, message);
         }
@@ -191,7 +202,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
-        Object frozen = freeze(message);
+        Object frozen = freezeForRuntime(message);
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -252,7 +263,11 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
-        return new Shared<>((T) freeze(value));
+        return new Shared<>((T) freezeForRuntime(value));
+    }
+
+    private Object freezeForRuntime(Object value) {
+        return freeze(value, new FreezeState(this), 0);
     }
 
     /**
@@ -264,7 +279,7 @@ public final class ActorRuntime implements AutoCloseable {
      * or allocate without bound before the mailbox capacity check runs.
      */
     public static Object freeze(Object value) {
-        return freeze(value, new FreezeState(), 0);
+        return freeze(value, new FreezeState(null), 0);
     }
 
     private static Object freeze(Object value, FreezeState state, int depth) {
@@ -285,7 +300,15 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
             return value;
         }
-        if (value instanceof ActorRef<?> ref) return ref;
+        if (value instanceof ActorRef<?> ref) {
+            if (state.runtime == null) {
+                throw new IllegalArgumentException("ActorRef values require an ActorRuntime send boundary");
+            }
+            if (ref.owner() != state.runtime) {
+                throw new IllegalArgumentException("ActorRef belongs to a different actor runtime/isolate");
+            }
+            return ref;
+        }
 
         if (value instanceof Shared<?> shared) {
             return new Shared<>(freeze(shared.value(), state, depth + 1));
@@ -356,8 +379,13 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static final class FreezeState {
+        private final ActorRuntime runtime;
         private final IdentityHashMap<Object, Boolean> visiting = new IdentityHashMap<>();
         private int nodes;
+
+        private FreezeState(ActorRuntime runtime) {
+            this.runtime = runtime;
+        }
     }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
