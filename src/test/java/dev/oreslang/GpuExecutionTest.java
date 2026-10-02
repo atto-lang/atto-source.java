@@ -169,7 +169,12 @@ final class GpuExecutionTest {
         assertTrue(gpu.source().contains("static inline int ores_dev_math_add_a2"));
         assertTrue(gpu.source().contains("__kernel void ores_kernel_math_add_a2"));
         assertTrue(gpu.source().contains("__global int* restrict __ores_out"));
-        assertTrue(gpu.source().contains("__ores_out[0] = ores_dev_math_add_a2(a, b)"));
+        assertTrue(gpu.source().contains("__global int* restrict __ores_error"));
+        assertTrue(gpu.source().contains("__ores_out[0] = ores_dev_math_add_a2(a, b, __ores_error)"));
+        assertTrue(kernel.hiddenParameters().stream()
+                .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.RESULT));
+        assertTrue(kernel.hiddenParameters().stream()
+                .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.ERROR_SLOTS));
     }
 
     @Test
@@ -188,9 +193,17 @@ final class GpuExecutionTest {
         GpuKernelCompiler.GpuKernel kernel = compilation.gpuProgram().kernels().getFirst();
         assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, kernel.executionShape());
         assertEquals("n", kernel.launchExtentExpression());
-        assertTrue(compilation.gpuProgram().source().contains("__global float* restrict xs"));
-        assertTrue(compilation.gpuProgram().source().contains("get_global_id(0)"));
-        assertTrue(compilation.gpuProgram().source().contains("xs[i] = (xs[i] * factor)"));
+        String source = compilation.gpuProgram().source();
+        assertTrue(source.contains("__global float* restrict xs"));
+        assertTrue(source.contains("ulong xs__len"));
+        assertTrue(source.contains("__global int* restrict __ores_error"));
+        assertTrue(source.contains("#define ORES_GPU_ERR_BOUNDS 1"));
+        assertTrue(source.contains("get_global_id(0)"));
+        assertTrue(source.contains("xs__len"));
+        assertTrue(source.contains("__ores_error[get_global_id(0)] |= ORES_GPU_ERR_BOUNDS"));
+        assertTrue(kernel.hiddenParameters().stream()
+                .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.BUFFER_LENGTH
+                        && "xs".equals(p.sourceParameter())));
     }
 
     @Test
@@ -222,6 +235,41 @@ final class GpuExecutionTest {
         assertTrue(batch.hasDispatcher());
         assertTrue(compilation.gpuProgram().source().contains("__kernel void " + batch.dispatcherSymbol()));
         assertTrue(compilation.gpuProgram().source().contains("switch (__ores_task)"));
+        assertTrue(compilation.gpuProgram().source().contains("__ores_error[__ores_task] = 0"));
+        assertTrue(batch.hiddenParameters().stream()
+                .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.ERROR_SLOTS));
+    }
+
+    @Test
+    void deviceCallsPropagateBufferLengthsAndErrorState() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module math
+                  gpu fnc load(Array<f32> xs, i64 i) => f32 {
+                    return xs[i];
+                  }
+
+                  gpu fnc outer(Array<f32> xs, i64 i) => f32 {
+                    return load(xs, i);
+                  }
+                end
+                """);
+
+        String source = compilation.gpuProgram().source();
+        assertTrue(source.contains("ores_dev_math_load_a2(xs, xs__len, i, __ores_error)"));
+        assertTrue(source.contains("((ulong)(i) < xs__len)"));
+        assertTrue(source.contains("ORES_GPU_ERR_BOUNDS"));
+    }
+
+    @Test
+    void integerDivisionIsRejectedUntilDeviceTrapSemanticsExist() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc div(i64 a, i64 b) => i64 {
+                          return a / b;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("integer / is rejected in GPU code"));
     }
 
     @Test
