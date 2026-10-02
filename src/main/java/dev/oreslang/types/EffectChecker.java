@@ -556,6 +556,11 @@ public final class EffectChecker {
                     return;
                 }
                 default -> {
+                    if (scope.lookup(name.name()) != null) {
+                        addOpaqueEffects(current,
+                                "dynamic callable binding '" + name.name() + "(...)'");
+                        return;
+                    }
                     Callable target = resolveFunction(name.name(), current.module());
                     if (target != null) {
                         addCallee(current, target);
@@ -852,6 +857,7 @@ public final class EffectChecker {
                     Ast.TypeRef inner = inferType(call.arguments().getFirst(), current, scope);
                     return inner == null ? null : new Ast.TypeRef("Option", List.of(inner), false);
                 }
+                if (scope.lookup(name.name()) != null) return null;
                 Callable target = resolveFunction(name.name(), current.module());
                 if (target != null) return target.returnType();
             }
@@ -978,7 +984,10 @@ public final class EffectChecker {
             for (Ast.FieldDecl field : effectiveFields(
                     klass, module, scope,
                     java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
-                if (copyMayAllocate(field.type(), module, scope, active)) return true;
+                if (field.type() == null
+                        || copyMayAllocate(field.type(), module, scope, active)) {
+                    return true;
+                }
             }
             return false;
         } finally {
