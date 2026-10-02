@@ -318,9 +318,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         if (value instanceof List<?> list) {
+            if (list.size() > MAX_FREEZE_NODES) {
+                throw new IllegalArgumentException(
+                        "actor message exceeds maximum graph size " + MAX_FREEZE_NODES);
+            }
             enterComposite(value, path);
             try {
-                List<Object> frozen = new ArrayList<>(list.size());
+                List<Object> frozen = new ArrayList<>();
                 for (Object item : list) {
                     frozen.add(freeze(item, path, budget, depth + 1, allowedActorRuntime));
                 }
@@ -330,6 +334,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         if (value instanceof Set<?> set) {
+            if (set.size() > MAX_FREEZE_NODES) {
+                throw new IllegalArgumentException(
+                        "actor message exceeds maximum graph size " + MAX_FREEZE_NODES);
+            }
             enterComposite(value, path);
             try {
                 Set<Object> frozen = new LinkedHashSet<>();
@@ -346,6 +354,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         if (value instanceof Map<?, ?> map) {
+            if (map.size() > MAX_FREEZE_NODES) {
+                throw new IllegalArgumentException(
+                        "actor message exceeds maximum graph size " + MAX_FREEZE_NODES);
+            }
             enterComposite(value, path);
             try {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
@@ -366,10 +378,14 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
         if (value.getClass().isArray()) {
+            int length = Array.getLength(value);
+            if (length > MAX_FREEZE_NODES) {
+                throw new IllegalArgumentException(
+                        "actor message exceeds maximum graph size " + MAX_FREEZE_NODES);
+            }
             enterComposite(value, path);
             try {
-                int length = Array.getLength(value);
-                List<Object> frozen = new ArrayList<>(length);
+                List<Object> frozen = new ArrayList<>();
                 for (int i = 0; i < length; i++) {
                     frozen.add(freeze(
                             Array.get(value, i), path, budget, depth + 1, allowedActorRuntime));
