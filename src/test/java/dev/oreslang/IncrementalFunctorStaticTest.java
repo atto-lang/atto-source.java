@@ -60,18 +60,22 @@ final class IncrementalFunctorStaticTest {
                 import fnc {answer} from './math.ores';
                 pub fnc main() => void { return; }
                 """);
+        firstSources.put("cli.ores", """
+                import fnc {main} from './app.ores';
+                pub fnc launch() => void { return; }
+                """);
         firstSources.put("unrelated.ores", """
                 pub fnc untouched() => int { return 7; }
                 """);
 
         var first = compiler.compile(firstSources);
-        assertEquals(3, first.rebuiltUnits().size());
+        assertEquals(4, first.rebuiltUnits().size());
         assertEquals("mathpkg", first.units().get("math.ores").packageId());
         assertEquals("app", first.units().get("app.ores").packageId());
 
         var second = compiler.compile(firstSources);
         assertEquals(0, second.rebuiltUnits().size());
-        assertEquals(3, second.reusedUnits().size());
+        assertEquals(4, second.reusedUnits().size());
 
         Map<String, String> changed = new LinkedHashMap<>(firstSources);
         changed.put("math.ores", """
@@ -82,6 +86,7 @@ final class IncrementalFunctorStaticTest {
         var third = compiler.compile(changed);
         assertTrue(third.rebuilt("math.ores"));
         assertTrue(third.reused("app.ores"), "implementation-only dependency edits must not rebuild importers");
+        assertTrue(third.reused("cli.ores"), "implementation-only edits must stay local through the dependency graph");
         assertTrue(third.reused("unrelated.ores"));
 
         Map<String, String> abiChanged = new LinkedHashMap<>(changed);
@@ -93,6 +98,7 @@ final class IncrementalFunctorStaticTest {
         var fourth = compiler.compile(abiChanged);
         assertTrue(fourth.rebuilt("math.ores"));
         assertTrue(fourth.rebuilt("app.ores"), "public ABI changes must invalidate direct importers");
+        assertTrue(fourth.rebuilt("cli.ores"), "ABI changes must conservatively invalidate the transitive reverse-import closure");
         assertTrue(fourth.reused("unrelated.ores"));
     }
 
