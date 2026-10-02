@@ -1075,8 +1075,11 @@ Borrow rules:
 - reading the owner is forbidden while an exclusive mutable borrow is active;
 - mutable borrowing requires a mutable owner;
 - a borrow of a local value may not escape the owner's lifetime;
+- borrow provenance is propagated through borrow-returning functions/methods instead of being erased at call boundaries;
+- ordinary borrows cannot be hidden inside owning lists/tuples/objects/structs/classes/Options until explicit container lifetime relationships are modeled;
 - temporary call borrows end at the call boundary;
-- borrows stored in local bindings remain active until that binding's lexical scope ends.
+- borrows stored or re-bound in local bindings remain active until every registered alias leaves lexical scope;
+- detached values created by `share(...)` are not ordinary borrows and may be stored, captured, or returned safely.
 
 The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
@@ -1109,7 +1112,9 @@ The operations are:
 - **trait** — has no independent runtime identity; once composed, its stored fields follow the host struct/class rule.
 - **interface** — is a contract, not concrete storage, so an interface-typed value does not by itself prove copyability.
 
-A class copy implementation is checked twice. Static ownership analysis prevents mutation through `self`, including nested projections such as `self.child.bump()` when `bump` requires a mutable receiver. At runtime, Oreslang also verifies that `copy()` did not mutate the source graph, returned the same concrete class, and retained no mutable object/list/set/map/array aliases from the source graph.
+A class copy implementation is checked twice. Static ownership analysis prevents mutation through `self`, including nested projections such as `self.child.bump()` when `bump` requires a mutable receiver. At runtime, Oreslang also verifies that `copy()` did not mutate the source graph, returned the same concrete class, and retained no mutable object/list/set/map/array aliases from the source graph. Immutable wrappers are traversed so mutable aliases cannot be hidden inside `Option` or similar containers.
+
+The verifier is intentionally fail-closed at host/FFI boundaries: if a class graph contains a foreign reference whose mutability/alias structure Oreslang cannot inspect, `copy()` is rejected unless that value is an explicitly recognized immutable capability (for example actor identity/reference values). Future FFI copy adapters can widen this safely without weakening the language guarantee.
 
 ```ores
 define class Buffer as
