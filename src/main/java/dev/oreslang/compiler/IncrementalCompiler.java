@@ -18,10 +18,10 @@ import java.util.Set;
 /**
  * File-granular incremental compiler.
  *
- * Each source file is an independently versioned compilation/code unit. The
- * current invalidation rule is deliberately conservative: a source change
- * recompiles that unit and the full reverse-import closure. Future ABI digests
- * may narrow that closure without changing the unit model.
+ * Each source file is an independently versioned compilation/code unit.
+ * Source edits always rebuild their own unit. Importers rebuild only when the
+ * dependency's exported ABI digest changes, so implementation-only edits stay
+ * local while public contract changes invalidate the necessary dependents.
  */
 public final class IncrementalCompiler {
     private final Map<String, CompiledUnit> cache = new LinkedHashMap<>();
@@ -38,6 +38,7 @@ public final class IncrementalCompiler {
         }
 
         Map<String, String> hashes = new LinkedHashMap<>();
+        Map<String, String> abiHashes = new LinkedHashMap<>();
         Map<String, Ast.Program> parsed = new LinkedHashMap<>();
         Map<String, Set<String>> dependencies = new LinkedHashMap<>();
 
@@ -45,22 +46,29 @@ public final class IncrementalCompiler {
             hashes.put(entry.getKey(), digest(entry.getValue()));
             Ast.Program program = Parser.parse(entry.getValue());
             parsed.put(entry.getKey(), program);
+            abiHashes.put(entry.getKey(), abiDigest(program));
             dependencies.put(entry.getKey(), resolveDependencies(entry.getKey(), program, normalized.keySet()));
         }
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
+        LinkedHashSet<String> abiChanged = new LinkedHashSet<>();
         for (String id : normalized.keySet()) {
             CompiledUnit previous = cache.get(id);
-            if (previous == null || !previous.sourceDigest().equals(hashes.get(id))) dirty.add(id);
+            boolean sourceChanged = previous == null || !previous.sourceDigest().equals(hashes.get(id));
+            boolean depsChanged = previous == null || !previous.dependencies().equals(dependencies.get(id));
+            if (sourceChanged || depsChanged) dirty.add(id);
+            if (previous == null || !previous.abiDigest().equals(abiHashes.get(id))) abiChanged.add(id);
         }
 
+        /*
+         * ABI changes invalidate direct importers. Rebuilding an importer does
+         * not automatically cascade further: its own ABI digest decides that.
+         * This is the key distinction between code-generation dirtiness and
+         * public-contract dirtiness.
+         */
         Map<String, Set<String>> reverse = reverseDependencies(dependencies);
-        ArrayDeque<String> queue = new ArrayDeque<>(dirty);
-        while (!queue.isEmpty()) {
-            String changed = queue.removeFirst();
-            for (String dependent : reverse.getOrDefault(changed, Set.of())) {
-                if (dirty.add(dependent)) queue.addLast(dependent);
-            }
+        for (String changed : abiChanged) {
+            dirty.addAll(reverse.getOrDefault(changed, Set.of()));
         }
 
         LinkedHashMap<String, CompiledUnit> next = new LinkedHashMap<>();
@@ -80,6 +88,7 @@ public final class IncrementalCompiler {
                     packageId(id, checked),
                     checked.namespace(),
                     hashes.get(id),
+                    abiHashes.get(id),
                     dependencies.get(id),
                     normalized.get(id),
                     checked);
@@ -94,6 +103,115 @@ public final class IncrementalCompiler {
 
     public synchronized void clear() {
         cache.clear();
+    }
+
+    private static String abiDigest(Ast.Program program) {
+        StringBuilder abi = new StringBuilder("ores-abi-v1\n");
+        abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
+
+        for (Ast.ModuleDecl module : program.modules()) {
+            abi.append("module ").append(module.name()).append('\n');
+            for (Ast.Annotation annotation : module.annotations()) {
+                if (annotation.name().equals("AdheresTo")) {
+                    abi.append(" module-annotation AdheresTo:");
+                    for (Ast.TypeRef arg : annotation.arguments()) abi.append(typeRef(arg)).append(',');
+                    abi.append('\n');
+                }
+            }
+            for (Ast.Decl decl : module.declarations()) appendAbi(abi, decl);
+        }
+        return digest(abi.toString());
+    }
+
+    private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
+        if (decl instanceof Ast.FunctionDecl fn) {
+            if (fn.visibility() != Ast.Visibility.PUBLIC) return;
+            abi.append(fn.kind()).append(" pub ").append(fn.name());
+            appendGenerics(abi, fn.genericParameters());
+            appendParams(abi, fn.parameters());
+            abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+            return;
+        }
+        if (decl instanceof Ast.ClassDecl klass) {
+            abi.append("class ").append(klass.name());
+            appendGenerics(abi, klass.genericParameters());
+            abi.append(" extends ");
+            for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
+            abi.append(" implements ");
+            for (Ast.TypeRef iface : klass.interfaces()) abi.append(typeRef(iface)).append(',');
+            abi.append('\n');
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.visibility() != Ast.Visibility.PUBLIC) continue;
+                abi.append(" field ").append(field.bindingKind()).append(' ')
+                        .append(typeRef(field.type())).append(' ').append(field.name()).append('\n');
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.visibility() != Ast.Visibility.PUBLIC) continue;
+                abi.append(method.isStatic() ? " static-fnc " : " method ")
+                        .append(method.name());
+                appendGenerics(abi, method.genericParameters());
+                appendParams(abi, method.parameters());
+                abi.append("=>").append(typeRef(method.returnType())).append('\n');
+            }
+            return;
+        }
+        if (decl instanceof Ast.InterfaceDecl iface) {
+            abi.append("interface ").append(iface.visibility()).append(' ').append(iface.name());
+            appendGenerics(abi, iface.genericParameters());
+            abi.append(" extends ");
+            for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
+            abi.append('\n');
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                    abi.append(" iface-fnc ").append(fn.name());
+                    appendGenerics(abi, fn.genericParameters());
+                    appendParams(abi, fn.parameters());
+                    abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+                } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                    abi.append(" iface-field ").append(field.name()).append(':').append(typeRef(field.type())).append('\n');
+                }
+            }
+            return;
+        }
+        if (decl instanceof Ast.TypeAliasDecl alias) {
+            abi.append("type ").append(alias.name());
+            appendGenerics(abi, alias.genericParameters());
+            abi.append('=').append(typeRef(alias.target())).append('\n');
+            return;
+        }
+        if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
+            abi.append("binding ").append(field.bindingKind()).append(' ')
+                    .append(field.type() == null ? "<inferred>" : typeRef(field.type()))
+                    .append(' ').append(field.name()).append('\n');
+        }
+    }
+
+    private static void appendGenerics(StringBuilder abi, List<String> generics) {
+        abi.append('<');
+        for (String generic : generics) abi.append(generic).append(',');
+        abi.append('>');
+    }
+
+    private static void appendParams(StringBuilder abi, List<Ast.Param> params) {
+        abi.append('(');
+        for (Ast.Param param : params) {
+            if (param.structural()) abi.append("structural ");
+            abi.append(typeRef(param.type())).append(',');
+        }
+        abi.append(')');
+    }
+
+    private static String typeRef(Ast.TypeRef ref) {
+        if (ref == null) return "<inferred>";
+        if (ref.isStringLiteral()) return "'" + ref.stringLiteralValue() + "'";
+        StringBuilder out = new StringBuilder(ref.name());
+        if (ref.inferArguments()) return out.append("<>").toString();
+        if (!ref.arguments().isEmpty()) {
+            out.append('<');
+            for (Ast.TypeRef arg : ref.arguments()) out.append(typeRef(arg)).append(',');
+            out.append('>');
+        }
+        return out.toString();
     }
 
     private static Set<String> resolveDependencies(String unitId, Ast.Program program, Set<String> available) {
@@ -152,6 +270,7 @@ public final class IncrementalCompiler {
             String packageId,
             String namespace,
             String sourceDigest,
+            String abiDigest,
             Set<String> dependencies,
             String sourceText,
             Ast.Program program) {
