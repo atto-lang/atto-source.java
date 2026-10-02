@@ -132,10 +132,10 @@ final class IsolationHotReloadTest {
     void hotReloadCreatesDistinctVersionedContextsWithoutFfi() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
-            var first = hot.load("v1.ores", """
+            var first = hot.loadAndStart("v1.ores", """
                     pub routine main() => void { return; }
                     """);
-            var second = hot.load("v2.ores", """
+            var second = hot.loadAndStart("v2.ores", """
                     pub routine main() => void {
                       val version = 2;
                       return;
@@ -157,7 +157,7 @@ final class IsolationHotReloadTest {
     void retiredGenerationWaitsForOutstandingLeaseThenReclaimsContext() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
-            var generation = hot.load("leased.ores", """
+            var generation = hot.loadAndStart("leased.ores", """
                     pub routine main() => void { return; }
                     """);
             HotReloadManager.Lease lease = generation.acquire();
@@ -178,6 +178,38 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void activatingReplacementRetiresOldGenerationOnlyAfterItsLeaseDrains() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var first = hot.loadAndStart("worker.ores", """
+                    pub routine main() => void { return; }
+                    """);
+            HotReloadManager.Lease lease = first.acquire();
+
+            var second = hot.load("worker.ores", """
+                    pub routine main() => void {
+                      val version = 2;
+                      return;
+                    }
+                    """);
+            assertFalse(second.activated());
+            assertSame(first, hot.active("worker.ores"));
+
+            second.start();
+            hot.activate(second);
+
+            assertSame(second, hot.active("worker.ores"));
+            assertTrue(first.retired());
+            assertFalse(first.closed());
+            assertEquals(1L, first.leaseCount());
+
+            lease.close();
+            assertTrue(first.closed());
+            assertEquals(1, hot.retainedGenerations());
+        }
+    }
+
+    @Test
     void hotLoadStagesWithoutRunningMainUntilExplicitStart() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
@@ -189,6 +221,8 @@ final class IsolationHotReloadTest {
                     }
                     """);
             assertFalse(generation.started());
+            assertFalse(generation.activated());
+            assertNull(hot.active("staged.ores"));
             assertThrows(RuntimeException.class, generation::start);
             assertTrue(generation.closed());
             assertEquals(0, hot.liveGenerations());
