@@ -222,6 +222,23 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isAbstract() && !klass.isAbstract()) {
+                throw new IllegalArgumentException("concrete class '" + klass.name() + "' cannot declare abstract method '" + method.name() + "'");
+            }
+            Ast.MethodDecl overridden = findMethodInParents(klass, method.name(), method.arity(), new LinkedHashSet<>());
+            if (hasOverrideAnnotation(method)) {
+                if (overridden == null) {
+                    throw new IllegalArgumentException("@override method '" + klass.name() + "." + method.name() + "' has no inherited method with arity " + method.arity());
+                }
+                Set<String> overrideGenerics = new HashSet<>(classGenerics);
+                overrideGenerics.addAll(method.genericParameters());
+                Function inheritedType = functionType(overridden.parameters(), overridden.returnType(), overrideGenerics, self);
+                Function overridingType = functionType(method.parameters(), method.returnType(), overrideGenerics, self);
+                if (!assignable(overridingType, inheritedType) || !assignable(inheritedType, overridingType)) {
+                    throw new IllegalArgumentException("@override method '" + klass.name() + "." + method.name() + "' is not signature-compatible with its inherited method");
+                }
+            }
+
             Set<String> generics = new HashSet<>(classGenerics);
             for (String generic : method.genericParameters()) {
                 if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
@@ -246,6 +263,13 @@ public final class TypeChecker {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
             }
+        }
+
+        Map<String, Ast.MethodDecl> unresolvedAbstract = new LinkedHashMap<>();
+        collectAbstractMethods(klass, unresolvedAbstract, new LinkedHashSet<>());
+        if (!klass.isAbstract() && !unresolvedAbstract.isEmpty()) {
+            Ast.MethodDecl missing = unresolvedAbstract.values().iterator().next();
+            throw new IllegalArgumentException("concrete class '" + klass.name() + "' must implement abstract method '" + missing.name() + "' with arity " + missing.arity());
         }
 
         Set<String> implemented = new HashSet<>();
@@ -1168,6 +1192,27 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("non-void anonymous override '" + method.name() + "' must explicitly return on every path");
             }
         }
+    }
+
+    private Ast.MethodDecl findMethodInParents(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            for (Ast.MethodDecl method : parent.methods()) {
+                if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                    seen.remove(klass);
+                    return method;
+                }
+            }
+            Ast.MethodDecl nested = findMethodInParents(parent, name, arity, seen);
+            if (nested != null) {
+                seen.remove(klass);
+                return nested;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private Ast.MethodDecl findMethodInParentsOrSelf(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
