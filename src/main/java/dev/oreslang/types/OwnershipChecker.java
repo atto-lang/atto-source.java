@@ -34,9 +34,12 @@ public final class OwnershipChecker {
     private Ast.ModuleDecl activeModule;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final ArrayDeque<Map<String, Ast.ClassDecl>> localClassScopes = new ArrayDeque<>();
+    private final ArrayDeque<Map<String, Ast.TypeAliasDecl>> localAliasScopes = new ArrayDeque<>();
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -53,6 +56,7 @@ public final class OwnershipChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
             }
         }
     }
@@ -158,25 +162,30 @@ public final class OwnershipChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
-        pushLocalClassScope(body);
+        pushLocalTypeScopes(body);
         Scope scope = new Scope(parent);
         try {
             for (Ast.Stmt stmt : body) checkStatement(stmt, scope, returnType);
         } finally {
             scope.close();
+            localAliasScopes.pop();
             localClassScopes.pop();
         }
     }
 
-    private void pushLocalClassScope(List<Ast.Stmt> body) {
-        LinkedHashMap<String, Ast.ClassDecl> local = new LinkedHashMap<>();
+    private void pushLocalTypeScopes(List<Ast.Stmt> body) {
+        LinkedHashMap<String, Ast.ClassDecl> localClasses = new LinkedHashMap<>();
+        LinkedHashMap<String, Ast.TypeAliasDecl> localAliases = new LinkedHashMap<>();
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.TypeDeclStmt typeDecl
-                    && typeDecl.declaration() instanceof Ast.ClassDecl klass) {
-                local.put(klass.name(), klass);
+            if (!(stmt instanceof Ast.TypeDeclStmt typeDecl)) continue;
+            if (typeDecl.declaration() instanceof Ast.ClassDecl klass) {
+                localClasses.put(klass.name(), klass);
+            } else if (typeDecl.declaration() instanceof Ast.TypeAliasDecl alias) {
+                localAliases.put(alias.name(), alias);
             }
         }
-        localClassScopes.push(local);
+        localClassScopes.push(localClasses);
+        localAliasScopes.push(localAliases);
     }
 
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
@@ -682,7 +691,8 @@ public final class OwnershipChecker {
         } else if (receiver instanceof Ast.NewExpr created) type = created.type();
         else if (receiver instanceof Ast.StructInitExpr created) type = created.type();
         if (type == null) return null;
-        if (type.isBorrow()) type = type.borrowedTarget();
+        type = resolveOwnershipAlias(type, new LinkedHashSet<>());
+        if (type.isBorrow()) type = resolveOwnershipAlias(type.borrowedTarget(), new LinkedHashSet<>());
         return findClass(type.name());
     }
 
@@ -695,7 +705,8 @@ public final class OwnershipChecker {
             }
         }
         for (Ast.TypeRef parent : klass.parents()) {
-            Ast.ClassDecl p = findClass(parent.name());
+            Ast.TypeRef resolvedParent = resolveOwnershipAlias(parent, new LinkedHashSet<>());
+            Ast.ClassDecl p = findClass(resolvedParent.name());
             if (p == null) continue;
             Ast.FieldDecl found = findField(p, name, seen);
             if (found != null) {
@@ -769,6 +780,60 @@ public final class OwnershipChecker {
         return classes.get(name);
     }
 
+    private Ast.TypeAliasDecl findTypeAlias(String name) {
+        if (!name.contains(".")) {
+            for (Map<String, Ast.TypeAliasDecl> scope : localAliasScopes) {
+                Ast.TypeAliasDecl local = scope.get(name);
+                if (local != null) return local;
+            }
+        }
+        if (ambiguousTypeAliases.contains(name)) return null;
+        return typeAliases.get(name);
+    }
+
+    private Ast.TypeRef resolveOwnershipAlias(Ast.TypeRef type, Set<Ast.TypeAliasDecl> seen) {
+        if (type == null) return null;
+        if (type.isBorrow()) {
+            return Ast.TypeRef.borrowed(
+                    resolveOwnershipAlias(type.borrowedTarget(), seen),
+                    type.mutableBorrow());
+        }
+
+        Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+        if (alias == null) return type;
+        if (!seen.add(alias)) throw error("type alias cycle involving '" + alias.name() + "'");
+        if (type.arguments().size() != alias.genericParameters().size()) {
+            throw error("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
+                    + " type argument(s), got " + type.arguments().size());
+        }
+
+        LinkedHashMap<String, Ast.TypeRef> substitutions = new LinkedHashMap<>();
+        for (int i = 0; i < alias.genericParameters().size(); i++) {
+            substitutions.put(alias.genericParameters().get(i), type.arguments().get(i));
+        }
+        Ast.TypeRef target = substituteOwnershipAliasType(alias.target(), substitutions);
+        return resolveOwnershipAlias(target, seen);
+    }
+
+    private Ast.TypeRef substituteOwnershipAliasType(
+            Ast.TypeRef type,
+            Map<String, Ast.TypeRef> substitutions) {
+        if (type.isBorrow()) {
+            return Ast.TypeRef.borrowed(
+                    substituteOwnershipAliasType(type.borrowedTarget(), substitutions),
+                    type.mutableBorrow());
+        }
+        Ast.TypeRef replacement = substitutions.get(type.name());
+        if (replacement != null && type.arguments().isEmpty() && !type.inferArguments()) return replacement;
+        if (type.arguments().isEmpty()) return type;
+        return new Ast.TypeRef(
+                type.name(),
+                type.arguments().stream()
+                        .map(argument -> substituteOwnershipAliasType(argument, substitutions))
+                        .toList(),
+                type.inferArguments());
+    }
+
     private void requireUsable(VarState state, String name, boolean write) {
         if (state.moved) throw error("use of moved value '" + name + "'");
         if (write) {
@@ -838,8 +903,9 @@ public final class OwnershipChecker {
 
     private ValueKind kindOfType(Ast.TypeRef type) {
         if (type == null) return ValueKind.MOVE_ONLY;
-        if (type.isBorrow()) return type.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
-        return isCopyType(type) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
+        Ast.TypeRef resolved = resolveOwnershipAlias(type, new LinkedHashSet<>());
+        if (resolved.isBorrow()) return resolved.mutableBorrow() ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW;
+        return isCopyType(resolved) ? ValueKind.COPY : ValueKind.MOVE_ONLY;
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
