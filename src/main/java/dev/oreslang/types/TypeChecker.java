@@ -52,6 +52,8 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     // Set only while checking a method expanded from a trait.
     private String activeTraitOwner;
+    // Lexical aggregate owner for ordinary private member access.
+    private Ast.ClassDecl activeClassOwner;
 
     public static Ast.Program check(Ast.Program program) {
         Ast.Program composed = TraitComposer.compose(program);
@@ -721,7 +723,10 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            String previousTraitOwner = activeTraitOwner;
+            Ast.ClassDecl previousClassOwner = activeClassOwner;
             activeTraitOwner = method.compositionOwner();
+            activeClassOwner = klass;
             pushLocalTypeScope(method.body());
             try {
                 Set<String> generics = new HashSet<>(classGenerics);
@@ -756,7 +761,8 @@ public final class TypeChecker {
                 }
             } finally {
                 popLocalTypeScope();
-                activeTraitOwner = null;
+                activeTraitOwner = previousTraitOwner;
+                activeClassOwner = previousClassOwner;
             }
         }
 
@@ -1589,6 +1595,9 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "trait state field '" + field.compositionOwner() + "." + name
                                     + "' is private to that trait");
+                } else if (field.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
+                    throw new IllegalArgumentException(
+                            "field '" + klass.name() + "." + name + "' is private to " + klass.name());
                 }
                 seen.remove(klass);
                 return resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
@@ -1611,6 +1620,11 @@ public final class TypeChecker {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                if (method.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
+                    seen.remove(klass);
+                    throw new IllegalArgumentException(
+                            "method '" + klass.name() + "." + name + "' is private to " + klass.name());
+                }
                 seen.remove(klass);
                 return method;
             }
@@ -1631,7 +1645,12 @@ public final class TypeChecker {
     private List<Ast.MethodDecl> findMethodsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return List.of();
         LinkedHashMap<Integer, Ast.MethodDecl> methods = new LinkedHashMap<>();
-        for (Ast.MethodDecl method : klass.methods()) if (!method.isStatic() && method.name().equals(name)) methods.put(method.arity(), method);
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name)
+                    && (method.visibility() == Ast.Visibility.PUBLIC || activeClassOwner == klass)) {
+                methods.put(method.arity(), method);
+            }
+        }
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
@@ -1645,6 +1664,11 @@ public final class TypeChecker {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                if (method.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
+                    seen.remove(klass);
+                    throw new IllegalArgumentException(
+                            "static function '" + klass.name() + "." + name + "' is private to " + klass.name());
+                }
                 seen.remove(klass);
                 return method;
             }
@@ -1665,7 +1689,12 @@ public final class TypeChecker {
     private List<Ast.MethodDecl> findStaticFunctionsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return List.of();
         LinkedHashMap<Integer, Ast.MethodDecl> functions = new LinkedHashMap<>();
-        for (Ast.MethodDecl method : klass.methods()) if (method.isStatic() && method.name().equals(name)) functions.put(method.arity(), method);
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic() && method.name().equals(name)
+                    && (method.visibility() == Ast.Visibility.PUBLIC || activeClassOwner == klass)) {
+                functions.put(method.arity(), method);
+            }
+        }
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
