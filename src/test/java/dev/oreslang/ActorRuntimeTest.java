@@ -51,6 +51,9 @@ final class ActorRuntimeTest {
                 if (factoryContext.policy().allows(IsolatePolicy.Capability.SHARED_MEMORY)) {
                     throw new AssertionError("private actor policy retained SHARED_MEMORY");
                 }
+                if (factoryContext.policy().allows(IsolatePolicy.Capability.ACTOR_SHARE_READONLY)) {
+                    throw new AssertionError("private actor policy retained ACTOR_SHARE_READONLY");
+                }
                 if (factoryContext.policy().maxMailboxMessages() != IsolatePolicy.strictFaas().maxMailboxMessages()) {
                     throw new AssertionError("private actor policy did not preserve mailbox limit");
                 }
@@ -1272,5 +1275,58 @@ final class ActorRuntimeTest {
         }
     }
 
+
+    @Test
+    void effectiveCapabilityChecksUseActorPolicyAndRejectCrossRuntimeLaundering() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer());
+             ActorRuntime other = new ActorRuntime(IsolatePolicy.developer())) {
+            CountDownLatch privateChecked = new CountDownLatch(1);
+            CountDownLatch sharedChecked = new CountDownLatch(1);
+
+            var isolated = runtime.<String>spawnPrivate(factoryContext -> (message, context) -> {
+                assertThrows(SecurityException.class, () ->
+                        runtime.requireEffectiveCapability(
+                                IsolatePolicy.Capability.SHARED_MEMORY,
+                                "private-shared-memory"));
+                assertThrows(SecurityException.class, () ->
+                        runtime.requireEffectiveCapability(
+                                IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                                "private-readonly-sharing"));
+                assertDoesNotThrow(() ->
+                        runtime.requireEffectiveCapability(
+                                IsolatePolicy.Capability.STDOUT,
+                                "private-stdout"));
+                assertThrows(SecurityException.class, () ->
+                        other.requireEffectiveCapability(
+                                IsolatePolicy.Capability.SHARED_MEMORY,
+                                "cross-runtime"));
+                privateChecked.countDown();
+                context.self().stop();
+            });
+
+            var shared = runtime.<String>spawnShared(factoryContext -> (message, context) -> {
+                assertDoesNotThrow(() ->
+                        runtime.requireEffectiveCapability(
+                                IsolatePolicy.Capability.SHARED_MEMORY,
+                                "shared-shared-memory"));
+                assertDoesNotThrow(() ->
+                        runtime.requireEffectiveCapability(
+                                IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                                "shared-readonly-sharing"));
+                sharedChecked.countDown();
+                context.self().stop();
+            });
+
+            isolated.send("check");
+            shared.send("check");
+
+            assertTrue(privateChecked.await(2, TimeUnit.SECONDS));
+            assertTrue(sharedChecked.await(2, TimeUnit.SECONDS));
+            assertTrue(isolated.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(shared.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(isolated.failure().isEmpty());
+            assertTrue(shared.failure().isEmpty());
+        }
+    }
 
 }
