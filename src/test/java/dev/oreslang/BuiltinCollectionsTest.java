@@ -178,6 +178,61 @@ final class BuiltinCollectionsTest {
     }
 
     @Test
+    void coreCollectionTypeNamesAreReservedAndAnonymousMethodsCannotCaptureLocals() {
+        IllegalArgumentException reserved = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Map
+                  end
+                end
+                """)));
+        assertTrue(reserved.getMessage().contains("reserved"));
+
+        IllegalArgumentException captured = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  pub fnc main() => void {
+                    val suffix = "captured";
+                    val map = new Map<String, String>() {
+                      @override
+                      find(String key) => Option<String> {
+                        return Some(suffix);
+                      }
+                    };
+                    return;
+                  }
+                end
+                """)));
+        assertTrue(captured.getMessage().contains("cannot capture"));
+    }
+
+    @Test
+    void jsonMapRejectsNonJsonValuesAtRuntime() throws Exception {
+        String program = """
+                define module app
+                  define class NotJson
+                  end
+
+                  pub fnc main() => void {
+                    val json = new JsonMap() {
+                      "bad": new NotJson()
+                    };
+                    return;
+                  }
+                end
+                """;
+
+        Source source = Source.newBuilder(OresLanguage.ID, program, "bad-json-map.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            Exception failure = assertThrows(Exception.class, () -> context.eval(source));
+            assertTrue(failure.getMessage().contains("JSON-compatible"));
+        }
+    }
+
+    @Test
     void jsonMapRejectsNonJsonRuntimeValues() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
