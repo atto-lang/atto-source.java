@@ -185,6 +185,51 @@ final class UntrustedActorRuntimeTest {
         }
     }
 
+
+    @Test
+    void untrustedActorsRunOnDedicatedDispatcherPool() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 1, 64, 128);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var limits = new ActorRuntime.UntrustedActorLimits(
+                    Duration.ofSeconds(2), 100, 1024, 1024, 1024);
+            var ref = runtime.<String>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    limits,
+                    null,
+                    null,
+                    ignored -> (message, turn) -> {
+                        assertTrue(Thread.currentThread().getName()
+                                .startsWith("ores-untrusted-actor-dispatcher-"));
+                        turn.self().stop();
+                    });
+
+            ref.send("thread-name");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void untrustedActorsCannotReceiveActorGroupFanoutCapabilities() {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer());
+             var workers = runtime.<Object>group("trusted-workers")) {
+            var limits = new ActorRuntime.UntrustedActorLimits(
+                    Duration.ofSeconds(2), 100, 1024, 1024, 1024);
+            var ref = runtime.<Object>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    limits,
+                    null,
+                    null,
+                    ignored -> (message, turn) -> { });
+
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> ref.send(workers));
+            assertTrue(failure.getMessage().contains("ActorGroup"));
+            ref.stop();
+        }
+    }
+
     private static boolean waitUntil(BooleanSupplier condition, long timeoutMillis)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
