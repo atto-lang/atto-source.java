@@ -2126,6 +2126,7 @@ public final class TypeChecker {
                     || copyMethod.isAbstract()
                     || copyMethod.async()
                     || copyMethod.composed()
+                    || !aggregate.methods().contains(copyMethod)
                     || !copyMethod.genericParameters().isEmpty()
                     || !immutableReceiver) {
                 throw new IllegalArgumentException("class '" + aggregate.name()
