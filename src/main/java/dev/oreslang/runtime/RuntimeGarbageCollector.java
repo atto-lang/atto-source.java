@@ -1,11 +1,16 @@
 package dev.oreslang.runtime;
 
+import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -21,6 +26,12 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private static final int DEFAULT_MAX_TRACKED_PER_ACTOR = 4_096;
     private static final int DEFAULT_MAX_ACTOR_SWEEP_ENTRIES = 256;
     private static final Object PROCESS_DOMAIN = new Object();
+    private static final ScheduledExecutorService SWEEP_TIMER =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread thread = new Thread(r, "ores-gc-timer");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     public record CollectionReport(
             String scope,
@@ -44,21 +55,24 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         }
     }
 
-    private static final class TrackedCleanup {
-        private final WeakReference<Object> owner;
+    private static final class TrackedCleanup extends WeakReference<Object> {
         private final Object domain;
         private final Runnable cleanup;
         private final AtomicBoolean cleaning = new AtomicBoolean();
         private final AtomicBoolean cleaned = new AtomicBoolean();
 
-        private TrackedCleanup(Object owner, Object domain, Runnable cleanup) {
-            this.owner = new WeakReference<>(Objects.requireNonNull(owner));
+        private TrackedCleanup(
+                Object owner,
+                Object domain,
+                Runnable cleanup,
+                ReferenceQueue<Object> queue) {
+            super(Objects.requireNonNull(owner), queue);
             this.domain = Objects.requireNonNull(domain);
             this.cleanup = Objects.requireNonNull(cleanup);
         }
 
-        private boolean eligible() {
-            return owner.get() == null;
+        private boolean eligible(Set<Object> retiredDomains) {
+            return get() == null || retiredDomains.contains(domain);
         }
 
         private boolean tryClean() {
@@ -90,6 +104,8 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
 
     private final Set<TrackedCleanup> tracked = ConcurrentHashMap.newKeySet();
     private final Map<Object, Set<TrackedCleanup>> trackedByDomain = new ConcurrentHashMap<>();
+    private final Set<Object> retiredDomains = ConcurrentHashMap.newKeySet();
+    private final ReferenceQueue<Object> referenceQueue = new ReferenceQueue<>();
     private final AtomicLong collections = new AtomicLong();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong lastJvmGcNanos = new AtomicLong(Long.MIN_VALUE);
@@ -99,7 +115,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private final int maxTracked;
     private final int maxTrackedPerActor;
     private final int maxActorSweepEntries;
-    private final Thread sweeper;
+    private final ScheduledFuture<?> periodicSweep;
 
     public RuntimeGarbageCollector() {
         this(
@@ -152,7 +168,12 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         this.maxTracked = maxTracked;
         this.maxTrackedPerActor = maxTrackedPerActor;
         this.maxActorSweepEntries = maxActorSweepEntries;
-        this.sweeper = Thread.ofVirtual().name("ores-gc-sweeper").start(() -> sweepLoop(period));
+        long periodNanos = period.toNanos();
+        this.periodicSweep = SWEEP_TIMER.scheduleWithFixedDelay(
+                this::safePeriodicSweep,
+                periodNanos,
+                periodNanos,
+                TimeUnit.NANOSECONDS);
     }
 
     private static Duration requirePositive(Duration value, String name) {
@@ -179,7 +200,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 throw new IllegalStateException(
                         "actor cleanup registry limit exceeded: " + maxTrackedPerActor);
             }
-            TrackedCleanup entry = new TrackedCleanup(owner, domain, cleanup);
+            TrackedCleanup entry = new TrackedCleanup(owner, domain, cleanup, referenceQueue);
             tracked.add(entry);
             domainEntries.add(entry);
             return new CleanupHandle(entry);
@@ -204,6 +225,21 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         return sweep(null, false, Integer.MAX_VALUE);
     }
 
+    /**
+     * Retires one semantic actor domain. Actor-local runtime resources are
+     * deterministic actor-lifetime resources: actor termination makes them
+     * cleanup-eligible even if a stale host reference still exists.
+     *
+     * Failed cleanup hooks remain registered and are retried by later process
+     * or periodic sweeps. The per-actor registry cap bounds exit work.
+     */
+    public CollectionReport retireActorDomain(Object actorDomain) {
+        Objects.requireNonNull(actorDomain, "actorDomain");
+        ensureOpen();
+        retiredDomains.add(actorDomain);
+        return sweep(actorDomain, false, Integer.MAX_VALUE);
+    }
+
     private boolean requestJvmGcIfAllowed() {
         long now = System.nanoTime();
         long previous = lastJvmGcNanos.get();
@@ -224,29 +260,68 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             Object requestedDomain,
             boolean jvmGcRequested,
             int maxEntriesToInspect) {
-        Set<TrackedCleanup> candidates = requestedDomain == null
-                ? tracked
-                : trackedByDomain.getOrDefault(requestedDomain, Set.of());
-        int before = candidates.size();
+        int before = requestedDomain == null
+                ? tracked.size()
+                : trackedByDomain.getOrDefault(requestedDomain, Set.of()).size();
         int inspected = 0;
         int cleanedCount = 0;
         int cleanupFailures = 0;
 
-        for (TrackedCleanup entry : candidates) {
-            if (inspected >= maxEntriesToInspect) break;
-            inspected++;
-            if (!entry.eligible()) continue;
-            try {
-                if (entry.tryClean()) {
-                    cleanedCount++;
-                    removeTracked(entry);
+        if (requestedDomain == null) {
+            while (inspected < maxEntriesToInspect) {
+                TrackedCleanup entry = (TrackedCleanup) referenceQueue.poll();
+                if (entry == null) break;
+                if (!tracked.contains(entry)) continue;
+                inspected++;
+                try {
+                    if (entry.tryClean()) {
+                        cleanedCount++;
+                        removeTracked(entry);
+                    }
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable cleanupFailure) {
+                    cleanupFailures++;
                 }
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable cleanupFailure) {
-                // Keep failed hooks registered so a later explicit/periodic sweep
-                // can retry. Cleanup hooks therefore must be idempotent.
-                cleanupFailures++;
+            }
+
+            // Retired actor domains are deterministically cleanup-eligible even
+            // if a stale host reference keeps an owner strongly reachable.
+            for (Object retired : Set.copyOf(retiredDomains)) {
+                if (inspected >= maxEntriesToInspect) break;
+                Set<TrackedCleanup> entries = trackedByDomain.getOrDefault(retired, Set.of());
+                for (TrackedCleanup entry : entries) {
+                    if (inspected >= maxEntriesToInspect) break;
+                    inspected++;
+                    try {
+                        if (entry.tryClean()) {
+                            cleanedCount++;
+                            removeTracked(entry);
+                        }
+                    } catch (VirtualMachineError | ThreadDeath fatal) {
+                        throw fatal;
+                    } catch (Throwable cleanupFailure) {
+                        cleanupFailures++;
+                    }
+                }
+            }
+        } else {
+            Set<TrackedCleanup> candidates =
+                    trackedByDomain.getOrDefault(requestedDomain, Set.of());
+            for (TrackedCleanup entry : candidates) {
+                if (inspected >= maxEntriesToInspect) break;
+                inspected++;
+                if (!entry.eligible(retiredDomains)) continue;
+                try {
+                    if (entry.tryClean()) {
+                        cleanedCount++;
+                        removeTracked(entry);
+                    }
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable cleanupFailure) {
+                    cleanupFailures++;
+                }
             }
         }
 
@@ -270,29 +345,22 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             Set<TrackedCleanup> domainEntries = trackedByDomain.get(entry.domain);
             if (domainEntries == null) return;
             domainEntries.remove(entry);
-            if (domainEntries.isEmpty()) trackedByDomain.remove(entry.domain, domainEntries);
+            if (domainEntries.isEmpty()) {
+                trackedByDomain.remove(entry.domain, domainEntries);
+                retiredDomains.remove(entry.domain);
+            }
         }
     }
 
-    private void sweepLoop(Duration period) {
-        while (!closed.get()) {
-            try {
-                Thread.sleep(period);
-            } catch (InterruptedException interrupted) {
-                if (closed.get()) return;
-                Thread.currentThread().interrupt();
-                return;
-            }
-            if (!closed.get()) {
-                try {
-                    collectPeriodic();
-                } catch (VirtualMachineError | ThreadDeath fatal) {
-                    throw fatal;
-                } catch (Throwable ignored) {
-                    // Periodic housekeeping must not terminate the VM on a
-                    // single host-resource cleanup failure.
-                }
-            }
+    private void safePeriodicSweep() {
+        if (closed.get()) return;
+        try {
+            collectPeriodic();
+        } catch (VirtualMachineError | ThreadDeath fatal) {
+            throw fatal;
+        } catch (Throwable ignored) {
+            // Periodic housekeeping is best-effort. Cleanup hook failures are
+            // retained for retry and must not kill the shared timer thread.
         }
     }
 
@@ -305,13 +373,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         synchronized (lifecycleLock) {
             if (!closed.compareAndSet(false, true)) return;
         }
-        sweeper.interrupt();
-        boolean interrupted = false;
-        try {
-            sweeper.join(1000);
-        } catch (InterruptedException e) {
-            interrupted = true;
-        }
+        periodicSweep.cancel(false);
         for (TrackedCleanup entry : tracked) {
             try {
                 if (entry.tryClean()) removeTracked(entry);
@@ -324,7 +386,8 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
         synchronized (lifecycleLock) {
             tracked.clear();
             trackedByDomain.clear();
+            retiredDomains.clear();
+            while (referenceQueue.poll() != null) { /* drain */ }
         }
-        if (interrupted) Thread.currentThread().interrupt();
     }
 }
