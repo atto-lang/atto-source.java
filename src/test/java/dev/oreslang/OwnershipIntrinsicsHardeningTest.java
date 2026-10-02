@@ -369,7 +369,7 @@ final class OwnershipIntrinsicsHardeningTest {
                           pub let int value = 0;
 
                           pub view() => &Buffer {
-                            return self;
+                            return &self;
                           }
                         end
 
