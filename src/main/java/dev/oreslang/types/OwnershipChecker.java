@@ -328,8 +328,7 @@ public final class OwnershipChecker {
                             }
                             return new ValueInfo(field.type(), ValueKind.COPY, null);
                         }
-                        List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
-                        if (!methods.isEmpty()) {
+                        if (hasMethodNamed(klass, member.member(), new LinkedHashSet<>())) {
                             throw error("cannot extract a bound method from protected mutex state; invoke it directly while the guard is live");
                         }
                     }
@@ -767,6 +766,26 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return null;
+    }
+
+    private boolean hasMethodNamed(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return false;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        for (Ast.TypeRef parent : klass.parents()) {
+            Ast.ClassDecl p = findClass(parent.name());
+            if (p == null) continue;
+            if (hasMethodNamed(p, name, seen)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        seen.remove(klass);
+        return false;
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
