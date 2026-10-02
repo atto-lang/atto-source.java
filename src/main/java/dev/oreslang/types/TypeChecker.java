@@ -45,30 +45,6 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
-    private static final int MAX_SHARED_SAFE_DEPTH = 128;
-
-    private static final class SharedSafeKey {
-        private final Ast.ClassDecl klass;
-        private final List<Type> arguments;
-
-        private SharedSafeKey(Ast.ClassDecl klass, List<Type> arguments) {
-            this.klass = klass;
-            this.arguments = List.copyOf(arguments);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            return other instanceof SharedSafeKey key
-                    && klass == key.klass
-                    && arguments.equals(key.arguments);
-        }
-
-        @Override
-        public int hashCode() {
-            return 31 * System.identityHashCode(klass) + arguments.hashCode();
-        }
-    }
-
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -772,105 +748,74 @@ public final class TypeChecker {
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
     }
 
-    private boolean isSharedSafe(
-            Type type,
-            Set<SharedSafeKey> seen,
-            Map<String, Type> genericBindings) {
-        return isSharedSafe(type, seen, genericBindings, 0);
-    }
-
-    private boolean isSharedSafe(
-            Type type,
-            Set<SharedSafeKey> seen,
-            Map<String, Type> genericBindings,
-            int depth) {
-        if (depth > MAX_SHARED_SAFE_DEPTH) return false;
+    private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
         if (type == Unknown.INSTANCE || type instanceof Borrow || type instanceof Function || type instanceof ClassNamespace) return false;
         if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
         if (type instanceof StringLiteral) return true;
         if (type instanceof Generic generic) {
             Type bound = genericBindings.get(generic.name());
-            return bound != null
-                    && bound != type
-                    && isSharedSafe(bound, seen, genericBindings, depth + 1);
+            return bound != null && bound != type && isSharedSafe(bound, seen, genericBindings);
         }
-        if (type instanceof ListType list) {
-            return isSharedSafe(list.element(), seen, genericBindings, depth + 1);
-        }
+        if (type instanceof ListType list) return isSharedSafe(list.element(), seen, genericBindings);
         if (type instanceof Union union) {
-            for (Type option : union.options()) {
-                if (!isSharedSafe(option, seen, genericBindings, depth + 1)) return false;
-            }
+            for (Type option : union.options()) if (!isSharedSafe(option, seen, genericBindings)) return false;
             return true;
         }
         if (type instanceof Tuple tuple) {
-            for (Type element : tuple.elements()) {
-                if (!isSharedSafe(element, seen, genericBindings, depth + 1)) return false;
-            }
+            for (Type element : tuple.elements()) if (!isSharedSafe(element, seen, genericBindings)) return false;
             return true;
         }
         if (type instanceof Record record) {
-            for (Type member : record.members().values()) {
-                if (!isSharedSafe(member, seen, genericBindings, depth + 1)) return false;
-            }
+            for (Type member : record.members().values()) if (!isSharedSafe(member, seen, genericBindings)) return false;
             return true;
         }
         if (!(type instanceof Named named)) return false;
 
-        if (named.name().equals("Mutex")
-                || named.name().equals("MutexGuard")
-                || named.name().equals("Future")) {
-            return false;
-        }
+        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) return false;
         if (named.name().equals("Option") || named.name().equals("SharedMutex")) {
-            return named.arguments().size() == 1
-                    && isSharedSafe(
-                            named.arguments().getFirst(),
-                            seen,
-                            genericBindings,
-                            depth + 1);
+            return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
         }
 
         for (Type argument : named.arguments()) {
-            if (!isSharedSafe(argument, seen, genericBindings, depth + 1)) return false;
+            if (!isSharedSafe(argument, seen, genericBindings)) return false;
         }
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) return false;
-
-        SharedSafeKey key = new SharedSafeKey(klass, named.arguments());
-        if (!seen.add(key)) return true;
+        if (!seen.add(klass)) return true;
 
         try {
             Map<String, Type> classBindings = new HashMap<>(genericBindings);
             if (named.arguments().size() != klass.genericParameters().size()) return false;
             for (int i = 0; i < klass.genericParameters().size(); i++) {
-                classBindings.put(
-                        klass.genericParameters().get(i),
+                classBindings.put(klass.genericParameters().get(i),
                         resolveSharedGeneric(named.arguments().get(i), genericBindings));
             }
 
             Type nominal = nominalClassType(klass);
             Set<String> classGenerics = Set.copyOf(klass.genericParameters());
 
+            // Check only fields declared by this class under this class's own
+            // generic environment. Flattening inherited fields here is unsafe:
+            // a parent T must never be resolved as an unrelated child T.
             for (Ast.FieldDecl field : klass.fields()) {
                 Type fieldType = resolveSharedGeneric(
                         resolve(field.type(), classGenerics, nominal),
                         classBindings);
-                if (!isSharedSafe(fieldType, seen, classBindings, depth + 1)) return false;
+                if (!isSharedSafe(fieldType, seen, classBindings)) return false;
             }
 
+            // Recurse into each parent after substituting the child's generic
+            // bindings into the parent's concrete type arguments.
             for (Ast.TypeRef parentRef : klass.parents()) {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
-                Type parentType = resolveSharedGeneric(
-                        resolve(parentRef, classGenerics, nominal),
-                        classBindings);
-                if (!isSharedSafe(parentType, seen, classBindings, depth + 1)) return false;
+                Type parentType = resolveSharedGeneric(resolve(parentRef, classGenerics, nominal), classBindings);
+                if (!isSharedSafe(parentType, seen, classBindings)) return false;
             }
 
             return true;
         } finally {
-            seen.remove(key);
+            seen.remove(klass);
         }
     }
 
