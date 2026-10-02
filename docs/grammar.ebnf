@@ -1,4 +1,4 @@
-(* Oreslang v0.5 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
+(* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
 namespace_decl  = "namespace" IDENT ";" ;
@@ -29,7 +29,7 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" ;
+callable_modifier = "abstract" | "async" ;\nmethod_modifier   = "abstract" | "async" | "mut" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -46,7 +46,7 @@ class_member    = field_decl
 
 field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
 
-method_decl     = { annotation } visibility { callable_modifier } method_name [ generic_params ]
+method_decl     = { annotation } visibility { method_modifier } method_name [ generic_params ]
                   method_head return_spec ( block | stmt_terminator ) ;
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
@@ -76,8 +76,8 @@ annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
-param           = type_ref IDENT
-                | "@Structural" type_ref IDENT
+param           = type_ref [ "mut" ] IDENT
+                | "@Structural" type_ref [ "mut" ] IDENT
                 | IDENT "structural" type_ref ;
 
 binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
@@ -122,7 +122,9 @@ equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
-unary           = [ "!" | "-" | "+" | "await" ] postfix ;
+unary           = ( "&" [ "mut" ] | "*" | "!" | "-" | "+" ) unary
+                | "await" unary
+                | postfix ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." IDENT ;
@@ -142,7 +144,7 @@ primary         = literal
 
 lambda          = pipe_lambda | typed_legacy_lambda ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
-lambda_param    = IDENT | type_ref IDENT ;
+lambda_param    = [ "mut" ] IDENT | type_ref [ "mut" ] IDENT ;
 typed_legacy_lambda
                 = "(" [ param_list ] ")" "->" block ;
 
@@ -155,7 +157,8 @@ object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
 
-type_ref        = named_type
+type_ref        = borrow_type
+                | named_type
                 | function_type
                 | grouped_type
                 | STRING_LITERAL
@@ -163,6 +166,7 @@ type_ref        = named_type
                 | "void"
                 | "null" ;
 
+borrow_type     = "&" [ "mut" ] type_ref ;
 named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
 function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "->" type_ref
                 | "(" [ function_type_params ] ")" "->" type_ref ;
@@ -207,5 +211,18 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" is contextual in parameter position, not globally reserved.
-   - self is an immutable receiver binding and cannot be rebound.
+   - ordinary parameters are immutable owned bindings; "Type mut name" opts
+     the local parameter binding into mutation.
+   - class fields are immutable unless declared with let.
+   - instance methods are immutable-receiver methods unless prefixed with mut.
+   - &T creates a shared borrow; &mut T creates an exclusive mutable borrow;
+     *ref dereferences either form.
+   - borrows are non-escaping: reference values cannot be returned, stored in
+     class/module state, captured by closures, or transferred through actors.
+   - non-Copy owned values move on by-value calls, returns, aggregate creation,
+     and non-Copy closure capture; a moved binding cannot be reused.
+   - closures use lexical scope and own non-Copy/mutable captures, preventing
+     shared mutable closure state between the closure and its outer scope.
+   - self is immutable unless the method is declared with the mut receiver
+     modifier.
 *)
