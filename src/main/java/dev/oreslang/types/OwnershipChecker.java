@@ -21,7 +21,7 @@ import java.util.Set;
  *
  * Current model:
  * - primitive immutable values are Copy;
- * - class/list/object/function values and structs are move-only by default;
+ * - classes/lists/objects/functions are move-only; named structs derive Copy when every stored field is Copy;
  * - by-value call/binding/return moves move-only values;
  * - &T permits shared immutable borrows;
  * - &mut T is exclusive and requires a mutable owner;
@@ -397,7 +397,8 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.StructInitExpr created) {
             for (Ast.ObjectField field : created.fields()) checkExpr(field.value(), scope, true);
-            return new ValueInfo(created.type() == null ? Ast.TypeRef.inferred() : created.type(), ValueKind.MOVE_ONLY, null);
+            Ast.TypeRef type = created.type() == null ? Ast.TypeRef.inferred() : created.type();
+            return new ValueInfo(type, created.type() != null ? kindOfType(type) : ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
@@ -909,13 +910,46 @@ public final class OwnershipChecker {
     }
 
     private boolean isCopyType(Ast.TypeRef type) {
-        if (type == null || type.isBorrow()) return false;
-        return switch (type.name()) {
+        return isCopyType(type, new LinkedHashSet<>());
+    }
+
+    private boolean isCopyType(Ast.TypeRef type, Set<Ast.ClassDecl> visiting) {
+        if (type == null || type.isBorrow() || type.inferArguments()) return false;
+        Ast.TypeRef resolved = resolveOwnershipAlias(type, new LinkedHashSet<>());
+        if (resolved == null || resolved.isBorrow() || resolved.inferArguments()) return false;
+
+        switch (resolved.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void" -> true;
-            default -> false;
-        };
+                    "bool","Bool","string","String","void" -> {
+                return true;
+            }
+            case "Option" -> {
+                return resolved.arguments().size() == 1
+                        && isCopyType(resolved.arguments().getFirst(), visiting);
+            }
+            default -> { }
+        }
+
+        Ast.ClassDecl aggregate = findClass(resolved.name());
+        if (aggregate == null || !aggregate.isStruct()) return false;
+        if (aggregate.genericParameters().size() != resolved.arguments().size()) return false;
+        if (!visiting.add(aggregate)) return false;
+
+        LinkedHashMap<String, Ast.TypeRef> substitutions = new LinkedHashMap<>();
+        for (int i = 0; i < aggregate.genericParameters().size(); i++) {
+            substitutions.put(aggregate.genericParameters().get(i), resolved.arguments().get(i));
+        }
+
+        try {
+            for (Ast.FieldDecl field : aggregate.fields()) {
+                Ast.TypeRef fieldType = substituteOwnershipAliasType(field.type(), substitutions);
+                if (!isCopyType(fieldType, visiting)) return false;
+            }
+            return true;
+        } finally {
+            visiting.remove(aggregate);
+        }
     }
 
     private Ast.TypeRef inferLiteralType(Object value) {
