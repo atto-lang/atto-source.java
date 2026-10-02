@@ -26,6 +26,7 @@ import java.util.function.Supplier;
  */
 public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<IsolatePolicy> CURRENT_ACTOR_POLICY = new ThreadLocal<>();
+    private static final ThreadLocal<Object> CURRENT_ACTOR_DOMAIN = new ThreadLocal<>();
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -49,6 +50,18 @@ public final class ActorRuntime implements AutoCloseable {
     /** Current actor policy for runtime primitives that need capability checks. */
     public static IsolatePolicy currentActorPolicy() {
         return CURRENT_ACTOR_POLICY.get();
+    }
+
+    /**
+     * Stable semantic execution domain for actor-local state.
+     *
+     * Shared actors may migrate between JVM worker threads, so actor-local
+     * confinement must key off actor identity rather than Thread identity.
+     * Outside actor execution, the current Thread is the local domain.
+     */
+    public static Object currentExecutionDomain() {
+        Object actorDomain = CURRENT_ACTOR_DOMAIN.get();
+        return actorDomain != null ? actorDomain : Thread.currentThread();
     }
 
     public record ActorId(UUID value) {
@@ -240,6 +253,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
+        private final Object executionDomain = new Object();
         private volatile Thread thread;
 
         private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
@@ -256,6 +270,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private void run() {
             CURRENT_ACTOR_POLICY.set(policy);
+            CURRENT_ACTOR_DOMAIN.set(executionDomain);
             final Behavior<M> behavior = behaviorFactory.get();
             final ActorContext<M> context = new ActorContext<>() {
                 @Override public ActorRef<M> self() { return ref; }
@@ -274,6 +289,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // v0 fail-stop supervision policy. A later supervisor layer will
                 // expose restart/escalation strategies as typed Oreslang APIs.
             } finally {
+                CURRENT_ACTOR_DOMAIN.remove();
                 CURRENT_ACTOR_POLICY.remove();
                 actors.remove(ref.id(), this);
             }
