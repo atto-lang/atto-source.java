@@ -299,6 +299,8 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
+            for (Ast.ObjectField entry : created.entries()) checkExpr(entry.value(), scope, true);
+            for (Ast.MethodDecl method : created.methods()) checkAnonymousMethod(method, created.type(), scope);
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
@@ -320,6 +322,25 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private void checkAnonymousMethod(Ast.MethodDecl method, Ast.TypeRef selfType, Scope outer) {
+        CaptureSet captures = new CaptureSet();
+        Set<String> locals = new HashSet<>();
+        locals.add("self");
+        for (Ast.Param param : method.parameters()) locals.add(param.name());
+        scanStatements(method.body(), locals, outer, null, captures);
+        if (!captures.values.isEmpty()) {
+            String names = String.join(", ", captures.values.keySet());
+            throw error("anonymous class/collection methods are non-lexical and cannot capture local value(s): " + names
+                    + "; move state into fields/map entries or pass it as a parameter");
+        }
+
+        Scope methodScope = new Scope(null);
+        methodScope.define("self", new VarState(selfType, false, ValueKind.IMM_BORROW, Origin.PARAM));
+        for (Ast.Param param : method.parameters()) methodScope.define(param.name(), stateForParam(param));
+        checkBlock(method.body(), methodScope, method.returnType());
+        methodScope.close();
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
@@ -566,7 +587,13 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.IndexExpr e) {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
-        } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+        } else if (expr instanceof Ast.NewExpr e) {
+            for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+            for (Ast.ObjectField entry : e.entries()) scanExpr(entry.value(), locals, outer, recursiveBinding, captures, false);
+            // Anonymous method bodies are deliberately non-lexical; their own
+            // ownership check rejects local captures instead of attributing
+            // them to the enclosing closure.
+        }
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
