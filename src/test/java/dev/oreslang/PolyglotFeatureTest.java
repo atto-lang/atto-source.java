@@ -17,12 +17,10 @@ final class PolyglotFeatureTest {
                   pub fnc add(int a, int b) => int { return a + b; }
                 end
 
-                define module model
-                  define class A
-                    pub value() => int { return 7; }
-                  end
-                  define class B extends A
-                  end
+                define class A
+                  pub value() => int { return 7; }
+                end
+                define class B extends A
                 end
 
                 define module app
