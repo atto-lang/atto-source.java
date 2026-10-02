@@ -25,6 +25,8 @@ import java.util.function.Supplier;
  * Frozen values rather than sharing Java object references.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final ThreadLocal<IsolatePolicy> CURRENT_ACTOR_POLICY = new ThreadLocal<>();
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
@@ -38,6 +40,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /** True only while the current JVM thread is executing an actor behavior. */
+    public static boolean inActorExecution() {
+        return CURRENT_ACTOR_POLICY.get() != null;
+    }
+
+    /** Current actor policy for runtime primitives that need capability checks. */
+    public static IsolatePolicy currentActorPolicy() {
+        return CURRENT_ACTOR_POLICY.get();
+    }
 
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
@@ -120,6 +132,12 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
         Object frozen = freeze(message);
+        if (containsSharedMutex(frozen)) {
+            IsolatePolicy sender = CURRENT_ACTOR_POLICY.get();
+            if (sender != null) sender.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor send");
+            else policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
+            cell.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
+        }
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -158,6 +176,7 @@ public final class ActorRuntime implements AutoCloseable {
             return value;
         }
         if (value instanceof Shared<?> shared) return shared;
+        if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof ActorRef<?> ref) return ref;
         if (value instanceof List<?> list) {
             List<Object> frozen = new ArrayList<>(list.size());
@@ -181,6 +200,25 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Sendable sendable) return sendable.freezeForSend();
         throw new IllegalArgumentException("value of type " + value.getClass().getName()
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
+    }
+
+    private static boolean containsSharedMutex(Object value) {
+        if (value instanceof OresMutex.Shared<?>) return true;
+        if (value instanceof List<?> list) {
+            for (Object item : list) if (containsSharedMutex(item)) return true;
+            return false;
+        }
+        if (value instanceof Set<?> set) {
+            for (Object item : set) if (containsSharedMutex(item)) return true;
+            return false;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (containsSharedMutex(entry.getKey()) || containsSharedMutex(entry.getValue())) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
@@ -216,6 +254,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void run() {
+            CURRENT_ACTOR_POLICY.set(policy);
             final Behavior<M> behavior = behaviorFactory.get();
             final ActorContext<M> context = new ActorContext<>() {
                 @Override public ActorRef<M> self() { return ref; }
@@ -234,6 +273,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // v0 fail-stop supervision policy. A later supervisor layer will
                 // expose restart/escalation strategies as typed Oreslang APIs.
             } finally {
+                CURRENT_ACTOR_POLICY.remove();
                 actors.remove(ref.id(), this);
             }
         }
