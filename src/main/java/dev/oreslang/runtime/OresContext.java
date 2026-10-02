@@ -37,7 +37,7 @@ public final class OresContext implements AutoCloseable {
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.actors = new ActorRuntime(
                 isolatePolicy,
-                ActorRuntime.DispatcherConfig.defaults(),
+                ActorRuntime.WorkerConfig.defaults(),
                 this::executeActorTurn);
     }
 
