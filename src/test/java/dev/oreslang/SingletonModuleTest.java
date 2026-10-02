@@ -93,6 +93,8 @@ final class SingletonModuleTest {
     @Test
     void unrelatedCodeUnitsWithSameModuleNameDoNotAlias() throws Exception {
         String program = """
+                namespace shared_tenant_namespace;
+
                 define singleton module same_name_cache
                   let int count = 0;
 
