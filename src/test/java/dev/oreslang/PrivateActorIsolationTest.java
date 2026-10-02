@@ -450,4 +450,37 @@ final class PrivateActorIsolationTest {
     }
 
 
+    @Test
+    void privateFactoryCannotUseMutableStaticJvmState() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            assertThrows(SecurityException.class, () ->
+                    runtime.<String>spawnPrivate(new ActorRuntime.BehaviorFactory<>() {
+                        private static int SHARED_COUNTER;
+
+                        @Override
+                        public ActorRuntime.Behavior<String> create(ActorRuntime.ActorContext<String> context) {
+                            SHARED_COUNTER++;
+                            return (message, turn) -> { };
+                        }
+                    }));
+        }
+    }
+
+    @Test
+    void privateFactoryCannotHideSharedMutableObjectBehindStaticFinal() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            assertThrows(SecurityException.class, () ->
+                    runtime.<String>spawnPrivate(new ActorRuntime.BehaviorFactory<>() {
+                        private static final AtomicInteger SHARED_COUNTER = new AtomicInteger();
+
+                        @Override
+                        public ActorRuntime.Behavior<String> create(ActorRuntime.ActorContext<String> context) {
+                            SHARED_COUNTER.incrementAndGet();
+                            return (message, turn) -> { };
+                        }
+                    }));
+        }
+    }
+
+
 }
