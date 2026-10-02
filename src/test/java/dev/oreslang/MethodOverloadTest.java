@@ -176,6 +176,196 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void unrelatedParentsWithSameArityRequireExplicitChildOverrideEvenWhenTypesMatch() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Left
+                            pub pick(int value) => int { return value; }
+                          end
+
+                          define class Right
+                            pub pick(int value) => int { return value; }
+                          end
+
+                          define class Child extends Left, Right
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("ambiguous inherited method 'Child.pick' with arity 1"));
+        assertTrue(error.getMessage().contains("m.Left"));
+        assertTrue(error.getMessage().contains("m.Right"));
+        assertTrue(error.getMessage().contains("argument and return types never select an overload"));
+    }
+
+    @Test
+    void explicitChildOverrideResolvesSameArityMultipleInheritance() throws Exception {
+        String output = run("""
+                define module m
+                  define class Left
+                    pub pick(int value) => int { return value + 10; }
+                  end
+
+                  define class Right
+                    pub pick(int value) => int { return value + 20; }
+                  end
+
+                  define class Child extends Left, Right
+                    pub pick(int value) => int { return value + 30; }
+                  end
+                end
+
+                pub routine main() => void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.pick(2));
+                }
+                """);
+
+        assertEquals("32", output);
+    }
+
+    @Test
+    void trueDiamondInheritanceOfTheSameDeclarationIsNotAmbiguous() throws Exception {
+        String output = run("""
+                define module m
+                  define class Base
+                    pub pick(int value) => int { return value + 1; }
+                  end
+
+                  define class Left extends Base
+                  end
+
+                  define class Right extends Base
+                  end
+
+                  define class Diamond extends Left, Right
+                  end
+                end
+
+                pub routine main() => void {
+                  val value = new m.Diamond();
+                  stdio.stdout.write(value.pick(4));
+                }
+                """);
+
+        assertEquals("5", output);
+    }
+
+    @Test
+    void unrelatedParentsCanContributeDifferentAritiesWithoutConflict() throws Exception {
+        String output = run("""
+                define module m
+                  define class Left
+                    pub pick() => int { return 1; }
+                  end
+
+                  define class Right
+                    pub pick(int value) => int { return value; }
+                  end
+
+                  define class Child extends Left, Right
+                  end
+                end
+
+                pub routine main() => void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.pick());
+                  stdio.stdout.write(child.pick(7));
+                }
+                """);
+
+        assertEquals("17", output);
+    }
+
+    @Test
+    void inheritedStaticFunctionsAlsoRequireExplicitResolutionForSameArity() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Left
+                            pub static fnc pick(int value) => int { return value; }
+                          end
+
+                          define class Right
+                            pub static fnc pick(int value) => int { return value; }
+                          end
+
+                          define class Child extends Left, Right
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("ambiguous inherited static function 'Child.pick' with arity 1"));
+    }
+
+    @Test
+    void parentOrderNeverChoosesAWinningSameArityMethod() {
+        String leftFirst = """
+                define module m
+                  define class Left
+                    pub pick(int value) => int { return value; }
+                  end
+                  define class Right
+                    pub pick(int value) => int { return value; }
+                  end
+                  define class Child extends Left, Right
+                  end
+                end
+                """;
+        String rightFirst = """
+                define module m
+                  define class Left
+                    pub pick(int value) => int { return value; }
+                  end
+                  define class Right
+                    pub pick(int value) => int { return value; }
+                  end
+                  define class Child extends Right, Left
+                  end
+                end
+                """;
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(leftFirst)));
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse(rightFirst)));
+    }
+
+    @Test
+    void asyncModifierDoesNotCreateASecondSameArityOverloadSlot() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class C
+                            pub find(int value) => int { return value; }
+                            pub async find(int value) => int { return value; }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("already has arity 1"));
+    }
+
+    @Test
+    void staticAndInstanceNamespacesRemainDistinct() throws Exception {
+        String output = run("""
+                define module m
+                  define class C
+                    pub pick(int value) => int { return value + 1; }
+                    pub static fnc pick(int value) => int { return value + 2; }
+                  end
+                end
+
+                pub routine main() => void {
+                  val c = new m.C();
+                  stdio.stdout.write(c.pick(3));
+                  stdio.stdout.write(m.C.pick(3));
+                }
+                """);
+
+        assertEquals("45", output);
+    }
+
+    @Test
     void interfacesAndImplementationsUseArityOnlyMethodSlots() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub interface Lookup {
