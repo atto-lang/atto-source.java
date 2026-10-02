@@ -686,6 +686,10 @@ public final class Parser {
         if (match(MINUS)) {
             if (match(INT)) return new Ast.LiteralPattern(-Long.parseLong(previous().lexeme().replace("_", "")));
             if (match(FLOAT)) return new Ast.LiteralPattern(-Double.parseDouble(previous().lexeme().replace("_", "")));
+            if (match(IMAG)) {
+                String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
+                return new Ast.LiteralPattern(new Ast.Imaginary(-Double.parseDouble(raw)));
+            }
             throw error(peek(), "negative match literals must be numeric");
         }
 
