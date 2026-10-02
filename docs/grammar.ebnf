@@ -231,6 +231,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - named class/interface types are nominal by default.
    - @Structural, name structural Type, or @AllowStructural(name) opt a
      parameter into public-shape compatibility.
+   - "main" and "init" are reserved callable names at file/root and module declaration scope.
+     At those scopes, bindings/types/classes/interfaces/import aliases may not occupy those names.
+     The reservation is scope-specific: locals and class members may still use main/init.
+   - main/init lifecycle fnc/routine declarations may not be actor or actor-isolate callables.
    - "actor fnc" / "actor routine" declarations are one-shot actor factories.
      Their declared body return type must be void; calling one returns ActorTask.
    - ActorTask exposes stop/join/alive/failed/kind but no mailbox send operation.
