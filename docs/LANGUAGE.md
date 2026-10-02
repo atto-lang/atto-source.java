@@ -1,83 +1,67 @@
-# Oreslang language design (v0)
+# Oreslang language design (v0.2)
 
-Oreslang is a statically typed, structurally typed language implemented on Truffle for GraalVM. The design favors explicit mutation, actor heap isolation, predictable message passing, and a stricter isolate profile for untrusted/FaaS execution.
+Oreslang is a statically typed, structurally typed guest language for GraalVM/Truffle. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
-## 1. Source files and modules
+## Files, modules, and imports
 
-A source file may contain more than one named module:
+A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
 
 ```ores
-
-define module foo
-  pub fnc answer() => int {
-    return 42;
+define module math
+  pub fnc add(int a, int b) => int {
+    return a + b;
   }
 end
 
-define module bar
-  fnc hidden() => void {
+define module app
+  pub fnc main() => void {
+    val answer = math.add(40, 2);
+    stdio.println(answer);
     return;
   }
 end
 ```
 
-A module name is mandatory. Top-level functions are private unless prefixed with `pub`.
-
-## 2. Bindings
-
-Every variable binding is declared with exactly one of:
-
-- `const`: compile-time constant. The initializer must be compile-time evaluable.
-- `val`: runtime single-assignment binding. The binding cannot be rebound.
-- `let`: mutable binding.
-
-Examples:
+Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
-const max_retries = 3;
-val request_id = process.request_id;
-let attempts = 0;
+import module foo from "../xyz";
+import module {foo, bar} from "../xyz";
+import class {x} from '../xyz';
+import fnc * as funcs from '../xyz';
+import * as x from './xyz';
 ```
 
-Types may be inferred or written explicitly:
+Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+
+## Module interfaces / OCaml-style module signatures
+
+Interfaces can describe the structural public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
 
 ```ores
-let int attempts = 0;
-val String name = "ores";
+define module contracts
+  define interface MathApi
+    fnc add(int a, int b) => int;
+    String name;
+  end
+end
+
+@AdheresTo(contracts.MathApi)
+define module math
+  pub fnc add(int a, int b) => int { return a + b; }
+  pub val String name = "math";
+end
 ```
 
-Destructuring places the binding mode on each element, not on the container pattern:
+Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(A, B)` may name more than one interface.
 
-```ores
-[const code, let body] = get_tuple();
-[val head, let tail] = get_list();
-```
+## Functions and returns
 
-Oreslang intentionally does not use `const [a, b] = ...` because each binding can have different mutability.
-
-## 3. Functions
-
-Functions use `fnc`. They are private by default:
+Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
 
 ```ores
 fnc add(int a, int b) => int {
   return a + b;
-}
-
-pub fnc parse(String input) => Result<Value, ParseError> {
-  return parser.parse(input);
-}
-```
-
-Only one value may be returned. To return several logical values, return one tuple, array, record, class value, or another aggregate.
-
-Every non-`void` path must execute an explicit `return`. Oreslang does not use implicit final-expression returns.
-
-Return types may be written with a fat arrow or with a return annotation:
-
-```ores
-fnc id<T>(T value) => T {
-  return value;
 }
 
 @Ret<int>
@@ -86,14 +70,34 @@ fnc answer() {
 }
 ```
 
-The two return syntaxes are equivalent. Supplying both is allowed only when they denote the same type.
+`@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
 
-## 4. Classes and receiver methods
+## Bindings
 
-Classes use `define class`:
+Every local binding is declared as exactly one of:
+
+- `const`: compile-time constant; cannot be reassigned.
+- `val`: runtime single-assignment binding; cannot be reassigned.
+- `let`: mutable binding and the only local binding kind that may be reassigned.
 
 ```ores
+const max = 10;
+val request_id = process.context_id;
+let retries = 0;
+retries = retries + 1;
+```
 
+Destructuring carries mutability per element:
+
+```ores
+[const code, let body] = (200, "ok");
+```
+
+## Classes, receivers, multiple inheritance, and interfaces
+
+Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
+
+```ores
 define class Box<T>
   val T value;
 
@@ -101,121 +105,116 @@ define class Box<T>
   identity() {
     return self;
   }
-
-  get() => T {
-    return self.value;
-  }
 end
 ```
 
-Methods do not use `fnc`. Every instance method has an implicit receiver named `self`.
-
-An explicit receiver form is also accepted when the receiver type should be visible in the signature:
+The explicit receiver form remains available:
 
 ```ores
-
-define class x
-  find(self x)(int foo) => self {
-    print(self);
-    return self;
-  }
-end
-```
-
-The receiver binding is always named `self`; another receiver variable name is a compile-time error. `find(self x)()` and `find()` are equivalent for receiver binding purposes.
-
-`self` is valid as a return pseudo-type and resolves to the enclosing class type:
-
-```ores
-@Ret<self>
-find() {
+find(self Box)(int key) => self {
   return self;
 }
-
-@Ret<x>
-copy() {
-  return new x();
-}
 ```
 
-## 5. Structural typing
+The receiver variable name is always `self`.
 
-Interfaces and record-like values are structurally assignable. A value satisfies a target structural type when it exposes every required member with compatible types; extra members are allowed.
+A class may list multiple parent classes and multiple interfaces:
 
 ```ores
+define class Combined extends Cacheable, Serializable implements HasId, Named
+end
+```
 
-type Named = {
+Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible types.
+
+`Object` and `List` are extensible base classes:
+
+```ores
+define class RecordBag extends Object
+end
+
+define class Names extends List
+end
+```
+
+Inline object and array literals are values, not classes, and cannot be inherited from.
+
+## Inline values
+
+Structural inline object:
+
+```ores
+val user = obj{name: "Ada", age: 37};
+stdio.println(user.name);
+```
+
+Inline array:
+
+```ores
+val values = arr[10, 20, 30];
+val first = values[0];
+```
+
+`arr[...]` is the canonical inline-array spelling. The original bare `[...]` literal remains accepted for source compatibility and destructuring migration.
+
+Tuples preserve per-position static types:
+
+```ores
+val pair = (1, "one");
+[const number, let label] = pair;
+```
+
+## Structural typing and interfaces
+
+Interfaces are structural contracts. Explicit `implements` asks the compiler to prove conformance and documents intent; structural compatibility does not require nominal ancestry in every context.
+
+```ores
+define interface Named
   String name;
-};
-
-define class User
-  val String name;
-  val int id;
 end
 
-fnc greet(Named n) => String {
-  return "hello " + n.name;
-}
-```
-
-`User` is assignable to `Named` without an explicit declaration because it has a compatible `name` member.
-
-`impl` remains useful to request compiler checking and documentation, but it is not required for structural compatibility.
-
-## 6. Generics
-
-Types, classes, interfaces, and functions may be generic:
-
-```ores
-fnc id<T>(T value) => T {
-  return value;
-}
-
-define class Pair<A, B>
-  val A first;
-  val B second;
+define class User implements Named
+  pub val String name;
 end
 ```
 
-`Array<T>`, `Map<K,V>`, `Future<T>`, `Result<T,E>`, tuples, function types, and user-defined generic types are first-class.
+Class interface satisfaction uses public members, including inherited public members.
 
-`Array<>` is permitted only in an inference position. Public/exported API signatures must resolve every inferred generic before module export.
+## Option and null
 
-## 7. Numbers
+Oreslang does **not** have ambient nullable references. A bare `null` value is a compile-time error, and `null` is not a standalone variable/parameter/return type.
 
-Oreslang has separate integral, floating-point, decimal, and complex numeric families.
-
-Initial built-in numeric types:
-
-- integral: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `int`, `uint`, `bigint`;
-- floating: `f32`, `f64`, `float`;
-- decimal: `decimal`;
-- complex: `complex64`, `complex128`, `complex`.
-
-Examples:
+Optionality is explicit:
 
 ```ores
-const int count = 3;
-const f64 ratio = 0.25;
+fnc lookup(String key) => Option<Value> {
+  // explicit Option value construction API evolves separately
+}
+```
+
+`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
+
+## Numbers
+
+Built-in numeric families include integral, floating, decimal, and complex types. Imaginary literals use `i`:
+
+```ores
 const complex z = 3 + 4i;
 ```
 
-The imaginary suffix `i` creates an imaginary numeric literal. Arithmetic between real and complex values promotes to the appropriate complex type. There is no silent lossy narrowing.
+Numeric widening is loss-aware; real values can widen toward complex values, but silent lossy narrowing is not performed.
 
-## 8. Lambdas
+## Lambdas
 
-Lambdas use a single arrow:
+Lambdas use `->`:
 
 ```ores
 val Fnc<int, int> inc = (int x) -> x + 1;
-val mapper = (String s) -> normalize(s);
 ```
 
-Functions are ordinary typed values. `Fnc<A, B>` denotes a function from `A` to `B`; additional input parameters appear before the final return type parameter.
+## Conditionals
 
-## 9. Conditionals
-
-The canonical conditional form uses `if`, `do`, and `fi`:
+`fi` is a real, distinct conditional terminator. It is not an alias for module/class `end`.
 
 ```ores
 if ready, authorized | process.is_admin; do
@@ -227,17 +226,11 @@ else
 fi
 ```
 
-Within a condition:
+Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
-- comma `,` means logical AND;
-- single pipe `|` means logical OR;
-- comma binds more tightly than pipe.
+## Exceptions and defer
 
-`&&` and `||` are not required syntax. The compiler may reserve them permanently.
-
-## 10. Exceptions, `try`, and `defer`
-
-Oreslang supports conventional structured exception handling:
+Both structured exceptions and lexical `defer` are supported:
 
 ```ores
 try {
@@ -249,122 +242,33 @@ try {
 }
 ```
 
-`defer` registers work for lexical-scope unwind and executes in LIFO order on normal return or exceptional exit:
+`defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
 
-```ores
-fnc use_resource() => void {
-  val r = open_resource();
-  defer r.close();
-  work(r);
-  return;
-}
-```
+## Async / await
 
-`defer` does not replace `try/catch/finally`; both are supported.
+`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
 
-## 11. Futures and `await`
+## Actors
 
-`async` functions return `Future<T>`. `await` resolves a future and yields control to the scheduler rather than blocking an OS thread when the runtime can avoid it.
+Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
 
-```ores
-pub async fnc load() => Future<Response> {
-  val response = await http.get("https://example.invalid");
-  return response;
-}
-```
+## Isolates
 
-The exact scheduler is runtime-defined, but language semantics do not permit mutable state to become shared merely because multiple tasks exist.
+An isolate is stricter than an actor and is intended as a FaaS/tenant security boundary. Strict isolate contexts deny host reflection, native access, arbitrary filesystem/IO, child-process creation, guest-created threads, environment access, and unrestricted polyglot access unless an explicit capability is granted by the host.
 
-## 12. Actors
+Actors may run inside an isolate. Actor semantics never weaken isolate policy.
 
-Actors are the default concurrency isolation unit.
+## Built-in globals
 
-Core guarantees:
+`process` is an Oreslang runtime descriptor/capability facade, not unrestricted OS process access. `stdio` is capability-scoped standard IO. `print(value)` is shorthand for the output facade.
 
-1. each actor owns its mutable heap;
-2. mutable objects are never directly shared between actors;
-3. communication occurs through typed messages;
-4. send performs freeze/copy/serialization as needed;
-5. deeply immutable values may use a zero-copy read-only representation;
-6. a mutable alias cannot exist to a value that is shared read-only;
-7. actor failure does not make another actor's heap directly reachable.
+## Compiler pipeline
 
-The initial runtime API is exposed through `process` rather than by granting access to the host OS process:
+1. UTF-8 source -> lexer.
+2. lexer -> parser / AST.
+3. imports and declarations are collected without executing user code.
+4. generic, structural, module-interface, inheritance, mutability, and return-flow checks run.
+5. actor/isolate sendability constraints are enforced at relevant runtime boundaries.
+6. checked source is lowered/executed as Truffle guest code.
 
-```ores
-val worker = process.spawn_actor<Worker>();
-await worker.send(Job{id: 10});
-val result = await worker.receive<Result>();
-```
-
-Message types must satisfy the `Sendable` rules. Host objects, file descriptors, raw pointers, mutable foreign buffers, thread handles, and mutable closures are not sendable.
-
-## 13. Read-only shared memory
-
-Oreslang permits explicit sharing only for immutable data. A `Shared<T>` is deeply frozen and has no writable alias:
-
-```ores
-val Shared<Model> model = process.share_readonly(load_model());
-```
-
-Actors can access the same backing storage only through the read-only view. Creating `Shared<T>` consumes or freezes the source graph so that later mutation cannot race with readers.
-
-## 14. Isolates
-
-An isolate is stricter than an actor and is intended for tenant/FaaS security boundaries.
-
-An isolate has:
-
-- a separate language context/security domain;
-- no implicit host object access;
-- no native access;
-- no arbitrary filesystem access;
-- no child-process spawning;
-- no shared mutable memory;
-- capability-scoped network/stdio/environment access;
-- bounded CPU/time/memory/mailbox policies supplied by the host platform;
-- explicit serialization for cross-isolate messages.
-
-Actors may live inside an isolate, but actor boundaries never weaken isolate policy. Cross-isolate values are copied/serialized unless the host explicitly exposes an immutable shared segment whose lifetime and permissions are enforced outside Oreslang.
-
-## 15. Built-in globals
-
-Two names are always reserved:
-
-### `process`
-
-A safe language runtime/process descriptor, not `java.lang.Process` and not unrestricted OS process access. It provides identity, actor/isolate metadata, scheduling, message operations, and explicitly granted capabilities.
-
-### `stdio`
-
-Capability-scoped input/output. In a strict FaaS isolate, stdin may be absent and output may be bounded or redirected by the host.
-
-`print(value)` is shorthand for `stdio.print(value)`.
-
-## 16. Reserved keywords
-
-The v0 reserved set is:
-
-`define`, `class`, `module`, `try`, `catch`, `finally`, `end`, `if`, `do`, `else`, `then`, `new`, `done`, `await`, `async`, `def`, `fnc`, `yield`, `super`, `elseif`, `switch`, `type`, `interface`, `impl`, `abstract`, `void`, `static`, `pub`, `private`, `return`, `defer`, `val`, `const`, `let`.
-
-`def`, `then`, `done`, `yield`, `switch`, `impl`, `abstract`, and `static` are reserved even where the first interpreter does not yet execute every construct.
-
-## 17. Truffle implementation pipeline
-
-The reference implementation uses this pipeline:
-
-1. UTF-8 source -> lexer;
-2. lexer -> parser / syntax tree;
-3. declaration collection across every module in the file;
-4. generic resolution and structural static type checking;
-5. actor/isolate sendability validation;
-6. lowering to Truffle AST nodes;
-7. execution on GraalVM/Truffle.
-
-Parsing and type checking execute no user code. A source file is executable only after the static phases succeed.
-
-## 18. FaaS host profile
-
-For untrusted functions, the embedding host should create a restricted Graal polyglot context and provide only explicit capabilities. The host, not guest code, controls filesystem, networking, native access, environment variables, threads, and cross-language access.
-
-The Oreslang runtime adds language-level actor isolation and sendability checks on top of that host boundary; it does not treat language semantics alone as a substitute for the host sandbox.
+The parser and static checker execute no user code.
