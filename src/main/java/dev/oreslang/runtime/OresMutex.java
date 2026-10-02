@@ -707,7 +707,11 @@ public final class OresMutex {
             synchronized (asyncQueueLock) {
                 if (poisoned.get()) {
                     poisonedNow = true;
-                } else if (permit.tryAcquire()) {
+                } else if (!permit.hasQueuedThreads() && permit.tryAcquire()) {
+                    // Untimed Semaphore.tryAcquire() may barge even when the
+                    // semaphore is fair. Do not let a newly-arriving async
+                    // request jump ahead of an already-queued blocking host
+                    // waiter; queue it for the normal alternating handoff path.
                     acquired = true;
                 } else {
                     boolean waitRegistered = false;
