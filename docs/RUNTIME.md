@@ -53,7 +53,7 @@ Oreslang has two deliberately different mutex domains:
 - `MutexGuard<T>` is a lexical linear capability. The runtime releases it on normal scope exit and poisons a shared mutex on abnormal scope exit. Guest code may call `guard.release()` for early release; there is intentionally no `mutex.unlock()`.
 - Guarded values transparently dereference through the guard, e.g. `guard.count = guard.count + 1`.
 - `await` while a guard is live and closure capture of a guard are compile-time ownership errors.
-- Blocking `SharedMutex.lock()`/timed acquisition is rejected while executing an actor. Actor code uses `await mutex.lock_async()`, allowing the scheduler to run other actors while waiting.
+- Blocking `SharedMutex.lock()`/timed acquisition is rejected while executing an actor. `lock_async()` returns a future and is the nonblocking acquisition primitive. On the virtual-thread actor runtime, awaiting it does not pin an OS worker. When integrated with the bounded shared-actor platform-thread pool, the language `await` lowering must suspend/resume the actor turn rather than synchronously join the future; until that continuation lowering is in place, actor-backed singleton/mailbox serialization is preferred over contended shared-memory locking from shared actors.
 - A poisoned `SharedMutex<T>` rejects ordinary acquisition until `recover(...)` repairs invariants and clears poison.
 
 Example:
