@@ -11,16 +11,14 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletionStage;
 
-/**
- * Initial executable Truffle root. The frontend is already statically checked;
- * this v0 evaluator deliberately keeps semantic lowering in one boundary while
- * dedicated specializing Truffle expression nodes are added incrementally.
- */
+/** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
     private final Ast.Program program;
 
@@ -29,15 +27,8 @@ public final class OresEvalRootNode extends RootNode {
         this.program = program;
     }
 
-    @Override
-    public String getName() {
-        return "ores-eval";
-    }
-
-    @Override
-    public boolean isInternal() {
-        return true;
-    }
+    @Override public String getName() { return "ores-eval"; }
+    @Override public boolean isInternal() { return true; }
 
     @Override
     public Object execute(VirtualFrame frame) {
@@ -54,6 +45,9 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+        private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
+        private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
         private Evaluator(Ast.Program program, OresContext context) {
             this.program = program;
@@ -63,40 +57,50 @@ public final class OresEvalRootNode extends RootNode {
 
         private void indexDeclarations() {
             for (Ast.ModuleDecl module : program.modules()) {
+                modules.put(module.name(), module);
                 for (Ast.Decl decl : module.declarations()) {
-                    if (decl instanceof Ast.FunctionDecl fn) {
-                        functions.put(module.name() + "." + fn.name(), fn);
-                        functions.putIfAbsent(fn.name(), fn);
-                    } else if (decl instanceof Ast.ClassDecl klass) {
-                        classes.put(module.name() + "." + klass.name(), klass);
-                        classes.putIfAbsent(klass.name(), klass);
-                    }
+                    if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                    else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 }
             }
         }
 
+        private static <T> void index(Map<String, T> map, Set<String> ambiguous, String module, String name, T value) {
+            map.put(module + "." + name, value);
+            T previous = map.putIfAbsent(name, value);
+            if (previous != null && previous != value) {
+                ambiguous.add(name);
+                map.remove(name);
+            }
+        }
+
+        private Ast.FunctionDecl findFunction(String name) {
+            if (ambiguousFunctions.contains(name)) throw new IllegalArgumentException("ambiguous function " + name + "; qualify it with its module");
+            return functions.get(name);
+        }
+
+        private Ast.ClassDecl findClass(String name) {
+            if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class " + name + "; qualify it with its module");
+            return classes.get(name);
+        }
+
         private Object execute(Object[] arguments) {
-            Ast.FunctionDecl main = functions.get("main");
+            Ast.FunctionDecl main = findFunction("main");
             if (main == null) return null;
             return callFunction(main, List.of(arguments));
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             if (args.size() != fn.parameters().size()) {
-                if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) {
-                    args = List.of();
-                } else {
-                    throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
-                }
+                if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
+                else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
             }
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) env.define(fn.parameters().get(i).name(), args.get(i), Ast.BindingKind.VAL);
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) {
-                return signal.value;
-            }
+            } catch (ReturnSignal signal) { return signal.value; }
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -107,9 +111,7 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) {
-                return signal.value;
-            }
+            } catch (ReturnSignal signal) { return signal.value; }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -138,41 +140,29 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
-            if (stmt instanceof Ast.ExprStmt expression) {
-                eval(expression.expression(), env);
-                return;
-            }
-            if (stmt instanceof Ast.DeferStmt defer) {
-                deferred.push(defer.expression());
-                return;
-            }
+            if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
+            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
-                    if (truth(eval(branch.condition(), env))) {
-                        executeBlock(branch.body(), env);
-                        return;
-                    }
+                    if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env); return; }
                 }
                 executeBlock(ifStmt.elseBody(), env);
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
-                try {
-                    executeBlock(tried.body(), env);
-                } catch (ReturnSignal signal) {
-                    throw signal;
-                } catch (RuntimeException failure) {
+                try { executeBlock(tried.body(), env); }
+                catch (ReturnSignal signal) { throw signal; }
+                catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                     executeBlock(tried.catchBody(), catchEnv);
-                } finally {
-                    executeBlock(tried.finallyBody(), env);
-                }
+                } finally { executeBlock(tried.finallyBody(), env); }
             }
         }
 
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
+                if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
                 return literal.value();
             }
@@ -182,30 +172,31 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
-                    if (args.size() != 1) throw new IllegalArgumentException("print expects one argument");
-                    context.output().print(display(args.getFirst()));
-                    context.output().flush();
-                    return null;
+                    requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
                 };
-                Ast.FunctionDecl fn = functions.get(name.name());
+                Ast.ModuleDecl module = modules.get(name.name());
+                if (module != null) return new ModuleFacade(module);
+                Ast.FunctionDecl fn = findFunction(name.name());
                 if (fn != null) return (Invokable) args -> callFunction(fn, args);
                 throw new IllegalArgumentException("unknown name " + name.name());
+            }
+            if (expr instanceof Ast.AssignExpr assignment) {
+                Ast.NameExpr target = (Ast.NameExpr) assignment.target();
+                Object value = eval(assignment.value(), env);
+                env.assign(target.name(), value);
+                return value;
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);
                 return switch (unary.operator()) {
-                    case "!" -> !truth(value);
-                    case "+" -> value;
-                    case "-" -> negate(value);
+                    case "!" -> !truth(value); case "+" -> value; case "-" -> negate(value);
                     default -> throw new IllegalArgumentException("unsupported unary operator " + unary.operator());
                 };
             }
             if (expr instanceof Ast.BinaryExpr binary) {
                 if (binary.operator().equals(",")) return truth(eval(binary.left(), env)) && truth(eval(binary.right(), env));
                 if (binary.operator().equals("|")) return truth(eval(binary.left(), env)) || truth(eval(binary.right(), env));
-                Object left = eval(binary.left(), env);
-                Object right = eval(binary.right(), env);
-                return binary(binary.operator(), left, right);
+                return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
                 Object callee = eval(call.callee(), env);
@@ -213,18 +204,29 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
                 return invokable.call(args);
             }
-            if (expr instanceof Ast.MemberExpr member) {
-                Object receiver = eval(member.receiver(), env);
-                return member(receiver, member.member());
+            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member());
+            if (expr instanceof Ast.IndexExpr indexed) {
+                Object receiver = eval(indexed.receiver(), env);
+                Object index = eval(indexed.index(), env);
+                if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
+                int i = Math.toIntExact(number.longValue());
+                if (receiver instanceof List<?> list) return list.get(i);
+                if (receiver instanceof Object[] array) return array[i];
+                throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
-                Ast.ClassDecl klass = classes.get(created.type().name());
+                Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+                if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
                 LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                for (int i = 0; i < klass.fields().size(); i++) {
-                    Ast.FieldDecl field = klass.fields().get(i);
-                    Object value = i < args.size() ? args.get(i) : field.initializer() == null ? null : eval(field.initializer(), env);
+                for (int i = 0; i < classFields.size(); i++) {
+                    Ast.FieldDecl field = classFields.get(i);
+                    Object value;
+                    if (i < args.size()) value = args.get(i);
+                    else if (field.initializer() != null) value = eval(field.initializer(), env);
+                    else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
                     fields.put(field.name(), value);
                 }
                 return new OresObject(klass, fields);
@@ -235,6 +237,14 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (expr instanceof Ast.ListExpr list) return list.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.ObjectExpr object) {
+                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                for (Ast.ObjectField field : object.fields()) {
+                    if (result.putIfAbsent(field.name(), eval(field.value(), env)) != null) throw new IllegalArgumentException("duplicate obj field " + field.name());
+                }
+                return Map.copyOf(result);
+            }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 Env captured = env.snapshot();
                 return (Invokable) args -> {
@@ -242,12 +252,8 @@ public final class OresEvalRootNode extends RootNode {
                     Env local = new Env(captured);
                     for (int i = 0; i < lambda.parameters().size(); i++) local.define(lambda.parameters().get(i).name(), args.get(i), Ast.BindingKind.VAL);
                     if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    try {
-                        executeBlock(lambda.blockBody(), local);
-                        return null;
-                    } catch (ReturnSignal signal) {
-                        return signal.value;
-                    }
+                    try { executeBlock(lambda.blockBody(), local); return null; }
+                    catch (ReturnSignal signal) { return signal.value; }
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
@@ -256,8 +262,8 @@ public final class OresEvalRootNode extends RootNode {
         private Object member(Object receiver, String name) {
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
-                    case "print" -> (Invokable) args -> stdio.print(args);
-                    case "println" -> (Invokable) args -> stdio.println(args);
+                    case "print" -> (Invokable) stdio::print;
+                    case "println" -> (Invokable) stdio::println;
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
             }
@@ -265,33 +271,75 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
-                    case "share_readonly" -> (Invokable) args -> process.shareReadonly(args);
+                    case "share_readonly" -> (Invokable) process::shareReadonly;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
+            if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                Ast.MethodDecl method = object.klass.methods().stream().filter(candidate -> candidate.name().equals(name)).findFirst().orElse(null);
+                Ast.MethodDecl method = findMethod(object.klass, name, new LinkedHashSet<>());
                 if (method != null) return (Invokable) args -> callMethod(object, method, args);
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
-            if (receiver instanceof Map<?, ?> map) return map.get(name);
+            if (receiver instanceof Map<?, ?> map) {
+                if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
+                return map.get(name);
+            }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object moduleMember(Ast.ModuleDecl module, String name) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    return (Invokable) args -> callFunction(fn, args);
+                }
+                if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
+                    if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
+                    return eval(field.initializer(), new Env(null));
+                }
+            }
+            throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
+            LinkedHashMap<String, Ast.FieldDecl> result = new LinkedHashMap<>();
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) throw new IllegalArgumentException("unknown parent class " + parentRef.name());
+                for (Ast.FieldDecl field : effectiveFields(parent, seen)) result.putIfAbsent(field.name(), field);
+            }
+            for (Ast.FieldDecl field : klass.fields()) result.put(field.name(), field);
+            seen.remove(klass);
+            return List.copyOf(result.values());
+        }
+
+        private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
+            for (Ast.MethodDecl method : klass.methods()) if (method.name().equals(name)) { seen.remove(klass); return method; }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                Ast.MethodDecl candidate = findMethod(parent, name, seen);
+                if (candidate != null) {
+                    seen.remove(klass);
+                    return candidate;
+                }
+            }
+            seen.remove(klass);
+            return null;
         }
 
         private Object binary(String op, Object left, Object right) {
             return switch (op) {
-                case "+" -> add(left, right);
-                case "-" -> numeric(left, right, '-');
-                case "*" -> numeric(left, right, '*');
-                case "/" -> numeric(left, right, '/');
-                case "%" -> numeric(left, right, '%');
-                case "==" -> Objects.equals(left, right);
-                case "!=" -> !Objects.equals(left, right);
-                case "<" -> compare(left, right) < 0;
-                case "<=" -> compare(left, right) <= 0;
-                case ">" -> compare(left, right) > 0;
-                case ">=" -> compare(left, right) >= 0;
+                case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
+                case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
+                case "==" -> Objects.equals(left, right); case "!=" -> !Objects.equals(left, right);
+                case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
+                case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
         }
@@ -303,13 +351,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object numeric(Object left, Object right, char op) {
             if (left instanceof Complex || right instanceof Complex) {
-                Complex a = asComplex(left);
-                Complex b = asComplex(right);
+                Complex a = asComplex(left), b = asComplex(right);
                 return switch (op) {
-                    case '+' -> a.add(b);
-                    case '-' -> a.sub(b);
-                    case '*' -> a.mul(b);
-                    case '/' -> a.div(b);
+                    case '+' -> a.add(b); case '-' -> a.sub(b); case '*' -> a.mul(b); case '/' -> a.div(b);
                     default -> throw new IllegalArgumentException("operator " + op + " is not supported for complex numbers");
                 };
             }
@@ -317,27 +361,14 @@ public final class OresEvalRootNode extends RootNode {
             boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
-                return switch (op) {
-                    case '+' -> x + y;
-                    case '-' -> x - y;
-                    case '*' -> x * y;
-                    case '%' -> x % y;
-                    default -> throw new IllegalArgumentException("bad numeric operator");
-                };
+                return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
             }
             double x = a.doubleValue(), y = b.doubleValue();
-            return switch (op) {
-                case '+' -> x + y;
-                case '-' -> x - y;
-                case '*' -> x * y;
-                case '/' -> x / y;
-                case '%' -> x % y;
-                default -> throw new IllegalArgumentException("bad numeric operator");
-            };
+            return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
         }
 
         private Object negate(Object value) {
-            if (value instanceof Complex complex) return new Complex(-complex.real, -complex.imaginary);
+            if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
@@ -349,124 +380,71 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("values are not comparable");
         }
 
-        private boolean truth(Object value) {
-            if (value instanceof Boolean bool) return bool;
-            throw new IllegalArgumentException("condition must be bool");
-        }
-
-        private boolean isIntegral(Number value) {
-            return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long;
-        }
-
-        private Complex asComplex(Object value) {
-            if (value instanceof Complex complex) return complex;
-            if (value instanceof Number number) return new Complex(number.doubleValue(), 0.0);
-            throw new IllegalArgumentException("value is not numeric");
-        }
-
-        private List<?> asSequence(Object value) {
-            if (value instanceof List<?> list) return list;
-            if (value instanceof Object[] array) return List.of(array);
-            throw new IllegalArgumentException("value is not destructurable");
-        }
-
-        private String display(Object value) {
-            if (value instanceof Complex complex) return complex.toString();
-            return String.valueOf(value);
-        }
+        private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
+        private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
+        private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
+        private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
 
-    @FunctionalInterface
-    private interface Invokable {
-        Object call(List<Object> arguments);
-    }
+    @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
 
     private static final class Env {
         private static final Object MISSING = new Object();
         private final Env parent;
         private final Map<String, Slot> slots = new HashMap<>();
-
         private Env(Env parent) { this.parent = parent; }
-
         private void define(String name, Object value, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
-
-        private Object lookup(String name) {
+        private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private void assign(String name, Object value) {
             Slot slot = slots.get(name);
-            if (slot != null) return slot.value;
-            return parent == null ? MISSING : parent.lookup(name);
+            if (slot != null) {
+                if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                slot.value = value;
+                return;
+            }
+            if (parent != null) { parent.assign(name, value); return; }
+            throw new IllegalArgumentException("unknown binding " + name);
         }
-
-        private Env snapshot() {
-            Env copyParent = parent == null ? null : parent.snapshot();
-            Env copy = new Env(copyParent);
-            copy.slots.putAll(slots);
-            return copy;
-        }
+        private Env snapshot() { Env cp=new Env(parent==null?null:parent.snapshot()); cp.slots.putAll(slots); return cp; }
     }
 
-    private record Slot(Object value, Ast.BindingKind kind) { }
+    private static final class Slot {
+        private Object value;
+        private final Ast.BindingKind kind;
+        private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+    }
 
     private static final class ReturnSignal extends RuntimeException {
         private final Object value;
-        private ReturnSignal(Object value) {
-            super(null, null, false, false);
-            this.value = value;
-        }
+        private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
     private record Complex(double real, double imaginary) {
-        private Complex add(Complex other) { return new Complex(real + other.real, imaginary + other.imaginary); }
-        private Complex sub(Complex other) { return new Complex(real - other.real, imaginary - other.imaginary); }
-        private Complex mul(Complex other) {
-            return new Complex(real * other.real - imaginary * other.imaginary,
-                    real * other.imaginary + imaginary * other.real);
-        }
-        private Complex div(Complex other) {
-            double d = other.real * other.real + other.imaginary * other.imaginary;
-            return new Complex((real * other.real + imaginary * other.imaginary) / d,
-                    (imaginary * other.real - real * other.imaginary) / d);
-        }
-        @Override public String toString() {
-            return real + (imaginary < 0 ? "" : "+") + imaginary + "i";
-        }
+        private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
+        private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
+        private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
+        private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
+        @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
 
     private static final class OresObject {
-        private final Ast.ClassDecl klass;
-        private final Map<String, Object> fields;
-        private OresObject(Ast.ClassDecl klass, Map<String, Object> fields) {
-            this.klass = klass;
-            this.fields = fields;
-        }
-        @Override public String toString() { return klass.name() + fields; }
+        private final Ast.ClassDecl klass; private final Map<String,Object> fields;
+        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){this.klass=klass;this.fields=fields;}
+        @Override public String toString(){return klass.name()+fields;}
     }
 
+    private record ModuleFacade(Ast.ModuleDecl module) { }
     private record StdioFacade(OresContext context) {
-        private Object print(List<Object> args) {
-            requireOne(args, "stdio.print");
-            context.output().print(String.valueOf(args.getFirst()));
-            context.output().flush();
-            return null;
-        }
-        private Object println(List<Object> args) {
-            requireOne(args, "stdio.println");
-            context.output().println(String.valueOf(args.getFirst()));
-            return null;
-        }
+        private Object print(List<Object> args){requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
+        private Object println(List<Object> args){requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
     }
-
     private record ProcessFacade(OresContext context) {
-        private String contextId() { return context.contextId().toString(); }
-        private Map<String, Object> descriptor() { return context.processDescriptor(); }
-        private Object shareReadonly(List<Object> args) {
-            requireOne(args, "process.share_readonly");
-            return context.actors().shareReadonly(args.getFirst());
-        }
+        private String contextId(){return context.contextId().toString();}
+        private Map<String,Object> descriptor(){return context.processDescriptor();}
+        private Object shareReadonly(List<Object> args){requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
     }
-
-    private static void requireOne(List<Object> args, String name) {
-        if (args.size() != 1) throw new IllegalArgumentException(name + " expects one argument");
-    }
+    private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
 }
