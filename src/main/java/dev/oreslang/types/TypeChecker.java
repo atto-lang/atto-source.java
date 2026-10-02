@@ -1221,6 +1221,23 @@ public final class TypeChecker {
     }
 
     private Type typeOfWithExpected(Ast.Expr expression, Type expected, Env env, Set<String> generics, Type self) {
+        if (expression instanceof Ast.CallExpr call && expected != Any.INSTANCE && expected != Unknown.INSTANCE) {
+            if (call.callee() instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
+                Ast.FunctionDecl direct = findFunction(name.name());
+                if (direct != null && !direct.genericParameters().isEmpty()) {
+                    return typeGenericFunctionCall(direct, call, env, generics, self, expected);
+                }
+            }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && env.lookup(namespace.name()) == null
+                    && modules.containsKey(namespace.name())) {
+                Ast.FunctionDecl direct = functions.get(namespace.name() + "." + member.member());
+                if (direct != null && !direct.genericParameters().isEmpty()) {
+                    return typeGenericFunctionCall(direct, call, env, generics, self, expected);
+                }
+            }
+        }
         if (expression instanceof Ast.MatchExpr match && expected != Any.INSTANCE && expected != Unknown.INSTANCE) {
             return typeOfMatch(match, expected, env, generics, self);
         }
@@ -1590,13 +1607,32 @@ public final class TypeChecker {
             Env env,
             Set<String> callerGenerics,
             Type callerSelf) {
+        return typeGenericFunctionCall(fn, call, env, callerGenerics, callerSelf, null);
+    }
+
+    private Type typeGenericFunctionCall(
+            Ast.FunctionDecl fn,
+            Ast.CallExpr call,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            Type contextualResult) {
         Set<String> names = Set.copyOf(fn.genericParameters());
         if (names.isEmpty()) return null;
         List<Type> parameters = fn.parameters().stream()
                 .map(param -> resolveParam(param, names, null))
                 .toList();
-        return typeSpecializedCall(parameters, callableReturnType(fn), names, Map.of(),
+        Type resultTemplate = callableReturnType(fn);
+        Map<String, Type> seedBindings = new LinkedHashMap<>();
+        if (contextualResult != null && contextualResult != Any.INSTANCE && contextualResult != Unknown.INSTANCE) {
+            inferGenericBindings(resultTemplate, contextualResult, names, seedBindings, fn.name());
+        }
+        Type actualResult = typeSpecializedCall(parameters, resultTemplate, names, seedBindings,
                 call.arguments(), env, callerGenerics, callerSelf, fn.name());
+        if (contextualResult != null && contextualResult != Any.INSTANCE && contextualResult != Unknown.INSTANCE) {
+            requireAssignable(actualResult, contextualResult, "result of " + fn.name());
+        }
+        return actualResult;
     }
 
     private Type typeSpecializedCall(
