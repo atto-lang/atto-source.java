@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -33,6 +34,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_FREEZE_NODES = 100_000;
     private static final long MAX_FREEZE_BYTES = 16L * 1024 * 1024;
     private static final ThreadLocal<ActorExecution> CURRENT_ACTOR = new ThreadLocal<>();
+    private static final ThreadLocal<Long> CURRENT_ACTOR_DEADLINE_NANOS = new ThreadLocal<>();
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -81,7 +83,8 @@ public final class ActorRuntime implements AutoCloseable {
         Object existing = execution.locals.get(key);
         if (existing != null) return (T) existing;
         if (!execution.initializingLocals.add(key)) {
-            throw new IllegalStateException("actor-local initialization cycle for " + key);
+            throw new IllegalStateException(
+                    "actor-local initialization cycle for " + diagnosticKey(key));
         }
         try {
             T value = java.util.Objects.requireNonNull(initializer.get(),
@@ -171,6 +174,9 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <M> void send(ActorRef<M> ref, M message) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        if (!ref.belongsTo(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
+        }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
         Object frozen = freezeForThisRuntime(message);
@@ -192,6 +198,13 @@ public final class ActorRuntime implements AutoCloseable {
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
         if (Thread.currentThread().isInterrupted()) throw new CancellationException("actor execution interrupted");
+
+        ActorExecution execution = CURRENT_ACTOR.get();
+        Long deadline = CURRENT_ACTOR_DEADLINE_NANOS.get();
+        if (execution != null && execution.runtime == this && deadline != null
+                && System.nanoTime() - deadline >= 0) {
+            throw new CancellationException("actor message wall-time budget exceeded");
+        }
         Thread.yield();
     }
 
@@ -356,6 +369,27 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static String diagnosticKey(Object key) {
+        return key.getClass().getSimpleName() + "#"
+                + Integer.toUnsignedString(key.hashCode(), 16);
+    }
+
+    private static long deadlineAfter(Duration duration) {
+        long delta;
+        try {
+            delta = duration.toNanos();
+        } catch (ArithmeticException overflow) {
+            delta = Long.MAX_VALUE / 4;
+        }
+        delta = Math.max(1L, Math.min(delta, Long.MAX_VALUE / 4));
+        return System.nanoTime() + delta;
+    }
+
+    private static <T> void restoreThreadLocal(ThreadLocal<T> local, T previous) {
+        if (previous == null) local.remove();
+        else local.set(previous);
+    }
+
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
@@ -401,7 +435,15 @@ public final class ActorRuntime implements AutoCloseable {
                 while (true) {
                     Object message = mailbox.take();
                     if (message == STOP) return;
-                    behavior.onMessage((M) message, context);
+
+                    Long previousDeadline = CURRENT_ACTOR_DEADLINE_NANOS.get();
+                    CURRENT_ACTOR_DEADLINE_NANOS.set(deadlineAfter(policy.maxWallTime()));
+                    try {
+                        behavior.onMessage((M) message, context);
+                        schedulerSafepoint();
+                    } finally {
+                        restoreThreadLocal(CURRENT_ACTOR_DEADLINE_NANOS, previousDeadline);
+                    }
                 }
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
@@ -412,6 +454,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // so subsequent sends fail immediately instead of targeting a
                 // dead actor left behind in the runtime registry.
             } finally {
+                CURRENT_ACTOR_DEADLINE_NANOS.remove();
                 if (previous == null) CURRENT_ACTOR.remove();
                 else CURRENT_ACTOR.set(previous);
                 actors.remove(ref.id(), this);
