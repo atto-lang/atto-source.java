@@ -406,17 +406,41 @@ public final class Parser {
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean shared = false;
-        boolean progress;
-        do {
-            progress = true;
-            if (match(PUB)) visibility = Ast.Visibility.PUBLIC;
-            else if (match(PRIVATE)) visibility = Ast.Visibility.PRIVATE;
-            else if (match(ASYNC)) async = true;
-            else if (match(STATIC)) isStatic = true;
-            else if (match(ABSTRACT)) isAbstract = true;
-            else if (match(SHARED)) shared = true;
-            else progress = false;
-        } while (progress);
+        boolean visibilitySeen = false;
+        boolean asyncSeen = false;
+        boolean staticSeen = false;
+        boolean abstractSeen = false;
+        boolean sharedSeen = false;
+
+        while (true) {
+            if (match(PUB)) {
+                if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
+                visibilitySeen = true;
+                visibility = Ast.Visibility.PUBLIC;
+            } else if (match(PRIVATE)) {
+                if (visibilitySeen) throw error(previous(), "duplicate/conflicting visibility modifier");
+                visibilitySeen = true;
+                visibility = Ast.Visibility.PRIVATE;
+            } else if (match(ASYNC)) {
+                if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
+                asyncSeen = true;
+                async = true;
+            } else if (match(STATIC)) {
+                if (staticSeen) throw error(previous(), "duplicate 'static' modifier");
+                staticSeen = true;
+                isStatic = true;
+            } else if (match(ABSTRACT)) {
+                if (abstractSeen) throw error(previous(), "duplicate 'abstract' modifier");
+                abstractSeen = true;
+                isAbstract = true;
+            } else if (match(SHARED)) {
+                if (sharedSeen) throw error(previous(), "duplicate 'shared' modifier");
+                sharedSeen = true;
+                shared = true;
+            } else {
+                break;
+            }
+        }
         return new Modifiers(visibility, async, isStatic, isAbstract, shared);
     }
 
