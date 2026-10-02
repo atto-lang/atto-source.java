@@ -492,6 +492,159 @@ final class CallableLocalTypeTest {
         assertTrue(error.getMessage().contains("duplicate callable-local type 'T'"));
     }
 
+    @Test
+    void objectLiteralCanCrossAFunctionBoundaryIntoCallableLocalStruct() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  fnc greet(T value) => string {
+                    struct T {
+                      pub name: string;
+
+                      pub greeting() => string {
+                        return "hello " + self.name;
+                      }
+                    }
+
+                    return value.greeting();
+                  }
+
+                  pub fnc main() => void {
+                    stdio.stdout.write(greet(obj{name: "Ada"}));
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("hello Ada", output);
+    }
+
+    @Test
+    void contextualStructArgumentStillRequiresExactFields() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          fnc greet(T value) => string {
+                            struct T {
+                              pub name: string;
+                            }
+                            return value.name;
+                          }
+
+                          fnc bad() => string {
+                            return greet(obj{name: "Ada", extra: 1});
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("unknown or trait-owned fields"));
+    }
+
+    @Test
+    void typedLambdaReturnPromotesObjectLiteralToLocalStruct() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  pub fnc main() => void {
+                    struct T {
+                      pub name: string;
+
+                      pub greeting() => string {
+                        return "hello " + self.name;
+                      }
+                    }
+
+                    val (() -> T) make = || -> {
+                      return obj{name: "Ada"};
+                    };
+
+                    val result = make();
+                    stdio.stdout.write(result.greeting());
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("hello Ada", output);
+    }
+
+    @Test
+    void typedLambdaArgumentPromotesObjectLiteralToLocalStruct() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  pub fnc main() => void {
+                    struct T {
+                      pub name: string;
+
+                      pub greeting() => string {
+                        return "hello " + self.name;
+                      }
+                    }
+
+                    val ((T value) -> string) greet = |value| -> {
+                      return value.greeting();
+                    };
+
+                    stdio.stdout.write(greet(obj{name: "Ada"}));
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("hello Ada", output);
+    }
+
+    @Test
+    void localStructAliasPromotesObjectAtFunctionBoundary() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  fnc greet(Alias value) => string {
+                    struct T {
+                      pub name: string;
+
+                      pub greeting() => string {
+                        return "hello " + self.name;
+                      }
+                    }
+                    type Alias = T;
+                    return value.greeting();
+                  }
+
+                  pub fnc main() => void {
+                    stdio.stdout.write(greet(obj{name: "Ada"}));
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("hello Ada", output);
+    }
+
+    @Test
+    void functionAliasPreservesStructCoercionForTypedLambda() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  pub fnc main() => void {
+                    struct T {
+                      pub name: string;
+
+                      pub greeting() => string {
+                        return "hello " + self.name;
+                      }
+                    }
+                    type Maker = (() -> T);
+
+                    val Maker make = || -> {
+                      return obj{name: "Ada"};
+                    };
+
+                    stdio.stdout.write(make().greeting());
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("hello Ada", output);
+    }
+
     private static String runProgram(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callable-local-types.ores")
