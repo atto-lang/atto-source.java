@@ -61,7 +61,7 @@ public final class AwaitSupport {
             if (thread.getState() == Thread.State.NEW) {
                 throw new IllegalArgumentException("cannot await a thread that has not been started");
             }
-            rejectPendingActorCarrier(thread.isAlive(), "Thread");
+            rejectPendingActorCarrier(!thread.isAlive(), "Thread");
             try {
                 thread.join();
                 return null;
