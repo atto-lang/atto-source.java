@@ -589,6 +589,32 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void exportedSingletonObjectCannotHideActorLocalCaptureInsideLocalStruct() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        let int actor_local_value = 41;
+
+                        define class CapturingNestedFoo as
+                          pub read() => int {
+                            struct Hidden {
+                              pub read_hidden() => int {
+                                return actor_local_value;
+                              }
+                            }
+                            return 0;
+                          }
+                        end
+
+                        define singleton module nested_process_owner as
+                          pub val CapturingNestedFoo foo = new CapturingNestedFoo();
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot capture actor-local module state"));
+    }
+
+    @Test
     void singletonObjectProxyCallsMustBeAwaitedAndFieldsStayPrivate() {
         IllegalArgumentException unawaited = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
