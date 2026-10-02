@@ -8,6 +8,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresMutex;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -126,10 +127,24 @@ public final class OresEvalRootNode extends RootNode {
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+            boolean abnormalExit = false;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
+            } catch (ReturnSignal signal) {
+                throw signal;
+            } catch (RuntimeException | Error failure) {
+                abnormalExit = true;
+                throw failure;
             } finally {
-                while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                boolean deferredFailure = false;
+                try {
+                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                } catch (RuntimeException | Error failure) {
+                    deferredFailure = true;
+                    throw failure;
+                } finally {
+                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                }
             }
         }
 
@@ -205,6 +220,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("Mutex")) return new MutexFactory(false, context);
+                if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -230,12 +247,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
+                    if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
                         if (!object.fields.containsKey(target.member())) throw new IllegalArgumentException("unknown field " + target.member());
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    throw new IllegalArgumentException("member assignment requires a class instance");
+                    throw new IllegalArgumentException("member assignment requires a class instance or mutex guard over a class instance");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
@@ -374,6 +392,19 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
+            if (receiver instanceof MutexFactory factory) {
+                if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
+                return (Invokable) factory::create;
+            }
+            if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
+            if (receiver instanceof OresMutex.Guard<?> guard) {
+                return switch (name) {
+                    case "value" -> guard.value();
+                    case "release" -> (Invokable) args -> { requireZero(args, "MutexGuard.release"); guard.release(); return null; };
+                    case "is_released" -> (Invokable) args -> { requireZero(args, "MutexGuard.is_released"); return guard.released(); };
+                    default -> member(guard.value(), name);
+                };
+            }
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
@@ -393,6 +424,42 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        @SuppressWarnings("unchecked")
+        private Object mutexMember(OresMutex.Lock<?> rawLock, String name) {
+            OresMutex.Lock<Object> lock = (OresMutex.Lock<Object>) rawLock;
+            return switch (name) {
+                case "lock" -> (Invokable) args -> { requireZero(args, "Mutex.lock"); return lock.lock(); };
+                case "try_lock" -> (Invokable) args -> {
+                    requireZero(args, "Mutex.try_lock");
+                    var guard = lock.tryLock();
+                    return guard.isPresent() ? new OptionValue(true, guard.get()) : new OptionValue(false, null);
+                };
+                case "lock_async" -> (Invokable) args -> { requireZero(args, "Mutex.lock_async"); return lock.lockAsync(); };
+                case "with_lock" -> (Invokable) args -> {
+                    requireOne(args, "Mutex.with_lock");
+                    if (!(args.getFirst() instanceof Invokable callback)) {
+                        throw new IllegalArgumentException("Mutex.with_lock expects a one-argument lambda/function");
+                    }
+                    return lock.withLock(value -> callback.call(List.of(value)));
+                };
+                case "is_poisoned" -> (Invokable) args -> { requireZero(args, "Mutex.is_poisoned"); return lock.isPoisoned(); };
+                case "recover" -> {
+                    if (!(lock instanceof OresMutex.Shared<?> sharedRaw)) {
+                        throw new IllegalArgumentException("recover is only available on SharedMutex<T>");
+                    }
+                    OresMutex.Shared<Object> shared = (OresMutex.Shared<Object>) sharedRaw;
+                    yield (Invokable) args -> {
+                        requireOne(args, "SharedMutex.recover");
+                        if (!(args.getFirst() instanceof Invokable callback)) {
+                            throw new IllegalArgumentException("SharedMutex.recover expects a one-argument lambda/function");
+                        }
+                        return shared.recover(value -> callback.call(List.of(value)));
+                    };
+                }
+                default -> throw new IllegalArgumentException("unknown mutex member " + name);
+            };
         }
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
@@ -627,6 +694,14 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() { Env cp=new Env(parent==null?null:parent.snapshot()); cp.slots.putAll(slots); return cp; }
+        private void releaseMutexGuards(boolean failed) {
+            for (Slot slot : slots.values()) {
+                if (slot.value instanceof OresMutex.Guard<?> guard && !guard.released()) {
+                    if (failed) guard.fail();
+                    else guard.release();
+                }
+            }
+        }
     }
 
     private static final class Slot {
@@ -656,6 +731,16 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
     private record ClassFacade(Ast.ClassDecl klass) { }
+    private record MutexFactory(boolean shared, OresContext context) {
+        private Object create(List<Object> args) {
+            requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
+            if (shared) {
+                context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex.new");
+                return OresMutex.shared(args.getFirst());
+            }
+            return OresMutex.local(args.getFirst());
+        }
+    }
     private record OptionValue(boolean present, Object value) {
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
@@ -672,5 +757,6 @@ public final class OresEvalRootNode extends RootNode {
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
     }
+    private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
 }
