@@ -170,7 +170,12 @@ final class GpuExecutionTest {
         assertTrue(gpu.source().contains("__kernel void ores_kernel_math_add_a2"));
         assertTrue(gpu.source().contains("__global int* restrict __ores_out"));
         assertTrue(gpu.source().contains("__global int* restrict __ores_error"));
-        assertTrue(gpu.source().contains("__ores_out[0] = ores_dev_math_add_a2(ores_v_a, ores_v_b, __ores_error)"));
+        assertTrue(gpu.source().contains("__ores_out[0] = " + kernel.helperSymbol()
+                + "(ores_v_a, ores_v_b, __ores_error)"));
+        assertTrue(kernel.helperSymbol().matches("ores_dev_math_add_a2_[0-9a-f]{12}"));
+        assertTrue(kernel.kernelSymbol().matches("ores_kernel_math_add_a2_[0-9a-f]{12}"));
+        assertTrue(gpu.source().contains("#define ORES_GPU_ABI_VERSION 1"));
+        assertTrue(gpu.manifest().startsWith("abi=" + GpuKernelCompiler.ABI_VERSION + "\n"));
         assertTrue(kernel.hiddenParameters().stream()
                 .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.RESULT));
         assertTrue(kernel.hiddenParameters().stream()
@@ -208,8 +213,8 @@ final class GpuExecutionTest {
                 .filter(GpuKernelCompiler.GpuParameter::buffer)
                 .allMatch(GpuKernelCompiler.GpuParameter::noAlias));
         assertTrue(compilation.gpuProgram().manifest().contains("DATA_PARALLEL_1D"));
-        assertTrue(compilation.gpuProgram().manifest().contains("noAlias") == false,
-                "manifest is positional/deterministic rather than label-dependent");
+        assertTrue(compilation.gpuProgram().manifest()
+                .contains(" param=xs|Array<f32>|__global float* restrict|true|true|true"));
     }
 
     @Test
@@ -261,7 +266,11 @@ final class GpuExecutionTest {
                 """);
 
         String source = compilation.gpuProgram().source();
-        assertTrue(source.contains("ores_dev_math_load_a2(ores_v_xs, __ores_len_xs, ores_v_i, __ores_error)"));
+        GpuKernelCompiler.GpuKernel load = compilation.gpuProgram().kernels().stream()
+                .filter(k -> k.sourceName().equals("load"))
+                .findFirst().orElseThrow();
+        assertTrue(source.contains(load.helperSymbol()
+                + "(ores_v_xs, __ores_len_xs, ores_v_i, __ores_error)"));
         assertTrue(source.contains("((ulong)(ores_v_i) < __ores_len_xs)"));
         assertTrue(source.contains("ORES_GPU_ERR_BOUNDS"));
     }
