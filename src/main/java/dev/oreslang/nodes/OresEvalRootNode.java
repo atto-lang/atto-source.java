@@ -343,7 +343,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) return new TupleValue(tuple.elements().stream().map(item -> eval(item, env)).toList());
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 for (Ast.ObjectField field : object.fields()) {
@@ -625,14 +625,18 @@ public final class OresEvalRootNode extends RootNode {
             if (pattern instanceof Ast.LiteralPattern literal) return Objects.equals(literal.value(), value);
 
             List<Ast.Pattern> elements;
-            if (pattern instanceof Ast.TuplePattern tuple) elements = tuple.elements();
-            else if (pattern instanceof Ast.ListPattern list) elements = list.elements();
-            else return false;
-
             List<?> values;
-            if (value instanceof List<?> list) values = list;
-            else if (value instanceof Object[] array) values = List.of(array);
-            else return false;
+            if (pattern instanceof Ast.TuplePattern tuplePattern) {
+                elements = tuplePattern.elements();
+                if (!(value instanceof TupleValue tupleValue)) return false;
+                values = tupleValue;
+            } else if (pattern instanceof Ast.ListPattern listPattern) {
+                elements = listPattern.elements();
+                if (value instanceof TupleValue) return false;
+                if (value instanceof List<?> sequence) values = sequence;
+                else if (value instanceof Object[] array) values = List.of(array);
+                else return false;
+            } else return false;
             if (values.size() != elements.size()) return false;
 
             LinkedHashMap<String, Object> stagedCaptures = new LinkedHashMap<>(captures);
@@ -690,6 +694,13 @@ public final class OresEvalRootNode extends RootNode {
         private Object value;
         private final Ast.BindingKind kind;
         private Slot(Object value, Ast.BindingKind kind) { this.value=value; this.kind=kind; }
+    }
+
+    private static final class TupleValue extends java.util.AbstractList<Object> {
+        private final List<Object> elements;
+        private TupleValue(List<Object> elements) { this.elements = List.copyOf(elements); }
+        @Override public Object get(int index) { return elements.get(index); }
+        @Override public int size() { return elements.size(); }
     }
 
     private static final class ReturnSignal extends RuntimeException {
