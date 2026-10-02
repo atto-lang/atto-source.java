@@ -160,7 +160,7 @@ public final class Parser {
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = parseReturnType(annotations, modifiers.explicitVoid);
         List<Ast.Stmt> body = parseBlock();
         List<Ast.Annotation> effectiveAnnotations = new ArrayList<>(annotations);
         if (modifiers.actor) {
@@ -212,7 +212,7 @@ public final class Parser {
 
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
-            parseAnnotations();
+            List<Ast.Annotation> memberAnnotations = parseAnnotations();
             Modifiers memberModifiers = parseModifiers();
             if (memberModifiers.actor) {
                 throw error(peek(), "actor modifier is not valid on interface members");
@@ -224,7 +224,7 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                Ast.TypeRef returns = match(FAT_ARROW) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                Ast.TypeRef returns = parseReturnType(memberAnnotations, memberModifiers.explicitVoid);
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
                 continue;
@@ -299,7 +299,7 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = parseReturnType(annotations, mods.explicitVoid);
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
@@ -354,6 +354,8 @@ public final class Parser {
         boolean isAbstract = false;
         boolean actor = false;
         boolean actorIsolate = false;
+        boolean explicitVoid = false;
+        boolean voidSeen = false;
         boolean progress;
         do {
             progress = true;
@@ -362,6 +364,11 @@ public final class Parser {
             else if (match(ASYNC)) async = true;
             else if (match(STATIC)) isStatic = true;
             else if (match(ABSTRACT)) isAbstract = true;
+            else if (match(VOID)) {
+                if (voidSeen) throw error(previous(), "duplicate 'void' return modifier");
+                voidSeen = true;
+                explicitVoid = true;
+            }
             else if (check(ACTOR) && (checkNext(LPAREN) || checkNext(LT) || checkNext(COLON) || checkNext(EQUAL))) {
                 // In a name position, leave the token unconsumed so consume(IDENT, ...)
                 // produces the canonical reserved-keyword diagnostic.
@@ -374,10 +381,14 @@ public final class Parser {
             }
             else progress = false;
         } while (progress);
-        return new Modifiers(visibility, async, isStatic, isAbstract, actor, actorIsolate);
+        return new Modifiers(visibility, async, isStatic, isAbstract, actor, actorIsolate, explicitVoid);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
+        return parseReturnType(annotations, false);
+    }
+
+    private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations, boolean explicitVoid) {
         Ast.TypeRef annotated = null;
         for (Ast.Annotation annotation : annotations) {
             if (annotation.name().equals("Ret")) {
@@ -386,10 +397,20 @@ public final class Parser {
             }
         }
         Ast.TypeRef arrow = match(FAT_ARROW) ? parseTypeRef() : null;
+        Ast.TypeRef prefixed = explicitVoid ? Ast.TypeRef.simple("void") : null;
         if (annotated != null && arrow != null && !sameType(annotated, arrow)) {
             throw error(previous(), "@Ret type and => return type disagree");
         }
-        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.simple("void");
+        if (prefixed != null && annotated != null && !sameType(prefixed, annotated)) {
+            throw error(previous(), "'void' return modifier and @Ret type disagree");
+        }
+        if (prefixed != null && arrow != null && !sameType(prefixed, arrow)) {
+            throw error(previous(), "'void' return modifier and => return type disagree");
+        }
+        return arrow != null ? arrow
+                : annotated != null ? annotated
+                : prefixed != null ? prefixed
+                : Ast.TypeRef.simple("void");
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
@@ -909,8 +930,9 @@ public final class Parser {
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock());
+        Ast.TypeRef returnType = check(LBRACE) ? Ast.TypeRef.inferred() : parseTypeRef();
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }' or '-> Type { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock(), returnType);
     }
 
     private Ast.LambdaExpr parsePipeLambda() {
@@ -931,8 +953,9 @@ public final class Parser {
         }
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
-        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock());
+        Ast.TypeRef returnType = check(LBRACE) ? Ast.TypeRef.inferred() : parseTypeRef();
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }' or '|args| -> Type { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock(), returnType);
     }
 
     private boolean looksLikeLambda() {
@@ -1019,5 +1042,6 @@ public final class Parser {
             boolean isStatic,
             boolean isAbstract,
             boolean actor,
-            boolean actorIsolate) { }
+            boolean actorIsolate,
+            boolean explicitVoid) { }
 }
