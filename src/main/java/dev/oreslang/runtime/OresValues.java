@@ -42,6 +42,12 @@ public final class OresValues {
     }
 
     public record OptionValue(boolean present, Object value) {
+        public OptionValue {
+            if (!present && value != null) {
+                throw new IllegalArgumentException("None cannot carry a hidden value");
+            }
+        }
+
         @Override
         public String toString() {
             return present ? "Some(" + value + ")" : "None";
