@@ -38,7 +38,29 @@ public final class OresContext implements AutoCloseable {
         this.actors = new ActorRuntime(
                 isolatePolicy,
                 ActorRuntime.DispatcherConfig.defaults(),
-                this::executeActorTurn);
+                new ActorRuntime.TurnExecutor() {
+                    @Override
+                    public void execute(Runnable turn) {
+                        executeActorTurn(null, isolatePolicy, turn);
+                    }
+
+                    @Override
+                    public void execute(
+                            ActorRuntime.ActorKind kind,
+                            IsolatePolicy actorPolicy,
+                            Runnable turn) {
+                        executeActorTurn(kind, actorPolicy, turn);
+                    }
+
+                    @Override
+                    public boolean supportsUntrustedIsolation() {
+                        // An adversarial OresContext is created through
+                        // SandboxPolicy.UNTRUSTED + spawnIsolate(true) with hard
+                        // heap/CPU/thread limits. A developer context is not a
+                        // sufficient boundary for hostile actor code.
+                        return isolatePolicy.adversarial();
+                    }
+                });
     }
 
     public static OresContext get(Node node) {
@@ -70,7 +92,13 @@ public final class OresContext implements AutoCloseable {
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
-    private void executeActorTurn(Runnable turn) {
+    private void executeActorTurn(
+            ActorRuntime.ActorKind kind,
+            IsolatePolicy actorPolicy,
+            Runnable turn) {
+        // A strict/adversarial Truffle context remains single-guest-thread at
+        // this layer. ActorRuntime still uses separate ready queues/pools, while
+        // the UNTRUSTED sandbox supplies the hard containment boundary.
         boolean serialize = isolatePolicy.adversarial();
         if (serialize) adversarialActorTurnLock.lock();
         TruffleContext truffleContext = env.getContext();
