@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import dev.oreslang.OresLanguage;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.compiler.IncrementalCompiler;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -44,14 +45,27 @@ public final class HotReloadManager implements AutoCloseable {
      */
     public synchronized Generation load(String name, String sourceText) {
         OresCompiler.validateForIsolate(sourceText, policy);
+        return stage(name, digest(sourceText), sourceText);
+    }
 
+    /**
+     * Reuses an incrementally compiled unit. Static compilation work is reused,
+     * while capability admission is deliberately repeated for the destination
+     * isolate because authority belongs to the runtime policy, not the cache.
+     */
+    public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
+        CapabilityChecker.check(unit.program(), policy);
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+    }
+
+    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
         long id = sequence.incrementAndGet();
         Context context = policy.restrictedContextBuilder(executionProfile).build();
         try {
-            Source source = Source.newBuilder(OresLanguage.ID, sourceText, name)
+            Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
                     .buildLiteral();
-            Generation generation = new Generation(id, digest(sourceText), context, source, executionProfile);
+            Generation generation = new Generation(id, codeUnitId, sourceDigest, context, source, executionProfile);
             generations.put(id, generation);
             active.set(generation);
             return generation;
@@ -98,6 +112,7 @@ public final class HotReloadManager implements AutoCloseable {
 
     public static final class Generation implements AutoCloseable {
         private final long id;
+        private final String codeUnitId;
         private final String sha256;
         private final Context context;
         private final Source source;
@@ -105,8 +120,9 @@ public final class HotReloadManager implements AutoCloseable {
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean closed = new AtomicBoolean();
 
-        private Generation(long id, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
+        private Generation(long id, String codeUnitId, String sha256, Context context, Source source, ExecutionProfile executionProfile) {
             this.id = id;
+            this.codeUnitId = codeUnitId;
             this.sha256 = sha256;
             this.context = context;
             this.source = source;
@@ -114,6 +130,7 @@ public final class HotReloadManager implements AutoCloseable {
         }
 
         public long id() { return id; }
+        public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
         public Context context() { return context; }
         public Source source() { return source; }
