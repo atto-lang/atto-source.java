@@ -408,6 +408,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "stop" -> (Invokable) actor::stop;
                     case "join" -> (Invokable) actor::join;
                     case "status" -> (Invokable) actor::status;
+                    case "gc" -> (Invokable) actor::gc;
                     case "monitor" -> (Invokable) actor::monitor;
                     case "demonitor" -> (Invokable) actor::demonitor;
                     case "self" -> actor.self();
@@ -868,6 +869,12 @@ public final class OresEvalRootNode extends RootNode {
                 context.requireCapability(IsolatePolicy.Capability.ACTOR_CONTROL, "actor.status");
                 requireOne(args, "actor.status");
                 return context.actors().snapshot(actorRef(args.getFirst())).asMap();
+            }
+
+            private Object gc(List<Object> args) {
+                context.requireCapability(IsolatePolicy.Capability.GC_CONTROL, "actor.gc");
+                requireZero(args, "actor.gc");
+                return context.gc().collectActor();
             }
 
             private Object monitor(List<Object> args) {
