@@ -1467,20 +1467,24 @@ public final class TypeChecker {
                     .toList();
             Type nominal;
             if (created.type().inferArguments()) {
-                List<Ast.TypeRef> declaredInputs = constructorFields.subList(0, argumentTypes.size()).stream()
-                        .map(Ast.FieldDecl::type)
-                        .toList();
-                nominal = inferClassType(klass, declaredInputs, argumentTypes, "constructor for " + klass.name());
+                Type genericSelf = nominalClassType(klass);
+                List<Type> declaredInputs = new ArrayList<>();
+                for (Ast.FieldDecl field : constructorFields.subList(0, argumentTypes.size())) {
+                    Type pattern = findFieldType(klass, field.name(), genericSelf, new LinkedHashSet<>(), false);
+                    if (pattern == null) throw new IllegalArgumentException("internal constructor field lookup failed for " + field.name());
+                    declaredInputs.add(pattern);
+                }
+                nominal = inferClassTypeFromPatterns(klass, declaredInputs, argumentTypes, "constructor for " + klass.name());
             } else {
                 nominal = concreteClassType(klass, created.type(), generics, self);
             }
 
-            Map<String, Type> substitutions = classGenericSubstitutions(klass, nominal);
             int argumentIndex = 0;
             for (Ast.FieldDecl field : fields) {
                 if (!field.composed() && argumentIndex < argumentTypes.size()) {
-                    requireAssignable(argumentTypes.get(argumentIndex++),
-                            instantiateClassType(field.type(), klass, substitutions, nominal), "constructor field " + field.name());
+                    Type expectedField = findFieldType(klass, field.name(), nominal, new LinkedHashSet<>(), false);
+                    if (expectedField == null) throw new IllegalArgumentException("internal constructor field lookup failed for " + field.name());
+                    requireAssignable(argumentTypes.get(argumentIndex++), expectedField, "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
                 }
@@ -1976,6 +1980,15 @@ public final class TypeChecker {
             String name,
             Type receiverType,
             Set<Ast.ClassDecl> seen) {
+        return findFieldType(klass, name, receiverType, seen, true);
+    }
+
+    private Type findFieldType(
+            Ast.ClassDecl klass,
+            String name,
+            Type receiverType,
+            Set<Ast.ClassDecl> seen,
+            boolean enforceAccess) {
         if (!seen.add(klass)) return null;
         Type self = receiverType == null ? nominalClassType(klass) : receiverType;
         Map<String, Type> substitutions = self instanceof Named named
@@ -1985,18 +1998,20 @@ public final class TypeChecker {
 
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.name().equals(name)) {
-                if (activeTraitOwner != null) {
-                    if (!field.composed() || !activeTraitOwner.equals(field.compositionOwner())) {
+                if (enforceAccess) {
+                    if (activeTraitOwner != null) {
+                        if (!field.composed() || !activeTraitOwner.equals(field.compositionOwner())) {
+                            throw new IllegalArgumentException(
+                                    "trait '" + activeTraitOwner + "' cannot access host or foreign trait state field '" + name + "'");
+                        }
+                    } else if (field.composed() && field.visibility() != Ast.Visibility.PUBLIC) {
                         throw new IllegalArgumentException(
-                                "trait '" + activeTraitOwner + "' cannot access host or foreign trait state field '" + name + "'");
+                                "trait state field '" + field.compositionOwner() + "." + name
+                                        + "' is private to that trait");
+                    } else if (field.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
+                        throw new IllegalArgumentException(
+                                "field '" + klass.name() + "." + name + "' is private to " + klass.name());
                     }
-                } else if (field.composed() && field.visibility() != Ast.Visibility.PUBLIC) {
-                    throw new IllegalArgumentException(
-                            "trait state field '" + field.compositionOwner() + "." + name
-                                    + "' is private to that trait");
-                } else if (field.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
-                    throw new IllegalArgumentException(
-                            "field '" + klass.name() + "." + name + "' is private to " + klass.name());
                 }
                 seen.remove(klass);
                 Type unresolved = resolve(field.type(), Set.copyOf(klass.genericParameters()), self);
@@ -2010,7 +2025,7 @@ public final class TypeChecker {
 
             Type parentType = resolve(parentRef, Set.copyOf(klass.genericParameters()), self);
             if (!substitutions.isEmpty()) parentType = substituteGenerics(parentType, substitutions);
-            Type result = findFieldType(parent, name, parentType, seen);
+            Type result = findFieldType(parent, name, parentType, seen, enforceAccess);
             if (result != null) {
                 seen.remove(klass);
                 return result;
@@ -2357,6 +2372,36 @@ public final class TypeChecker {
         for (int i = 0; i < declaredInputs.size(); i++) {
             Type pattern = resolve(declaredInputs.get(i), genericNames, genericSelf);
             inferGenericBindings(pattern, actualInputs.get(i), inferred, where);
+        }
+
+        List<Type> arguments = new ArrayList<>(klass.genericParameters().size());
+        for (String generic : klass.genericParameters()) {
+            Type inferredType = inferred.get(generic);
+            if (inferredType == null || inferredType == Unknown.INSTANCE) {
+                throw new IllegalArgumentException(where + " cannot infer generic '" + generic
+                        + "'; provide explicit type arguments");
+            }
+            arguments.add(inferredType);
+        }
+        return new Named(qualifiedClassName(klass), arguments);
+    }
+
+    private Type inferClassTypeFromPatterns(
+            Ast.ClassDecl klass,
+            List<Type> declaredInputs,
+            List<Type> actualInputs,
+            String where) {
+        if (declaredInputs.size() != actualInputs.size()) {
+            throw new IllegalArgumentException("internal generic inference arity mismatch in " + where);
+        }
+        if (klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
+                    + "' is not generic; omit <>");
+        }
+
+        LinkedHashMap<String, Type> inferred = new LinkedHashMap<>();
+        for (int i = 0; i < declaredInputs.size(); i++) {
+            inferGenericBindings(declaredInputs.get(i), actualInputs.get(i), inferred, where);
         }
 
         List<Type> arguments = new ArrayList<>(klass.genericParameters().size());
