@@ -51,9 +51,9 @@ class_member    = field_decl
                 | static_function_decl ;
 
 module_field_decl
-                = visibility [ "static" ] data_member_decl ;
+                = { annotation } visibility [ "static" ] data_member_decl ;
 
-field_decl      = visibility [ "static" ] data_member_decl ;
+field_decl      = { annotation } visibility [ "static" ] data_member_decl ;
 
 data_member_decl
                 = [ binding_kind ] IDENT ":" type_ref [ "=" expression ] [ ";" ]
