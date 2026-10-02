@@ -121,10 +121,14 @@ public final class OwnershipChecker {
             seedModuleState(module, moduleScope);
             Scope scope = new Scope(moduleScope);
             if (!method.isStatic()) {
-                // Receiver is immutable unless a future explicit "mut self"
-                // syntax is introduced. Methods can still mutate through an
-                // explicit &mut parameter.
-                scope.define("self", new VarState(Ast.TypeRef.simple(klass.name()), false, ValueKind.IMM_BORROW, Origin.PARAM));
+                // Normal method receivers are immutable. A constructor owns an
+                // exclusive initialization borrow so it can populate mutable
+                // fields before the instance becomes observable.
+                ValueKind receiverKind = method.name().equals("constructor")
+                        ? ValueKind.MUT_BORROW
+                        : ValueKind.IMM_BORROW;
+                scope.define("self", new VarState(
+                        Ast.TypeRef.simple(klass.name()), false, receiverKind, Origin.PARAM));
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             checkBlock(method.body(), scope, method.returnType());
@@ -335,7 +339,13 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.NewExpr created) {
-            for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
+            Ast.ClassDecl klass = findClass(created.type().name());
+            Ast.MethodDecl constructor = klass == null ? null : findConstructor(klass, created.arguments().size());
+            if (constructor != null) {
+                checkArguments(created.arguments(), constructor.parameters(), scope, "constructor " + klass.name());
+            } else {
+                for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
+            }
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
@@ -428,6 +438,20 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace) {
+                Ast.ClassDecl staticClass = findClass(namespace.name());
+                if (staticClass != null) {
+                    Ast.FieldDecl staticField = findStaticField(staticClass, member.member());
+                    if (staticField == null) {
+                        throw error("unknown static field '" + namespace.name() + "." + member.member() + "'");
+                    }
+                    if (staticField.bindingKind() != Ast.BindingKind.LET) {
+                        throw error("static field '" + namespace.name() + "." + member.member()
+                                + "' is immutable; declare it with let to permit mutation");
+                    }
+                    return;
+                }
+            }
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             if (klass != null) {
                 Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
@@ -627,7 +651,7 @@ public final class OwnershipChecker {
     private Ast.FieldDecl findField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.FieldDecl field : klass.fields()) {
-            if (field.name().equals(name)) {
+            if (!field.isStatic() && field.name().equals(name)) {
                 seen.remove(klass);
                 return field;
             }
@@ -642,6 +666,24 @@ public final class OwnershipChecker {
             }
         }
         seen.remove(klass);
+        return null;
+    }
+
+    private Ast.FieldDecl findStaticField(Ast.ClassDecl klass, String name) {
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.isStatic() && field.name().equals(name)) return field;
+        }
+        return null;
+    }
+
+    private Ast.MethodDecl findConstructor(Ast.ClassDecl klass, int arity) {
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic()
+                    && method.name().equals("constructor")
+                    && method.parameters().size() == arity) {
+                return method;
+            }
+        }
         return null;
     }
 
