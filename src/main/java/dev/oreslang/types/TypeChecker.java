@@ -816,6 +816,7 @@ public final class TypeChecker {
 
         Ast.ClassDecl klass = findClass(named.name());
         if (klass == null) return false;
+        if (klass.actorKind() != Ast.ActorKind.NONE) return false;
         if (!seen.add(klass)) return true;
 
         try {
