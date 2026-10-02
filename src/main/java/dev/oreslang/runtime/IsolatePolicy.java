@@ -186,7 +186,7 @@ public record IsolatePolicy(
                 "--ores-max-heap-bytes=" + maxHeapBytes,
                 "--ores-max-mailbox-messages=" + maxMailboxMessages,
                 "--ores-max-actors=" + maxActors,
-                "--ores-max-wall-ms=" + maxWallTime.toMillis(),
+                "--ores-max-wall-ms=" + millisSaturated(maxWallTime),
                 "--ores-adversarial=" + adversarial,
                 "--ores-execution-mode=" + profile.mode().name(),
                 "--ores-platform=" + profile.platform().name()
@@ -226,11 +226,19 @@ public record IsolatePolicy(
         return ExecutionProfile.parse(mode, platform);
     }
 
+    private static long millisSaturated(Duration value) {
+        try {
+            return Math.max(1L, value.toMillis());
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE / 4L;
+        }
+    }
+
     private static String bytes(long value) {
         return value + "B";
     }
 
     private static String duration(Duration value) {
-        return value.toMillis() + "ms";
+        return millisSaturated(value) + "ms";
     }
 }
