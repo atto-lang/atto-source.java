@@ -241,7 +241,7 @@ public final class ActorRuntime implements AutoCloseable {
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
-        for (ActorCell<?> cell : actors.values()) cell.stop();
+        for (ActorCell<?> cell : actors.values()) cell.forceStop();
         actors.clear();
     }
 
@@ -296,6 +296,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void stop() {
+            if (!ref.isAlive()) return;
+            if (!mailbox.offer(STOP)) {
+                // A full mailbox must not make stop impossible.
+                forceStop();
+            }
+        }
+
+        private void forceStop() {
+            mailbox.clear();
             mailbox.offer(STOP);
             Thread t = thread;
             if (t != null) t.interrupt();
