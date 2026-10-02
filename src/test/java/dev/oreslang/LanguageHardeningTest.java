@@ -4,6 +4,8 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Lexer;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.parser.Token;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
 
@@ -243,4 +245,23 @@ final class LanguageHardeningTest {
                 end
                 """)));
     }
+    @Test
+    void strictFaasRejectsSharedActorDeclarationsAtAdmission() {
+        Ast.Program sharedActor = TypeChecker.check(Parser.parse("""
+                shared actor Account {
+                  let balance = 100;
+
+                  pub fnc current() => int {
+                    return self.balance;
+                  }
+                }
+                """));
+
+        assertThrows(SecurityException.class, () ->
+                CapabilityChecker.check(sharedActor, IsolatePolicy.strictFaas()));
+        assertDoesNotThrow(() ->
+                CapabilityChecker.check(sharedActor, IsolatePolicy.developer()));
+    }
+
+
 }
