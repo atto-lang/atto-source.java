@@ -1,7 +1,18 @@
-(* Oreslang v0 concrete grammar. Some reserved constructs are parsed before runtime support lands. *)
+(* Oreslang v0.2 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
-source          = { module_decl } EOF ;
-module_decl     = "define" "module" qualified_name { module_member } "end" ;
+source          = { import_decl } { annotated_module_decl } EOF ;
+
+import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
+import_spec     = "*" "as" IDENT
+                | "module" import_names
+                | "class" import_names
+                | "fnc" import_names ;
+import_names    = IDENT
+                | "{" IDENT { "," IDENT } "}"
+                | "*" "as" IDENT ;
+
+annotated_module_decl = { annotation } "define" "module" qualified_name
+                        { module_member } "end" ;
 module_member   = function_decl | class_decl | interface_decl | type_decl | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
@@ -11,22 +22,25 @@ function_decl   = { annotation } visibility { modifier } "fnc" IDENT [ generic_p
                   "(" [ param_list ] ")" return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   { class_member } "end" ;
-class_member    = field_decl | method_decl | class_decl | type_decl ;
-field_decl      = visibility [ "static" ] binding_kind type_ref IDENT [ "=" expression ] ";" ;
+class_member    = field_decl | method_decl ;
+field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] ";" ;
 
-method_decl     = { annotation } visibility { modifier } IDENT [ generic_params ] method_head return_spec block ;
+method_decl     = { annotation } visibility { modifier } IDENT [ generic_params ] method_head return_spec
+                  ( block | ";" ) ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
 explicit_receiver = "self" type_ref ;
 
 interface_decl  = "define" "interface" IDENT [ generic_params ]
                   { interface_member } "end" ;
-interface_member= { annotation } IDENT [ generic_params ] "(" [ param_list ] ")" return_spec ";"
-                | type_ref IDENT ";" ;
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec ";"
+                | [ binding_kind ] type_ref IDENT ";" ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref ";" ;
 
-annotation      = "@" IDENT [ "<" [ type_args ] ">" ] ;
+annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
@@ -54,7 +68,7 @@ if_stmt         = "if" condition ";" "do" { statement }
                   { "elseif" condition ";" "do" { statement } }
                   [ "else" { statement } ] "fi" ;
 condition       = condition_and { "|" condition_and } ;
-condition_and   = expression { "," expression } ;
+condition_and   = equality { "," equality } ;
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
@@ -78,23 +92,33 @@ primary         = literal
                 | "new" type_ref "(" [ argument_list ] ")"
                 | lambda
                 | tuple_literal
-                | list_literal
+                | array_literal
+                | legacy_array_literal
+                | object_literal
                 | "(" expression ")" ;
 
 lambda          = "(" [ param_list ] ")" "->" expression
                 | "(" [ param_list ] ")" "->" block ;
 tuple_literal   = "(" expression "," expression { "," expression } ")" ;
-list_literal    = "[" [ expression { "," expression } ] "]" ;
+array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
+legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
+object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
+object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
-                | "true" | "false" | "null" ;
+                | "true" | "false" ;
 
 type_ref        = qualified_name [ "<" [ type_args ] ">" ]
-                | tuple_type
-                | function_type
                 | "self"
-                | "void" ;
+                | "void"
+                | "null" ;
 type_args       = type_ref { "," type_ref } ;
-tuple_type      = "(" type_ref "," type_ref { "," type_ref } ")" ;
-function_type   = "Fnc" "<" type_ref { "," type_ref } ">" ;
 qualified_name  = IDENT { "." IDENT } ;
+
+(* Semantic restrictions:
+   - assignment targets are local names in v0.2;
+   - `fi` closes only conditionals; `end` closes modules/classes/interfaces;
+   - standalone `null` values are illegal;
+   - the `null` type marker is legal only directly inside Option<null>;
+   - inline `obj{}` / `arr[]` values are not subclass targets. Extend Object or List instead.
+*)
