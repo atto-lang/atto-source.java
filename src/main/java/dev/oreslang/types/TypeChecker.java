@@ -549,6 +549,10 @@ public final class TypeChecker {
                 String ownerName = functionOwners.get(fn);
                 Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
                 if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
+                    if (fn.visibility() != Ast.Visibility.PUBLIC) {
+                        throw new IllegalArgumentException("private singleton callable '" + owner.name() + "."
+                                + fn.name() + "' is actor-private");
+                    }
                     return singletonTransportType(fn);
                 }
                 return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
@@ -1182,6 +1186,16 @@ public final class TypeChecker {
         Ast.ClassDecl parent = findClass(parentRef.name());
         if (parent == null) throw new IllegalArgumentException("unknown parent class '" + parentRef.name() + "' for " + child.name());
         if (parent == child) throw new IllegalArgumentException("class '" + child.name() + "' cannot extend itself");
+
+        String parentOwnerName = classOwners.get(parent);
+        Ast.ModuleDecl parentOwner = parentOwnerName == null ? null : modules.get(parentOwnerName);
+        String childOwnerName = classOwners.get(child);
+        if (parentOwner != null && parentOwner.singleton()
+                && !java.util.Objects.equals(parentOwnerName, childOwnerName)) {
+            throw new IllegalArgumentException("class '" + parent.name()
+                    + "' is actor-private inside singleton module '" + parentOwner.name()
+                    + "' and cannot be inherited outside that module");
+        }
         return parent;
     }
 
