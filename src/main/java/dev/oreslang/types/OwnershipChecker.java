@@ -363,6 +363,14 @@ public final class OwnershipChecker {
             return;
         }
         if (target instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
+            if (klass != null) {
+                Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
+                if (field == null) throw error("unknown field '" + member.member() + "' on " + klass.name());
+                if (field.bindingKind() != Ast.BindingKind.LET) {
+                    throw error("field '" + klass.name() + "." + member.member() + "' is immutable; declare the field with let to permit mutation");
+                }
+            }
             ensureMutableReceiver(member.receiver(), scope, "field '" + member.member() + "'");
             return;
         }
@@ -549,6 +557,27 @@ public final class OwnershipChecker {
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         return findClass(type.name());
+    }
+
+    private Ast.FieldDecl findField(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.name().equals(name)) {
+                seen.remove(klass);
+                return field;
+            }
+        }
+        for (Ast.TypeRef parent : klass.parents()) {
+            Ast.ClassDecl p = findClass(parent.name());
+            if (p == null) continue;
+            Ast.FieldDecl found = findField(p, name, seen);
+            if (found != null) {
+                seen.remove(klass);
+                return found;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
