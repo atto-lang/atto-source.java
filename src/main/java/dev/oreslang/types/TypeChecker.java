@@ -1400,6 +1400,10 @@ public final class TypeChecker {
     }
 
     private Ast.TypeAliasDecl findTypeAlias(String name) {
+        if (resolutionModule != null && name.indexOf('.') < 0) {
+            Ast.TypeAliasDecl local = typeAliases.get(resolutionModule + "." + name);
+            if (local != null) return local;
+        }
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
     }
