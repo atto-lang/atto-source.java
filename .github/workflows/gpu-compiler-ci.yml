@@ -32,7 +32,37 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      - name: Compile GPU compiler path
-        run: mvn -B -ntp -DskipTests compile
-      - name: Run GPU compiler tests
-        run: mvn -B -ntp -Dtest=GpuExecutionTest,IncrementalFunctorStaticTest test
+      - name: Capture GPU compiler build
+        id: gpu_build
+        shell: bash
+        run: |
+          set +e
+          mvn -B -ntp -DskipTests compile > gpu-compile.log 2>&1
+          compile_status=$?
+          if [ "$compile_status" -eq 0 ]; then
+            mvn -B -ntp -Dtest=GpuExecutionTest,IncrementalFunctorStaticTest test > gpu-tests.log 2>&1
+            test_status=$?
+          else
+            printf 'tests skipped because compile failed\n' > gpu-tests.log
+            test_status=99
+          fi
+          printf 'compile_status=%s\ntest_status=%s\n' "$compile_status" "$test_status" > gpu-status.txt
+          cat gpu-status.txt
+          echo "compile_status=$compile_status" >> "$GITHUB_OUTPUT"
+          echo "test_status=$test_status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload GPU compiler diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-compiler-diagnostics
+          path: |
+            gpu-status.txt
+            gpu-compile.log
+            gpu-tests.log
+          if-no-files-found: error
+          retention-days: 3
+      - name: Enforce GPU compiler gate
+        shell: bash
+        run: |
+          test "${{ steps.gpu_build.outputs.compile_status }}" = "0"
+          test "${{ steps.gpu_build.outputs.test_status }}" = "0"
