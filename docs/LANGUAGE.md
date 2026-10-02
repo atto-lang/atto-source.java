@@ -315,9 +315,10 @@ shared actor Account {
 - the handle itself is not awaitable; awaiting actor completion is explicit as `await handle.result()`;
 - private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
 - both kinds still process their own mailbox serially;
-- the runtime receive lane is FIFO: source `receive() => Future<M>` suspends logically and is consumed as `await receive()`, while `try_receive() => Option<M>` is an immediate head-only poll;
-- blocking receive loops use ordinary loop syntax around `await receive()`; non-blocking drain loops use ordinary loop syntax around `try_receive()` and stop on `None`, so no extra receive-loop keyword is required;
-- non-blocking drain loops remain subject to scheduler safepoints / dispatcher throughput quanta and cannot monopolize a worker indefinitely;
+- actor communication is compiler-visible syntax rather than library calls: `receive`, `try_receive`, `send`, `try_send`, `select`, `channel`, `case`, `default`, and `loop` are reserved;
+- `receive loop (msg) { ... }` is the suspending mailbox service loop; `try_receive loop (msg) { ... }` drains only immediately available messages;
+- actor/channel suspension points hoist live locals into the actor continuation frame instead of requiring Erlang-style recursive `loop(NewState)` state threading;
+- actor fairness uses a separate operation quantum in addition to mailbox-message throughput; compiler checkpoints and receive/select backedges consume that budget and lowering must hand the continuation back to the dispatcher when it is exhausted;
 - receive never scans past unmatched older messages; typed/indexed protocol channels are the future mechanism for selective routing rather than Erlang-style linear mailbox scanning;
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
 - no lock is required around ordinary actor-owned fields, including fields of a shared actor;
