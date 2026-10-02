@@ -12,9 +12,10 @@ public final class Lexer {
 
     static {
         KEYWORDS.put("define", DEFINE); KEYWORDS.put("class", CLASS); KEYWORDS.put("module", MODULE);
+        KEYWORDS.put("import", IMPORT); KEYWORDS.put("from", FROM); KEYWORDS.put("as", AS);
+        KEYWORDS.put("extends", EXTENDS); KEYWORDS.put("implements", IMPLEMENTS);
         KEYWORDS.put("try", TRY); KEYWORDS.put("catch", CATCH); KEYWORDS.put("finally", FINALLY);
-        // `fi` and `end` are distinct surface spellings but both close the current grammar scope.
-        KEYWORDS.put("end", END); KEYWORDS.put("fi", END); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
+        KEYWORDS.put("end", END); KEYWORDS.put("fi", FI); KEYWORDS.put("if", IF); KEYWORDS.put("do", DO);
         KEYWORDS.put("else", ELSE); KEYWORDS.put("then", THEN); KEYWORDS.put("new", NEW); KEYWORDS.put("done", DONE);
         KEYWORDS.put("await", AWAIT); KEYWORDS.put("async", ASYNC); KEYWORDS.put("def", DEF); KEYWORDS.put("fnc", FNC);
         KEYWORDS.put("yield", YIELD); KEYWORDS.put("super", SUPER); KEYWORDS.put("elseif", ELSEIF); KEYWORDS.put("switch", SWITCH);
@@ -22,7 +23,7 @@ public final class Lexer {
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
-        KEYWORDS.put("null", NULL);
+        KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
     }
 
     private final String source;
@@ -63,7 +64,7 @@ public final class Lexer {
             }
             case ' ', '\r', '\t' -> { }
             case '\n' -> newline();
-            case '"' -> string();
+            case '"', '\'' -> string(c);
             default -> {
                 if (isDigit(c)) number();
                 else if (isIdentStart(c)) identifier();
@@ -83,16 +84,16 @@ public final class Lexer {
         }
     }
 
-    private void string() {
+    private void string(char quote) {
         StringBuilder value = new StringBuilder();
-        while (!isAtEnd() && peek() != '"') {
+        while (!isAtEnd() && peek() != quote) {
             char c = advance();
             if (c == '\n') { newline(); value.append('\n'); continue; }
             if (c == '\\') {
                 if (isAtEnd()) throw error("unterminated string escape");
                 char escaped = advance();
                 value.append(switch (escaped) {
-                    case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\\' -> '\\'; default -> escaped;
+                    case 'n' -> '\n'; case 'r' -> '\r'; case 't' -> '\t'; case '"' -> '"'; case '\'' -> '\''; case '\\' -> '\\'; default -> escaped;
                 });
             } else value.append(c);
         }
