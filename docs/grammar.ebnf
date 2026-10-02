@@ -29,7 +29,7 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "actor" [ "isolate" ] ;
+callable_modifier = "abstract" | "async" | "actor" [ "isolate" ] | "void" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -66,7 +66,7 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
+interface_member= visibility { callable_modifier } "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
@@ -153,10 +153,11 @@ primary         = literal
 actor_expr      = "actor" [ "isolate" ] ( pipe_lambda | typed_legacy_lambda ) ;
 
 lambda          = pipe_lambda | typed_legacy_lambda ;
-pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
+pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" lambda_return block ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
-                = "(" [ param_list ] ")" "->" block ;
+                = "(" [ param_list ] ")" "->" lambda_return block ;
+lambda_return   = [ type_ref ] ;
 
 tuple_literal   = "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
@@ -226,8 +227,12 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      dispatched through the class namespace, never through an instance.
    - "=>" belongs to named callable return declarations.
    - "->" belongs to function types and lambdas.
-   - Lambdas always have braces. Non-void lambdas must use explicit return and
-     return on every path when a contextual function result type is known.
+   - "void" is a reserved return type. In prefix position it is callable-only
+     sugar: `void fnc f()` / `void routine r()` mean a void result and must
+     agree with any explicit `=>` return type.
+   - Lambdas always have braces. A lambda may omit its result type (`|| -> { ... }`)
+     or declare it between the slim arrow and block (`|| -> void { ... }`).
+     Omitted no-value lambdas infer void. Non-void lambdas must return on every path.
    - named class/interface types are nominal by default.
    - @Structural, name structural Type, or @AllowStructural(name) opt a
      parameter into public-shape compatibility.
