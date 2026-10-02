@@ -11,7 +11,8 @@ The language is intentionally opinionated:
 - class methods omit `fnc` and have an implicit `self` receiver;
 - one return value only (tuples/arrays/records are ordinary single values);
 - `val`, `const`, and `let` are the only variable declarations;
-- actor heaps are isolated: mutable values are never shared between actors;
+- first-class `actor` expressions with fail-stop mailbox isolation; `actor isolate` marks the stronger backend contract;
+- actor heaps are ownership-isolated: mutable values are never simultaneously writable from multiple actors;
 - immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
 - isolates are stricter security boundaries for FaaS/mobile workloads, with host access denied and Oreslang APIs capability-gated by default;
 - JIT, AOT/interpreter, and AOT-host + guest-JIT hybrid execution profiles;
@@ -25,6 +26,6 @@ The language is intentionally opinionated:
 - direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
 - multiple named modules may appear in one source file;
 - explicit `return` statements;
-- generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.
+- generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, `panic`/`recover`, and `try/catch/finally` are language-level features.
 
 The first implementation is developed on a feature branch and will land with an executable Truffle skeleton, grammar/specification, examples, tests, and CI.

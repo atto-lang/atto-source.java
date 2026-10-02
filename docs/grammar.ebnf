@@ -29,7 +29,7 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" ;
+callable_modifier = "abstract" | "async" | "actor" [ "isolate" ] ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -93,6 +93,8 @@ statement       = binding_decl
                 | if_stmt
                 | try_stmt
                 | defer_stmt
+                | recover_stmt
+                | panic_stmt
                 | break_stmt
                 | continue_stmt
                 | for_stmt
@@ -100,6 +102,8 @@ statement       = binding_decl
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
+recover_stmt    = "recover" expression stmt_terminator ;
+panic_stmt      = "panic" expression stmt_terminator ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
 
@@ -138,12 +142,15 @@ primary         = literal
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
+                | actor_expr
                 | lambda
                 | tuple_literal
                 | array_literal
                 | legacy_array_literal
                 | object_literal
                 | "(" expression ")" ;
+
+actor_expr      = "actor" [ "isolate" ] ( pipe_lambda | typed_legacy_lambda ) ;
 
 lambda          = pipe_lambda | typed_legacy_lambda ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
@@ -199,7 +206,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 *)
 
 (* Reserved keywords:
-   - "of", "is", and "as" are globally reserved tokens.
+   - "of", "is", "as", "actor", "isolate", "recover", and "panic" are globally reserved tokens.
    - They may appear only in grammar positions assigned to those keywords.
    - They are never IDENT tokens and therefore cannot name variables, parameters,
      callables, modules, classes, interfaces, fields, methods, type aliases,
@@ -224,6 +231,25 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - named class/interface types are nominal by default.
    - @Structural, name structural Type, or @AllowStructural(name) opt a
      parameter into public-shape compatibility.
+   - "main" and "init" are reserved callable names at file/root and module declaration scope.
+     At those scopes, bindings/types/classes/interfaces/import aliases may not occupy those names.
+     The reservation is scope-specific: locals and class members may still use main/init.
+   - a source file/code unit may declare at most one main across file-root and named modules.
+   - each module/file-root scope may declare its own init lifecycle callable.
+   - main/init lifecycle fnc/routine declarations may not be actor or actor-isolate callables.
+   - "actor fnc" / "actor routine" declarations are one-shot actor factories.
+     Their declared body return type must be void; calling one returns ActorTask.
+   - ActorTask exposes stop/join/alive/failed/kind but no mailbox send operation.
+   - main is the root/process entrypoint and cannot itself be declared actor.
+   - actor behavior lambdas accept exactly one mailbox message parameter and return void.
+   - actor defaults to SHARED runtime mode; "actor isolate" requests the stronger
+     isolate backend contract and cannot capture mutable, borrowed, or move-only outer state.
+   - actor failure is fail-stop for that actor; it does not unwind the spawning/main callable.
+   - recover evaluates/registers an arity-1 handler on the current callable invocation.
+   - defer handlers run before recovery. Recovery handlers run LIFO while a failure unwinds.
+   - normal recover-handler completion consumes the failure and becomes the callable result.
+   - "panic value" creates/re-creates a panic; re-panicking from a recover handler continues unwind.
+   - scheduler/runtime cancellation is not recoverable and cannot be swallowed by recover/catch.
    - break exits the nearest enclosing loop; continue advances the nearest loop.
    - continue in a classic for-loop still evaluates the update expression.
    - break/continue cannot cross a function, routine, method, or lambda boundary.

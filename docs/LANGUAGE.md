@@ -253,6 +253,136 @@ is a control-flow boundary, so it cannot break or continue a loop owned by its c
 creator. `finally` executes before a pending `break` or `continue` resumes. Callable-scoped
 `defer` is unaffected: breaking or continuing a loop does not drain the defer stack.
 
+## Actors, panic, and recover
+
+`actor` creates a first-class mailbox actor. The default spelling uses the shared-runtime
+backend; `actor isolate` requests the stronger isolation backend contract.
+
+```ores
+val worker = actor |String msg| -> {
+  stdio.println(msg);
+};
+
+val isolated = actor isolate |String msg| -> {
+  stdio.println(msg);
+};
+
+worker.send("hello");
+worker.stop();
+worker.join();
+```
+
+An actor behavior accepts exactly one mailbox message parameter and returns `void`. Inside
+the behavior, `self` is the current `Actor<T>` handle, so an actor can send to or stop itself
+without recursively capturing the outer binding. Actor handles expose `send(message)`,
+`stop()`, `join()`, `alive`, `failed`, and `kind`.
+
+```ores
+val counter = actor |int n| -> {
+  if n < 10; do
+    self.send(n + 1);
+  else
+    self.stop();
+  fi
+};
+```
+
+Calling `self.join()` is rejected at runtime instead of deadlocking the actor thread.
+
+Each mailbox delivery is a fresh actor **turn**. Actor-owned captured state persists across turns,
+but callable-scoped `defer` and `recover` frames belong only to the current turn and are drained
+or discarded before the actor accepts the next message.
+
+Actor callables are also supported as declaration sugar for one-shot work:
+
+```ores
+pub actor fnc rebuild(String target) => void {
+  rebuild_index(target);
+}
+
+pub actor isolate routine compact(String target) => void {
+  compact_index(target);
+}
+
+pub routine main() => void {
+  val task = rebuild("users");
+  task.join();
+  stdio.println(task.failed);
+}
+```
+
+An `actor fnc` or `actor routine` body must declare `void`. Calling it immediately
+creates a new actor, transfers/freezes its launch arguments across the actor boundary, schedules
+the body once, and returns an `ActorTask` handle. `ActorTask` exposes `stop()`, `join()`,
+`alive`, `failed`, and `kind`, but deliberately has no `send()`: persistent mailboxes use
+the explicit actor-expression form instead. `main` remains the root/process entrypoint and
+cannot itself be declared `actor`. `async actor` is rejected because actor already defines
+the execution boundary.
+
+Actor failure is fail-stop and isolated from the caller: an uncaught panic/exception terminates
+that actor without unwinding the spawning function, killing sibling actors, or terminating the
+main process. `join()` waits for termination but deliberately does not rethrow actor failure;
+supervisors can inspect `failed` and choose an explicit restart/escalation policy.
+
+A shared actor may take ownership of mutable/non-Copy captures. The outer binding becomes moved,
+so ordinary code cannot keep a writable alias. An `actor isolate` is stricter: the current
+checker permits only immutable Copy captures. Mutable, borrowed, or move-only outer values must
+cross the mailbox boundary instead.
+
+The current Java interpreter gives both actor kinds independent mailbox/thread lifecycles and
+failure containment. `actor isolate` is also an explicit backend contract for stronger
+Graal/native-isolate memory separation; physical address-space separation is a host/backend
+mapping and is not faked by the interpreter.
+
+### `panic`
+
+`panic value;` starts exceptional unwind. A panic may carry any ordinary Oreslang value:
+
+```ores
+panic "database unavailable";
+```
+
+If a panic reaches an actor boundary unrecovered, only that actor dies.
+
+### `recover`
+
+`recover` is callable-scoped and may appear in any function, routine, method, lambda, or actor
+behavior. It evaluates its operand immediately. The result must be an arity-1 callable that
+accepts the pending failure value.
+
+```ores
+fnc load() => int {
+  recover |err| -> {
+    stdio.println(err);
+    return 0;
+  };
+
+  return risky_load();
+}
+```
+
+Recovery happens only if a failure is escaping that callable. Deferred cleanup runs first, then
+registered recover handlers run in LIFO order. If a handler returns normally, the failure is
+consumed and the handler's result becomes the callable result. For a `void` callable the
+handler returns `void`.
+
+A recover handler may re-panic:
+
+```ores
+recover |err| -> {
+  log(err);
+  panic err;
+};
+```
+
+Re-panicking continues unwind to the next older recover handler, then to the caller if no handler
+consumes it. This lets a caller's `try/catch` observe the re-panic. Conversely, a recover handler
+inside a callee runs before a higher-up caller `try/catch` sees the failure.
+
+A lexical `try/catch` inside the *same* callable still handles a failure before callable-level
+recovery, because the callable has not begun unwinding yet. Scheduler/runtime cancellation is
+non-recoverable and cannot be swallowed by either `recover` or guest `catch`.
+
 ## Exceptions and defer
 
 Both structured exceptions and callable-scoped `defer` are supported:
@@ -261,7 +391,7 @@ Both structured exceptions and callable-scoped `defer` are supported:
 try {
   risky();
 } catch (err) {
-  recover(err);
+  stdio.println(err);
 } finally {
   cleanup();
 }
@@ -355,6 +485,60 @@ pub routine main() => void {
 
 Qualified names such as `x.y` retain their module namespace.
 
+## Reserved lifecycle callable names: `main` and `init`
+
+`main` and `init` are **scope-reserved callable names** at the file/root and module
+declaration levels. They are not lexer keywords.
+
+At those declaration scopes, the names may only be used by `fnc` or `routine`
+declarations:
+
+```ores
+fnc init() => void {
+  return;
+}
+
+pub routine main() => void {
+  return;
+}
+
+define module worker
+  fnc init() => void {
+    return;
+  }
+end
+```
+
+A file/module binding, type, class, or interface may not occupy `main` or `init`,
+because doing so would shadow a lifecycle entrypoint name. A named function import such
+as `import fnc {main} from "./app.ores";` remains legal because it references an existing
+lifecycle callable rather than declaring a new one. Wildcard aliases and non-function
+imports may not bind `main` or `init`.
+
+Neither lifecycle callable may be an actor:
+
+```ores
+actor fnc init() => void {     // compile-time error
+  return;
+}
+
+pub actor routine main() => void { // compile-time error
+  return;
+}
+```
+
+This applies equally to shared and isolate actor callables. Lifecycle hooks belong to
+their file/module execution context rather than being detached into a child actor.
+
+A source file/code unit may declare **at most one `main`** across its file-root and named
+modules, because `main` is the process entrypoint. Each module/file-root scope may declare its
+own `init`; separate modules may therefore each have an initializer without making process
+startup ambiguous.
+
+The reservation is intentionally scoped. Local bindings and class members named
+`main` or `init` remain legal, so these names do not pollute every identifier
+namespace in the language.
+
 ## `fnc` versus `routine`
 
 `fnc` is the recursive/function form. It may participate in recursive call graphs. Tail-position calls from `fnc` are optimization-eligible, but v0.3 deliberately does **not** promise that every recursive `fnc` executes in constant stack space yet.
@@ -379,10 +563,11 @@ let Fnc<int, int> fact = |int n| -> {
 
 ## Reserved keywords
 
-`of`, `is`, and `as` are **globally reserved** Oreslang keywords. The lexer never
-emits them as ordinary identifiers, so they cannot be used as variable, parameter,
-function, routine, module, class, interface, field, method, type-alias, generic,
-namespace, import-alias, or member names.
+`of`, `is`, `as`, `actor`, `isolate`, `recover`, and `panic` are
+**globally reserved** Oreslang keywords. The lexer never emits them as ordinary
+identifiers, so they cannot be used as variable, parameter, function, routine,
+module, class, interface, field, method, type-alias, generic, namespace,
+import-alias, or member names.
 
 ```ores
 val is = 1;             // compile-time parse error
