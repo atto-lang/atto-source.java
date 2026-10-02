@@ -7,6 +7,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -118,6 +120,7 @@ public final class OresMutex {
         Optional<Guard<T>> tryLock();
         Optional<Guard<T>> lockFor(Duration timeout);
         CompletableFuture<Guard<T>> lockAsync();
+        CompletableFuture<Guard<T>> lockAsyncFor(Duration timeout);
         <R> R withLock(Function<? super T, ? extends R> body);
         boolean isPoisoned();
     }
@@ -159,6 +162,12 @@ public final class OresMutex {
     public static final class PoisonedMutexException extends IllegalStateException {
         public PoisonedMutexException() {
             super("SharedMutex is poisoned because a previous critical section exited abnormally; call recover(...)");
+        }
+    }
+
+    public static final class LockTimeoutException extends IllegalStateException {
+        public LockTimeoutException(Duration timeout) {
+            super("mutex acquisition timed out after " + timeout);
         }
     }
 
@@ -220,6 +229,13 @@ public final class OresMutex {
         }
 
         @Override
+        public CompletableFuture<Guard<T>> lockAsyncFor(Duration timeout) {
+            Objects.requireNonNull(timeout, "timeout");
+            if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
+            return lockAsync();
+        }
+
+        @Override
         public <R> R withLock(Function<? super T, ? extends R> body) {
             Objects.requireNonNull(body, "body");
             Guard<T> guard = lock();
@@ -274,6 +290,12 @@ public final class OresMutex {
         private static final int MAX_ASYNC_WAITERS = 8_192;
         private static final int MAX_GLOBAL_ASYNC_WAITERS = 32_768;
         private static final AtomicInteger GLOBAL_ASYNC_WAITERS = new AtomicInteger();
+        private static final ScheduledExecutorService ASYNC_TIMEOUTS =
+                Executors.newSingleThreadScheduledExecutor(
+                        Thread.ofPlatform()
+                                .daemon(true)
+                                .name("ores-shared-mutex-timeouts")
+                                .factory());
 
         private final T value;
         private final Semaphore permit = new Semaphore(1, true);
@@ -415,6 +437,12 @@ public final class OresMutex {
             releaseWaiter(GLOBAL_ASYNC_WAITERS, "global");
         }
 
+        private static <T> GuardFuture<T> failedGuardFuture(Throwable failure) {
+            GuardFuture<T> future = new GuardFuture<>();
+            future.failFromRuntime(failure);
+            return future;
+        }
+
         private final class AsyncWaiter {
             private final Object ownerDomain;
             private final boolean enforceOwnerDomain;
@@ -549,13 +577,13 @@ public final class OresMutex {
             int waiterLimit = asyncWaiterLimit();
             if (!reserveAsyncWaiter(waiterLimit)) {
                 releaseDomain(ownerDomain);
-                return CompletableFuture.failedFuture(new IllegalStateException(
+                return failedGuardFuture(new IllegalStateException(
                         "SharedMutex async waiter limit exceeded: " + waiterLimit));
             }
             if (!reserveWaiter(GLOBAL_ASYNC_WAITERS, MAX_GLOBAL_ASYNC_WAITERS)) {
                 releaseAsyncWaiter();
                 releaseDomain(ownerDomain);
-                return CompletableFuture.failedFuture(new IllegalStateException(
+                return failedGuardFuture(new IllegalStateException(
                         "SharedMutex process-wide async waiter limit exceeded: " + MAX_GLOBAL_ASYNC_WAITERS));
             }
 
@@ -567,13 +595,11 @@ public final class OresMutex {
                     future);
 
             future.whenComplete((ignored, failure) -> {
-                if (future.isCancelled()) {
-                    boolean removed;
-                    synchronized (asyncQueueLock) {
-                        removed = asyncQueue.remove(waiter);
-                    }
-                    if (removed) releaseDomain(ownerDomain);
+                boolean removed;
+                synchronized (asyncQueueLock) {
+                    removed = asyncQueue.remove(waiter);
                 }
+                if (removed) releaseDomain(ownerDomain);
                 releaseAsyncWaiter();
                 releaseGlobalAsyncWaiter();
             });
@@ -602,6 +628,38 @@ public final class OresMutex {
                 }
             }
 
+            return future;
+        }
+
+        @Override
+        public CompletableFuture<Guard<T>> lockAsyncFor(Duration timeout) {
+            Objects.requireNonNull(timeout, "timeout");
+            if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
+
+            CompletableFuture<Guard<T>> pending = lockAsync();
+            if (!(pending instanceof GuardFuture<?>)) return pending;
+
+            @SuppressWarnings("unchecked")
+            GuardFuture<T> future = (GuardFuture<T>) pending;
+            if (future.isDone()) return future;
+
+            long timeoutNanos = saturatedNanos(timeout);
+            if (timeoutNanos == 0L) {
+                future.failFromRuntime(new LockTimeoutException(timeout));
+                return future;
+            }
+
+            final java.util.concurrent.ScheduledFuture<?> timeoutTask;
+            try {
+                timeoutTask = ASYNC_TIMEOUTS.schedule(
+                        () -> future.failFromRuntime(new LockTimeoutException(timeout)),
+                        timeoutNanos,
+                        TimeUnit.NANOSECONDS);
+            } catch (RuntimeException schedulingFailure) {
+                future.failFromRuntime(schedulingFailure);
+                return future;
+            }
+            future.whenComplete((ignored, failure) -> timeoutTask.cancel(false));
             return future;
         }
 
