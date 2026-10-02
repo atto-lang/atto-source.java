@@ -33,6 +33,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long MAX_FREEZE_BYTES = 16L * 1024 * 1024;
 
     private static final ThreadLocal<IsolatePolicy> CURRENT_ACTOR_POLICY = new ThreadLocal<>();
+    private static final ThreadLocal<ActorRuntime> CURRENT_ACTOR_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_ACTOR_DOMAIN = new ThreadLocal<>();
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
@@ -59,6 +60,11 @@ public final class ActorRuntime implements AutoCloseable {
         return CURRENT_ACTOR_POLICY.get();
     }
 
+    /** Owning ActorRuntime for the actor currently executing on this thread. */
+    static ActorRuntime currentActorRuntime() {
+        return CURRENT_ACTOR_RUNTIME.get();
+    }
+
     /**
      * Stable semantic execution domain for actor-local state.
      *
@@ -79,6 +85,13 @@ public final class ActorRuntime implements AutoCloseable {
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
+
+    /**
+     * Runtime-qualified semantic actor identity. Value equality lets a future
+     * pooled scheduler recreate the token on each mailbox turn without tying
+     * actor-local state to a particular JVM worker thread.
+     */
+    private record ActorDomain(ActorRuntime runtime, ActorId actorId) { }
 
     public static final class Shared<T> {
         private final T value;
@@ -118,6 +131,11 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorId id() { return id; }
 
         public void send(M message) {
+            ActorRuntime callerRuntime = CURRENT_ACTOR_RUNTIME.get();
+            if (callerRuntime != null && callerRuntime != ActorRuntime.this) {
+                throw new SecurityException(
+                        "ActorRef cannot be invoked from an actor owned by another ActorRuntime");
+            }
             ActorRuntime.this.send(this, message);
         }
 
@@ -490,7 +508,8 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private void run() {
             CURRENT_ACTOR_POLICY.set(policy);
-            CURRENT_ACTOR_DOMAIN.set(ref.id());
+            CURRENT_ACTOR_RUNTIME.set(ActorRuntime.this);
+            CURRENT_ACTOR_DOMAIN.set(new ActorDomain(ActorRuntime.this, ref.id()));
             try {
                 final Behavior<M> behavior = java.util.Objects.requireNonNull(
                         behaviorFactory.get(), "actor behavior factory returned null");
@@ -514,6 +533,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // dead actor left behind in the runtime registry.
             } finally {
                 CURRENT_ACTOR_DOMAIN.remove();
+                CURRENT_ACTOR_RUNTIME.remove();
                 CURRENT_ACTOR_POLICY.remove();
                 actors.remove(ref.id(), this);
             }
