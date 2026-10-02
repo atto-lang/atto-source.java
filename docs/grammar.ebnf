@@ -248,9 +248,15 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      or List.of(...) containing only direct lambda literals. "parallel" remains a
      contextual word rather than a globally reserved identifier.
    - gpu and async cannot be combined. GPU routines, instance methods, structural
-     parameters, generics, inferred lambda parameters, host borrows, host objects,
-     strings, await/defer/try, dynamic calls, and host/global captures are rejected
-     by the current GPU ABI.
+     parameters, generics, inferred lambda parameters, tuple device-ABI parameters,
+     complex arithmetic, host borrows, host objects, strings, list/tuple allocation,
+     destructuring, for-of, await/defer/try, dynamic calls, recursion, and host/global
+     captures are rejected by the current GPU ABI.
+   - GPU callables return only a supported scalar or void. Array/List results use an
+     explicit mutable Array<T>/List<T> output parameter.
+   - A canonical top-level index loop may lower to get_global_id(0) only when mutable
+     buffer access is proven elementwise; otherwise lowering preserves single-work-item
+     semantics.
    - GPU placement never implies stable GPU-core affinity. The backend maps work
      to lanes/warps/work-groups. Physical multi-device affinity is a separate,
      future execution-placement concern.
