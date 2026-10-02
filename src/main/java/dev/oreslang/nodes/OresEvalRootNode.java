@@ -375,7 +375,11 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) {
+                Object[] values = new Object[tuple.elements().size()];
+                for (int i = 0; i < tuple.elements().size(); i++) values[i] = eval(tuple.elements().get(i), env);
+                return Arrays.asList(values);
+            }
             if (expr instanceof Ast.ObjectExpr object) {
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 for (Ast.ObjectField field : object.fields()) {
