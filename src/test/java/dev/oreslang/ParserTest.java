@@ -64,11 +64,11 @@ final class ParserTest {
     }
 
     @Test
-    void parsesIfDoFiWithCommaAndPipeConditions() {
+    void parsesIfDoFiWithLogicalOperators() {
         String source = """
                 define module app
                   fnc choose(bool a, bool b) => int {
-                    if a, b | false; do
+                    if a && b || false; do
                       return 1;
                     else
                       return 0;
