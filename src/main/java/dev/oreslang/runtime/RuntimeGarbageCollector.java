@@ -29,6 +29,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
             int trackedBefore,
             int cleaned,
             int trackedAfter,
+            int cleanupFailures,
             boolean jvmGcRequested) {
         public Map<String,Object> asMap() {
             return Map.of(
@@ -37,6 +38,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                     "tracked_before", trackedBefore,
                     "cleaned", cleaned,
                     "tracked_after", trackedAfter,
+                    "cleanup_failures", cleanupFailures,
                     "jvm_gc_requested", jvmGcRequested);
         }
     }
@@ -130,11 +132,14 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
     private CollectionReport sweep(Object requestedDomain, boolean requestJvmGc) {
         int before = tracked.size();
         int cleanedCount = 0;
+        int cleanupFailures = 0;
         List<TrackedCleanup> remove = new ArrayList<>();
         for (TrackedCleanup entry : tracked) {
             if (!entry.eligible(requestedDomain)) continue;
             try {
                 if (entry.clean()) cleanedCount++;
+            } catch (RuntimeException cleanupFailure) {
+                cleanupFailures++;
             } finally {
                 remove.add(entry);
             }
@@ -146,6 +151,7 @@ public final class RuntimeGarbageCollector implements AutoCloseable {
                 before,
                 cleanedCount,
                 tracked.size(),
+                cleanupFailures,
                 requestJvmGc);
     }
 
