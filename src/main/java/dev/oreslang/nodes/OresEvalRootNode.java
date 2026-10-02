@@ -833,7 +833,7 @@ public final class OresEvalRootNode extends RootNode {
             this.schema = schema;
             this.activeCodeDigest = activeCodeDigest;
             this.activeGeneration = activeGeneration;
-            this.fields = new Env(null, this);
+            this.fields = new Env(null, this, true);
         }
     }
 
@@ -841,17 +841,25 @@ public final class OresEvalRootNode extends RootNode {
         private static final Object MISSING = new Object();
         private final Env parent;
         private final SingletonState singletonState;
+        private final boolean singletonStorage;
         private final Map<String, Slot> slots = new HashMap<>();
 
         private Env(Env parent) {
-            this(parent, parent == null ? null : parent.singletonState);
+            this(parent, parent == null ? null : parent.singletonState, false);
         }
 
         private Env(Env parent, SingletonState singletonState) {
+            this(parent, singletonState, false);
+        }
+
+        private Env(Env parent, SingletonState singletonState, boolean singletonStorage) {
             this.parent = parent;
             this.singletonState = singletonState;
+            this.singletonStorage = singletonStorage;
         }
+
         private void define(String name, Object value, Ast.BindingKind kind) {
+            validateSingletonStorageValue(value);
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void reserve(String name, Ast.BindingKind kind) {
@@ -860,6 +868,7 @@ public final class OresEvalRootNode extends RootNode {
         private void initialize(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
+            validateSingletonStorageValue(value);
             slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
@@ -867,14 +876,24 @@ public final class OresEvalRootNode extends RootNode {
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
+                validateSingletonStorageValue(value);
                 slot.value = value;
                 return;
             }
             if (parent != null) { parent.assign(name, value); return; }
             throw new IllegalArgumentException("unknown binding " + name);
         }
+        private void validateSingletonStorageValue(Object value) {
+            if (singletonStorage && value != MISSING) {
+                // Validation happens before mutation. We intentionally keep the
+                // actor-owned mutable value rather than replacing it with the
+                // frozen copy; the freeze pass supplies the graph/size guard.
+                ActorRuntime.freeze(value);
+            }
+        }
+
         private Env snapshot() {
-            Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState);
+            Env cp = new Env(parent == null ? null : parent.snapshot(), singletonState, singletonStorage);
             cp.slots.putAll(slots);
             return cp;
         }
