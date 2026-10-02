@@ -155,6 +155,22 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return;
             }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                Object value = eval(matched.value(), env);
+                for (Ast.MatchArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> captures = new LinkedHashMap<>();
+                    LinkedHashMap<String, Ast.BindingKind> kinds = new LinkedHashMap<>();
+                    if (!matchPattern(arm.pattern(), value, captures, kinds)) continue;
+
+                    Env armEnv = new Env(env);
+                    for (Map.Entry<String, Object> capture : captures.entrySet()) {
+                        armEnv.define(capture.getKey(), capture.getValue(), kinds.get(capture.getKey()));
+                    }
+                    executeBlock(arm.body(), armEnv);
+                    return;
+                }
+                throw new IllegalArgumentException("non-exhaustive match for value " + display(value));
+            }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
@@ -590,6 +606,45 @@ public final class OresEvalRootNode extends RootNode {
             if (left instanceof Number a && right instanceof Number b) return Double.compare(a.doubleValue(), b.doubleValue());
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
+        }
+
+        private boolean matchPattern(
+                Ast.Pattern pattern,
+                Object value,
+                Map<String, Object> captures,
+                Map<String, Ast.BindingKind> kinds) {
+            if (pattern instanceof Ast.WildcardPattern) return true;
+            if (pattern instanceof Ast.BindingPattern binding) {
+                if (captures.containsKey(binding.name())) {
+                    return Objects.equals(captures.get(binding.name()), value);
+                }
+                captures.put(binding.name(), value);
+                kinds.put(binding.name(), binding.kind());
+                return true;
+            }
+            if (pattern instanceof Ast.LiteralPattern literal) return Objects.equals(literal.value(), value);
+
+            List<Ast.Pattern> elements;
+            if (pattern instanceof Ast.TuplePattern tuple) elements = tuple.elements();
+            else if (pattern instanceof Ast.ListPattern list) elements = list.elements();
+            else return false;
+
+            List<?> values;
+            if (value instanceof List<?> list) values = list;
+            else if (value instanceof Object[] array) values = List.of(array);
+            else return false;
+            if (values.size() != elements.size()) return false;
+
+            LinkedHashMap<String, Object> stagedCaptures = new LinkedHashMap<>(captures);
+            LinkedHashMap<String, Ast.BindingKind> stagedKinds = new LinkedHashMap<>(kinds);
+            for (int i = 0; i < elements.size(); i++) {
+                if (!matchPattern(elements.get(i), values.get(i), stagedCaptures, stagedKinds)) return false;
+            }
+            captures.clear();
+            captures.putAll(stagedCaptures);
+            kinds.clear();
+            kinds.putAll(stagedKinds);
+            return true;
         }
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
