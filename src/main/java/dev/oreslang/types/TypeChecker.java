@@ -1392,7 +1392,7 @@ public final class TypeChecker {
                 ref.inferArguments());
     }
 
-    private Type nominalClassType(Ast.ClassDecl klass) {
+    private Named nominalClassType(Ast.ClassDecl klass) {
         return new Named(qualifiedClassName(klass), klass.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
     }
 
