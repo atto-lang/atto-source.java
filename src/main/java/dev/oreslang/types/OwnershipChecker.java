@@ -132,10 +132,11 @@ public final class OwnershipChecker {
                 boolean mutableReceiver = explicit != null
                         && explicit.isBorrow()
                         && explicit.mutableBorrow();
+                Ast.TypeRef selfType = Ast.TypeRef.simple(klass.name());
                 scope.define(
                         "self",
                         new VarState(
-                                Ast.TypeRef.simple(klass.name()),
+                                selfType,
                                 false,
                                 mutableReceiver ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW,
                                 Origin.PARAM));
