@@ -1829,16 +1829,17 @@ public final class TypeChecker {
         if (cached != null) return cached;
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> generics = Set.copyOf(klass.genericParameters());
+        Type self = nominalClassType(klass);
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
-                for (Map.Entry<String, Type> inherited : classShape(parent, stack).members().entrySet()) {
+                Record inheritedShape = instantiateParentShape(classShape(parent, stack), parent, parentRef, generics, self);
+                for (Map.Entry<String, Type> inherited : inheritedShape.members().entrySet()) {
                     mergeMember(members, inherited.getKey(), inherited.getValue(), "multiple inheritance of " + klass.name());
                 }
             }
         }
-        Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
@@ -1854,16 +1855,17 @@ public final class TypeChecker {
     private Record publicClassShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> generics = Set.copyOf(klass.genericParameters());
+        Type self = nominalClassType(klass);
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
-                for (Map.Entry<String, Type> inherited : publicClassShape(parent, stack).members().entrySet()) {
+                Record inheritedShape = instantiateParentShape(publicClassShape(parent, stack), parent, parentRef, generics, self);
+                for (Map.Entry<String, Type> inherited : inheritedShape.members().entrySet()) {
                     mergeMember(members, inherited.getKey(), inherited.getValue(), "public inheritance of " + klass.name());
                 }
             }
         }
-        Set<String> generics = Set.copyOf(klass.genericParameters());
-        Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
         }
@@ -1875,6 +1877,32 @@ public final class TypeChecker {
         }
         stack.remove(klass);
         return new Record(members);
+    }
+
+    private Record instantiateParentShape(
+            Record raw,
+            Ast.ClassDecl parent,
+            Ast.TypeRef parentRef,
+            Set<String> childGenerics,
+            Type childSelf) {
+        if (parent.genericParameters().isEmpty()) return raw;
+        Type resolvedParent = resolve(parentRef, childGenerics, childSelf);
+        if (!(resolvedParent instanceof Named named)
+                || named.arguments().size() != parent.genericParameters().size()) {
+            throw new IllegalArgumentException("invalid generic parent instantiation for " + parent.name());
+        }
+        return (Record) substituteGenerics(raw, classGenericSubstitutions(parent, named));
+    }
+
+    private Record publicClassShapeForType(Ast.ClassDecl klass, Type receiverType) {
+        Record raw = publicClassShape(klass, new LinkedHashSet<>());
+        if (klass.genericParameters().isEmpty()) return raw;
+        if (!(receiverType instanceof Named named)
+                || named.arguments().size() != klass.genericParameters().size()) {
+            throw new IllegalArgumentException("cannot instantiate public shape for generic " + klass.name()
+                    + " from " + receiverType);
+        }
+        return (Record) substituteGenerics(raw, classGenericSubstitutions(klass, named));
     }
 
     private Record interfaceShapeForUse(
@@ -2164,7 +2192,10 @@ public final class TypeChecker {
         Ast.InterfaceDecl iface = findInterface(param.type().name());
         if (iface != null) return interfaceShapeForUse(iface, param.type(), generics, self);
         Ast.ClassDecl klass = findClass(param.type().name());
-        if (klass != null) return publicClassShape(klass, new LinkedHashSet<>());
+        if (klass != null) {
+            Type concrete = resolve(param.type(), generics, self);
+            return publicClassShapeForType(klass, concrete);
+        }
         throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
     }
 
@@ -2469,7 +2500,7 @@ public final class TypeChecker {
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
             Ast.ClassDecl klass = findClass(actualNamed.name());
-            return klass != null && Types.isAssignable(publicClassShape(klass, new LinkedHashSet<>()), targetShape);
+            return klass != null && Types.isAssignable(publicClassShapeForType(klass, actualNamed), targetShape);
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
