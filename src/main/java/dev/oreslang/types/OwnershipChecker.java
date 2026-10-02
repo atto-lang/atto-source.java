@@ -221,8 +221,8 @@ public final class OwnershipChecker {
                     if (staged.kind == ValueKind.MOVE_ONLY
                             || staged.kind == ValueKind.IMM_BORROW
                             || staged.kind == ValueKind.MUT_BORROW) {
-                        throw error("select send cases currently require Copy/Shared-safe values; "
-                                + "move-only or borrowed values need ownership-phi lowering so losing cases can restore ownership");
+                        throw error("select send cases currently require Copy values; "
+                                + "move-only/borrowed sends need ownership-phi lowering, and Shared<T> is not source-wired on this branch yet");
                     }
                     if (branch.operation().channel() != null) {
                         checkExpr(branch.operation().channel(), scope, false);
