@@ -186,63 +186,42 @@ final class ActorCapabilityIsolationTest {
         IsolatePolicy developer = IsolatePolicy.developer();
 
         try (ActorRuntime runtime = new ActorRuntime(developer)) {
-            AtomicReference<Throwable> privateSharedMemory = new AtomicReference<>();
-            AtomicReference<Throwable> privateReadonlyShare = new AtomicReference<>();
-            AtomicReference<Throwable> sharedFailure = new AtomicReference<>();
-            CountDownLatch done = new CountDownLatch(2);
+            var privateSharedMemory = runtime.<String>spawnPrivate(
+                    factoryContext -> (message, context) ->
+                            OresContext.requireEffectiveCapability(
+                                    IsolatePolicy.developer(),
+                                    IsolatePolicy.Capability.SHARED_MEMORY,
+                                    "indirect-helper-shared-memory"));
 
-            var isolated = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
-                try {
-                    OresContext.requireEffectiveCapability(
-                            developer,
-                            IsolatePolicy.Capability.SHARED_MEMORY,
-                            "indirect-helper-shared-memory");
-                } catch (Throwable failure) {
-                    privateSharedMemory.set(failure);
-                }
+            var privateReadonlyShare = runtime.<String>spawnPrivate(
+                    factoryContext -> (message, context) ->
+                            OresContext.requireEffectiveCapability(
+                                    IsolatePolicy.developer(),
+                                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                                    "indirect-helper-readonly-share"));
 
-                try {
-                    OresContext.requireEffectiveCapability(
-                            developer,
-                            IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
-                            "indirect-helper-readonly-share");
-                } catch (Throwable failure) {
-                    privateReadonlyShare.set(failure);
-                }
-
-                done.countDown();
+            var shared = runtime.<String>spawnShared(factoryContext -> (message, context) -> {
+                OresContext.requireEffectiveCapability(
+                        IsolatePolicy.developer(),
+                        IsolatePolicy.Capability.SHARED_MEMORY,
+                        "shared-actor-shared-memory");
+                OresContext.requireEffectiveCapability(
+                        IsolatePolicy.developer(),
+                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                        "shared-actor-readonly-share");
                 context.self().stop();
             });
 
-            var shared = runtime.<String>spawnSharedTrusted(factoryContext -> (message, context) -> {
-                try {
-                    OresContext.requireEffectiveCapability(
-                            developer,
-                            IsolatePolicy.Capability.SHARED_MEMORY,
-                            "shared-actor-shared-memory");
-                    OresContext.requireEffectiveCapability(
-                            developer,
-                            IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
-                            "shared-actor-readonly-share");
-                } catch (Throwable failure) {
-                    sharedFailure.set(failure);
-                }
-
-                done.countDown();
-                context.self().stop();
-            });
-
-            isolated.send("check");
+            privateSharedMemory.send("check");
+            privateReadonlyShare.send("check");
             shared.send("check");
 
-            assertTrue(done.await(2, TimeUnit.SECONDS));
-            assertInstanceOf(SecurityException.class, privateSharedMemory.get());
-            assertInstanceOf(SecurityException.class, privateReadonlyShare.get());
-            assertNull(sharedFailure.get());
-
-            assertTrue(isolated.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(privateSharedMemory.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(privateReadonlyShare.awaitTermination(2, TimeUnit.SECONDS));
             assertTrue(shared.awaitTermination(2, TimeUnit.SECONDS));
-            assertTrue(isolated.failure().isEmpty());
+
+            assertInstanceOf(SecurityException.class, privateSharedMemory.failure().orElseThrow());
+            assertInstanceOf(SecurityException.class, privateReadonlyShare.failure().orElseThrow());
             assertTrue(shared.failure().isEmpty());
         }
     }
