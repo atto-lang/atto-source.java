@@ -79,3 +79,59 @@ Hot reload preserves the same singleton actor and state when a new generation ke
 The host actor boundary is defensive against malformed or adversarial object graphs. `ActorRuntime.freeze` rejects cycles and unknown mutable host objects, re-freezes public `Shared<T>` wrappers, and bounds traversal depth, node count, and approximate frozen size. Lists, sets, maps, and arrays become unmodifiable frozen copies. Duplicate set elements or map keys created by freezing are rejected rather than silently collapsing data.
 
 These are runtime defense-in-depth checks; source-level singleton APIs are also statically restricted to sendable types. Production cross-isolate transports should serialize the frozen representation rather than share writable Java object references.
+
+
+## Ownership-first garbage collection and lifetimes
+
+Oreslang does not use tracing GC as its primary memory-safety model. Source
+semantics use affine ownership, inferred borrows, and deterministic scope
+retirement. JVM/Graal GC remains the final reclamation mechanism for unreachable
+host objects, reflection/interop artifacts, and other runtime implementation
+objects.
+
+Lifetimes are inferred first. The compiler reasons about these domains without
+requiring Rust-style lifetime punctuation:
+
+1. expression temporary;
+2. lexical binding;
+3. actor-owned state;
+4. context/code-generation state;
+5. process-singleton state.
+
+A borrow may never outlive its owner. Explicit named lifetime syntax should be
+added only if generic borrow-return APIs cannot be safely expressed/inferred.
+
+Runtime cleanup has two layers:
+
+- deterministic scope retirement closes runtime-owned `AutoCloseable` values;
+- safe points scavenge runtime caches implementing `GcRuntime.Scavengeable`.
+
+Periodic scavenging never forces process-global host GC. That avoids allowing
+one actor/tenant to impose global collection pressure on unrelated actors.
+
+### Explicit cleanup
+
+`process.gc()` requires `GC_CONTROL`, scavenges context-owned runtime caches,
+signals actors to self-scavenge at their next safe point/turn, and may make a
+rate-limited host-GC request. It never directly walks another actor's mutable
+roots.
+
+`actor.gc()` requires an active actor turn plus `GC_CONTROL`, scavenges only
+that actor's runtime-owned caches, and may make the same rate-limited host-GC
+request.
+
+Both are optimization/cleanup controls, never correctness primitives.
+
+### Private and shared actors
+
+The runtime distinguishes `PRIVATE` and `SHARED` actors.
+
+- Private actors reject `Shared<T>` transport. Send ordinary values so the
+  mailbox boundary isolation-copies/freezes them.
+- Shared actors still exclusively own ordinary mutable fields. They may accept
+  explicitly deeply immutable `Shared<T>` only when
+  `ACTOR_SHARE_READONLY` is granted.
+- Both execute one actor turn at a time and retain separate actor-local roots.
+
+This takes the mailbox-serialization lesson from Akka/ractor/actix while adding
+Oreslang's compile-time ownership guarantee against cross-actor mutable aliasing.

@@ -1046,3 +1046,30 @@ The same compiled program can target a secondary multi-threaded runtime because:
 - actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
 
 When explicit thread/task spawning is added, cross-thread transfer will require move semantics and a `Send`-equivalent capability; shared cross-thread references will additionally require a `Sync`-equivalent guarantee. Those marker traits are intentionally a future surface feature—the current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
+
+
+## Garbage collection, `actor.gc()`, `process.gc()`, and inferred lifetimes
+
+Oreslang is ownership-first rather than tracing-GC-first. Most guest values
+naturally become unreachable when their owner/lifetime ends; JVM/Graal GC
+reclaims the backing heap automatically.
+
+The initial language does not require explicit lifetime annotations. The
+compiler infers lexical, actor, context, and process-singleton lifetimes and
+rejects borrows that may escape their owners. Named lifetime syntax remains
+reserved for future generic APIs where return-borrow provenance cannot be
+inferred safely.
+
+```ores
+process.gc(); // context cleanup + actor self-clean signal + rate-limited host hint
+actor.gc();   // current actor only
+```
+
+These calls cannot make an unsafe program safe and never bypass ownership,
+borrow, sendability, or actor-isolation checks.
+
+A private/isolate actor cannot receive `Shared<T>`; an ordinary message is
+copied/frozen at its mailbox boundary. A shared actor may receive explicitly
+deeply immutable shared values, but ordinary mutable actor state still has one
+actor owner. "Shared actor" therefore means shared address-space/runtime
+placement, not shared mutable object graphs.
