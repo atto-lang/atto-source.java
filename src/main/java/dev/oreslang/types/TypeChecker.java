@@ -372,9 +372,7 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.LiteralPattern literal) {
             Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), env, generics, self);
-            if (source != Unknown.INSTANCE
-                    && !assignable(literalType, source)
-                    && !assignable(source, literalType)) {
+            if (!patternLiteralCompatible(source, literalType)) {
                 throw new IllegalArgumentException("match literal has type " + literalType + " but cannot match " + source);
             }
             return;
@@ -403,6 +401,13 @@ public final class TypeChecker {
             return;
         }
         throw new IllegalArgumentException("tuple/list match pattern cannot match value of type " + source);
+    }
+
+    private boolean patternLiteralCompatible(Type source, Type literal) {
+        if (source == Unknown.INSTANCE || literal == Unknown.INSTANCE) return true;
+        if (isStringLike(source) && isStringLike(literal)) return true;
+        if (Types.isNumeric(source) && Types.isNumeric(literal)) return true;
+        return assignable(literal, source) || assignable(source, literal);
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
