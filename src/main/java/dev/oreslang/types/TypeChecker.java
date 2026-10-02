@@ -48,9 +48,9 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
-        GpuSafetyChecker.check(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
+        GpuSafetyChecker.check(program);
         OwnershipChecker.check(program);
         return program;
     }
