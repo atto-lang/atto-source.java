@@ -1539,10 +1539,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         private boolean chargeOperations(int operations) {
             requireCurrentTurn("actor operation accounting");
+            if (operationsRemaining <= 0) return true;
+            if (operations >= operationsRemaining) {
+                operationsRemaining = 0;
+                return true;
+            }
             operationsRemaining -= operations;
-            if (operationsRemaining > 0) return false;
-            operationsRemaining = dispatcherConfig.operationBudget();
-            return true;
+            return false;
         }
 
         private CompletionStage<M> receive() {
