@@ -252,6 +252,38 @@ const complex z = 3 + 4i;
 
 Numeric widening is loss-aware; real values can widen toward complex values, but silent lossy narrowing is not performed.
 
+## Generics and operators
+
+Generic declarations and type applications use angle brackets:
+
+```ores
+define class Box<T>
+  val T value;
+end
+
+fnc identity<T>(T value) => T {
+  return value;
+}
+
+fnc use(Box<int> box) => int {
+  return identity(box.value);
+}
+```
+
+Known classes, interfaces, aliases, and built-ins enforce generic arity. Generic parameters are opaque types, not an implicit `any`: a concrete value is not assignable to an unconstrained `T` unless inference has bound that `T`. Generic function and method calls infer type arguments from value arguments. Calls may also state type arguments explicitly with `identity<int>(42)`; `identity<>(42)` explicitly requests inference. Constructors support the same inference marker: `new Box<>(7)` infers `Box<int>` from positional fields, including inherited generic fields. Every class generic must be inferable and repeated occurrences must infer compatibly; otherwise explicit type arguments are required. The `<` opening a call-site generic list must be adjacent to the callable name/member, which keeps ordinary spaced comparisons such as `a < b` unambiguous. Nested generic closers such as `Option<Array<int>>` remain valid.
+
+Generic inference works for both unqualified and module-qualified calls, such as `identity<>(42)` and `util.identity<>(42)`. Generic declarations must currently be specialized by a direct call. Unspecialized polymorphic function or bound-method values such as `val f = identity` or `val f = box.map` are rejected until Oreslang has a first-class universal/polytype representation; non-generic function values remain supported.
+
+Generic bindings are substituted through inherited class fields/methods, constructors, inherited interfaces, structural-typing views, and nominal subtype checks, so `Child<U> extends Parent<U>` preserves the concrete `U` all the way through member access and assignment. Generic class and interface arguments are invariant by default: `Child<int>` may satisfy `Parent<int>`, but never `Parent<String>`; likewise an implementation of `HasValue<int>` does not satisfy `HasValue<String>`.
+
+Generic callable contracts compare type parameters by position rather than spelling, so an interface method `map<T>` can be implemented as `map<U>` when their signatures are otherwise equivalent. The number of callable generic parameters is part of the contract; adding an unused extra generic parameter does not silently satisfy the interface.
+
+`Type<>` is reserved for inferred type arguments in type contexts that explicitly support inference; it is **not** an expression operator. Oreslang uses `^^` for logical XOR and `^` for bitwise XOR.
+
+Logical operators are `!`, `&&`, `^^`, and `||`. `&&` and `||` short-circuit; `^^` evaluates both boolean operands. Bitwise operators are integer-only: unary `~`, binary `&`, `^`, `|`, and shifts `<<`, `>>`, `>>>`. In the current runtime all integral spellings share one signed 64-bit bitwise lane: `~` flips all 64 bits, `<<` shifts left, `>>` is arithmetic/sign-extending right shift, and `>>>` is logical/zero-filling right shift. Shift distances must be in the range 0 through 63. Width-specific masking/sign behavior can be introduced later when the runtime preserves distinct i8/i16/i32/i64/u* representations instead of collapsing them to the current integral type.
+
+From tighter to looser binding, the relevant binary precedence is: multiplicative, additive, shifts, comparisons, equality, bitwise AND, bitwise XOR, bitwise OR, logical AND, logical XOR, logical OR, ternary, assignment. Prefix borrow `&value` / `&mut value` remains unambiguous because bitwise `&` is infix.
+
 ## Lambdas
 
 Lambdas use `->`:
@@ -662,7 +694,8 @@ A static class function:
 - has no implicit or explicit `self`;
 - cannot be invoked through an instance;
 - may be extracted as a function value from the class namespace;
-- has one shared definition, just like any other named function.
+- has one shared definition, just like any other named function;
+- does not capture enclosing class generics. In `class Box<T>`, a static function cannot use that `T`; declare its own `static fnc identity<U>(U value) => U` instead. Static-function generics support the same explicit and inferred call syntax as top-level functions.
 
 Static data fields are intentionally not part of v0.5 yet; `static` on a class binding is rejected rather than silently acquiring Java-like global mutable state semantics.
 

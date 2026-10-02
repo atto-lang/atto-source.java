@@ -792,7 +792,8 @@ final class MutexRuntimeTest {
             sender.join();
 
             assertInstanceOf(IllegalStateException.class, senderFailure.get());
-            assertTrue(senderFailure.get().getMessage().contains("terminated before message admission"));
+            assertTrue(senderFailure.get().getMessage().contains("unknown actor"),
+                    "send races should expose the stable dead-ref contract");
 
             CountDownLatch delivered = new CountDownLatch(1);
             var receiver = runtimeB.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
