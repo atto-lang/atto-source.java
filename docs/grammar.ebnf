@@ -104,8 +104,11 @@ param           = type_ref [ "mut" ] IDENT
 binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
 
-destructure_stmt= "[" destructure_item { "," destructure_item } "]" "=" expression stmt_terminator ;
-destructure_item= binding_kind IDENT ;
+destructure_stmt= [ binding_kind ] sequence_pattern "=" expression stmt_terminator
+                | [ binding_kind ] object_pattern "=" expression stmt_terminator ;
+sequence_pattern= "[" destructure_item { "," destructure_item } "]" ;
+object_pattern  = "{" destructure_item { "," destructure_item } "}" ;
+destructure_item= [ binding_kind ] IDENT | "_" ;
 
 block           = "{" { statement } "}" ;
 statement       = binding_decl
@@ -177,7 +180,12 @@ object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
 
-type_ref        = borrow_type
+type_ref        = type_atom { "|" type_atom } ;
+
+type_atom       = borrow_type
+                | tuple_type
+                | record_type
+                | alias_marker
                 | named_type
                 | function_type
                 | grouped_type
@@ -186,7 +194,12 @@ type_ref        = borrow_type
                 | "void"
                 | "null" ;
 
-borrow_type     = "&" [ "mut" ] type_ref ;
+borrow_type     = "&" [ "mut" ] type_atom ;
+tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
+record_type     = "{" [ record_type_field { "," record_type_field } ] "}" ;
+record_type_field
+                = ( IDENT | STRING_LITERAL ) ":" type_ref ;
+alias_marker    = "type" named_type ;
 named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
 function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "->" type_ref
                 | "(" [ function_type_params ] ")" "->" type_ref ;
@@ -220,6 +233,17 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      dispatched through the class namespace, never through an instance.
    - "=>" belongs to named callable return declarations.
    - "->" belongs to function types and lambdas.
+   - Unqualified "actor" declarations are private actors; "shared actor" opts
+     into the SHARED_MEMORY execution domain.
+   - Actor fields are private mailbox-owned state; public actor API is exposed
+     through actor methods/messages rather than public mutable fields.
+   - Actor inheritance must preserve actor isolation kind.
+   - In a destructure pattern, an explicit binding kind propagates to subsequent
+     unqualified names until another binding kind appears. A leading binding
+     kind (for example const [a, b]) seeds the whole pattern. "_" never binds.
+   - Sequence destructuring targets returned arrays/lists and finite tuple types;
+     object destructuring targets returned record/map-like values.
+   - Destructuring is not currently permitted in callable parameter lists.
    - Lambdas always have braces. Non-void lambdas must use explicit return and
      return on every path when a contextual function result type is known.
    - named class/interface types are nominal by default.
