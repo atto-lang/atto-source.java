@@ -81,6 +81,7 @@ public final class IncrementalCompiler {
                     checked.namespace(),
                     hashes.get(id),
                     dependencies.get(id),
+                    normalized.get(id),
                     checked);
             next.put(id, unit);
             rebuilt.add(id);
@@ -152,6 +153,7 @@ public final class IncrementalCompiler {
             String namespace,
             String sourceDigest,
             Set<String> dependencies,
+            String sourceText,
             Ast.Program program) {
         public CompiledUnit {
             dependencies = Set.copyOf(dependencies);
