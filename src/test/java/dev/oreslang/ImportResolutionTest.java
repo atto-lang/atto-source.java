@@ -41,6 +41,13 @@ final class ImportResolutionTest {
                         import fnc hidden from "./lib.ores";
                         pub fnc main() => void { return; }
                         """)));
+
+        assertThrows(IllegalArgumentException.class, () -> new IncrementalCompiler().compile(Map.of(
+                "lib.ores", "pub routine worker() => void { return; }",
+                "app.ores", """
+                        import fnc worker from "./lib.ores";
+                        pub fnc main() => void { return; }
+                        """)));
     }
 
     @Test

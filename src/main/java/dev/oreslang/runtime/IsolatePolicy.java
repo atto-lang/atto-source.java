@@ -112,6 +112,7 @@ public record IsolatePolicy(
             if (adversarial) {
                 throw new SecurityException("Java host imports are disabled for adversarial isolates");
             }
+            for (String className : hostClasses) validateHostClassAuthority(className);
         }
 
         HostAccess hostAccess;
@@ -124,9 +125,11 @@ public record IsolatePolicy(
         }
 
         Context.Builder builder = Context.newBuilder(OresLanguage.ID)
-                .allowHostAccess(hostAccess)
-                .allowHostClassLookup(hostClasses::contains)
-                .allowHostClassLoading(false)
+                .allowHostAccess(hostAccess);
+        if (hostClasses.isEmpty()) builder.allowHostClassLookup(null);
+        else builder.allowHostClassLookup(hostClasses::contains);
+
+        builder.allowHostClassLoading(false)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
                 .allowEnvironmentAccess(EnvironmentAccess.NONE)
                 .allowNativeAccess(false)
@@ -162,6 +165,50 @@ public record IsolatePolicy(
         }
 
         return builder;
+    }
+
+    private void validateHostClassAuthority(String className) {
+        if (className == null || className.isBlank()) {
+            throw new IllegalArgumentException("allowlisted Java host class name cannot be blank");
+        }
+
+        if (className.equals("java.lang.Class")
+                || className.equals("java.lang.ClassLoader")
+                || className.equals("java.lang.Module")
+                || className.equals("java.lang.Runtime")
+                || className.equals("java.lang.System")
+                || className.equals("java.lang.Process")
+                || className.equals("java.lang.ProcessBuilder")
+                || className.equals("java.lang.ProcessHandle")
+                || className.equals("java.lang.Thread")
+                || className.equals("java.lang.ThreadGroup")
+                || className.equals("java.lang.SecurityManager")
+                || className.startsWith("java.lang.reflect.")
+                || className.startsWith("java.lang.invoke.")
+                || className.startsWith("jdk.")
+                || className.startsWith("sun.")
+                || className.startsWith("com.sun.")) {
+            throw new SecurityException("Java host class is blocked from class-level FFI import: " + className);
+        }
+
+        if (className.startsWith("java.io.") || className.startsWith("java.nio.file.")) {
+            require(Capability.FILESYSTEM_READ, "Java host class " + className);
+            require(Capability.FILESYSTEM_WRITE, "Java host class " + className);
+        }
+        if (className.startsWith("java.net.")) {
+            require(Capability.NETWORK, "Java host class " + className);
+        }
+        if (className.startsWith("java.nio.channels.")) {
+            require(Capability.NETWORK, "Java host class " + className);
+            require(Capability.FILESYSTEM_READ, "Java host class " + className);
+            require(Capability.FILESYSTEM_WRITE, "Java host class " + className);
+        }
+        if (className.startsWith("java.util.concurrent.")) {
+            require(Capability.THREAD_CREATE, "Java host class " + className);
+        }
+        if (className.startsWith("java.lang.foreign.")) {
+            require(Capability.NATIVE, "Java host class " + className);
+        }
     }
 
     private static HostAccess explicitHostAccess(Set<String> hostClasses) {

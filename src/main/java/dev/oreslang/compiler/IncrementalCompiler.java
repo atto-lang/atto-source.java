@@ -309,6 +309,7 @@ public final class IncrementalCompiler {
         for (Ast.ModuleDecl module : target.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.kind() == Ast.CallableKind.FNC
                         && fn.visibility() == Ast.Visibility.PUBLIC
                         && fn.name().equals(name)) count++;
             }

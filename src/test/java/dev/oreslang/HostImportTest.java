@@ -51,6 +51,24 @@ final class HostImportTest {
     }
 
     @Test
+    void sensitiveJdkClassesRequireTheirOwnCapabilitiesOrStayBlocked() {
+        IsolatePolicy ffiOnly = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.FFI);
+
+        assertThrows(SecurityException.class, () -> ffiOnly.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.System")));
+        assertThrows(SecurityException.class, () -> ffiOnly.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.Class")));
+        assertThrows(SecurityException.class, () -> ffiOnly.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.io.File")));
+
+        IsolatePolicy filePolicy = ffiOnly.withCapabilities(
+                IsolatePolicy.Capability.FILESYSTEM_READ,
+                IsolatePolicy.Capability.FILESYSTEM_WRITE);
+        assertDoesNotThrow(() -> filePolicy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.io.File")));
+    }
+
+    @Test
     void importsAllowlistedStaticFunctionAndClassNamespace() {
         IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.FFI);
 
@@ -70,6 +88,18 @@ final class HostImportTest {
                     pub fnc main() => int { return Math.max(40, 2); }
                     """);
             assertEquals(40L, namespaced.asLong());
+        }
+    }
+
+    @Test
+    void rejectsMissingNamedJavaFunctionsAtImportTime() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.FFI);
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.Math")).build()) {
+            assertThrows(PolyglotException.class, () -> context.eval(OresLanguage.ID, """
+                    import fnc definitelyMissing from "java:java.lang.Math";
+                    pub fnc main() => int { return 1; }
+                    """));
         }
     }
 

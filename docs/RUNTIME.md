@@ -34,6 +34,8 @@ Java imports are a two-key boundary: the Oreslang policy must grant `FFI`, and t
 
 When a host class is allowlisted, the embedder constructs a narrow `HostAccess` policy from that class's explicitly enumerated public declared constructors, methods, and fields. Access inheritance is disabled. This intentionally avoids `HostAccess.ALL` and prevents ambient inherited reflection helpers such as `Object.getClass()` from becoming available merely because one safe class was admitted.
 
+FFI does not subsume the rest of the capability model. Filesystem, network, concurrency, and native-facing JDK packages require the corresponding Ores capabilities in addition to `FFI`. VM-control/reflection infrastructure such as `System`, `Runtime`, `Class`, `ClassLoader`, `java.lang.reflect.*`, `java.lang.invoke.*`, and JDK-internal packages are rejected from class-level FFI imports entirely; exposing those safely requires a future reviewed member-level bridge rather than a whole-class allowlist.
+
 The host-side policy builder may load an explicitly configured class in order to enumerate its members. Guest-language resolution never does that: Oreslang calls `TruffleLanguage.Env.lookupHostSymbol`, which re-applies the Context host-class filter. A class missing from the allowlist therefore fails at the Truffle boundary even if source text names it.
 
 Adversarial FaaS isolates fail closed and do not enable Java host imports. A future production FFI profile can introduce a reviewed class/member manifest rather than widening this default.

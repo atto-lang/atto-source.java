@@ -56,7 +56,7 @@ Java import authority comes only from the embedder. The source must be admitted 
 ores --allow=FFI --allow-host-class=java.lang.Math app.ores
 ```
 
-Adversarial/strict FaaS isolates reject Java host imports even if `FFI` is requested.
+Adversarial/strict FaaS isolates reject Java host imports even if `FFI` is requested. FFI also does not bypass Ores capabilities: sensitive JDK packages require the matching filesystem/network/thread/native authority, while VM-control and reflection infrastructure is blocked from whole-class imports.
 
 ## Module interfaces / OCaml-style module signatures
 

@@ -87,7 +87,12 @@ public final class OresEvalRootNode extends RootNode {
                 } else if (imported.kind() == Ast.ImportKind.FUNCTION && imported.wildcard()) {
                     putHostClass(imported.namespace(), new HostClassFacade(className, symbol.symbol(), false));
                 } else if (imported.kind() == Ast.ImportKind.FUNCTION) {
+                    InteropLibrary interop = InteropLibrary.getUncached(symbol.symbol());
                     for (String name : imported.names()) {
+                        if (!interop.isMemberInvocable(symbol.symbol(), name)) {
+                            throw new IllegalArgumentException("Java host class '" + className
+                                    + "' does not export invocable static member '" + name + "'");
+                        }
                         putHostFunction(name, args -> invokeHostMember(symbol.symbol(), name, args));
                     }
                 } else if (imported.kind() == Ast.ImportKind.ALL) {
