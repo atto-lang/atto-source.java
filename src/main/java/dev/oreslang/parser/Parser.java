@@ -145,6 +145,7 @@ public final class Parser {
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
+        if (modifiers.mutableReceiver) throw error(previous(), "'mut' callable modifier is only valid on instance methods");
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
@@ -176,6 +177,7 @@ public final class Parser {
             if (mods.isStatic) {
                 consume(FNC, "static class functions must be declared with 'static fnc'");
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
+                if (mods.mutableReceiver) throw error(previous(), "static class functions cannot have a mutable receiver");
             } else if (check(FNC)) {
                 throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
@@ -285,7 +287,7 @@ public final class Parser {
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
-                receiverType, generics, params, returnType, annotations, body);
+                mods.mutableReceiver, receiverType, generics, params, returnType, annotations, body);
     }
 
     private String parseMethodName() {
@@ -331,6 +333,7 @@ public final class Parser {
         boolean async = false;
         boolean isStatic = false;
         boolean isAbstract = false;
+        boolean mutableReceiver = false;
         boolean progress;
         do {
             progress = true;
@@ -339,9 +342,10 @@ public final class Parser {
             else if (match(ASYNC)) async = true;
             else if (match(STATIC)) isStatic = true;
             else if (match(ABSTRACT)) isAbstract = true;
+            else if (match(MUT)) mutableReceiver = true;
             else progress = false;
         } while (progress);
-        return new Modifiers(visibility, async, isStatic, isAbstract);
+        return new Modifiers(visibility, async, isStatic, isAbstract, mutableReceiver);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -387,7 +391,7 @@ public final class Parser {
                 Token marker = consume(IDENT, "expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
                 Ast.TypeRef type = parseTypeRef();
-                params.add(new Ast.Param(type, name, true));
+                params.add(new Ast.Param(type, name, true, false));
                 continue;
             }
 
@@ -395,7 +399,7 @@ public final class Parser {
             if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
                 String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
-                params.add(new Ast.Param(type, name, true));
+                params.add(new Ast.Param(type, name, true, false));
                 continue;
             }
 
@@ -406,8 +410,9 @@ public final class Parser {
                 structural = true;
             }
             Ast.TypeRef type = parseTypeRef();
+            boolean mutable = match(MUT);
             String name = consume(IDENT, "expected parameter name").lexeme();
-            params.add(new Ast.Param(type, name, structural));
+            params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         return params;
     }
@@ -434,7 +439,7 @@ public final class Parser {
         for (Ast.Param param : params) {
             boolean structural = param.structural() || allowed.contains(param.name());
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
@@ -446,6 +451,12 @@ public final class Parser {
 
     private Ast.TypeRef parseTypeRef() {
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
+
+        if (match(AMPERSAND)) {
+            boolean mutable = match(MUT);
+            Ast.TypeRef target = parseTypeRef();
+            return new Ast.TypeRef(mutable ? "MutRef" : "Ref", List.of(target), false);
+        }
 
         if (match(TYPEOF)) {
             consume(FNC, "typeof function types use 'typeof fnc(...) -> ReturnType'");
@@ -682,7 +693,11 @@ public final class Parser {
     private Ast.Expr parseAssignment() {
         Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
-            if (!(expr instanceof Ast.NameExpr)) throw error(previous(), "assignment target must be a local name in v0");
+            boolean assignable = expr instanceof Ast.NameExpr
+                    || expr instanceof Ast.MemberExpr
+                    || expr instanceof Ast.IndexExpr
+                    || (expr instanceof Ast.UnaryExpr unary && unary.operator().equals("*"));
+            if (!assignable) throw error(previous(), "assignment target must be a mutable place");
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
@@ -740,6 +755,11 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
+        if (match(AMPERSAND)) {
+            String operator = match(MUT) ? "&mut" : "&";
+            return new Ast.UnaryExpr(operator, parseUnary());
+        }
+        if (match(STAR)) return new Ast.UnaryExpr("*", parseUnary());
         if (match(BANG, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         return parsePostfix();
@@ -843,13 +863,18 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
             do {
-                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                if (check(MUT) && current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT) {
+                    advance();
+                    String name = consume(IDENT, "expected mutable lambda parameter name").lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, true));
+                } else if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name));
                 } else {
                     Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name));
+                    params.add(new Ast.Param(type, name, false, mutable));
                 }
             } while (match(COMMA));
         }
@@ -929,5 +954,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract, boolean mutableReceiver) { }
 }
