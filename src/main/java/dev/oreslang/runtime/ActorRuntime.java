@@ -59,6 +59,7 @@ public final class ActorRuntime implements AutoCloseable {
     public static final Duration HARD_MAX_UNTRUSTED_LIFETIME = Duration.ofSeconds(300);
     private static final long DEFAULT_UNTRUSTED_FUEL_PER_TURN = 100_000L;
     private static final long DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES = 1024L * 1024L;
+    private static final long DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES = 16L * 1024L * 1024L;
     private static final long DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES = 16L * 1024L * 1024L;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
@@ -159,6 +160,7 @@ public final class ActorRuntime implements AutoCloseable {
             Duration maxLifetime,
             long fuelPerTurn,
             long maxMailboxReturnBytes,
+            long maxHttpRequestBytes,
             long maxHttpResponseBytes) {
         public UntrustedActorLimits {
             Objects.requireNonNull(maxLifetime, "maxLifetime");
@@ -171,7 +173,22 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (fuelPerTurn <= 0) throw new IllegalArgumentException("untrusted actor fuelPerTurn must be positive");
             if (maxMailboxReturnBytes <= 0) throw new IllegalArgumentException("maxMailboxReturnBytes must be positive");
+            if (maxHttpRequestBytes <= 0) throw new IllegalArgumentException("maxHttpRequestBytes must be positive");
             if (maxHttpResponseBytes <= 0) throw new IllegalArgumentException("maxHttpResponseBytes must be positive");
+        }
+
+        /** Backward-compatible constructor for response-only hosts. */
+        public UntrustedActorLimits(
+                Duration maxLifetime,
+                long fuelPerTurn,
+                long maxMailboxReturnBytes,
+                long maxHttpResponseBytes) {
+            this(
+                    maxLifetime,
+                    fuelPerTurn,
+                    maxMailboxReturnBytes,
+                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
+                    maxHttpResponseBytes);
         }
 
         public static UntrustedActorLimits defaults() {
@@ -179,6 +196,7 @@ public final class ActorRuntime implements AutoCloseable {
                     HARD_MAX_UNTRUSTED_LIFETIME,
                     DEFAULT_UNTRUSTED_FUEL_PER_TURN,
                     DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES,
+                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
                     DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES);
         }
     }
@@ -191,8 +209,31 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorLifetimeExceededException(String message) { super(message); }
     }
 
+    public static final class HttpRequestLimitExceededException extends RuntimeException {
+        public HttpRequestLimitExceededException(String message) { super(message); }
+    }
+
     public static final class HttpResponseLimitExceededException extends RuntimeException {
         public HttpResponseLimitExceededException(String message) { super(message); }
+    }
+
+    /**
+     * Host-provided adapter for exactly one HTTP request stream. This is
+     * intentionally narrower than NETWORK authority: the host retains the
+     * socket/parser and exposes only the already-accepted request.
+     */
+    public interface HttpRequestTransport {
+        String method();
+        String path();
+        default Optional<String> header(String name) { return Optional.empty(); }
+
+        /**
+         * Reads request-body bytes into target. Return -1 at EOF, 0 when a
+         * non-blocking transport would wait, or a positive byte count.
+         */
+        int read(ByteBuffer target) throws IOException;
+
+        default void cancel(Throwable cause) { }
     }
 
     /**
@@ -228,6 +269,112 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId actorId() { return actorId; }
         public ActorKind actorKind() { return actorKind; }
+    }
+
+    /**
+     * Owner-bound, non-Sendable HTTP request capability. It reads from the
+     * host's already-admitted HTTP request stream without copying request-body
+     * chunks through the actor mailbox.
+     */
+    public final class HttpRequestCapability {
+        private final ActorId owner;
+        private final HttpRequestTransport transport;
+        private final long maxBytes;
+        private final AtomicLong readBytes = new AtomicLong();
+        private final AtomicBoolean eof = new AtomicBoolean();
+
+        private HttpRequestCapability(
+                ActorId owner,
+                HttpRequestTransport transport,
+                long maxBytes) {
+            this.owner = Objects.requireNonNull(owner);
+            this.transport = Objects.requireNonNull(transport);
+            this.maxBytes = maxBytes;
+        }
+
+        public long maxBytes() { return maxBytes; }
+        public long readBytes() { return readBytes.get(); }
+        public long remainingBytes() { return Math.max(0L, maxBytes - readBytes.get()); }
+        public boolean eof() { return eof.get(); }
+
+        private ActorCell<?> requireOwner(String operation) {
+            ActorCell<?> cell = currentActor.get();
+            if (cell == null || cell.kind != ActorKind.UNTRUSTED || !cell.ref.id().equals(owner)) {
+                throw new SecurityException(
+                        "HTTP request capability may only be used by its owning untrusted actor: " + operation);
+            }
+            cell.checkUntrustedBudget(1);
+            return cell;
+        }
+
+        public String method() {
+            requireOwner("method");
+            return transport.method();
+        }
+
+        public String path() {
+            requireOwner("path");
+            return transport.path();
+        }
+
+        public Optional<String> header(String name) {
+            requireOwner("header");
+            Objects.requireNonNull(name, "header name");
+            return transport.header(name);
+        }
+
+        /**
+         * Reads directly from the host request-body stream. A larger caller
+         * buffer is temporarily windowed to the remaining sandbox quota.
+         */
+        public int read(ByteBuffer target) throws IOException {
+            requireOwner("read");
+            Objects.requireNonNull(target, "target");
+            if (eof.get()) return -1;
+            if (!target.hasRemaining()) return 0;
+
+            long remaining = remainingBytes();
+            if (remaining == 0L) {
+                throw new HttpRequestLimitExceededException(
+                        "untrusted actor HTTP request limit exceeded: max=" + maxBytes);
+            }
+
+            int originalLimit = target.limit();
+            int permitted = (int) Math.min((long) target.remaining(), remaining);
+            int beforePosition = target.position();
+            target.limit(beforePosition + permitted);
+            final int read;
+            try {
+                read = transport.read(target);
+            } finally {
+                target.limit(originalLimit);
+            }
+
+            if (read == -1) {
+                if (target.position() != beforePosition) {
+                    throw new IllegalStateException(
+                            "HTTP request transport advanced buffer position while reporting EOF");
+                }
+                eof.set(true);
+                return -1;
+            }
+            if (read < 0 || read > permitted || target.position() != beforePosition + read) {
+                throw new IllegalStateException(
+                        "HTTP request transport violated ByteBuffer read contract");
+            }
+            readBytes.addAndGet(read);
+            return read;
+        }
+
+        private void cancelFromRuntime(Throwable cause) {
+            if (eof.compareAndSet(false, true)) {
+                try {
+                    transport.cancel(cause);
+                } catch (RuntimeException ignored) {
+                    // Actor teardown must not be retained by a bad host adapter.
+                }
+            }
+        }
     }
 
     /**
