@@ -213,7 +213,9 @@ public final class OwnershipChecker {
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
             rejectLoopMoves(before, scope);
             loopScope.close();
+            return;
         }
+        throw error("ownership checker does not handle statement kind " + stmt.getClass().getSimpleName());
     }
 
     private void definePatternBindings(Ast.Pattern pattern, Scope scope, ValueKind sourceKind) {
@@ -356,7 +358,7 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
-        return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+        throw error("ownership checker does not handle expression kind " + expr.getClass().getSimpleName());
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
@@ -555,8 +557,8 @@ public final class OwnershipChecker {
                     collectPatternBindings(arm.pattern(), armLocals);
                     scanStatements(arm.body(), armLocals, outer, recursiveBinding, captures);
                 }
-            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
-                scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.ReturnStmt ret) {
+                if (ret.value() != null) scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.IfStmt s) {
@@ -577,10 +579,20 @@ public final class OwnershipChecker {
                 loop.add(s.bindingName());
                 scanStatements(s.body(), loop, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ForStmt s) {
-                if (s.initializer() instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.condition() != null) scanExpr(s.condition(), blockLocals, outer, recursiveBinding, captures, false);
-                if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
-                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+                Set<String> loop = new HashSet<>(blockLocals);
+                if (s.initializer() instanceof Ast.BindingStmt binding) {
+                    scanExpr(binding.initializer(), loop, outer, recursiveBinding, captures, false);
+                    loop.add(binding.name());
+                } else if (s.initializer() instanceof Ast.ExprStmt e) {
+                    scanExpr(e.expression(), loop, outer, recursiveBinding, captures, false);
+                } else if (s.initializer() != null) {
+                    throw error("capture analysis does not handle for initializer " + s.initializer().getClass().getSimpleName());
+                }
+                if (s.condition() != null) scanExpr(s.condition(), loop, outer, recursiveBinding, captures, false);
+                if (s.update() != null) scanExpr(s.update(), loop, outer, recursiveBinding, captures, false);
+                scanStatements(s.body(), loop, outer, recursiveBinding, captures);
+            } else {
+                throw error("capture analysis does not handle statement kind " + stmt.getClass().getSimpleName());
             }
         }
     }
@@ -600,6 +612,7 @@ public final class OwnershipChecker {
     }
 
     private void scanExpr(Ast.Expr expr, Set<String> locals, Scope outer, String recursiveBinding, CaptureSet captures, boolean write) {
+        if (expr instanceof Ast.LiteralExpr) return;
         if (expr instanceof Ast.NameExpr name) {
             if (name.name().equals(recursiveBinding)) return;
             if (!locals.contains(name.name())) {
@@ -633,6 +646,8 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.LambdaExpr) {
             // Nested lambda performs its own capture analysis when checked.
+        } else {
+            throw error("capture analysis does not handle expression kind " + expr.getClass().getSimpleName());
         }
     }
 
