@@ -64,6 +64,15 @@ public final class OresContext implements AutoCloseable {
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
+    public void actorGc() {
+        actors.gcCurrentActor();
+    }
+
+    public void processGc() {
+        requireCapability(IsolatePolicy.Capability.PROCESS_GC, "process.gc");
+        actors.gcProcess();
+    }
+
     public Map<String, Object> processDescriptor() {
         return Map.of(
                 "context_id", contextId.toString(),
@@ -71,7 +80,9 @@ public final class OresContext implements AutoCloseable {
                 "language", "oreslang",
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
-                "scheduler_safepoints", schedulerSafepoints.get());
+                "scheduler_safepoints", schedulerSafepoints.get(),
+                "actor_gc_requests", actors.gcStats().actorRequests(),
+                "process_gc_requests", actors.gcStats().processRequests());
     }
 
     @Override
