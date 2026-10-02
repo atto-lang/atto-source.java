@@ -48,9 +48,69 @@ public final class OresMutex {
         return new Shared<>(value);
     }
 
-    /** Runtime marker for futures whose successful value is a lexical MutexGuard. */
+    /**
+     * Runtime-owned future for a lexical MutexGuard.
+     *
+     * <p>Callers may observe or cancel it, but may not forge completion,
+     * timeout-complete it, or obtrude a value. Otherwise a queued lock request
+     * could be detached from the mutex's domain/permit accounting.</p>
+     */
     public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
         private GuardFuture() { }
+
+        private boolean completeFromRuntime(Guard<T> guard) {
+            return super.complete(guard);
+        }
+
+        private boolean failFromRuntime(Throwable failure) {
+            return super.completeExceptionally(failure);
+        }
+
+        @Override
+        public boolean complete(Guard<T> value) {
+            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
+        }
+
+        @Override
+        public boolean completeExceptionally(Throwable ex) {
+            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
+        }
+
+        @Override
+        public CompletableFuture<Guard<T>> completeAsync(
+                java.util.function.Supplier<? extends Guard<T>> supplier) {
+            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
+        }
+
+        @Override
+        public CompletableFuture<Guard<T>> completeAsync(
+                java.util.function.Supplier<? extends Guard<T>> supplier,
+                java.util.concurrent.Executor executor) {
+            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
+        }
+
+        @Override
+        public CompletableFuture<Guard<T>> orTimeout(long timeout, TimeUnit unit) {
+            throw new UnsupportedOperationException("use Oreslang timed lock acquisition, not GuardFuture.orTimeout");
+        }
+
+        @Override
+        public CompletableFuture<Guard<T>> completeOnTimeout(
+                Guard<T> value,
+                long timeout,
+                TimeUnit unit) {
+            throw new UnsupportedOperationException("use Oreslang timed lock acquisition, not GuardFuture.completeOnTimeout");
+        }
+
+        @Override
+        public void obtrudeValue(Guard<T> value) {
+            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
+        }
+
+        @Override
+        public void obtrudeException(Throwable ex) {
+            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
+        }
     }
 
     public sealed interface Lock<T> permits Local, Shared {
@@ -387,6 +447,9 @@ public final class OresMutex {
                             waiter = candidate;
                             break;
                         }
+                        // Cancellation/completion can race with dequeue. Once
+                        // removed from the queue, this path owns domain cleanup.
+                        releaseDomain(candidate.ownerDomain);
                     }
 
                     if (waiter == null) {
