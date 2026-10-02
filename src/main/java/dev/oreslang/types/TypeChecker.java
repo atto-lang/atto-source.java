@@ -44,6 +44,9 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
+    private enum AwaitContext { NONE, ASYNC, ACTOR }
+    private AwaitContext awaitContext = AwaitContext.NONE;
+
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -141,7 +144,7 @@ public final class TypeChecker {
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
-                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()), signature, "module " + module.name());
             } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
@@ -177,6 +180,9 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.async() && fn.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException("'async' and 'actor' are mutually exclusive concurrency contracts on '" + module + "." + fn.name() + "'");
+        }
         if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException("program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
         }
@@ -184,7 +190,22 @@ public final class TypeChecker {
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
-        checkBlock(fn.body(), env, generics, returns, null);
+        if (fn.async() && isFutureType(returns)) {
+            throw new IllegalArgumentException("async callable '" + module + "." + fn.name()
+                    + "' declares its fulfilled result type after '=>'; do not write Future<T> there because callers already receive Future<T>");
+        }
+        if (fn.actorKind() != Ast.ActorKind.NONE && isFutureType(returns)) {
+            throw new IllegalArgumentException("actor fnc '" + module + "." + fn.name()
+                    + "' declares its actor result type after '=>'; callers receive ActorHandle<T>, not Future<T>");
+        }
+        AwaitContext previousAwaitContext = awaitContext;
+        awaitContext = fn.actorKind() != Ast.ActorKind.NONE ? AwaitContext.ACTOR
+                : fn.async() ? AwaitContext.ASYNC : AwaitContext.NONE;
+        try {
+            checkBlock(fn.body(), env, generics, returns, null);
+        } finally {
+            awaitContext = previousAwaitContext;
+        }
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
             throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
         }
@@ -253,12 +274,27 @@ public final class TypeChecker {
                 }
             }
 
+            if (klass.actorKind() != Ast.ActorKind.NONE && method.async()) {
+                throw new IllegalArgumentException("actor methods do not use 'async': " + module + "." + klass.name() + "." + method.name());
+            }
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
-            checkBlock(method.body(), env, generics, returns, callableSelf);
+            if (method.async() && isFutureType(returns)) {
+                throw new IllegalArgumentException("async method '" + module + "." + klass.name() + "." + method.name()
+                        + "' declares its fulfilled result type after '=>'; do not write Future<T> there");
+            }
+            AwaitContext previousAwaitContext = awaitContext;
+            awaitContext = klass.actorKind() != Ast.ActorKind.NONE && !method.isStatic()
+                    ? AwaitContext.ACTOR
+                    : method.async() ? AwaitContext.ASYNC : AwaitContext.NONE;
+            try {
+                checkBlock(method.body(), env, generics, returns, callableSelf);
+            } finally {
+                awaitContext = previousAwaitContext;
+            }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
                 throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
@@ -396,7 +432,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("actor fnc '" + fn.name()
                             + "' is an actor entry point, not an ordinary function value; spawn it through the actor runtime");
                 }
-                return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -464,6 +500,23 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr actorName) {
+                Ast.FunctionDecl actorFn = findFunction(actorName.name());
+                if (actorFn != null && actorFn.actorKind() != Ast.ActorKind.NONE) {
+                    if (actorFn.parameters().size() != call.arguments().size()) {
+                        throw new IllegalArgumentException("actor fnc '" + actorFn.name() + "' expects "
+                                + actorFn.parameters().size() + " argument(s), got " + call.arguments().size());
+                    }
+                    Set<String> actorGenerics = Set.copyOf(actorFn.genericParameters());
+                    for (int i = 0; i < actorFn.parameters().size(); i++) {
+                        Type expected = resolveParam(actorFn.parameters().get(i), actorGenerics, null);
+                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
+                                "actor argument " + (i + 1));
+                    }
+                    return new Named("ActorHandle", List.of(resolve(actorFn.returnType(), actorGenerics, null)));
+                }
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -482,7 +535,8 @@ public final class TypeChecker {
                         validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                         requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                     }
-                    return resolve(fn.returnType(), fnGenerics, null);
+                    Type result = resolve(fn.returnType(), fnGenerics, null);
+                    return fn.async() ? new Named("Future", List.of(result)) : result;
                 }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
@@ -496,7 +550,8 @@ public final class TypeChecker {
                             validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                             requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                         }
-                        return resolve(method.returnType(), methodGenerics, named);
+                        Type result = resolve(method.returnType(), methodGenerics, named);
+                        return method.async() ? new Named("Future", List.of(result)) : result;
                     }
                 }
             }
@@ -531,7 +586,7 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -550,7 +605,7 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
-                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
+                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named, method.async());
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -587,9 +642,17 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (awaitContext == AwaitContext.NONE) {
+                throw new IllegalArgumentException("'await' is only legal inside an async callable or an actor mailbox turn");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
-            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) return named.arguments().getFirst();
-            return Unknown.INSTANCE;
+            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            if (awaitedType instanceof Named named && named.name().equals("ActorHandle")) {
+                throw new IllegalArgumentException("ActorHandle<T> is not awaitable; await an explicit result Future<T> from the handle when needed");
+            }
+            throw new IllegalArgumentException("await requires Future<T>, got " + awaitedType);
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
@@ -620,7 +683,13 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            AwaitContext previousAwaitContext = awaitContext;
+            awaitContext = AwaitContext.NONE;
+            try {
+                checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            } finally {
+                awaitContext = previousAwaitContext;
+            }
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
@@ -648,7 +717,13 @@ public final class TypeChecker {
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
-        checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        AwaitContext previousAwaitContext = awaitContext;
+        awaitContext = AwaitContext.NONE;
+        try {
+            checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        } finally {
+            awaitContext = previousAwaitContext;
+        }
         if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
@@ -733,7 +808,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
-                    functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                    functionType(method.parameters(), method.returnType(), generics, self, method.async()), "class " + klass.name());
         }
         stack.remove(klass);
         Record result = new Record(members);
@@ -760,7 +835,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members, methodKey(method.name(), method.arity()),
-                        functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                        functionType(method.parameters(), method.returnType(), generics, self, method.async()), "class " + klass.name());
             }
         }
         stack.remove(klass);
@@ -922,7 +997,22 @@ public final class TypeChecker {
     }
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
-        return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
+        return functionType(params, returns, generics, self, false);
+    }
+
+    private Function functionType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            Set<String> generics,
+            Type self,
+            boolean async) {
+        Type result = resolve(returns, generics, self);
+        if (async) result = new Named("Future", List.of(result));
+        return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), result);
+    }
+
+    private static boolean isFutureType(Type type) {
+        return type instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1;
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
@@ -985,6 +1075,12 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Option<void> is invalid; use void for no return value");
                 yield new Named("Option", List.of(element));
+            }
+            case "Future", "ActorHandle" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+                }
+                yield new Named(ref.name(), List.of(resolve(ref.arguments().getFirst(), generics, self)));
             }
             case "Fnc" -> {
                 List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
