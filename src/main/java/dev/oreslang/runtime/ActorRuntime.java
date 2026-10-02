@@ -37,6 +37,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<String, ActorId> singletonActors = new ConcurrentHashMap<>();
     private final Map<ActorId, ActorFailure> failures = new ConcurrentHashMap<>();
+    private final Map<ActorId, Map<UUID, ActorId>> monitorsByTarget = new ConcurrentHashMap<>();
     private final ThreadLocal<ActorId> currentActor = new ThreadLocal<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
@@ -68,6 +69,13 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public record ActorFailure(String type, String message) { }
+
+    public record MonitorRef(UUID value, ActorId target) {
+        public MonitorRef {
+            java.util.Objects.requireNonNull(value, "value");
+            java.util.Objects.requireNonNull(target, "target");
+        }
+    }
 
     public record ActorSnapshot(
             ActorId id,
@@ -219,6 +227,55 @@ public final class ActorRuntime implements AutoCloseable {
 
     public int activeActorCount() {
         return actors.size();
+    }
+
+    /**
+     * Erlang-style unidirectional monitor. The watcher receives one immutable
+     * DOWN message when the target exits. Monitoring an already-dead actor
+     * immediately queues a DOWN message with reason "noproc" or "failed".
+     */
+    public MonitorRef monitor(ActorRef<?> watcher, ActorRef<?> target) {
+        java.util.Objects.requireNonNull(watcher, "watcher");
+        java.util.Objects.requireNonNull(target, "target");
+        if (watcher.id().equals(target.id())) {
+            throw new IllegalArgumentException("an actor cannot monitor itself");
+        }
+        if (!actors.containsKey(watcher.id())) {
+            throw new IllegalStateException("monitor watcher is not a live actor");
+        }
+
+        MonitorRef monitor = new MonitorRef(UUID.randomUUID(), target.id());
+        ActorCell<?> targetCell = actors.get(target.id());
+        if (targetCell == null) {
+            ActorFailure failure = failures.get(target.id());
+            sendDown(watcher.id(), monitor, failure == null ? "noproc" : "failed", failure);
+            return monitor;
+        }
+
+        monitorsByTarget.computeIfAbsent(target.id(), ignored -> new ConcurrentHashMap<>())
+                .put(monitor.value(), watcher.id());
+
+        // Close the race where the target exits after the liveness check but
+        // before monitor registration.
+        if (!actors.containsKey(target.id())) {
+            Map<UUID, ActorId> monitors = monitorsByTarget.get(target.id());
+            if (monitors != null && monitors.remove(monitor.value(), watcher.id())) {
+                if (monitors.isEmpty()) monitorsByTarget.remove(target.id(), monitors);
+                ActorFailure failure = failures.get(target.id());
+                sendDown(watcher.id(), monitor, failure == null ? "normal" : "failed", failure);
+            }
+        }
+        return monitor;
+    }
+
+    public boolean demonitor(ActorRef<?> watcher, MonitorRef monitor) {
+        java.util.Objects.requireNonNull(watcher, "watcher");
+        java.util.Objects.requireNonNull(monitor, "monitor");
+        Map<UUID, ActorId> monitors = monitorsByTarget.get(monitor.target());
+        if (monitors == null) return false;
+        boolean removed = monitors.remove(monitor.value(), watcher.id());
+        if (monitors.isEmpty()) monitorsByTarget.remove(monitor.target(), monitors);
+        return removed;
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
@@ -463,6 +520,40 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private void notifyMonitors(ActorId target, String reason, ActorFailure failure) {
+        Map<UUID, ActorId> monitors = monitorsByTarget.remove(target);
+        if (monitors == null || monitors.isEmpty()) return;
+        for (Map.Entry<UUID, ActorId> entry : monitors.entrySet()) {
+            sendDown(entry.getValue(), new MonitorRef(entry.getKey(), target), reason, failure);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void sendDown(ActorId watcherId, MonitorRef monitor, String reason, ActorFailure failure) {
+        ActorCell<?> watcherCell = actors.get(watcherId);
+        if (watcherCell == null) return;
+
+        Map<String, Object> down = new LinkedHashMap<>();
+        down.put("type", "DOWN");
+        down.put("monitor_id", monitor.value().toString());
+        down.put("actor_id", monitor.target().toString());
+        down.put("reason", reason);
+        if (failure != null) {
+            down.put("error_type", failure.type());
+            down.put("error_message", failure.message() == null ? "" : failure.message());
+        }
+        send((ActorRef<Object>) watcherCell.ref, Map.copyOf(down));
+    }
+
+    private void removeWatchesOwnedBy(ActorId watcher) {
+        for (Map.Entry<ActorId, Map<UUID, ActorId>> entry : monitorsByTarget.entrySet()) {
+            Map<UUID, ActorId> monitors = entry.getValue();
+            monitors.entrySet().removeIf(item -> item.getValue().equals(watcher));
+            if (monitors.isEmpty()) monitorsByTarget.remove(entry.getKey(), monitors);
+        }
+    }
+
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
@@ -480,6 +571,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
         actors.clear();
         singletonActors.clear();
+        monitorsByTarget.clear();
         failures.clear();
     }
 
@@ -537,6 +629,8 @@ public final class ActorRuntime implements AutoCloseable {
                 currentActor.remove();
                 actors.remove(ref.id(), this);
                 removeSingletonMapping();
+                removeWatchesOwnedBy(ref.id());
+                notifyMonitors(ref.id(), "failed", failures.get(ref.id()));
                 return;
             }
 
@@ -566,6 +660,9 @@ public final class ActorRuntime implements AutoCloseable {
                 currentActor.remove();
                 actors.remove(ref.id(), this);
                 removeSingletonMapping();
+                removeWatchesOwnedBy(ref.id());
+                ActorFailure actorFailure = failures.get(ref.id());
+                notifyMonitors(ref.id(), actorFailure == null ? "normal" : "failed", actorFailure);
             }
         }
 
