@@ -284,10 +284,10 @@ final class ActorLanguageTest {
                   val shared = share(values);
                   val worker_ref = actor.spawn(worker);
                   actor.send(worker_ref, shared);
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(values[0]);
                   actor.stop(worker_ref);
                   actor.join(worker_ref);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(values[0]);
                   return;
                 }
                 """);
