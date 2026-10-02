@@ -1030,9 +1030,9 @@ public final class ActorRuntime implements AutoCloseable {
     private void reserveActorSlot() {
         while (true) {
             int current = actorCount.get();
-            if (current >= dispatcherConfig.maxActors()) {
+            if (current >= workerConfig.maxActors()) {
                 throw new IllegalStateException(
-                        "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
+                        "actor runtime limit exceeded: maximum " + workerConfig.maxActors());
             }
             if (actorCount.compareAndSet(current, current + 1)) return;
         }
