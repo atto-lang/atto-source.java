@@ -198,10 +198,12 @@ public final class TypeChecker {
 
         Set<String> localMethodSignatures = new HashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
-            String signature = methodKey(method.name(), method.arity());
+            String memberKind = method.isStatic() ? "static:" : "instance:";
+            String signature = memberKind + methodKey(method.name(), method.arity());
             if (!localMethodSignatures.add(signature)) {
-                throw new IllegalArgumentException("method '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
-                        + "; methods may overload only by arity");
+                String label = method.isStatic() ? "static function" : "method";
+                throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
+                        + "; class callables may overload only by arity within their own static/instance namespace");
             }
         }
 
@@ -231,13 +233,15 @@ public final class TypeChecker {
                 }
             }
 
+            Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, self), Ast.BindingKind.VAL);
-            Type returns = resolve(method.returnType(), generics, self);
-            checkBlock(method.body(), env, generics, returns, self);
+            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), Ast.BindingKind.VAL);
+            Type returns = resolve(method.returnType(), generics, callableSelf);
+            checkBlock(method.body(), env, generics, returns, callableSelf);
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
-                throw new IllegalArgumentException("non-void method '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
+                String label = method.isStatic() ? "static function" : "method";
+                throw new IllegalArgumentException("non-void " + label + " '" + module + "." + klass.name() + "." + method.name() + "' must explicitly return on every path");
             }
         }
 
