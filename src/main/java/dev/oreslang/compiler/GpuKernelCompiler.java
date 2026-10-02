@@ -389,7 +389,7 @@ public final class GpuKernelCompiler {
             Ast.TypeRef result = resolvedResult(target);
             body.append("static inline ").append(cScalar(result)).append(' ')
                     .append(target.helperSymbol).append('(')
-                    .append(parameterList(target.parameters, target.module)).append(");\n");
+                    .append(helperParameterList(target.parameters, target.module)).append(");\n");
         }
         if (!namedTargets.isEmpty()) body.append('\n');
 
@@ -468,7 +468,7 @@ public final class GpuKernelCompiler {
     private void emitHelper(StringBuilder out, Target target, Ast.TypeRef resultType) {
         out.append("static inline ").append(cScalar(resultType)).append(' ')
                 .append(target.helperSymbol).append('(')
-                .append(parameterList(target.parameters, target.module)).append(") {\n");
+                .append(helperParameterList(target.parameters, target.module)).append(") {\n");
         LoweringEnv env = parameterEnv(target.parameters, target.module);
         emitStatements(out, target.module, target.body, env, "  ");
         out.append("}\n\n");
@@ -485,6 +485,8 @@ public final class GpuKernelCompiler {
             if (!params.isEmpty()) out.append(", ");
             out.append("__global ").append(cScalar(resultType)).append("* restrict __ores_out");
         }
+        if (!params.isEmpty() || !isVoid(resultType)) out.append(", ");
+        out.append("__global int* restrict __ores_error");
         out.append(") {\n");
 
         String launchExtent = null;
@@ -502,7 +504,7 @@ public final class GpuKernelCompiler {
             emitStatements(out, target.module, parallelLoop.loop.body(), env, "  ");
         } else {
             out.append("  if (get_global_id(0) != 0 || get_global_id(1) != 0 || get_global_id(2) != 0) return;\n");
-            String args = argumentNames(target.parameters);
+            String args = argumentNames(target.parameters, target.module);
             if (isVoid(resultType)) {
                 out.append("  ").append(target.helperSymbol).append('(').append(args).append(");\n");
             } else {
