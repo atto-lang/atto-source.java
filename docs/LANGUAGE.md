@@ -580,9 +580,11 @@ The incremental compiler uses separate **source** and **ABI** digests:
 5. reuse every importer artifact across implementation-only dependency edits;
 6. keep unchanged/unaffected compiled-unit objects intact.
 
+Public inferred bindings are fingerprinted conservatively from their initializer AST until the compiler materializes their inferred exported type in the unit manifest.
+
 This separates code-generation dirtiness from public-contract dirtiness. An implementation edit such as changing a function body from `return 42;` to `return 43;` recompiles that file without recompiling importers when the exported signature is unchanged. Until the cross-unit linker records exact public imported-symbol dependencies, ABI changes intentionally propagate transitively for correctness.
 
-Actors and isolates consume versioned code-unit generations. A hot reload therefore does **not** require rebuilding or replacing every actor: changed units receive new generations, unchanged units can remain shared, and supervisors migrate actors/requests according to policy.
+Actors and isolates consume versioned code-unit generations. `HotReloadManager` tracks the active generation **per code-unit id**, so staging `worker.ores` does not replace the active `helper.ores` generation. A hot reload therefore does **not** require rebuilding or replacing every actor: changed units receive new generations, unchanged units remain active/shared, and supervisors migrate actors/requests according to policy.
 
 A deployment may still aggregate many code units into one Native Image for startup/distribution reasons. That aggregate is never the only compiler artifact and must not erase per-unit identities or dependency metadata.
 
