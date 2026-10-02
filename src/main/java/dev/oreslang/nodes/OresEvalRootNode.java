@@ -262,6 +262,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresObject object) {
+                        if (object.readOnlyShared) {
+                            throw new IllegalStateException("cannot mutate a process.share_readonly class value");
+                        }
                         if (!object.fields.containsKey(target.member())) throw new IllegalArgumentException("unknown field " + target.member());
                         object.fields.put(target.member(), value);
                         return value;
@@ -956,7 +959,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private record GuestActorRef(ActorRuntime.ActorRef<Object> delegate) implements ActorRuntime.Sendable {
             @Override
-            public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
+            public Object freezeForSend(ActorRuntime.SendFreezer freezer, boolean readOnlyShared) {
                 return delegate;
             }
 
@@ -968,7 +971,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private record GuestMonitorRef(ActorRuntime.MonitorRef delegate) implements ActorRuntime.Sendable {
             @Override
-            public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
+            public Object freezeForSend(ActorRuntime.SendFreezer freezer, boolean readOnlyShared) {
                 return delegate;
             }
 
@@ -1122,7 +1125,7 @@ public final class OresEvalRootNode extends RootNode {
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
         private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
-        @Override public Object freezeForSend(ActorRuntime.SendFreezer freezer){return new Complex(real,imaginary);}
+        @Override public Object freezeForSend(ActorRuntime.SendFreezer freezer, boolean readOnlyShared){return new Complex(real,imaginary);}
         @Override public long estimatedSendBytes(ActorRuntime.SendSizer sizer){return 32L;}
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
@@ -1130,19 +1133,26 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresObject implements ActorRuntime.Sendable {
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        private final boolean readOnlyShared;
 
         private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){
+            this(klass, fields, false);
+        }
+
+        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields, boolean readOnlyShared){
             this.klass=klass;
             this.fields=fields;
+            this.readOnlyShared=readOnlyShared;
         }
 
         @Override
-        public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
+        public Object freezeForSend(ActorRuntime.SendFreezer freezer, boolean readOnlyShared) {
             LinkedHashMap<String,Object> copied = new LinkedHashMap<>();
             for (Map.Entry<String,Object> field : fields.entrySet()) {
                 copied.put(field.getKey(), freezer.freeze(field.getValue()));
             }
-            return new OresObject(klass, copied);
+            Map<String,Object> destination = readOnlyShared ? Map.copyOf(copied) : copied;
+            return new OresObject(klass, destination, readOnlyShared);
         }
 
         @Override
@@ -1163,7 +1173,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private record OptionValue(boolean present, Object value) implements ActorRuntime.Sendable {
         @Override
-        public Object freezeForSend(ActorRuntime.SendFreezer freezer) {
+        public Object freezeForSend(ActorRuntime.SendFreezer freezer, boolean readOnlyShared) {
             return present ? new OptionValue(true, freezer.freeze(value)) : new OptionValue(false, null);
         }
 
