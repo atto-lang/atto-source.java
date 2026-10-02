@@ -1349,8 +1349,10 @@ public final class OresEvalRootNode extends RootNode {
 
             if (value instanceof OptionValue option) {
                 if (!option.present()) return option;
-                Object copied = new OptionValue(true,
-                        copyValue(option.value(), singletonState, copies));
+                Object nested = copyValue(option.value(), singletonState, copies);
+                Object reentrant = copies.get(value);
+                if (reentrant != null) return reentrant;
+                Object copied = new OptionValue(true, nested);
                 copies.put(value, copied);
                 return copied;
             }
@@ -1458,6 +1460,8 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OptionValue option) {
                 if (!option.present()) return option;
                 Object item = freezeGuestValue(option.value(), frozen);
+                Object reentrant = frozen.get(value);
+                if (reentrant != null) return reentrant;
                 OptionValue result = new OptionValue(true, item);
                 frozen.put(value, result);
                 return result;
