@@ -578,9 +578,10 @@ public final class OresMutex {
             @Override
             public void fail() {
                 requireOwnerDomain();
-                if (released()) return;
+                if (!released.compareAndSet(false, true)) return;
                 poisoned.set(true);
-                release();
+                releaseDomain(ownerDomain);
+                permit.release();
             }
         }
     }
