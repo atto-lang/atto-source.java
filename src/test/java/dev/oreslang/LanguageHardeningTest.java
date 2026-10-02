@@ -301,6 +301,42 @@ final class LanguageHardeningTest {
                 end
                 """)));
         assertTrue(unreachableAfterTupleCapture.getMessage().contains("unreachable match arm"));
+
+        IllegalArgumentException tupleSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match ("error", "enoent") {
+                      ("error", _) => { return; }
+                      ("error", reason) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(tupleSubsumed.getMessage().contains("earlier pattern already covers"));
+
+        IllegalArgumentException listSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match [1, 2] {
+                      [_, _] => { return; }
+                      [1, 2] => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(listSubsumed.getMessage().contains("earlier pattern already covers"));
+
+        IllegalArgumentException numericLiteralSubsumed = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match 1.0 {
+                      1 => { return; }
+                      1.0 => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(numericLiteralSubsumed.getMessage().contains("earlier pattern already covers"));
     }
 
     @Test
