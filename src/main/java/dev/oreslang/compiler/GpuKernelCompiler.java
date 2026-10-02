@@ -57,6 +57,11 @@ public final class GpuKernelCompiler {
             HiddenPurpose purpose,
             String sourceParameter) { }
 
+    public record GpuLaunchPlan(
+            String globalWorkItemsExpression,
+            String errorSlotsExpression,
+            String resultSlotsExpression) { }
+
     public record GpuKernel(
             String sourceName,
             String helperSymbol,
@@ -69,7 +74,8 @@ public final class GpuKernelCompiler {
             List<GpuParameter> parameters,
             List<GpuHiddenParameter> hiddenParameters,
             String resultType,
-            String launchExtentExpression) {
+            String launchExtentExpression,
+            GpuLaunchPlan launchPlan) {
         public GpuKernel {
             parameters = List.copyOf(parameters);
             hiddenParameters = List.copyOf(hiddenParameters);
@@ -82,7 +88,8 @@ public final class GpuKernelCompiler {
             String dispatcherSymbol,
             int workItems,
             List<String> kernelSymbols,
-            List<GpuHiddenParameter> hiddenParameters) {
+            List<GpuHiddenParameter> hiddenParameters,
+            GpuLaunchPlan fallbackDispatcherLaunchPlan) {
         public GpuBatch {
             kernelSymbols = List.copyOf(kernelSymbols);
             hiddenParameters = List.copyOf(hiddenParameters);
@@ -500,13 +507,18 @@ public final class GpuKernelCompiler {
                         null));
             }
 
+            GpuLaunchPlan dispatcherPlan = dispatcher == null ? null : new GpuLaunchPlan(
+                    Integer.toString(targets.size()),
+                    Integer.toString(targets.size()),
+                    "0");
             batches.add(new GpuBatch(
                     entry.getKey(),
                     BatchExecutionPolicy.CONCURRENT_KERNELS,
                     dispatcher,
                     targets.size(),
                     targets.stream().map(target -> target.kernelSymbol).toList(),
-                    hidden));
+                    hidden,
+                    dispatcherPlan));
         }
         return List.copyOf(batches);
     }
@@ -563,6 +575,11 @@ public final class GpuKernelCompiler {
 
         List<GpuParameter> parameters = target.parameters.stream()
                 .map(param -> metadataParameter(param, target.module)).toList();
+        String globalWorkItems = launchExtent == null ? "1" : launchExtent;
+        GpuLaunchPlan launchPlan = new GpuLaunchPlan(
+                globalWorkItems,
+                globalWorkItems,
+                isVoid(resultType) ? "0" : "1");
         GpuKernel meta = new GpuKernel(
                 target.sourceName,
                 target.helperSymbol,
@@ -575,7 +592,8 @@ public final class GpuKernelCompiler {
                 parameters,
                 hiddenParameters(target, resultType),
                 oresType(resultType),
-                launchExtent);
+                launchExtent,
+                launchPlan);
         return new KernelEmission(meta);
     }
 
@@ -1290,7 +1308,10 @@ public final class GpuKernelCompiler {
                     .append(kernel.batchId() == null ? "" : kernel.batchId()).append('|')
                     .append(kernel.batchIndex()).append('|')
                     .append(kernel.resultType()).append('|')
-                    .append(kernel.launchExtentExpression() == null ? "" : kernel.launchExtentExpression())
+                    .append(kernel.launchExtentExpression() == null ? "" : kernel.launchExtentExpression()).append('|')
+                    .append(kernel.launchPlan().globalWorkItemsExpression()).append('|')
+                    .append(kernel.launchPlan().errorSlotsExpression()).append('|')
+                    .append(kernel.launchPlan().resultSlotsExpression())
                     .append('\n');
             for (GpuParameter param : kernel.parameters()) {
                 out.append(" param=").append(param.name()).append('|')
@@ -1312,7 +1333,13 @@ public final class GpuKernelCompiler {
                     .append(batch.preferredPolicy()).append('|')
                     .append(batch.dispatcherSymbol() == null ? "" : batch.dispatcherSymbol()).append('|')
                     .append(batch.workItems()).append('|')
-                    .append(String.join(",", batch.kernelSymbols())).append('\n');
+                    .append(String.join(",", batch.kernelSymbols())).append('|');
+            if (batch.fallbackDispatcherLaunchPlan() != null) {
+                out.append(batch.fallbackDispatcherLaunchPlan().globalWorkItemsExpression()).append('|')
+                        .append(batch.fallbackDispatcherLaunchPlan().errorSlotsExpression()).append('|')
+                        .append(batch.fallbackDispatcherLaunchPlan().resultSlotsExpression());
+            }
+            out.append('\n');
             for (GpuHiddenParameter hidden : batch.hiddenParameters()) {
                 out.append(" batch-hidden=").append(hidden.name()).append('|')
                         .append(hidden.abiType()).append('|')
