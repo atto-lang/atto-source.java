@@ -493,6 +493,43 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void actorGcIsLocalInIntentAndTracksCurrentActorRequests() throws Exception {
+        String output = run("""
+                fnc worker(String message) => void {
+                  val result = actor.gc();
+                  stdio.stdout.write(result.actor_local_physical_collection);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(actor.status(actor.self).manual_gc_requests);
+                  return;
+                }
+
+                pub routine main() => void {
+                  val ref = actor.spawn(worker);
+                  actor.send(ref, "gc");
+                  actor.stop(ref);
+                  actor.join(ref);
+                  return;
+                }
+                """);
+
+        assertEquals("false:1", output);
+    }
+
+    @Test
+    void actorGcOutsideActorDoesNotFallBackToGlobalGc() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                pub routine main() => void {
+                  actor.gc();
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("only available inside an actor")
+                || failure.getMessage().contains("actor.gc"));
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
