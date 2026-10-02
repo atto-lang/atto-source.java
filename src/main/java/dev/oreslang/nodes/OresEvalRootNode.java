@@ -146,6 +146,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object executeFunctionBody(Ast.FunctionDecl fn, List<?> args, Env env) {
+            if (env.singletonState != null) ProcessSingletonRegistry.checkExecutionBudget();
             if (args.size() != fn.parameters().size()) {
                 throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
             }
@@ -163,7 +164,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private CompletionStage<Object> callSingleton(Ast.ModuleDecl module, Ast.FunctionDecl fn, List<?> args) {
             ProcessSingletonRegistry.Handle<SingletonState> handle = singletonHandle(module);
-            return handle.call(args, (state, frozenArgs) -> callSingletonFunction(state, fn, frozenArgs));
+            return handle.call(
+                    args,
+                    context.isolatePolicy().maxMailboxMessages(),
+                    context.isolatePolicy().maxWallTime(),
+                    (state, frozenArgs) -> callSingletonFunction(state, fn, frozenArgs));
         }
 
         private ProcessSingletonRegistry.Handle<SingletonState> singletonHandle(Ast.ModuleDecl module) {
@@ -208,9 +213,10 @@ public final class OresEvalRootNode extends RootNode {
             return owner == null ? null : modules.get(owner);
         }
 
-        private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+        private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args, SingletonState singletonState) {
+            if (singletonState != null) ProcessSingletonRegistry.checkExecutionBudget();
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
-            Env env = new Env(null);
+            Env env = new Env(null, singletonState);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
                 Ast.Param param = method.parameters().get(i);
@@ -274,7 +280,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
-                for (Object item : iterableValues(iterable)) {
+                for (Object item : iterableValues(iterable, env.singletonState)) {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
                     iteration.define(loop.bindingName(), item, loop.bindingKind());
@@ -322,7 +328,7 @@ public final class OresEvalRootNode extends RootNode {
                     return new ModuleFacade(module, localState);
                 }
                 Ast.ClassDecl klass = findClass(name.name());
-                if (klass != null) return new ClassFacade(klass);
+                if (klass != null) return new ClassFacade(klass, env.singletonState);
                 Ast.FunctionDecl fn = findFunction(name.name());
                 if (fn != null) {
                     Ast.ModuleDecl owner = ownerModule(fn);
@@ -388,12 +394,12 @@ public final class OresEvalRootNode extends RootNode {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
                     if (receiver instanceof OresObject object) {
-                        return invokeMethod(object, methodCall.member(), args);
+                        return invokeMethod(object, methodCall.member(), args, env.singletonState);
                     }
                     if (receiver instanceof ClassFacade klass) {
-                        return invokeStaticFunction(klass.klass(), methodCall.member(), args);
+                        return invokeStaticFunction(klass.klass(), methodCall.member(), args, klass.localState());
                     }
-                    Object callee = member(receiver, methodCall.member());
+                    Object callee = member(receiver, methodCall.member(), env.singletonState);
                     if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
                     return invokable.call(args);
                 }
@@ -402,7 +408,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
                 return invokable.call(args);
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member());
+            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member(), env.singletonState);
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
@@ -464,7 +470,7 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
-        private Object member(Object receiver, String name) {
+        private Object member(Object receiver, String name, SingletonState singletonState) {
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
@@ -493,14 +499,14 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return (Invokable) args -> callStaticFunction(klass.klass(), fn, args);
+                    return (Invokable) args -> callStaticFunction(klass.klass(), fn, args, klass.localState());
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                return new BoundMethod(object, name);
+                return new BoundMethod(object, name, singletonState);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -509,22 +515,23 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
         }
 
-        private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
+        private Object invokeMethod(OresObject receiver, String name, List<Object> args, SingletonState singletonState) {
             Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            return callMethod(receiver, method, args);
+            return callMethod(receiver, method, args, singletonState);
         }
 
-        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
+        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args, SingletonState singletonState) {
             Ast.MethodDecl fn = findStaticFunction(klass, name, args.size(), new LinkedHashSet<>());
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
-            return callStaticFunction(klass, fn, args);
+            return callStaticFunction(klass, fn, args, singletonState);
         }
 
-        private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
+        private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args, SingletonState singletonState) {
+            if (singletonState != null) ProcessSingletonRegistry.checkExecutionBudget();
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
-            Env env = new Env(null);
+            Env env = new Env(null, singletonState);
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -544,14 +551,16 @@ public final class OresEvalRootNode extends RootNode {
         private final class BoundMethod implements Invokable {
             private final OresObject receiver;
             private final String methodName;
+            private final SingletonState singletonState;
 
-            private BoundMethod(OresObject receiver, String methodName) {
+            private BoundMethod(OresObject receiver, String methodName, SingletonState singletonState) {
                 this.receiver = receiver;
                 this.methodName = methodName;
+                this.singletonState = singletonState;
             }
 
             @Override public Object call(List<Object> arguments) {
-                return invokeMethod(receiver, methodName, arguments);
+                return invokeMethod(receiver, methodName, arguments, singletonState);
             }
         }
 
@@ -559,7 +568,7 @@ public final class OresEvalRootNode extends RootNode {
             Ast.ModuleDecl module = facade.module();
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
-                    return new ClassFacade(klass);
+                    return new ClassFacade(klass, facade.localState());
                 }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
                     if (module.singleton()) {
@@ -658,14 +667,14 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(result.values());
         }
 
-        private List<?> iterableValues(Object value) {
+        private List<?> iterableValues(Object value, SingletonState singletonState) {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
-                Object produced = callMethod(object, iterator, List.of());
-                return iterableValues(produced);
+                Object produced = callMethod(object, iterator, List.of(), singletonState);
+                return iterableValues(produced, singletonState);
             }
             throw new IllegalArgumentException("value is not iterable");
         }
@@ -808,7 +817,7 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
-    private record ClassFacade(Ast.ClassDecl klass) { }
+    private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
     private record OptionValue(boolean present, Object value) implements ActorRuntime.Sendable {
         @Override public Object freezeForSend() {
             return present ? new OptionValue(true, ActorRuntime.freeze(value)) : this;
