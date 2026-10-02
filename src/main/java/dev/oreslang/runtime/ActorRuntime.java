@@ -191,6 +191,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 garbageCollector.actorStarted(id, policy);
                 backendStarted = true;
+                if (closed.get()) throw new IllegalStateException("actor runtime closed during actor startup");
                 actors.put(id, cell);
                 cell.start();
                 return ref;
