@@ -421,11 +421,17 @@ public final class TypeChecker {
             return Double.compare(a.coefficient(), b.coefficient()) == 0;
         }
         if (left instanceof Number a && right instanceof Number b) {
-            if (left instanceof Long && right instanceof Long) return a.longValue() == b.longValue();
             double x = a.doubleValue();
             double y = b.doubleValue();
             if (!Double.isFinite(x) || !Double.isFinite(y)) return Double.compare(x, y) == 0;
-            return java.math.BigDecimal.valueOf(x).compareTo(java.math.BigDecimal.valueOf(y)) == 0;
+
+            java.math.BigDecimal leftDecimal = left instanceof Byte || left instanceof Short || left instanceof Integer || left instanceof Long
+                    ? java.math.BigDecimal.valueOf(a.longValue())
+                    : java.math.BigDecimal.valueOf(x);
+            java.math.BigDecimal rightDecimal = right instanceof Byte || right instanceof Short || right instanceof Integer || right instanceof Long
+                    ? java.math.BigDecimal.valueOf(b.longValue())
+                    : java.math.BigDecimal.valueOf(y);
+            return leftDecimal.compareTo(rightDecimal) == 0;
         }
         return java.util.Objects.equals(left, right);
     }
