@@ -258,20 +258,19 @@ final class PrivateActorIsolationTest {
     }
 
     @Test
-    void privateAndSharedActorsStayOnDifferentCarrierPools() throws Exception {
-        var config = new ActorRuntime.DispatcherConfig(1, 1, 8);
-        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+    void privateAndSharedActorsAreEachTheirOwnWorker() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch done = new CountDownLatch(2);
-            AtomicReference<String> privateThread = new AtomicReference<>();
-            AtomicReference<String> sharedThread = new AtomicReference<>();
+            AtomicReference<Thread> privateWorker = new AtomicReference<>();
+            AtomicReference<Thread> sharedWorker = new AtomicReference<>();
 
             var privateRef = runtime.<String>spawnPrivate(() -> (message, context) -> {
-                privateThread.set(Thread.currentThread().getName());
+                privateWorker.set(Thread.currentThread());
                 done.countDown();
                 context.self().stop();
             });
             var sharedRef = runtime.<String>spawnShared(() -> (message, context) -> {
-                sharedThread.set(Thread.currentThread().getName());
+                sharedWorker.set(Thread.currentThread());
                 done.countDown();
                 context.self().stop();
             });
@@ -280,8 +279,11 @@ final class PrivateActorIsolationTest {
             sharedRef.send("shared");
 
             assertTrue(done.await(2, TimeUnit.SECONDS));
-            assertTrue(privateThread.get().startsWith("ores-private-actor-dispatcher-"));
-            assertTrue(sharedThread.get().startsWith("ores-shared-actor-dispatcher-"));
+            assertNotSame(privateWorker.get(), sharedWorker.get());
+            assertTrue(privateWorker.get().isVirtual());
+            assertTrue(sharedWorker.get().isVirtual());
+            assertTrue(privateWorker.get().getName().startsWith("ores-private-actor-worker-"));
+            assertTrue(sharedWorker.get().getName().startsWith("ores-shared-actor-worker-"));
             assertTrue(privateRef.awaitTermination(2, TimeUnit.SECONDS));
             assertTrue(sharedRef.awaitTermination(2, TimeUnit.SECONDS));
         }
