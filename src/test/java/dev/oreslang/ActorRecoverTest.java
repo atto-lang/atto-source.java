@@ -698,6 +698,72 @@ final class ActorRecoverTest {
     }
 
     @Test
+    void stopKeywordCleanlyTerminatesActorAndRunsDefersWithoutRecover() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    recover |err| -> {
+                      stdio.stdout.write("R");
+                      return;
+                    };
+                    defer || -> {
+                      stdio.stdout.write("D");
+                    };
+
+                    stdio.stdout.write("A");
+                    stop;
+                    stdio.stdout.write("B");
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failed);
+                  stdio.stdout.write(worker.alive);
+                }
+                """);
+
+        assertEquals("ADfalsefalse", output);
+    }
+
+    @Test
+    void stopBypassesCatchButRunsFinally() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    try {
+                      stdio.stdout.write("A");
+                      stop;
+                    } catch (err) {
+                      stdio.stdout.write("C");
+                    } finally {
+                      stdio.stdout.write("F");
+                    }
+
+                    stdio.stdout.write("B");
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failed);
+                }
+                """);
+
+        assertEquals("AFfalse", output);
+    }
+
+    @Test
+    void stopKeywordIsRejectedOutsideActorBodies() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub routine main() => void {
+                          stop;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("'stop' is only valid inside an actor body"));
+    }
+
+    @Test
     void capabilityCheckerDescendsIntoPanicPayloads() {
         IsolatePolicy denyAll = denyAllPolicy();
 
