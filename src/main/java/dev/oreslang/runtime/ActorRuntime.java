@@ -352,6 +352,14 @@ public final class ActorRuntime implements AutoCloseable {
         pruneWeak(sharedValues);
     }
 
+    private static void zeroDirectMemory(AtomicReference<ByteBuffer> memory) {
+        ByteBuffer live = memory.getAndSet(null);
+        if (live == null) return;
+        ByteBuffer duplicate = live.duplicate();
+        duplicate.clear();
+        while (duplicate.hasRemaining()) duplicate.put((byte) 0);
+    }
+
     /**
      * Logical actor-confined memory slice for one private actor.
      *
@@ -365,7 +373,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
-        private final Set<PrivateMemoryBlock> blocks = ConcurrentHashMap.newKeySet();
+        private final Set<WeakReference<PrivateMemoryBlock>> blocks = ConcurrentHashMap.newKeySet();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
@@ -385,7 +393,7 @@ public final class ActorRuntime implements AutoCloseable {
          */
         public MemoryReservation reserveHeap(long bytes) {
             requireCurrentOwner();
-            return reserve(bytes, "private actor heap");
+            return reserve(bytes, "private actor heap", true);
         }
 
         /**
@@ -397,10 +405,10 @@ public final class ActorRuntime implements AutoCloseable {
         public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
             if (bytes < 0) throw new IllegalArgumentException("private memory block size cannot be negative");
-            MemoryReservation reservation = reserve(bytes, "private actor direct heap");
+            MemoryReservation reservation = reserve(bytes, "private actor direct heap", false);
             try {
                 PrivateMemoryBlock block = new PrivateMemoryBlock(this, reservation, bytes);
-                blocks.add(block);
+                addWeak(blocks, block);
                 return block;
             } catch (RuntimeException | Error failure) {
                 reservation.close();
@@ -409,13 +417,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private MemoryReservation reserveMailbox(Object isolatedMessage) {
-            return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
+            return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox", false);
         }
 
-        private synchronized MemoryReservation reserve(long bytes, String purpose) {
+        private synchronized MemoryReservation reserve(long bytes, String purpose, boolean fallbackTracked) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
-            if (bytes == 0) return new MemoryReservation(this, 0);
+            if (bytes == 0) return new MemoryReservation(this, 0, false);
 
             long current = usedBytes.get();
             long next;
@@ -431,7 +439,7 @@ public final class ActorRuntime implements AutoCloseable {
 
             reservePrivateRuntimeBytes(bytes, owner, purpose);
             usedBytes.set(next);
-            return new MemoryReservation(this, bytes);
+            return new MemoryReservation(this, bytes, fallbackTracked);
         }
 
         private void requireCurrentOwner() {
@@ -460,14 +468,17 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
-            for (PrivateMemoryBlock block : List.copyOf(blocks)) block.invalidateFromSlice();
+            for (WeakReference<PrivateMemoryBlock> reference : List.copyOf(blocks)) {
+                PrivateMemoryBlock block = reference.get();
+                if (block != null) block.invalidateFromSlice();
+            }
             blocks.clear();
             long bytes = usedBytes.getAndSet(0);
             if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
         }
 
         private void unregister(PrivateMemoryBlock block) {
-            blocks.remove(block);
+            removeWeak(blocks, block);
         }
     }
 
@@ -481,8 +492,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final MemoryReservation reservation;
         private final int capacity;
-        private volatile ByteBuffer memory;
+        private final AtomicReference<ByteBuffer> memory = new AtomicReference<>();
         private final AtomicBoolean blockClosed = new AtomicBoolean();
+        private final RuntimeGarbageCollector.Registration gcRegistration;
 
         private PrivateMemoryBlock(
                 ActorMemorySlice slice,
@@ -491,7 +503,20 @@ public final class ActorRuntime implements AutoCloseable {
             this.slice = Objects.requireNonNull(slice);
             this.reservation = Objects.requireNonNull(reservation);
             this.capacity = bytes;
-            this.memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            this.memory.set(ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN));
+
+            AtomicBoolean closedState = this.blockClosed;
+            AtomicReference<ByteBuffer> memoryState = this.memory;
+            MemoryReservation reservationState = this.reservation;
+            this.gcRegistration = garbageCollector.trackActor(
+                    this,
+                    slice.owner(),
+                    "private-memory-block",
+                    () -> {
+                        if (!closedState.compareAndSet(false, true)) return;
+                        zeroDirectMemory(memoryState);
+                        reservationState.close();
+                    });
         }
 
         public int capacity() { return capacity; }
@@ -557,32 +582,20 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("private actor memory block is closed");
             }
             slice.requireCurrentOwner();
-            ByteBuffer live = memory;
+            ByteBuffer live = memory.get();
             if (live == null) throw new IllegalStateException("private actor memory block is closed");
             return live;
         }
 
-        private void zeroAndDetachMemory() {
-            ByteBuffer live = memory;
-            if (live == null) return;
-            ByteBuffer duplicate = live.duplicate();
-            duplicate.clear();
-            while (duplicate.hasRemaining()) duplicate.put((byte) 0);
-            memory = null;
-        }
-
         private void invalidateFromSlice() {
-            if (!blockClosed.compareAndSet(false, true)) return;
-            zeroAndDetachMemory();
+            gcRegistration.close();
         }
 
         @Override
         public void close() {
             openMemory(); // owner + liveness check before invalidation
-            if (!blockClosed.compareAndSet(false, true)) return;
-            zeroAndDetachMemory();
+            gcRegistration.close();
             slice.unregister(this);
-            reservation.close();
         }
     }
 
@@ -590,10 +603,27 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final long bytes;
         private final AtomicBoolean released = new AtomicBoolean();
+        private final RuntimeGarbageCollector.Registration gcRegistration;
 
-        private MemoryReservation(ActorMemorySlice slice, long bytes) {
+        private MemoryReservation(ActorMemorySlice slice, long bytes, boolean fallbackTracked) {
             this.slice = Objects.requireNonNull(slice);
             this.bytes = bytes;
+
+            if (fallbackTracked && bytes != 0L) {
+                AtomicBoolean releasedState = this.released;
+                ActorMemorySlice ownerSlice = this.slice;
+                this.gcRegistration = garbageCollector.trackActor(
+                        this,
+                        ownerSlice.owner(),
+                        "private-heap-reservation",
+                        () -> {
+                            if (releasedState.compareAndSet(false, true)) {
+                                ownerSlice.release(bytes);
+                            }
+                        });
+            } else {
+                this.gcRegistration = null;
+            }
         }
 
         public ActorId owner() { return slice.owner(); }
@@ -601,7 +631,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            if (released.compareAndSet(false, true)) slice.release(bytes);
+            if (gcRegistration != null) {
+                gcRegistration.close();
+            } else if (released.compareAndSet(false, true)) {
+                slice.release(bytes);
+            }
         }
     }
 
