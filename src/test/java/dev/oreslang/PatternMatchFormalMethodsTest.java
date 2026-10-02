@@ -103,6 +103,22 @@ final class PatternMatchFormalMethodsTest {
     }
 
     @Test
+    void constructorPayloadMustActuallyCoverConstructorDomain() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc unwrap(Option<int> value) => int {
+                            return match value {
+                              Some(0) => 0,
+                              None => 0
+                            };
+                          }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("non-exhaustive match on Option"));
+    }
+
+    @Test
     void explicitReturnTypeIsCheckedAgainstEveryMatchArm() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
