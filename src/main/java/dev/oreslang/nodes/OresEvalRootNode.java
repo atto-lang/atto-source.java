@@ -93,6 +93,7 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final IdentityHashMap<Object, Boolean> copyPath = new IdentityHashMap<>();
 
         private Evaluator(
                 Ast.Program program,
@@ -622,6 +623,23 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.NameExpr intrinsic
+                        && (intrinsic.name().equals("borrow")
+                        || intrinsic.name().equals("copy")
+                        || intrinsic.name().equals("take")
+                        || intrinsic.name().equals("share"))) {
+                    if (call.arguments().size() != 1) {
+                        throw new IllegalArgumentException(intrinsic.name() + " expects exactly one value");
+                    }
+                    Object value = eval(call.arguments().getFirst(), env);
+                    return switch (intrinsic.name()) {
+                        case "borrow", "take" -> value;
+                        case "copy" -> copyValue(value, env.singletonState);
+                        case "share" -> freezeGuestValue(copyValue(value, env.singletonState),
+                                new IdentityHashMap<>());
+                        default -> throw new IllegalStateException("unknown ownership intrinsic " + intrinsic.name());
+                    };
+                }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
@@ -1122,6 +1140,173 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return List.copyOf(result.values());
+        }
+
+        private Object copyValue(Object value, SingletonState singletonState) {
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Complex) {
+                return value;
+            }
+            if (value instanceof OptionValue option) {
+                return option.present()
+                        ? new OptionValue(true, copyValue(option.value(), singletonState))
+                        : option;
+            }
+            if (copyPath.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("copy does not support cyclic mutable graphs; define an acyclic copy boundary");
+            }
+            try {
+                if (value instanceof OresObject object) {
+                    if (object.klass.isStruct()) {
+                        LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                        for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                            fields.put(entry.getKey(), copyValue(entry.getValue(), singletonState));
+                        }
+                        return new OresObject(object.klass, fields);
+                    }
+
+                    Ast.MethodDecl copyMethod = findMethod(object.klass, "copy", 0, new LinkedHashSet<>());
+                    if (copyMethod == null || copyMethod.isStatic()
+                            || copyMethod.visibility() != Ast.Visibility.PUBLIC
+                            || copyMethod.isAbstract() || copyMethod.async()
+                            || !copyMethod.genericParameters().isEmpty()
+                            || (copyMethod.explicitReceiverType() != null
+                            && copyMethod.explicitReceiverType().isBorrow()
+                            && copyMethod.explicitReceiverType().mutableBorrow())) {
+                        throw new IllegalArgumentException("class '" + object.klass.name()
+                                + "' is not copyable: copy() must be concrete, synchronous, non-generic, "
+                                + "public, instance-bound, and use an immutable receiver");
+                    }
+                    Object copied = callMethod(object, copyMethod, List.of(), singletonState);
+                    if (!(copied instanceof OresObject result) || result.klass != object.klass) {
+                        throw new IllegalArgumentException("class '" + object.klass.name()
+                                + "' copy() must return a fresh instance of the same concrete class");
+                    }
+                    assertNoMutableAliases(object, result);
+                    return result;
+                }
+                if (value instanceof List<?> list) {
+                    ArrayList<Object> copied = new ArrayList<>(list.size());
+                    for (Object item : list) copied.add(copyValue(item, singletonState));
+                    return copied;
+                }
+                if (value instanceof Map<?, ?> map) {
+                    LinkedHashMap<Object, Object> copied = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        copied.put(copyValue(entry.getKey(), singletonState),
+                                copyValue(entry.getValue(), singletonState));
+                    }
+                    return copied;
+                }
+                if (value instanceof Object[] array) {
+                    Object[] copied = new Object[array.length];
+                    for (int i = 0; i < array.length; i++) copied[i] = copyValue(array[i], singletonState);
+                    return copied;
+                }
+                throw new IllegalArgumentException("value has no runtime copy semantics: " + value.getClass().getName());
+            } finally {
+                copyPath.remove(value);
+            }
+        }
+
+        private Object freezeGuestValue(Object value, IdentityHashMap<Object, Boolean> path) {
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Complex) {
+                return value;
+            }
+            if (value instanceof OptionValue option) {
+                return option.present()
+                        ? new OptionValue(true, freezeGuestValue(option.value(), path))
+                        : option;
+            }
+            if (path.put(value, Boolean.TRUE) != null) {
+                throw new IllegalArgumentException("share does not support cyclic mutable graphs");
+            }
+            try {
+                if (value instanceof OresObject object) {
+                    LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                        fields.put(entry.getKey(), freezeGuestValue(entry.getValue(), path));
+                    }
+                    return new OresObject(object.klass, java.util.Collections.unmodifiableMap(fields));
+                }
+                if (value instanceof List<?> list) {
+                    ArrayList<Object> frozen = new ArrayList<>(list.size());
+                    for (Object item : list) frozen.add(freezeGuestValue(item, path));
+                    return java.util.Collections.unmodifiableList(frozen);
+                }
+                if (value instanceof Map<?, ?> map) {
+                    LinkedHashMap<Object, Object> frozen = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> entry : map.entrySet()) {
+                        frozen.put(freezeGuestValue(entry.getKey(), path),
+                                freezeGuestValue(entry.getValue(), path));
+                    }
+                    return java.util.Collections.unmodifiableMap(frozen);
+                }
+                if (value instanceof Object[] array) {
+                    ArrayList<Object> frozen = new ArrayList<>(array.length);
+                    for (Object item : array) frozen.add(freezeGuestValue(item, path));
+                    return java.util.Collections.unmodifiableList(frozen);
+                }
+                return ActorRuntime.freeze(value);
+            } finally {
+                path.remove(value);
+            }
+        }
+
+        private void assertNoMutableAliases(Object original, Object copied) {
+            IdentityHashMap<Object, Boolean> originalGraph = new IdentityHashMap<>();
+            collectMutableGraph(original, originalGraph, new IdentityHashMap<>());
+            rejectMutableAliases(copied, originalGraph, new IdentityHashMap<>());
+        }
+
+        private void collectMutableGraph(
+                Object value,
+                IdentityHashMap<Object, Boolean> graph,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
+            graph.put(value, Boolean.TRUE);
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) collectMutableGraph(field, graph, seen);
+            } else if (value instanceof List<?> list) {
+                for (Object item : list) collectMutableGraph(item, graph, seen);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    collectMutableGraph(entry.getKey(), graph, seen);
+                    collectMutableGraph(entry.getValue(), graph, seen);
+                }
+            } else if (value instanceof Object[] array) {
+                for (Object item : array) collectMutableGraph(item, graph, seen);
+            }
+        }
+
+        private void rejectMutableAliases(
+                Object value,
+                IdentityHashMap<Object, Boolean> originalGraph,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
+            if (originalGraph.containsKey(value)) {
+                throw new IllegalArgumentException("copy() violated the Copy contract by retaining mutable storage from the source");
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) rejectMutableAliases(field, originalGraph, seen);
+            } else if (value instanceof List<?> list) {
+                for (Object item : list) rejectMutableAliases(item, originalGraph, seen);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectMutableAliases(entry.getKey(), originalGraph, seen);
+                    rejectMutableAliases(entry.getValue(), originalGraph, seen);
+                }
+            } else if (value instanceof Object[] array) {
+                for (Object item : array) rejectMutableAliases(item, originalGraph, seen);
+            }
+        }
+
+        private boolean isMutableComposite(Object value) {
+            return value instanceof OresObject || value instanceof List<?>
+                    || value instanceof Map<?, ?> || value instanceof Object[];
         }
 
         private List<?> iterableValues(Object value, SingletonState singletonState) {
