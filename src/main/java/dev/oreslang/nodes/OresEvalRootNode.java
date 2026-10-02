@@ -174,6 +174,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("print")) return (Invokable) args -> {
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
                 };
+                if (name.name().equals("Some")) return (Invokable) args -> {
+                    requireOne(args, "Some");
+                    return new OptionValue(true, args.getFirst());
+                };
+                if (name.name().equals("None")) return new OptionValue(false, null);
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) return new ModuleFacade(module);
                 Ast.FunctionDecl fn = findFunction(name.name());
@@ -437,6 +442,9 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
+    private record OptionValue(boolean present, Object value) {
+        @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
+    }
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args){requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
