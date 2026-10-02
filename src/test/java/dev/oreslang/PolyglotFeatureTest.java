@@ -79,6 +79,8 @@ final class PolyglotFeatureTest {
                     }
 
                     stdio.println((1, 2) == [1, 2] ? "bad-shape" : "shape-distinct");
+                    stdio.println([1, 2] == (1, 2) ? "bad-reverse-shape" : "reverse-shape-distinct");
+                    stdio.println([(1, 2)] == [[1, 2]] ? "bad-nested-shape" : "nested-shape-distinct");
                     stdio.println((1, 2) == (1, 2) ? "tuple-equal" : "bad-tuple");
                     return;
                   }
@@ -100,9 +102,13 @@ final class PolyglotFeatureTest {
         String text = output.toString(StandardCharsets.UTF_8);
         assertTrue(text.contains("negative-imag"));
         assertTrue(text.contains("shape-distinct"));
+        assertTrue(text.contains("reverse-shape-distinct"));
+        assertTrue(text.contains("nested-shape-distinct"));
         assertTrue(text.contains("tuple-equal"));
         assertTrue(!text.contains("bad-imag"));
         assertTrue(!text.contains("bad-shape"));
+        assertTrue(!text.contains("bad-reverse-shape"));
+        assertTrue(!text.contains("bad-nested-shape"));
         assertTrue(!text.contains("bad-tuple"));
     }
 
