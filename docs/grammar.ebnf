@@ -16,6 +16,7 @@ top_level_item  = annotated_module_decl
                 | init_decl
                 | callable_decl
                 | class_decl
+                | trait_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -26,6 +27,7 @@ annotated_module_decl = { annotation } "define" [ "singleton" ] "module" IDENT "
 module_member   = init_decl
                 | callable_decl
                 | class_decl
+                | trait_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -41,8 +43,17 @@ init_decl       = "init" "routine" "(" ")" "=>" "void" block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
                   "as" { class_member } "end" ;
+
+trait_decl      = "define" "trait" IDENT [ generic_params ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
+                  "as" { trait_member } "end" ;
+
+trait_member    = field_decl
+                | method_decl ;
 
 class_member    = field_decl
                 | method_decl
@@ -68,11 +79,9 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
                   interface_body ;
 
 interface_body  = "{" { interface_member } "}"
-                | { interface_member } "end" ;
+                | [ "as" ] { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
-                | IDENT ":" type_ref member_terminator
-                | [ binding_kind ] type_ref IDENT member_terminator ;
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
@@ -198,8 +207,22 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      contain modules.
    - "define singleton module X as" declares exactly one actor-backed module
      state cell per OS process.
-   - "define module X as" and "define class Y ... as" require the "as" body marker.
-     "as" and "is" are reserved keywords.
+   - "define module X as", "define class Y ... as", and "define trait T ... as"
+     use "as" as the body marker. "as", "is", "with", and "trait" are reserved.
+   - Interfaces are storage-free contracts: they declare function signatures only.
+     They never allocate fields or contribute object layout.
+   - Stateful reusable composition uses traits. A class satisfies interfaces with
+     "is" and composes traits with "with". "implements"/"impl" remain migration
+     aliases for "is".
+   - Traits may contain initialized state, concrete methods, and abstract method
+     requirements, but are never directly instantiated and have no object identity.
+     Trait state is flattened into the host class before runtime.
+   - Trait fields require initializers and are not positional constructor parameters.
+     Private trait state remains lexical to the defining trait.
+   - Multiple traits that contribute the same field are rejected. Multiple concrete
+     methods with the same name/arity require an explicit class override.
+   - v0 trait composition is module-local so flattening cannot silently change a
+     trait method's lexical module environment.
    - "init routine() => void { ... }" is a lifecycle declaration, not an ordinary
      callable. At file/root or ordinary-module scope it runs once per actor-local
      module state. Inside a singleton module it runs exactly once when the
