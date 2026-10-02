@@ -493,6 +493,9 @@ public final class TypeChecker {
                                 throw new IllegalArgumentException(member.member() + " expects a one-argument function");
                             }
                             requireAssignable(named.arguments().getFirst(), fn.parameters().getFirst(), member.member() + " callback parameter");
+                            if (fn.result() != Primitive.VOID) {
+                                throw new IllegalArgumentException(member.member() + " callback must return void");
+                            }
                         }
                         return Primitive.VOID;
                     }
@@ -649,7 +652,7 @@ public final class TypeChecker {
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
         Env lambdaEnv = new Env(parent);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+        checkBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
     }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
@@ -803,7 +806,6 @@ public final class TypeChecker {
         }
         if (named.name().equals("MutexGuard")) {
             return switch (member) {
-                case "get" -> new Function(List.of(), element);
                 case "release" -> new Function(List.of(), Primitive.VOID);
                 case "is_released" -> new Function(List.of(), Primitive.BOOL);
                 default -> null;
