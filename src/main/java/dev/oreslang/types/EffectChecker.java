@@ -233,8 +233,10 @@ public final class EffectChecker {
             scanExpr(binary.left(), current);
             scanExpr(binary.right(), current);
             if (binary.operator().equals("+")
-                    && (isStringLiteral(binary.left()) || isStringLiteral(binary.right()))) {
-                addEffect(current, Effect.ALLOC, "string concatenation");
+                    && !(isDefinitelyNumeric(binary.left(), current)
+                    && isDefinitelyNumeric(binary.right(), current))) {
+                addEffect(current, Effect.ALLOC,
+                        "potential string concatenation/materialization with '+'");
             }
             return;
         }
@@ -416,8 +418,43 @@ public final class EffectChecker {
         return found;
     }
 
-    private static boolean isStringLiteral(Ast.Expr expr) {
-        return expr instanceof Ast.LiteralExpr literal && literal.value() instanceof String;
+    private boolean isDefinitelyNumeric(Ast.Expr expr, Callable current) {
+        if (expr instanceof Ast.LiteralExpr literal) {
+            return literal.value() instanceof Number || literal.value() instanceof Ast.Imaginary;
+        }
+        if (expr instanceof Ast.NameExpr name) {
+            for (Ast.Param parameter : current.parameters()) {
+                if (parameter.name().equals(name.name())) return isNumericType(parameter.type());
+            }
+            return false;
+        }
+        if (expr instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("+") || unary.operator().equals("-"))) {
+            return isDefinitelyNumeric(unary.operand(), current);
+        }
+        if (expr instanceof Ast.BinaryExpr binary
+                && (binary.operator().equals("+")
+                || binary.operator().equals("-")
+                || binary.operator().equals("*")
+                || binary.operator().equals("/")
+                || binary.operator().equals("%"))) {
+            return isDefinitelyNumeric(binary.left(), current)
+                    && isDefinitelyNumeric(binary.right(), current);
+        }
+        if (expr instanceof Ast.CallExpr call && call.callee() instanceof Ast.NameExpr name) {
+            Callable target = resolveFunction(name.name(), current.module());
+            return target != null && isNumericType(target.returnType());
+        }
+        return false;
+    }
+
+    private static boolean isNumericType(Ast.TypeRef type) {
+        if (type == null) return false;
+        Ast.TypeRef target = type.isBorrow() ? type.borrowedTarget() : type;
+        return switch (target.name()) {
+            case "int", "float", "decimal", "complex" -> true;
+            default -> false;
+        };
     }
 
     private static String renderCallee(Ast.Expr callee) {
@@ -433,6 +470,8 @@ public final class EffectChecker {
             Ast.ClassDecl ownerClass,
             String name,
             int arity,
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType,
             List<Ast.Annotation> annotations,
             List<Ast.Stmt> body,
             String displayName) {
@@ -443,6 +482,8 @@ public final class EffectChecker {
                     null,
                     fn.name(),
                     fn.parameters().size(),
+                    fn.parameters(),
+                    fn.returnType(),
                     fn.annotations(),
                     fn.body(),
                     (fn.kind() == Ast.CallableKind.ROUTINE ? "routine '" : "function '")
@@ -455,6 +496,8 @@ public final class EffectChecker {
                     owner,
                     method.name(),
                     method.parameters().size(),
+                    method.parameters(),
+                    method.returnType(),
                     method.annotations(),
                     method.body(),
                     "method '" + module + "." + owner.name() + "." + method.name()
