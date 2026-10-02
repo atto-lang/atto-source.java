@@ -20,7 +20,7 @@ import java.util.Set;
  *
  * Current model:
  * - primitive immutable values are Copy;
- * - class/list/object/function values are move-only by default;
+ * - class/list/object/function values and structs are move-only by default;
  * - by-value call/binding/return moves move-only values;
  * - &T permits shared immutable borrows;
  * - &mut T is exclusive and requires a mutable owner;
@@ -338,6 +338,10 @@ public final class OwnershipChecker {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.StructInitExpr created) {
+            for (Ast.ObjectField field : created.fields()) checkExpr(field.value(), scope, true);
+            return new ValueInfo(created.type() == null ? Ast.TypeRef.inferred() : created.type(), ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
         if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) checkExpr(item, scope, true);
@@ -604,6 +608,7 @@ public final class OwnershipChecker {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.StructInitExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
@@ -619,6 +624,7 @@ public final class OwnershipChecker {
             VarState state = scope.lookup(name.name());
             if (state != null) type = state.type;
         } else if (receiver instanceof Ast.NewExpr created) type = created.type();
+        else if (receiver instanceof Ast.StructInitExpr created) type = created.type();
         if (type == null) return null;
         if (type.isBorrow()) type = type.borrowedTarget();
         return findClass(type.name());
