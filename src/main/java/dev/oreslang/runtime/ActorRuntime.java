@@ -650,10 +650,12 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable failure) {
                 recordFailure(failure);
                 currentActor.remove();
-                actors.remove(ref.id(), this);
                 removeSingletonMapping();
                 removeWatchesOwnedBy(ref.id());
                 notifyMonitors(ref.id(), "failed", failureRecord);
+                // Keep the cell discoverable through monitor delivery so join()
+                // cannot race ahead and tear down the watcher.
+                actors.remove(ref.id(), this);
                 return;
             }
 
@@ -681,11 +683,14 @@ public final class ActorRuntime implements AutoCloseable {
                 recordFailure(failure);
             } finally {
                 currentActor.remove();
-                actors.remove(ref.id(), this);
                 removeSingletonMapping();
                 removeWatchesOwnedBy(ref.id());
                 ActorFailure actorFailure = failureRecord;
                 notifyMonitors(ref.id(), actorFailure == null ? "normal" : "failed", actorFailure);
+                // Publish termination only after all lifecycle notifications
+                // have been queued. This gives join() a real happens-before
+                // boundary for supervision instead of a fail-open lookup race.
+                actors.remove(ref.id(), this);
             }
         }
 
