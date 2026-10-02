@@ -279,6 +279,9 @@ public final class TypeChecker {
             if (recursiveLambda && declaredAhead instanceof Function) {
                 env.define(binding.name(), declaredAhead, binding.kind());
             }
+            if (binding.initializer() instanceof Ast.LambdaExpr lambda && declaredAhead instanceof Function expectedFunction) {
+                validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
+            }
             Type actual = typeOf(binding.initializer(), env, generics, self);
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
@@ -303,6 +306,9 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
+            if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
+                validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
+            }
             Type actual = ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
             return;
@@ -559,10 +565,41 @@ public final class TypeChecker {
                 parameters.add(type);
                 lambdaEnv.define(param.name(), type, Ast.BindingKind.VAL);
             }
-            Type result = lambda.expressionBody() == null ? Unknown.INSTANCE : typeOf(lambda.expressionBody(), lambdaEnv, generics, self);
-            return new Function(parameters, result);
+            if (lambda.expressionBody() != null) {
+                throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
+            }
+            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
+        if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
+            validateLambdaAgainstExpected(lambda, fn, env, generics, self);
+        }
+    }
+
+    private void validateLambdaAgainstExpected(Ast.LambdaExpr lambda, Function expected, Env parent, Set<String> generics, Type self) {
+        if (lambda.expressionBody() != null) {
+            throw new IllegalArgumentException("lambdas always require a block body and explicit return for non-void results");
+        }
+        if (lambda.parameters().size() != expected.parameters().size()) {
+            throw new IllegalArgumentException("lambda arity " + lambda.parameters().size() + " does not match expected function arity " + expected.parameters().size());
+        }
+        Env lambdaEnv = new Env(parent);
+        for (int i = 0; i < lambda.parameters().size(); i++) {
+            Ast.Param param = lambda.parameters().get(i);
+            Type expectedParam = expected.parameters().get(i);
+            Type declared = param.type().name().equals("$infer$") ? expectedParam : resolveParam(param, generics, self);
+            requireAssignable(expectedParam, declared, "lambda parameter " + param.name());
+            requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
+            lambdaEnv.define(param.name(), declared, Ast.BindingKind.VAL);
+        }
+        checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
+            throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
+        }
     }
 
     private Type iterableElementType(Type iterable) {
