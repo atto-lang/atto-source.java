@@ -54,8 +54,15 @@ Oreslang treats an actor as a memory-ownership and GC boundary.
 - actor exit makes the actor cell, mailbox, and actor-owned reachable graph reclaimable together;
 - `actor.gc()` requests collection of the current actor only;
 - `process.gc()` requests whole-runtime/host-process collection and requires `PROCESS_GC`;
-- immutable shared values and backend-managed large blobs may outlive one actor and are reclaimed according to their shared ownership/reference policy.
+- immutable shared values and backend-managed large blobs may outlive one actor and are reclaimed according to their shared ownership/reference policy;
+- concurrent `process.gc()` requests are coalesced so many actors cannot trigger simultaneous full-heap collections;
+- message freezing is cycle-aware and bounded to 256 levels / 100,000 visited nodes before mailbox admission.
 
 The current JVM/Truffle reference backend cannot ask HotSpot/Graal GC to trace only one arbitrary Java actor object graph. Its default `actor.gc()` backend is therefore a cooperative actor-local collection point and **does not call `System.gc()`**. Native/isolate backends plug in a collector that can physically reclaim the actor heap. The JVM backend uses `System.gc()` only for explicit, capability-authorized `process.gc()`, and even there the JVM treats it as a collection request/hint rather than a correctness requirement.
 
 This preserves the language contract now without faking actor-local GC by introducing a global pause.
+
+
+## Runtime facade authority
+
+`stdio`, `process`, and `actor` are namespace-like capability facades, not ordinary first-class values. Guest code may capture an authorized member such as `process.gc`, but it may not capture the entire `process` facade and later select an authority dynamically. This keeps the compiler admission pass able to see which capability is being acquired, while the runtime facade repeats the authorization check at execution time.
