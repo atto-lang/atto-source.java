@@ -323,7 +323,7 @@ public final class OresEvalRootNode extends RootNode {
                             .append(':').append(field.type());
                     Ast.ClassDecl stateClass = field.type() == null ? null : findClass(field.type().name());
                     if (stateClass != null) {
-                        schema.append(":class{");
+                        schema.append(":class=").append(runtimeClassId(stateClass)).append('{');
                         for (Ast.FieldDecl classField : effectiveFields(stateClass, new LinkedHashSet<>())) {
                             schema.append(classField.name())
                                     .append(':').append(classField.bindingKind())
@@ -384,6 +384,14 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.ModuleDecl ownerModule(Ast.ClassDecl klass) {
             String owner = classOwners.get(klass);
             return owner == null ? null : modules.get(owner);
+        }
+
+        private String runtimeClassId(Ast.ClassDecl klass) {
+            String owner = classOwners.get(klass);
+            if (owner == null) {
+                throw new IllegalStateException("class has no indexed module owner: " + klass.name());
+            }
+            return owner + "." + klass.name();
         }
 
         private Object callMethod(
@@ -543,12 +551,13 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresObject object) {
-                        Ast.FieldDecl field = runtimeField(object.klass, target.member());
+                        Ast.ClassDecl fieldClass = runtimeDispatchClass(object, env.singletonState);
+                        Ast.FieldDecl field = runtimeField(fieldClass, target.member());
                         if (field == null || !object.fields.containsKey(target.member())) {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
                         if (field.bindingKind() != Ast.BindingKind.LET) {
-                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                            throw new IllegalArgumentException("field '" + object.classId + "."
                                     + target.member() + "' is immutable");
                         }
                         Object previous = object.fields.get(target.member());
@@ -668,7 +677,7 @@ public final class OresEvalRootNode extends RootNode {
                     else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
                     fields.put(field.name(), value);
                 }
-                return new OresObject(klass, fields);
+                return new OresObject(klass, runtimeClassId(klass), fields);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -763,9 +772,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Ast.ClassDecl runtimeDispatchClass(OresObject receiver, SingletonState singletonState) {
             if (singletonState == null) return receiver.klass;
-            Ast.ClassDecl current = findClass(receiver.klass.name());
+            Ast.ClassDecl current = findClass(receiver.classId);
             if (current == null) {
-                throw new IllegalStateException("singleton-owned class '" + receiver.klass.name()
+                throw new IllegalStateException("singleton-owned class '" + receiver.classId
                         + "' no longer exists in the active code generation");
             }
             return current;
@@ -790,7 +799,7 @@ public final class OresEvalRootNode extends RootNode {
                         authorizeSingletonCodeGeneration(working, proxy.module());
                         Object value = working.fields.lookup(proxy.fieldName());
                         if (!(value instanceof OresObject object)
-                                || !object.klass.name().equals(proxy.klass().name())) {
+                                || !object.classId.equals(runtimeClassId(proxy.klass()))) {
                             throw new IllegalStateException("singleton object proxy target changed for "
                                     + proxy.module().name() + "." + proxy.fieldName());
                         }
@@ -1141,7 +1150,7 @@ public final class OresEvalRootNode extends RootNode {
 
         if (value instanceof OresObject object) {
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-            OresObject copy = new OresObject(object.klass, fields);
+            OresObject copy = new OresObject(object.klass, object.classId, fields);
             copies.put(value, copy);
             for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
                 fields.put(entry.getKey(), copySingletonValue(entry.getValue(), copies));
@@ -1196,7 +1205,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                fields.put("@class", object.klass.name());
+                fields.put("@class", object.classId);
                 for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
                     fields.put(entry.getKey(), singletonValidationValue(entry.getValue(), path));
                 }
@@ -1364,9 +1373,17 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private static final class OresObject {
-        private final Ast.ClassDecl klass; private final Map<String,Object> fields;
-        private OresObject(Ast.ClassDecl klass, Map<String,Object> fields){this.klass=klass;this.fields=fields;}
-        @Override public String toString(){return klass.name()+fields;}
+        private final Ast.ClassDecl klass;
+        private final String classId;
+        private final Map<String,Object> fields;
+
+        private OresObject(Ast.ClassDecl klass, String classId, Map<String,Object> fields) {
+            this.klass = klass;
+            this.classId = classId;
+            this.fields = fields;
+        }
+
+        @Override public String toString(){return classId+fields;}
     }
 
     private record ActorModuleStateKey(
