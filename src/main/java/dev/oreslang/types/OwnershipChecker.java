@@ -178,13 +178,12 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() != null) {
-                if (isIntrinsicCall(ret.value(), "borrow")) {
-                    VarState owner = intrinsicOwner((Ast.CallExpr) ret.value(), scope, "borrow");
-                    if (owner.origin == Origin.LOCAL) {
-                        throw error("cannot return borrow(" + owner.debugName + "); borrowed value would outlive its owner");
-                    }
+                ValueInfo returned = checkExpr(ret.value(), scope, true);
+                if (returned.kind == ValueKind.IMM_BORROW || returned.kind == ValueKind.MUT_BORROW) {
+                    throw error(
+                            "cannot return a borrowed value without explicit return provenance; "
+                                    + "return ownership with take or wait for the 'T from owner' return contract");
                 }
-                checkExpr(ret.value(), scope, true);
             }
             return;
         }
