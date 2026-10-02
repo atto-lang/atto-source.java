@@ -15,6 +15,7 @@ import_names    = IDENT
 top_level_item  = annotated_module_decl
                 | callable_decl
                 | class_decl
+                | struct_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -24,6 +25,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT
 
 module_member   = callable_decl
                 | class_decl
+                | struct_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -37,7 +39,7 @@ callable_kind   = "fnc" | "routine" ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" | "is" ) type_ref { "," type_ref } ]
                   { class_member } "end" ;
 
 class_member    = field_decl
@@ -58,13 +60,24 @@ static_function_decl
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  interface_body
+                  "{" { interface_member } "}"
                 | "define" "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  interface_body ;
+                  [ "as" ] { interface_member } "end" ;
 
-interface_body  = "{" { interface_member } "}"
-                | { interface_member } "end" ;
+struct_decl     = "struct" IDENT [ generic_params ]
+                  [ ( "implements" | "impl" | "is" ) type_ref { "," type_ref } ]
+                  "{" { struct_member } "}"
+                | "define" "struct" IDENT [ generic_params ]
+                  [ ( "implements" | "impl" | "is" ) type_ref { "," type_ref } ]
+                  "as" { struct_member } "end" ;
+
+struct_member   = struct_field_decl
+                | method_decl
+                | static_function_decl ;
+
+struct_field_decl
+                = visibility [ binding_kind ] type_ref IDENT [ "=" expression ] stmt_terminator ;
 
 interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
@@ -134,6 +147,8 @@ primary         = literal
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
+                | named_struct_literal
+                | anonymous_struct_literal
                 | lambda
                 | tuple_literal
                 | array_literal
@@ -152,6 +167,13 @@ array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
+
+named_struct_literal
+                = type_ref "{" [ struct_init_field { "," struct_init_field } ] "}" ;
+anonymous_struct_literal
+                = "struct" "{" [ struct_init_field { "," struct_init_field } ] "}" ;
+struct_init_field
+                = IDENT ( "=" | ":" ) expression ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
@@ -201,7 +223,11 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - "->" belongs to function types and lambdas.
    - Lambdas always have braces. Non-void lambdas must use explicit return and
      return on every path when a contextual function result type is known.
-   - named class/interface types are nominal by default.
+   - named class/interface/struct types are nominal by default.
+   - structs are value types: they cannot extend classes, cannot be base classes,
+     and are initialized with Type { field = value }, never with new.
+   - bare struct fields default to val; struct values are move-only in v0 until
+     explicit/derived Copy semantics are added.
    - @Structural, name structural Type, or @AllowStructural(name) opt a
      parameter into public-shape compatibility.
    - every loop iteration contains an injected scheduler safepoint.
