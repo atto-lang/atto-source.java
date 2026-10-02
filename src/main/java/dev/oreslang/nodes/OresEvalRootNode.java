@@ -904,7 +904,9 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
     private record ClassFacade(Ast.ClassDecl klass) { }
-    private record ActorTaskValue(ActorRuntime.ActorRef<?> ref) { }
+    private record ActorTaskValue(ActorRuntime.ActorRef<?> ref) implements ActorRuntime.Sendable {
+        @Override public Object freezeForSend() { return this; }
+    }
     private record OptionValue(boolean present, Object value) {
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
