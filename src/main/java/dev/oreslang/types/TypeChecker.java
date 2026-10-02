@@ -1243,6 +1243,33 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr intrinsic && isOwnershipIntrinsic(intrinsic.name())) {
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(intrinsic.name() + " expects exactly one value");
+                }
+                Type operand = typeOf(call.arguments().getFirst(), env, generics, self);
+                return switch (intrinsic.name()) {
+                    case "copy" -> {
+                        requireCopyable(operand, new LinkedHashSet<>());
+                        yield operand;
+                    }
+                    case "take" -> {
+                        if (operand instanceof Borrow) {
+                            throw new IllegalArgumentException("take requires an owned value, not a borrow");
+                        }
+                        yield operand;
+                    }
+                    case "borrow" -> operand instanceof Borrow borrowed
+                            ? new Borrow(borrowed.target(), false)
+                            : new Borrow(operand, false);
+                    case "share" -> {
+                        requireCopyable(operand, new LinkedHashSet<>());
+                        Type target = operand instanceof Borrow borrowed ? borrowed.target() : operand;
+                        yield new Borrow(target, false);
+                    }
+                    default -> throw new IllegalStateException("unknown ownership intrinsic " + intrinsic.name());
+                };
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -1799,6 +1826,84 @@ public final class TypeChecker {
 
     private boolean isStringLike(Type type) {
         return type == Primitive.STRING || type instanceof StringLiteral;
+    }
+
+    private static boolean isOwnershipIntrinsic(String name) {
+        return name.equals("borrow") || name.equals("copy") || name.equals("take") || name.equals("share");
+    }
+
+    private void requireCopyable(Type type, Set<String> stack) {
+        if (type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException("copy requires a concrete value, got " + primitive);
+            }
+            return;
+        }
+        if (type instanceof Borrow) {
+            throw new IllegalArgumentException("copy requires an owned value; copy the owner rather than a borrow");
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) requireCopyable(element, stack);
+            return;
+        }
+        if (type instanceof ListType list) {
+            requireCopyable(list.element(), stack);
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) requireCopyable(member, stack);
+            return;
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                requireCopyable(named.arguments().getFirst(), stack);
+                return;
+            }
+
+            Ast.ClassDecl aggregate = findClass(named.name());
+            if (aggregate == null) {
+                throw new IllegalArgumentException("type '" + named.name()
+                        + "' has no provable copy semantics; interfaces/traits are not concrete copyable storage");
+            }
+
+            String identity = qualifiedClassName(aggregate);
+            if (!stack.add(identity)) {
+                throw new IllegalArgumentException("recursive copy graph involving '" + aggregate.name()
+                        + "' requires an explicit class copy implementation");
+            }
+            try {
+                if (aggregate.isStruct()) {
+                    Map<String, Type> substitutions = classGenericSubstitutions(aggregate, named);
+                    for (Ast.FieldDecl field : effectiveFields(aggregate, new LinkedHashSet<>())) {
+                        Type fieldType = instantiateClassType(field.type(), aggregate, substitutions, named);
+                        requireCopyable(fieldType, stack);
+                    }
+                    return;
+                }
+
+                Ast.MethodDecl copyMethod = findMethod(aggregate, "copy", 0, new LinkedHashSet<>());
+                if (copyMethod == null || copyMethod.isStatic() || copyMethod.visibility() != Ast.Visibility.PUBLIC
+                        || copyMethod.isAbstract() || copyMethod.async() || !copyMethod.genericParameters().isEmpty()
+                        || (copyMethod.explicitReceiverType() != null
+                        && copyMethod.explicitReceiverType().isBorrow()
+                        && copyMethod.explicitReceiverType().mutableBorrow())) {
+                    throw new IllegalArgumentException("class '" + aggregate.name()
+                            + "' is not copyable: define a concrete synchronous non-generic public instance "
+                            + "copy() => Self implementation with an immutable receiver");
+                }
+                Type copyResult = methodFunctionType(copyMethod, aggregate, named).result();
+                if (!assignable(copyResult, named) || !assignable(named, copyResult)) {
+                    throw new IllegalArgumentException("class '" + aggregate.name()
+                            + "' copy() must return Self/the same concrete class type");
+                }
+                return;
+            } finally {
+                stack.remove(identity);
+            }
+        }
+
+        throw new IllegalArgumentException("type " + type + " has no provable copy semantics");
     }
 
     private Record classShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
