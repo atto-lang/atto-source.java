@@ -97,7 +97,12 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
 
-    public record Shared<T>(T value) { }
+    public record Shared<T>(T value) {
+        @SuppressWarnings("unchecked")
+        public Shared {
+            value = (T) freeze(value);
+        }
+    }
 
     @FunctionalInterface
     public interface Behavior<M> {
@@ -224,6 +229,10 @@ public final class ActorRuntime implements AutoCloseable {
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
+        if (value instanceof MemorySegment) {
+            throw new IllegalArgumentException(
+                    "MemorySegment is actor-local memory and cannot cross actor boundaries");
+        }
         if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
