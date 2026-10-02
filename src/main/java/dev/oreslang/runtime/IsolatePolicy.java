@@ -22,6 +22,7 @@ public record IsolatePolicy(
         Set<Capability> capabilities,
         long maxHeapBytes,
         int maxMailboxMessages,
+        int maxActors,
         Duration maxWallTime,
         boolean adversarial) {
 
@@ -48,13 +49,23 @@ public record IsolatePolicy(
     }
 
     public IsolatePolicy(Set<Capability> capabilities, long maxHeapBytes, int maxMailboxMessages, Duration maxWallTime) {
-        this(capabilities, maxHeapBytes, maxMailboxMessages, maxWallTime, false);
+        this(capabilities, maxHeapBytes, maxMailboxMessages, 1024, maxWallTime, false);
+    }
+
+    public IsolatePolicy(
+            Set<Capability> capabilities,
+            long maxHeapBytes,
+            int maxMailboxMessages,
+            Duration maxWallTime,
+            boolean adversarial) {
+        this(capabilities, maxHeapBytes, maxMailboxMessages, 1024, maxWallTime, adversarial);
     }
 
     public IsolatePolicy {
         capabilities = Set.copyOf(capabilities);
         if (maxHeapBytes < 16L * 1024 * 1024) throw new IllegalArgumentException("maxHeapBytes must be at least 16 MiB");
         if (maxMailboxMessages <= 0) throw new IllegalArgumentException("maxMailboxMessages must be positive");
+        if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be positive");
         if (maxWallTime.isNegative() || maxWallTime.isZero()) throw new IllegalArgumentException("maxWallTime must be positive");
         if (adversarial && capabilities.contains(Capability.THREAD_CREATE)) {
             throw new IllegalArgumentException("adversarial isolates cannot grant THREAD_CREATE");
@@ -66,7 +77,13 @@ public record IsolatePolicy(
      * one guest thread, hard VM isolate and guest resource limits.
      */
     public static IsolatePolicy strictFaas() {
-        return new IsolatePolicy(Set.of(Capability.STDOUT), 128L * 1024 * 1024, 1024, Duration.ofSeconds(30), true);
+        return new IsolatePolicy(
+                Set.of(Capability.STDOUT),
+                128L * 1024 * 1024,
+                1024,
+                128,
+                Duration.ofSeconds(30),
+                true);
     }
 
     /** Restricted local/test baseline. FFI/native/reflection/process spawning remain denied. */
@@ -75,7 +92,11 @@ public record IsolatePolicy(
                 Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO,
                         Capability.ACTOR_SPAWN, Capability.ACTOR_SEND, Capability.ACTOR_CONTROL,
                         Capability.ACTOR_SHARE_READONLY, Capability.GC_CONTROL, Capability.HOT_CODE_LOAD),
-                512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
+                512L * 1024 * 1024,
+                8192,
+                8192,
+                Duration.ofMinutes(10),
+                false);
     }
 
     public IsolatePolicy withCapabilities(Capability... added) {
@@ -83,11 +104,13 @@ public record IsolatePolicy(
                 ? EnumSet.noneOf(Capability.class)
                 : EnumSet.copyOf(capabilities);
         next.addAll(Arrays.asList(added));
-        return new IsolatePolicy(next, maxHeapBytes, maxMailboxMessages, maxWallTime, adversarial);
+        return new IsolatePolicy(next, maxHeapBytes, maxMailboxMessages, maxActors, maxWallTime, adversarial);
     }
 
     public IsolatePolicy asAdversarial() {
-        return adversarial ? this : new IsolatePolicy(capabilities, maxHeapBytes, maxMailboxMessages, maxWallTime, true);
+        return adversarial
+                ? this
+                : new IsolatePolicy(capabilities, maxHeapBytes, maxMailboxMessages, maxActors, maxWallTime, true);
     }
 
     /**
@@ -162,6 +185,7 @@ public record IsolatePolicy(
                 "--ores-capabilities=" + caps,
                 "--ores-max-heap-bytes=" + maxHeapBytes,
                 "--ores-max-mailbox-messages=" + maxMailboxMessages,
+                "--ores-max-actors=" + maxActors,
                 "--ores-max-wall-ms=" + maxWallTime.toMillis(),
                 "--ores-adversarial=" + adversarial,
                 "--ores-execution-mode=" + profile.mode().name(),
@@ -173,12 +197,14 @@ public record IsolatePolicy(
         String raw = null;
         long maxHeap = 128L * 1024 * 1024;
         int maxMailbox = 1024;
+        int maxActors = 128;
         long maxWallMs = 30_000L;
         boolean adversarial = false;
         for (String arg : args) {
             if (arg.startsWith("--ores-capabilities=")) raw = arg.substring("--ores-capabilities=".length());
             else if (arg.startsWith("--ores-max-heap-bytes=")) maxHeap = Long.parseLong(arg.substring("--ores-max-heap-bytes=".length()));
             else if (arg.startsWith("--ores-max-mailbox-messages=")) maxMailbox = Integer.parseInt(arg.substring("--ores-max-mailbox-messages=".length()));
+            else if (arg.startsWith("--ores-max-actors=")) maxActors = Integer.parseInt(arg.substring("--ores-max-actors=".length()));
             else if (arg.startsWith("--ores-max-wall-ms=")) maxWallMs = Long.parseLong(arg.substring("--ores-max-wall-ms=".length()));
             else if (arg.startsWith("--ores-adversarial=")) adversarial = Boolean.parseBoolean(arg.substring("--ores-adversarial=".length()));
         }
@@ -187,7 +213,7 @@ public record IsolatePolicy(
         if (!raw.isBlank()) {
             for (String value : raw.split(",")) caps.add(Capability.valueOf(value.trim().toUpperCase(Locale.ROOT)));
         }
-        return new IsolatePolicy(caps, maxHeap, maxMailbox, Duration.ofMillis(maxWallMs), adversarial);
+        return new IsolatePolicy(caps, maxHeap, maxMailbox, maxActors, Duration.ofMillis(maxWallMs), adversarial);
     }
 
     public static ExecutionProfile executionProfileFromApplicationArguments(String[] args) {
