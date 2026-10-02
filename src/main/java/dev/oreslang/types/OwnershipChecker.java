@@ -33,6 +33,7 @@ import java.util.Set;
  */
 public final class OwnershipChecker {
     private Ast.ModuleDecl activeModule;
+    private Ast.ClassDecl activeAggregate;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
@@ -140,6 +141,8 @@ public final class OwnershipChecker {
 
     private void checkClass(Ast.ModuleDecl module, Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
+            Ast.ClassDecl previousAggregate = activeAggregate;
+            activeAggregate = klass;
             pushLocalTypeScope(method.body());
             try {
                 Scope moduleScope = new Scope(null);
@@ -165,6 +168,7 @@ public final class OwnershipChecker {
                 moduleScope.close();
             } finally {
                 popLocalTypeScope();
+                activeAggregate = previousAggregate;
             }
         }
     }
@@ -365,6 +369,19 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+
+            if (consuming
+                    && name.name().equals("self")
+                    && activeAggregate != null
+                    && activeAggregate.isStruct()) {
+                Ast.TypeRef selfType = canonicalOwnershipClassType(activeAggregate);
+                if (!isCopyType(selfType)) {
+                    throw error("cannot move non-Copy struct 'self' out of a borrowed receiver; "
+                            + "return a Copy field/value or construct a new owned value");
+                }
+                return new ValueInfo(selfType, ValueKind.COPY, null);
+            }
+
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
             return new ValueInfo(state.type, state.kind, state.borrowSource);
@@ -416,7 +433,24 @@ public final class OwnershipChecker {
                         + "' cannot be extracted; call it directly through a mutable owner"
                         + " until persistent &mut bound-method lifetimes are modeled");
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+
+            if (klass == null) {
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            }
+            Ast.FieldDecl field = findField(klass, member.member(), new LinkedHashSet<>());
+            if (field == null) {
+                return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            }
+
+            Ast.TypeRef fieldType = typeInAggregateLexicalScope(klass, field.type());
+            ValueKind fieldKind = kindOfType(fieldType);
+            if (consuming
+                    && fieldKind != ValueKind.COPY
+                    && !projectionRootIsOwnedTemporary(member.receiver())) {
+                throw error("cannot move non-Copy field '" + klass.name() + "." + member.member()
+                        + "' out of a live aggregate binding; move the whole aggregate or use an explicit take/replace operation");
+            }
+            return new ValueInfo(fieldType, fieldKind, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
             checkExpr(indexed.receiver(), scope, false);
@@ -753,6 +787,21 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.LambdaExpr) {
             // Nested lambda performs its own capture analysis when checked.
         }
+    }
+
+    private boolean projectionRootIsOwnedTemporary(Ast.Expr expr) {
+        if (expr instanceof Ast.NewExpr
+                || expr instanceof Ast.StructInitExpr
+                || expr instanceof Ast.CallExpr) {
+            return true;
+        }
+        if (expr instanceof Ast.MemberExpr member) {
+            return projectionRootIsOwnedTemporary(member.receiver());
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return projectionRootIsOwnedTemporary(indexed.receiver());
+        }
+        return false;
     }
 
     private Ast.ClassDecl classOfReceiver(Ast.Expr receiver, Scope scope) {
