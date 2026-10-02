@@ -719,7 +719,7 @@ public final class OresMutex {
                 if (!released.compareAndSet(false, true)) return;
                 poisoned.set(true);
                 releaseDomain(ownerDomain);
-                permit.release();
+                releasePermitOrHandoff();
             }
         }
     }
