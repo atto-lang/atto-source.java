@@ -286,6 +286,38 @@ final class OwnershipBorrowClosureTest {
     }
 
     @Test
+    void boundMethodValuesOwnTheirReceiver() {
+        assertThrows(IllegalArgumentException.class, () -> OresCompiler.parseAndTypeCheck("""
+                define class Box
+                  val int value = 7;
+                  get() => int { return self.value; }
+                end
+
+                pub routine main() => void {
+                  val box = new Box();
+                  val callback = box.get;
+                  stdio.println(box.value);
+                  stdio.println(callback());
+                  return;
+                }
+                """));
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                define class Box
+                  val int value = 7;
+                  get() => int { return self.value; }
+                end
+
+                pub routine main() => void {
+                  val box = new Box();
+                  stdio.println(box.get());
+                  stdio.println(box.get());
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void parserMarksMutabilityAndBorrowTypesExplicitly() {
         Ast.Program program = Parser.parse("""
                 fnc f(&mut String ref, String mut owned) => void { return; }
