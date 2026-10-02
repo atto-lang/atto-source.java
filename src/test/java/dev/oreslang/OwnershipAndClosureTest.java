@@ -354,13 +354,58 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc bad() => &Bar {
+                        fnc bad(&Bar input) => &Bar {
                           let Bar b = new Bar();
                           val &Bar alias = &b;
+                          stdio.println(input.foo);
                           return alias;
                         }
                         """)));
         assertTrue(error.getMessage().contains("inferred lifetime"));
+    }
+
+
+    @Test
+    void borrowReturnedFromCallKeepsLocalOwnerBorrowed() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc identity(&Bar b) => &Bar {
+                          return b;
+                        }
+
+                        fnc mutate(&mut Bar b) => void {
+                          b.foo = "changed";
+                          return;
+                        }
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val &Bar alias = identity(&b);
+                          mutate(&mut b);
+                          stdio.println(alias.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().toLowerCase().contains("borrow"));
+    }
+
+    @Test
+    void ambiguousBorrowReturnRequiresNamedLifetimeRelation() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc choose(&Bar left, &Bar right) => &Bar {
+                          return left;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("named lifetime"));
     }
 
 }
