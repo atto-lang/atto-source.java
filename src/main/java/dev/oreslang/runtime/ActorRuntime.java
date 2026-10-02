@@ -191,6 +191,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (sender != null) sender.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor send");
             else policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
             cell.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
+            bindSharedMutexes(frozen);
         }
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
@@ -273,13 +274,7 @@ public final class ActorRuntime implements AutoCloseable {
          * SharedMutex is an explicitly capability-gated writable shared-memory
          * handle. Its protected payload is intentionally not copied here.
          */
-        if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            if (allowedActorRuntime != null && !sharedMutex.bindToRuntime(allowedActorRuntime)) {
-                throw new IllegalArgumentException(
-                        "SharedMutex may cross actor mailboxes only within its owning ActorRuntime");
-            }
-            return sharedMutex;
-        }
+        if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
 
         if (value instanceof ActorRef<?> ref) {
             if (allowedActorRuntime == null || !ref.belongsTo(allowedActorRuntime)) {
@@ -410,6 +405,34 @@ public final class ActorRuntime implements AutoCloseable {
                                 + MAX_FREEZE_BYTES + " bytes");
             }
             bytes += amount;
+        }
+    }
+
+    private void bindSharedMutexes(Object value) {
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            if (!sharedMutex.bindToRuntime(this)) {
+                throw new IllegalArgumentException(
+                        "SharedMutex may cross actor mailboxes only within its owning ActorRuntime");
+            }
+            return;
+        }
+        if (value instanceof Shared<?> shared) {
+            bindSharedMutexes(shared.value());
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) bindSharedMutexes(item);
+            return;
+        }
+        if (value instanceof Set<?> set) {
+            for (Object item : set) bindSharedMutexes(item);
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                bindSharedMutexes(entry.getKey());
+                bindSharedMutexes(entry.getValue());
+            }
         }
     }
 
