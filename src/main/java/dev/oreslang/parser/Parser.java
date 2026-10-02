@@ -787,11 +787,36 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
-        if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(INT)) {
+            Token token = previous();
+            String raw = token.lexeme().replace("_", "");
+            try {
+                return new Ast.LiteralExpr(Long.parseLong(raw));
+            } catch (NumberFormatException invalid) {
+                throw error(token, "integer literal is outside the signed 64-bit int range; use an explicit bigint conversion/type when bigint runtime arithmetic is available");
+            }
+        }
+        if (match(FLOAT)) {
+            Token token = previous();
+            String raw = token.lexeme().replace("_", "");
+            try {
+                double value = Double.parseDouble(raw);
+                if (!Double.isFinite(value)) throw error(token, "floating-point literal must be finite");
+                return new Ast.LiteralExpr(value);
+            } catch (NumberFormatException invalid) {
+                throw error(token, "malformed floating-point literal");
+            }
+        }
         if (match(IMAG)) {
-            String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
-            return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
+            Token token = previous();
+            String raw = token.lexeme().substring(0, token.lexeme().length() - 1).replace("_", "");
+            try {
+                double coefficient = Double.parseDouble(raw);
+                if (!Double.isFinite(coefficient)) throw error(token, "imaginary literal coefficient must be finite");
+                return new Ast.LiteralExpr(new Ast.Imaginary(coefficient));
+            } catch (NumberFormatException invalid) {
+                throw error(token, "malformed imaginary literal");
+            }
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
