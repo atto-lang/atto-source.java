@@ -93,11 +93,15 @@ statement       = binding_decl
                 | if_stmt
                 | try_stmt
                 | defer_stmt
+                | break_stmt
+                | continue_stmt
                 | for_stmt
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
+break_stmt      = "break" stmt_terminator ;
+continue_stmt   = "continue" stmt_terminator ;
 
 if_stmt         = "if" condition [ ";" ] "do" { statement }
                   { "elseif" condition [ ";" ] "do" { statement } }
@@ -212,6 +216,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - named class/interface types are nominal by default.
    - @Structural, name structural Type, or @AllowStructural(name) opt a
      parameter into public-shape compatibility.
+   - break exits the nearest enclosing loop; continue advances the nearest loop.
+   - continue in a classic for-loop still evaluates the update expression.
+   - break/continue cannot cross a function, routine, method, or lambda boundary.
+   - try/finally runs finally before a pending break/continue is resumed.
    - every loop iteration contains an injected scheduler safepoint.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
    - standalone null values are illegal.
