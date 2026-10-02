@@ -312,6 +312,15 @@ public final class TypeChecker {
             } else throw new IllegalArgumentException("destructuring requires a tuple or array/list value");
             return;
         }
+        if (stmt instanceof Ast.MatchStmt matched) {
+            Type source = typeOf(matched.value(), env, generics, self);
+            for (Ast.MatchArm arm : matched.arms()) {
+                Env armEnv = new Env(env);
+                checkPattern(arm.pattern(), source, armEnv, generics, self);
+                checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
+            }
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
@@ -353,6 +362,47 @@ public final class TypeChecker {
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
         }
+    }
+
+    private void checkPattern(Ast.Pattern pattern, Type source, Env env, Set<String> generics, Type self) {
+        if (pattern instanceof Ast.WildcardPattern) return;
+        if (pattern instanceof Ast.BindingPattern binding) {
+            env.define(binding.name(), source, binding.kind());
+            return;
+        }
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            Type literalType = typeOf(new Ast.LiteralExpr(literal.value()), env, generics, self);
+            if (source != Unknown.INSTANCE
+                    && !assignable(literalType, source)
+                    && !assignable(source, literalType)) {
+                throw new IllegalArgumentException("match literal has type " + literalType + " but cannot match " + source);
+            }
+            return;
+        }
+
+        List<Ast.Pattern> elements;
+        if (pattern instanceof Ast.TuplePattern tuplePattern) elements = tuplePattern.elements();
+        else if (pattern instanceof Ast.ListPattern listPattern) elements = listPattern.elements();
+        else throw new IllegalArgumentException("unsupported match pattern " + pattern);
+
+        if (source instanceof Tuple tuple) {
+            if (tuple.elements().size() != elements.size()) {
+                throw new IllegalArgumentException("match pattern arity " + elements.size() + " cannot match tuple arity " + tuple.elements().size());
+            }
+            for (int i = 0; i < elements.size(); i++) {
+                checkPattern(elements.get(i), tuple.elements().get(i), env, generics, self);
+            }
+            return;
+        }
+        if (source instanceof ListType list) {
+            for (Ast.Pattern element : elements) checkPattern(element, list.element(), env, generics, self);
+            return;
+        }
+        if (source == Unknown.INSTANCE) {
+            for (Ast.Pattern element : elements) checkPattern(element, Unknown.INSTANCE, env, generics, self);
+            return;
+        }
+        throw new IllegalArgumentException("tuple/list match pattern cannot match value of type " + source);
     }
 
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
@@ -1083,6 +1133,9 @@ public final class TypeChecker {
                         && !conditional.elseBody().isEmpty()
                         && definitelyReturns(conditional.elseBody());
                 if (allBranches) return true;
+            }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                if (!matched.arms().isEmpty() && matched.arms().stream().allMatch(arm -> definitelyReturns(arm.body()))) return true;
             }
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
