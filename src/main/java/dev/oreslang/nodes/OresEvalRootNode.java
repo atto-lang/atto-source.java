@@ -2,9 +2,11 @@ package dev.oreslang.nodes;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -49,6 +51,9 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+        private final Map<String, HostClassFacade> hostClasses = new HashMap<>();
+        private final Map<String, Invokable> hostFunctions = new HashMap<>();
+        private final Map<String, HostClassFacade> hostSymbols = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -56,6 +61,7 @@ public final class OresEvalRootNode extends RootNode {
             this.program = program;
             this.context = context;
             indexDeclarations();
+            indexHostImports();
         }
 
         private void indexDeclarations() {
@@ -65,6 +71,42 @@ public final class OresEvalRootNode extends RootNode {
                     if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                 }
+            }
+        }
+
+        private void indexHostImports() {
+            for (Ast.ImportDecl imported : program.imports()) {
+                if (!ImportRules.isJavaPath(imported.path())) continue;
+                ImportRules.validate(imported);
+                String className = ImportRules.javaClassName(imported.path());
+                HostClassFacade symbol = hostSymbols.computeIfAbsent(className,
+                        ignored -> new HostClassFacade(className, context.lookupHostSymbol(className), true));
+
+                if (imported.kind() == Ast.ImportKind.CLASS) {
+                    putHostClass(imported.names().getFirst(), symbol);
+                } else if (imported.kind() == Ast.ImportKind.FUNCTION && imported.wildcard()) {
+                    putHostClass(imported.namespace(), new HostClassFacade(className, symbol.symbol(), false));
+                } else if (imported.kind() == Ast.ImportKind.FUNCTION) {
+                    for (String name : imported.names()) {
+                        putHostFunction(name, args -> invokeHostMember(symbol.symbol(), name, args));
+                    }
+                } else if (imported.kind() == Ast.ImportKind.ALL) {
+                    putHostClass(imported.namespace(), symbol);
+                } else {
+                    throw new IllegalArgumentException("unsupported Java host import kind: " + imported.kind());
+                }
+            }
+        }
+
+        private void putHostClass(String name, HostClassFacade value) {
+            if (hostClasses.putIfAbsent(name, value) != null || hostFunctions.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate Java host import binding " + name);
+            }
+        }
+
+        private void putHostFunction(String name, Invokable value) {
+            if (hostFunctions.putIfAbsent(name, value) != null || hostClasses.containsKey(name)) {
+                throw new IllegalArgumentException("duplicate Java host import binding " + name);
             }
         }
 
@@ -214,6 +256,10 @@ public final class OresEvalRootNode extends RootNode {
                     return new OptionValue(true, args.getFirst());
                 };
                 if (name.name().equals("None")) return new OptionValue(false, null);
+                HostClassFacade hostClass = hostClasses.get(name.name());
+                if (hostClass != null) return hostClass;
+                Invokable hostFunction = hostFunctions.get(name.name());
+                if (hostFunction != null) return hostFunction;
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) return new ModuleFacade(module);
                 Ast.ClassDecl klass = findClass(name.name());
@@ -299,6 +345,14 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                HostClassFacade hostClass = hostClasses.get(created.type().name());
+                if (hostClass != null) {
+                    if (!hostClass.constructible()) {
+                        throw new IllegalArgumentException("Java function namespace '" + created.type().name() + "' is not constructible");
+                    }
+                    List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return instantiateHost(hostClass.symbol(), args);
+                }
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
@@ -351,6 +405,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name) {
+            if (receiver instanceof HostClassFacade host) return hostMember(host.symbol(), name);
+            if (isHostObject(receiver)) return hostMember(receiver, name);
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
@@ -393,6 +449,57 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private boolean isHostObject(Object value) {
+            if (value == null || value instanceof Number || value instanceof Boolean || value instanceof String
+                    || value instanceof List<?> || value instanceof Map<?, ?> || value instanceof OresObject
+                    || value instanceof ModuleFacade || value instanceof ClassFacade || value instanceof Invokable
+                    || value instanceof OptionValue || value instanceof StdioFacade || value instanceof StdoutFacade
+                    || value instanceof ProcessFacade || value instanceof Complex) {
+                return false;
+            }
+            InteropLibrary interop = InteropLibrary.getUncached(value);
+            return interop.hasMembers(value) || interop.isMetaObject(value);
+        }
+
+        private Object hostMember(Object receiver, String name) {
+            InteropLibrary interop = InteropLibrary.getUncached(receiver);
+            if (interop.isMemberInvocable(receiver, name)) {
+                return (Invokable) args -> invokeHostMember(receiver, name, args);
+            }
+            if (interop.isMemberReadable(receiver, name)) {
+                try {
+                    return interop.readMember(receiver, name);
+                } catch (Exception failure) {
+                    throw hostInteropError("read Java member " + name, failure);
+                }
+            }
+            throw new IllegalArgumentException("Java member is not exported by HostAccess: " + name);
+        }
+
+        private Object invokeHostMember(Object receiver, String name, List<Object> args) {
+            try {
+                return InteropLibrary.getUncached(receiver).invokeMember(receiver, name, args.toArray());
+            } catch (Exception failure) {
+                throw hostInteropError("invoke Java member " + name, failure);
+            }
+        }
+
+        private Object instantiateHost(Object hostClass, List<Object> args) {
+            InteropLibrary interop = InteropLibrary.getUncached(hostClass);
+            if (!interop.isInstantiable(hostClass)) {
+                throw new IllegalArgumentException("allowlisted Java host class is not constructible");
+            }
+            try {
+                return interop.instantiate(hostClass, args.toArray());
+            } catch (Exception failure) {
+                throw hostInteropError("construct Java host class", failure);
+            }
+        }
+
+        private RuntimeException hostInteropError(String operation, Exception failure) {
+            return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
         }
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
@@ -656,6 +763,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
     private record ClassFacade(Ast.ClassDecl klass) { }
+    private record HostClassFacade(String className, Object symbol, boolean constructible) { }
     private record OptionValue(boolean present, Object value) {
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }

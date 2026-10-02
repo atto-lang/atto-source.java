@@ -10,6 +10,10 @@ import org.graalvm.polyglot.io.IOAccess;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -94,16 +98,35 @@ public record IsolatePolicy(
      * available and enforces guest/isolate resource limits.
      */
     public Context.Builder restrictedContextBuilder() {
-        return restrictedContextBuilder(ExecutionProfile.serverJit());
+        return restrictedContextBuilder(ExecutionProfile.serverJit(), Set.of());
     }
 
     public Context.Builder restrictedContextBuilder(ExecutionProfile profile) {
-        HostAccess hostAccess = adversarial
-                ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
-                : HostAccess.NONE;
+        return restrictedContextBuilder(profile, Set.of());
+    }
+
+    public Context.Builder restrictedContextBuilder(ExecutionProfile profile, Set<String> allowedHostClasses) {
+        Set<String> hostClasses = Set.copyOf(allowedHostClasses);
+        if (!hostClasses.isEmpty()) {
+            require(Capability.FFI, "Java host imports");
+            if (adversarial) {
+                throw new SecurityException("Java host imports are disabled for adversarial isolates");
+            }
+        }
+
+        HostAccess hostAccess;
+        if (!hostClasses.isEmpty()) {
+            hostAccess = explicitHostAccess(hostClasses);
+        } else {
+            hostAccess = adversarial
+                    ? HostAccess.newBuilder(HostAccess.NONE).allowMutableTargetMappings().methodScoping(true).build()
+                    : HostAccess.NONE;
+        }
 
         Context.Builder builder = Context.newBuilder(OresLanguage.ID)
                 .allowHostAccess(hostAccess)
+                .allowHostClassLookup(hostClasses::contains)
+                .allowHostClassLoading(false)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
                 .allowEnvironmentAccess(EnvironmentAccess.NONE)
                 .allowNativeAccess(false)
@@ -139,6 +162,35 @@ public record IsolatePolicy(
         }
 
         return builder;
+    }
+
+    private static HostAccess explicitHostAccess(Set<String> hostClasses) {
+        HostAccess.Builder access = HostAccess.newBuilder(HostAccess.NONE)
+                .allowAccessInheritance(false);
+        ClassLoader loader = Thread.currentThread().getContextClassLoader();
+
+        for (String className : hostClasses) {
+            final Class<?> type;
+            try {
+                type = Class.forName(className, false, loader);
+            } catch (ClassNotFoundException failure) {
+                throw new IllegalArgumentException("allowlisted Java host class is unavailable: " + className, failure);
+            }
+            if (!Modifier.isPublic(type.getModifiers())) {
+                throw new IllegalArgumentException("allowlisted Java host class must be public: " + className);
+            }
+
+            for (Constructor<?> constructor : type.getDeclaredConstructors()) {
+                if (Modifier.isPublic(constructor.getModifiers())) access.allowAccess(constructor);
+            }
+            for (Method method : type.getDeclaredMethods()) {
+                if (Modifier.isPublic(method.getModifiers())) access.allowAccess(method);
+            }
+            for (Field field : type.getDeclaredFields()) {
+                if (Modifier.isPublic(field.getModifiers())) access.allowAccess(field);
+            }
+        }
+        return access.build();
     }
 
     public boolean allows(Capability capability) {

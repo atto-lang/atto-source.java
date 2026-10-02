@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.util.List;
 
@@ -12,6 +13,11 @@ public final class CapabilityChecker {
     private CapabilityChecker() { }
 
     public static void check(Ast.Program program, IsolatePolicy policy) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (ImportRules.isJavaPath(imported.path())) {
+                require(policy, IsolatePolicy.Capability.FFI, "Java host import " + imported.path());
+            }
+        }
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.FunctionDecl fn) checkStatements(fn.body(), policy);

@@ -10,8 +10,10 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public final class OresMain {
     private OresMain() { }
@@ -21,6 +23,7 @@ public final class OresMain {
         String mode = "jit";
         String platform = "server";
         List<IsolatePolicy.Capability> additionalCapabilities = new ArrayList<>();
+        Set<String> allowedHostClasses = new LinkedHashSet<>();
         String filename = null;
 
         for (String arg : args) {
@@ -34,6 +37,10 @@ public final class OresMain {
                         additionalCapabilities.add(IsolatePolicy.Capability.valueOf(value.trim().toUpperCase(Locale.ROOT)));
                     }
                 }
+            } else if (arg.startsWith("--allow-host-class=")) {
+                String raw = arg.substring("--allow-host-class=".length()).trim();
+                if (raw.isEmpty()) throw new IllegalArgumentException("--allow-host-class requires a fully qualified Java class name");
+                allowedHostClasses.add(raw);
             } else if (arg.startsWith("--")) {
                 throw new IllegalArgumentException("unknown option: " + arg);
             } else if (filename == null) filename = arg;
@@ -41,7 +48,7 @@ public final class OresMain {
         }
 
         if (filename == null) {
-            System.err.println("usage: ores [--strict-isolate] [--mode=aot|jit|hybrid] [--platform=server|windows|macos|linux|android|ios] [--allow=CAP,...] <file.ores>");
+            System.err.println("usage: ores [--strict-isolate] [--mode=aot|jit|hybrid] [--platform=server|windows|macos|linux|android|ios] [--allow=CAP,...] [--allow-host-class=java.lang.Math ...] <file.ores>");
             System.exit(2);
             return;
         }
@@ -55,7 +62,7 @@ public final class OresMain {
             policy = policy.withCapabilities(additionalCapabilities.toArray(IsolatePolicy.Capability[]::new));
         }
 
-        Context.Builder builder = policy.restrictedContextBuilder(profile);
+        Context.Builder builder = policy.restrictedContextBuilder(profile, allowedHostClasses);
         Source source = Source.newBuilder(OresLanguage.ID, new File(filename))
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();

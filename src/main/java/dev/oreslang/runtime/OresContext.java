@@ -48,6 +48,18 @@ public final class OresContext implements AutoCloseable {
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
 
+    public Object lookupHostSymbol(String className) {
+        requireCapability(IsolatePolicy.Capability.FFI, "Java host import " + className);
+        if (!env.isHostLookupAllowed()) {
+            throw new SecurityException("Java host class lookup is disabled by the embedding Context");
+        }
+        try {
+            return env.lookupHostSymbol(className);
+        } catch (RuntimeException failure) {
+            throw new IllegalArgumentException("Java host class is not allowlisted or unavailable: " + className, failure);
+        }
+    }
+
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         isolatePolicy.require(capability, api);
     }

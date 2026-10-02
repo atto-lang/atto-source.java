@@ -1,6 +1,7 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 
 import java.nio.charset.StandardCharsets;
@@ -224,6 +225,7 @@ public final class IncrementalCompiler {
         LinkedHashSet<String> result = new LinkedHashSet<>();
         Path parent = Path.of(unitId).getParent();
         for (Ast.ImportDecl imported : program.imports()) {
+            if (ImportRules.isJavaPath(imported.path())) continue;
             String raw = imported.path().replace('\\', '/');
             Path candidatePath = raw.startsWith(".")
                     ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
