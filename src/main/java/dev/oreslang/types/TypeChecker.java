@@ -540,7 +540,11 @@ public final class TypeChecker {
             String where) {
         Set<String> locals = new LinkedHashSet<>(inheritedLocals);
         for (Ast.Stmt stmt : statements) {
-            if (stmt instanceof Ast.BindingStmt binding) {
+            if (stmt instanceof Ast.TypeDeclStmt localType) {
+                if (localType.declaration() instanceof Ast.ClassDecl struct) {
+                    validateProcessOwnedClassEffects(processOwner, struct);
+                }
+            } else if (stmt instanceof Ast.BindingStmt binding) {
                 validateProcessOwnedExpr(processOwner, processClass, binding.initializer(), locals, where);
                 locals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -665,6 +669,13 @@ public final class TypeChecker {
             }
             for (Ast.Expr arg : created.arguments()) {
                 validateProcessOwnedExpr(processOwner, processClass, arg, locals, where);
+            }
+            return;
+        }
+
+        if (expr instanceof Ast.StructInitExpr created) {
+            for (Ast.ObjectField field : created.fields()) {
+                validateProcessOwnedExpr(processOwner, processClass, field.value(), locals, where);
             }
             return;
         }
