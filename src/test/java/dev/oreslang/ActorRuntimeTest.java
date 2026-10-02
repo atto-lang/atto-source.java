@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.RuntimeGc;
 import org.junit.jupiter.api.Test;
 
 import java.util.AbstractList;
@@ -1479,6 +1480,28 @@ final class ActorRuntimeTest {
                         () -> receiver.send(foreignGroup));
                 assertTrue(failure.getMessage().contains("different ActorRuntime"));
             }
+        }
+    }
+
+
+    @Test
+    void actorCanRequestOnlyActorScopedGcDuringItsMailboxTurn() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            assertThrows(IllegalStateException.class, runtime::collectCurrentActorGarbage);
+
+            CountDownLatch collected = new CountDownLatch(1);
+            AtomicReference<RuntimeGc.GcStats> observed = new AtomicReference<>();
+            var ref = runtime.<String>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                observed.set(context.runtime().collectCurrentActorGarbage());
+                collected.countDown();
+            });
+
+            ref.send("collect");
+            assertTrue(collected.await(2, TimeUnit.SECONDS));
+            assertEquals(RuntimeGc.Scope.ACTOR, observed.get().scope());
+            assertEquals(RuntimeGc.Reason.MANUAL, observed.get().reason());
+            assertFalse(observed.get().hostGcRequested(),
+                    "actor.gc must never force a process-wide JVM collection");
         }
     }
 
