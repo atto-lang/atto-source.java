@@ -40,7 +40,7 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
-                = { annotation } visibility [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                = { annotation } visibility [ "shared" ] "actor" ( "fnc" | "routine" ) IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
