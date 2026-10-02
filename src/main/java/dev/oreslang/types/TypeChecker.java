@@ -678,7 +678,7 @@ public final class TypeChecker {
         }
         if (named.name().equals("MutexGuard")) {
             return switch (member) {
-                case "value" -> element;
+                case "get" -> new Function(List.of(), element);
                 case "release" -> new Function(List.of(), Primitive.VOID);
                 case "is_released" -> new Function(List.of(), Primitive.BOOL);
                 default -> null;
