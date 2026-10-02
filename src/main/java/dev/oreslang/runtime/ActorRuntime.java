@@ -375,6 +375,10 @@ public final class ActorRuntime implements AutoCloseable {
             singletonActors.remove(name, registration);
             return Optional.empty();
         }
+        ActorState state = cell.state;
+        if (state == ActorState.STOPPING || state == ActorState.STOPPED || state == ActorState.FAILED) {
+            return Optional.empty();
+        }
         return Optional.of((ActorRef<M>) cell.ref);
     }
 
@@ -778,7 +782,10 @@ public final class ActorRuntime implements AutoCloseable {
             GraphBudget budget) {
         budget.visit();
         if (depth > MAX_FREEZE_DEPTH) throw new IllegalArgumentException("message graph exceeds maximum freeze depth " + MAX_FREEZE_DEPTH);
-        if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+        if (value == null) {
+            throw new IllegalArgumentException("raw null cannot cross an actor boundary; use Option<T>");
+        }
+        if (value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
