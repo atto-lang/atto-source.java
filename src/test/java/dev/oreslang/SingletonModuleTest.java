@@ -344,6 +344,39 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void processSingletonCodeCannotAliasOrdinaryFunctionsOrClasses() {
+        IllegalArgumentException functionAlias = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc caller_local_alias_target() => int {
+                          return 7;
+                        }
+
+                        define singleton module alias_effect_guard as
+                          pub fnc read() => int {
+                            val f = caller_local_alias_target;
+                            return f();
+                          }
+                        end
+                        """)));
+        assertTrue(functionAlias.getMessage().contains("function value"));
+
+        IllegalArgumentException classAlias = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class CallerLocalUtility as
+                          pub static fnc read() => int { return 9; }
+                        end
+
+                        define singleton module class_alias_effect_guard as
+                          pub fnc read() => int {
+                            val C = CallerLocalUtility;
+                            return C.read();
+                          }
+                        end
+                        """)));
+        assertTrue(classAlias.getMessage().contains("class namespace"));
+    }
+
+    @Test
     void exportedProcessObjectMethodsCannotUseCallerAmbientEffects() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
