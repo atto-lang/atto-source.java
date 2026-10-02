@@ -688,6 +688,34 @@ final class MutexLanguageTest {
                 () -> TypeChecker.check(pending));
         assertTrue(pendingError.getMessage().contains(
                 "MutexGuard cannot be stored in a constructed object"));
+
+        var borrowed = Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub let T value;
+                  end
+
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    val hidden = new Box<>(&guard);
+                    stdio.println(hidden);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException borrowedError = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(borrowed));
+        assertTrue(borrowedError.getMessage().contains(
+                "MutexGuard cannot be stored in a constructed object"));
     }
 
 }
