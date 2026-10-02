@@ -1506,13 +1506,16 @@ public final class TypeChecker {
 
             LinkedHashMap<String, Ast.FieldDecl> callerFields = new LinkedHashMap<>();
             for (Ast.FieldDecl field : struct.fields()) {
-                if (!field.composed()) callerFields.put(field.name(), field);
+                if (field.composed()) continue;
+                if (field.visibility() == Ast.Visibility.PUBLIC || activeClassOwner == struct) {
+                    callerFields.put(field.name(), field);
+                }
             }
 
             LinkedHashMap<String, Ast.Expr> supplied = new LinkedHashMap<>();
             for (Ast.ObjectField field : created.fields()) {
                 if (!callerFields.containsKey(field.name())) {
-                    throw new IllegalArgumentException("unknown or trait-owned struct field '" + struct.name() + "." + field.name() + "'");
+                    throw new IllegalArgumentException("unknown, inaccessible, or trait-owned struct field '" + struct.name() + "." + field.name() + "'");
                 }
                 if (supplied.putIfAbsent(field.name(), field.value()) != null) {
                     throw new IllegalArgumentException("duplicate struct field '" + struct.name() + "." + field.name() + "'");
@@ -1551,6 +1554,11 @@ public final class TypeChecker {
                             instantiateClassType(field.type(), struct, substitutions, nominal),
                             "struct field " + struct.name() + "." + field.name());
                 } else if (field.initializer() == null) {
+                    if (field.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != struct) {
+                        throw new IllegalArgumentException("private struct field '" + struct.name() + "." + field.name()
+                                + "' has no default initializer and cannot be supplied outside " + struct.name()
+                                + "; construct the value through a method/static factory owned by the struct");
+                    }
                     throw new IllegalArgumentException("struct initializer for " + struct.name() + " is missing field '" + field.name() + "'");
                 }
             }
@@ -2693,12 +2701,17 @@ public final class TypeChecker {
                     expectedFields.put(field.name(), field);
                 }
                 LinkedHashSet<String> callerFields = new LinkedHashSet<>();
-                for (Ast.FieldDecl field : expectedFields.values()) if (!field.composed()) callerFields.add(field.name());
+                for (Ast.FieldDecl field : expectedFields.values()) {
+                    if (field.composed()) continue;
+                    if (field.visibility() == Ast.Visibility.PUBLIC || activeClassOwner == struct) {
+                        callerFields.add(field.name());
+                    }
+                }
 
                 LinkedHashSet<String> extras = new LinkedHashSet<>(record.members().keySet());
                 extras.removeAll(callerFields);
                 if (!extras.isEmpty()) {
-                    throw new IllegalArgumentException(where + " has unknown or trait-owned fields for struct '" + struct.name()
+                    throw new IllegalArgumentException(where + " has unknown, inaccessible, or trait-owned fields for struct '" + struct.name()
                             + "': " + extras);
                 }
 
@@ -2715,6 +2728,11 @@ public final class TypeChecker {
                     Type supplied = record.members().get(field.name());
                     if (supplied == null) {
                         if (field.initializer() == null) {
+                            if (field.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != struct) {
+                                throw new IllegalArgumentException("private struct field '" + struct.name() + "." + field.name()
+                                        + "' has no default initializer and cannot be supplied at " + where
+                                        + "; use a struct-owned constructor/factory");
+                            }
                             throw new IllegalArgumentException(where + " is missing required struct field '" + field.name() + "'");
                         }
                         continue;
