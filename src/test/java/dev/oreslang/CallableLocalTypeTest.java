@@ -243,6 +243,53 @@ final class CallableLocalTypeTest {
         assertEquals("42", output);
     }
 
+    @Test
+    void objectLiteralCanCrossAFunctionBoundaryIntoCallableLocalStruct() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  fnc greet(T value) => string {
+                    struct T {
+                      pub name: string;
+
+                      pub greeting() => string {
+                        return "hello " + self.name;
+                      }
+                    }
+
+                    return value.greeting();
+                  }
+
+                  pub fnc main() => void {
+                    stdio.stdout.write(greet(obj{name: "Ada"}));
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("hello Ada", output);
+    }
+
+    @Test
+    void contextualStructArgumentStillRequiresExactFields() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          fnc greet(T value) => string {
+                            struct T {
+                              pub name: string;
+                            }
+                            return value.name;
+                          }
+
+                          fnc bad() => string {
+                            return greet(obj{name: "Ada", extra: 1});
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("unknown or trait-owned fields"));
+    }
+
     private static String runProgram(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "callable-local-types.ores")
