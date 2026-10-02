@@ -61,7 +61,7 @@ The actor mailbox is a special bounded typed channel. An `ActorRef<M>` is the se
 pub actor routine counter(int initial) => void {
   let int count = initial;
 
-  receive loop (msg) {
+  receive loop (Message msg) {
     // match msg using the actor protocol
     // Increment    => count = count + 1
     // Add(value)   => count = count + value
@@ -71,7 +71,7 @@ pub actor routine counter(int initial) => void {
 }
 ```
 
-`receive loop (msg) { ... }` is a dedicated resumable actor-loop node. It suspends when no message is available. `try_receive loop (msg) { ... }` drains immediately available messages without waiting and exits when the mailbox is empty. Both forms contain mandatory operation-accounting/backedge checkpoints; a continuously busy mailbox cannot monopolize a carrier.
+`receive loop (Message msg) { ... }` is a dedicated resumable actor-loop node. It suspends when no message is available. `try_receive loop (msg) { ... }` drains immediately available messages without waiting and exits when the mailbox is empty. Both forms contain mandatory operation-accounting/backedge checkpoints; a continuously busy mailbox cannot monopolize a carrier.
 
 State is not represented by recursive calls. Any local that is live across `receive`, blocking `send`, `select`, or `await` is hoisted by lowering into the actor continuation frame. Mutable actor-owned locals therefore remain single-owner and persist across suspension without Erlang-style `loop(NewState)` plumbing. Ordinary stack borrows may not cross a suspension boundary; actor-owned frame state is allowed because ownership is tied to the actor id, not the carrier thread.
 
@@ -84,8 +84,8 @@ Blocking channel operations are dedicated suspension syntax:
 ```ores
 val Channel<Job> jobs = channel<Job>(64);
 
-send(jobs, job);          // suspend until admitted or closed
-val job = receive(jobs);  // suspend until a value or close result
+send(jobs, job);          // suspend until admitted, cancelled, or endpoint shutdown
+val job = receive(jobs);  // suspend until a value (or lifecycle cancellation)
 
 val sent = try_send(jobs, job);       // immediate admission result
 val polled = try_receive(jobs);       // immediate Ready/Empty/Closed result
@@ -95,7 +95,7 @@ val polled = try_receive(jobs);       // immediate Ready/Empty/Closed result
 
 ```ores
 select {
-  case receive(commands) as cmd => {
+  case receive(commands) as Command cmd => {
     handle(cmd);
   }
 
@@ -162,7 +162,9 @@ Before actor/async v1 is declared stable:
 - [x] actor vs async separation;
 - [x] actor vs isolate distinction;
 - [ ] reconcile typed `Protocol<M>`, `try_send`, and typed `ask` from the Erlang-wart branch onto the dispatcher actor stack;
-- [ ] parse/lower dedicated `receive loop`, `try_receive loop`, channel send/receive, and `select` AST nodes after the actor message protocol type is available to the static checker;
+- [x] reserve concurrency keywords and preserve `receive loop`, `try_receive loop`, channel send/receive, and `select` as dedicated AST nodes;
+- [x] statically check explicit channel element types/select bindings and fail closed in the interpreter;
+- [ ] wire actor `Protocol<M>` into source declarations so mailbox receive types no longer need explicit annotations;
 - [ ] continuation lowering for executable source `async`, actor receive/send/select suspension, and actor-frame state hoisting;
 - [ ] typed bounded channels plus atomic/fair select registration;
 - [ ] structured actor error reports with source-span/correlation metadata;
