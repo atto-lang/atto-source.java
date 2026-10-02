@@ -20,9 +20,41 @@ jobs:
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
-      - name: Verify
+      - name: Verify JIT/JVM profile
         run: mvn -B -ntp verify
       - name: Run showcase
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
       - name: Compile and run shared Oreslang program
         run: mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/together.ores"
+
+  native-aot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Build interpreter-only AOT image
+        run: mvn -B -ntp -Pnative-aot -DskipTests package
+      - name: Run AOT image
+        run: ./target/ores-aot --mode=aot --platform=linux examples/together.ores
+
+  native-hybrid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Build AOT host with guest JIT
+        run: mvn -B -ntp -Pnative-hybrid -DskipTests package
+      - name: Run hybrid image
+        run: ./target/ores-hybrid --mode=hybrid --platform=linux examples/together.ores
