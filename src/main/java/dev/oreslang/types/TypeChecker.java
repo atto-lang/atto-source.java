@@ -1650,7 +1650,7 @@ public final class TypeChecker {
                 ref.inferArguments());
     }
 
-    private Type nominalClassType(Ast.ClassDecl klass) {
+    private Named nominalClassType(Ast.ClassDecl klass) {
         return new Named(qualifiedClassName(klass), klass.genericParameters().stream().map(Generic::new).map(Type.class::cast).toList());
     }
 
@@ -1675,50 +1675,103 @@ public final class TypeChecker {
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
             Ast.ClassDecl klass = findClass(actualNamed.name());
-            return klass != null && Types.isAssignable(publicClassShape(klass, new LinkedHashSet<>()), targetShape);
+            if (klass == null) return false;
+            Type specializedShape = substituteGenerics(
+                    publicClassShape(klass, new LinkedHashSet<>()),
+                    classGenericBindings(klass, actualNamed));
+            return Types.isAssignable(specializedShape, targetShape);
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
-            Ast.ClassDecl actualClass = findClass(actualNamed.name());
-            if (actualClass != null) {
-                Ast.ClassDecl expectedClass = findClass(expectedNamed.name());
-                if (expectedClass != null && classExtends(actualClass, expectedClass, new LinkedHashSet<>())) return true;
-                Ast.InterfaceDecl expectedInterface = findInterface(expectedNamed.name());
-                if (expectedInterface != null && classImplements(actualClass, expectedInterface, new LinkedHashSet<>())) return true;
+            if (findClass(actualNamed.name()) != null) {
+                if (findClass(expectedNamed.name()) != null
+                        && classTypeExtends(actualNamed, expectedNamed, new LinkedHashSet<>())) {
+                    return true;
+                }
+                if (findInterface(expectedNamed.name()) != null
+                        && classTypeImplements(actualNamed, expectedNamed, new LinkedHashSet<>())) {
+                    return true;
+                }
+            }
+            if (findInterface(actualNamed.name()) != null
+                    && findInterface(expectedNamed.name()) != null
+                    && interfaceTypeExtends(actualNamed, expectedNamed, new LinkedHashSet<>())) {
+                return true;
             }
         }
         return false;
     }
 
-    private boolean classExtends(Ast.ClassDecl actual, Ast.ClassDecl expected, Set<Ast.ClassDecl> seen) {
-        if (actual == expected) return true;
-        if (!seen.add(actual)) return false;
+    private Named concreteClassReference(Ast.TypeRef ref, Ast.ClassDecl owner, Named ownerType) {
+        Type pattern = resolve(ref, Set.copyOf(owner.genericParameters()), nominalClassType(owner));
+        Type concrete = substituteGenerics(pattern, classGenericBindings(owner, ownerType));
+        if (!(concrete instanceof Named named)) {
+            throw new IllegalArgumentException("class relationship must resolve to a named type");
+        }
+        return named;
+    }
+
+    private boolean classTypeExtends(Named actualType, Named expectedType, Set<Named> seen) {
+        if (Types.isAssignable(actualType, expectedType)) return true;
+        if (!seen.add(actualType)) return false;
+
+        Ast.ClassDecl actual = findClass(actualType.name());
+        if (actual == null) return false;
         for (Ast.TypeRef parentRef : actual.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, actual);
-            if (parent != null && classExtends(parent, expected, seen)) return true;
+            if (parent == null) continue;
+            Named parentType = concreteClassReference(parentRef, actual, actualType);
+            if (Types.isAssignable(parentType, expectedType)
+                    || classTypeExtends(parentType, expectedType, seen)) {
+                return true;
+            }
         }
         return false;
     }
 
-    private boolean classImplements(Ast.ClassDecl klass, Ast.InterfaceDecl expected, Set<Ast.ClassDecl> seen) {
-        if (!seen.add(klass)) return false;
-        for (Ast.TypeRef ifaceRef : klass.interfaces()) {
-            Ast.InterfaceDecl iface = findInterface(ifaceRef.name());
-            if (iface != null && (iface == expected || interfaceExtends(iface, expected, new LinkedHashSet<>()))) return true;
-        }
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent != null && classImplements(parent, expected, seen)) return true;
-        }
-        return false;
-    }
+    private boolean classTypeImplements(Named actualType, Named expectedInterfaceType, Set<Named> seen) {
+        if (!seen.add(actualType)) return false;
+        Ast.ClassDecl actual = findClass(actualType.name());
+        if (actual == null) return false;
 
-    private boolean interfaceExtends(Ast.InterfaceDecl actual, Ast.InterfaceDecl expected, Set<Ast.InterfaceDecl> seen) {
-        if (actual == expected) return true;
-        if (!seen.add(actual)) return false;
+        for (Ast.TypeRef ifaceRef : actual.interfaces()) {
+            Named ifaceType = concreteClassReference(ifaceRef, actual, actualType);
+            if (interfaceTypeExtends(ifaceType, expectedInterfaceType, new LinkedHashSet<>())) {
+                return true;
+            }
+        }
+
         for (Ast.TypeRef parentRef : actual.parents()) {
-            Ast.InterfaceDecl parent = findInterface(parentRef.name());
-            if (parent != null && interfaceExtends(parent, expected, seen)) return true;
+            Ast.ClassDecl parent = resolveClassParent(parentRef, actual);
+            if (parent == null) continue;
+            Named parentType = concreteClassReference(parentRef, actual, actualType);
+            if (classTypeImplements(parentType, expectedInterfaceType, seen)) return true;
+        }
+        return false;
+    }
+
+    private boolean interfaceTypeExtends(Named actualType, Named expectedType, Set<Named> seen) {
+        if (Types.isAssignable(actualType, expectedType)) return true;
+        if (!seen.add(actualType)) return false;
+
+        Ast.InterfaceDecl actual = findInterface(actualType.name());
+        if (actual == null) return false;
+        Map<String, Type> bindings = genericBindings(
+                actual.genericParameters(),
+                actualType.arguments(),
+                "interface " + actual.name());
+        Set<String> generics = Set.copyOf(actual.genericParameters());
+
+        for (Ast.TypeRef parentRef : actual.parents()) {
+            Type pattern = resolve(parentRef, generics, null);
+            Type concrete = substituteGenerics(pattern, bindings);
+            if (!(concrete instanceof Named parentType)) {
+                throw new IllegalArgumentException("interface relationship must resolve to a named type");
+            }
+            if (Types.isAssignable(parentType, expectedType)
+                    || interfaceTypeExtends(parentType, expectedType, seen)) {
+                return true;
+            }
         }
         return false;
     }
