@@ -32,6 +32,11 @@ final class ActorTransportHardeningTest {
             var refA = runtimeA.<Object>spawn(() -> (message, context) -> { });
             var targetB = runtimeB.<Object>spawn(() -> (message, context) -> { });
 
+            IllegalArgumentException wrongDestinationRuntime = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> runtimeB.send(refA, "wrong-runtime"));
+            assertTrue(wrongDestinationRuntime.getMessage().contains("another ActorRuntime"));
+
             IllegalArgumentException direct = assertThrows(
                     IllegalArgumentException.class,
                     () -> targetB.send(refA));
@@ -44,6 +49,31 @@ final class ActorTransportHardeningTest {
                     IllegalArgumentException.class,
                     () -> targetB.send(wrapped));
             assertTrue(wrappedFailure.getMessage().contains("owning ActorRuntime"));
+        }
+    }
+
+    @Test
+    void actorStartupFailureDoesNotLeaveAUsableDeadRef() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.CountDownLatch attempted = new java.util.concurrent.CountDownLatch(1);
+            var ref = runtime.<String>spawn(() -> {
+                attempted.countDown();
+                throw new IllegalStateException("startup failed");
+            });
+
+            assertTrue(attempted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+
+            IllegalStateException failure = null;
+            for (int i = 0; i < 100 && failure == null; i++) {
+                try {
+                    ref.send("after-failure");
+                    Thread.yield();
+                } catch (IllegalStateException expected) {
+                    failure = expected;
+                }
+            }
+            assertNotNull(failure, "failed actor must be removed from the runtime registry");
+            assertTrue(failure.getMessage().contains("unknown actor"));
         }
     }
 
