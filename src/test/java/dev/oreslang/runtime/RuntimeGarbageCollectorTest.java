@@ -171,7 +171,7 @@ final class RuntimeGarbageCollectorTest {
 
             ref.send("stop");
             assertTrue(registered.await(2, TimeUnit.SECONDS));
-            assertTrue(ref.awaitStopped(2, TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
             assertNotNull(leakedOwner.get());
             assertEquals(1, cleanups.get(),
                     "actor termination must retire actor-local runtime resources even with a stale owner reference");
