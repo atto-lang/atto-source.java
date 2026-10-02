@@ -218,6 +218,9 @@ public final class OresEvalRootNode extends RootNode {
                 try { executeBlock(tried.body(), env); }
                 catch (ReturnSignal signal) { throw signal; }
                 catch (RuntimeException failure) {
+                    if (failure instanceof CancellationException || failure instanceof SecurityException) {
+                        throw failure;
+                    }
                     Env catchEnv = new Env(env);
                     try {
                         catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
