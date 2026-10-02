@@ -73,6 +73,7 @@ public final class Ast {
             }
             if (flattened.isEmpty()) throw new IllegalArgumentException("union type requires at least one member");
             if (flattened.size() == 1) return flattened.getFirst();
+            flattened.sort(java.util.Comparator.comparing(TypeRef::toString));
             return new TypeRef("$union$", List.copyOf(flattened), false);
         }
         public boolean isUnion() { return name.equals("$union$"); }
@@ -84,7 +85,9 @@ public final class Ast {
 
         public static TypeRef recordType(java.util.Map<String, TypeRef> members) {
             java.util.ArrayList<TypeRef> fields = new java.util.ArrayList<>(members.size());
-            for (java.util.Map.Entry<String, TypeRef> entry : members.entrySet()) {
+            java.util.ArrayList<java.util.Map.Entry<String, TypeRef>> entries = new java.util.ArrayList<>(members.entrySet());
+            entries.sort(java.util.Map.Entry.comparingByKey());
+            for (java.util.Map.Entry<String, TypeRef> entry : entries) {
                 if (entry.getKey() == null || entry.getKey().isBlank()) {
                     throw new IllegalArgumentException("record type field name cannot be blank");
                 }
