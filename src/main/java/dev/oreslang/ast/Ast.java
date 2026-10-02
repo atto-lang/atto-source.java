@@ -178,7 +178,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, MatchStmt, ReturnStmt, ExprStmt, DeferStmt,
             IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
@@ -200,6 +200,39 @@ public final class Ast {
 
     public record DestructureStmt(List<DestructureBinding> bindings, Expr initializer) implements Stmt {
         public DestructureStmt { bindings = List.copyOf(bindings); }
+    }
+
+    public sealed interface Pattern permits WildcardPattern, BindingPattern, LiteralPattern, TuplePattern, ListPattern { }
+
+    public record WildcardPattern() implements Pattern { }
+
+    public record BindingPattern(BindingKind kind, String name) implements Pattern {
+        public BindingPattern {
+            if (name == null || name.isBlank() || "_".equals(name)) {
+                throw new IllegalArgumentException("pattern binding name must be a non-discard identifier");
+            }
+        }
+    }
+
+    public record LiteralPattern(Object value) implements Pattern { }
+
+    public record TuplePattern(List<Pattern> elements) implements Pattern {
+        public TuplePattern { elements = List.copyOf(elements); }
+    }
+
+    public record ListPattern(List<Pattern> elements) implements Pattern {
+        public ListPattern { elements = List.copyOf(elements); }
+    }
+
+    public record MatchArm(Pattern pattern, List<Stmt> body) {
+        public MatchArm { body = List.copyOf(body); }
+    }
+
+    public record MatchStmt(Expr value, List<MatchArm> arms) implements Stmt {
+        public MatchStmt {
+            arms = List.copyOf(arms);
+            if (arms.isEmpty()) throw new IllegalArgumentException("match requires at least one arm");
+        }
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
