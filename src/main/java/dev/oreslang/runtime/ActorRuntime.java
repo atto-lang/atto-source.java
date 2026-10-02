@@ -4,6 +4,7 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -50,7 +51,7 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
-    private static final long CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(2);
+    private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -392,7 +393,8 @@ public final class ActorRuntime implements AutoCloseable {
     public final class PrivateMemoryBlock implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final MemoryReservation reservation;
-        private final ByteBuffer memory;
+        private final int capacity;
+        private volatile ByteBuffer memory;
         private final AtomicBoolean blockClosed = new AtomicBoolean();
 
         private PrivateMemoryBlock(
@@ -401,27 +403,50 @@ public final class ActorRuntime implements AutoCloseable {
                 int bytes) {
             this.slice = Objects.requireNonNull(slice);
             this.reservation = Objects.requireNonNull(reservation);
-            this.memory = ByteBuffer.allocateDirect(bytes);
+            this.capacity = bytes;
+            this.memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN);
         }
 
-        public int capacity() { return memory.capacity(); }
+        public int capacity() { return capacity; }
         public ActorId owner() { return slice.owner(); }
         public boolean closed() { return blockClosed.get(); }
 
         public byte readByte(int index) {
-            requireOwnerAndOpen();
-            return memory.get(index);
+            return openMemory().get(index);
         }
 
         public void writeByte(int index, byte value) {
-            requireOwnerAndOpen();
-            memory.put(index, value);
+            openMemory().put(index, value);
+        }
+
+        public int readInt(int index) {
+            return openMemory().getInt(index);
+        }
+
+        public void writeInt(int index, int value) {
+            openMemory().putInt(index, value);
+        }
+
+        public long readLong(int index) {
+            return openMemory().getLong(index);
+        }
+
+        public void writeLong(int index, long value) {
+            openMemory().putLong(index, value);
+        }
+
+        public double readDouble(int index) {
+            return openMemory().getDouble(index);
+        }
+
+        public void writeDouble(int index, double value) {
+            openMemory().putDouble(index, value);
         }
 
         public byte[] copyOut() {
-            requireOwnerAndOpen();
-            byte[] out = new byte[memory.capacity()];
-            ByteBuffer duplicate = memory.duplicate();
+            ByteBuffer live = openMemory();
+            byte[] out = new byte[capacity];
+            ByteBuffer duplicate = live.duplicate();
             duplicate.clear();
             duplicate.get(out);
             return out;
@@ -429,40 +454,46 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void copyIn(byte[] bytes) {
             Objects.requireNonNull(bytes);
-            requireOwnerAndOpen();
-            if (bytes.length != memory.capacity()) {
+            ByteBuffer live = openMemory();
+            if (bytes.length != capacity) {
                 throw new IllegalArgumentException(
-                        "private memory copy size mismatch: expected " + memory.capacity()
+                        "private memory copy size mismatch: expected " + capacity
                                 + " bytes but got " + bytes.length);
             }
-            ByteBuffer duplicate = memory.duplicate();
+            ByteBuffer duplicate = live.duplicate();
             duplicate.clear();
             duplicate.put(bytes);
         }
 
-        private void requireOwnerAndOpen() {
+        private ByteBuffer openMemory() {
             if (blockClosed.get() || slice.closed()) {
                 throw new IllegalStateException("private actor memory block is closed");
             }
             slice.requireCurrentOwner();
+            ByteBuffer live = memory;
+            if (live == null) throw new IllegalStateException("private actor memory block is closed");
+            return live;
         }
 
-        private void zeroMemory() {
-            ByteBuffer duplicate = memory.duplicate();
+        private void zeroAndDetachMemory() {
+            ByteBuffer live = memory;
+            if (live == null) return;
+            ByteBuffer duplicate = live.duplicate();
             duplicate.clear();
             while (duplicate.hasRemaining()) duplicate.put((byte) 0);
+            memory = null;
         }
 
         private void invalidateFromSlice() {
             if (!blockClosed.compareAndSet(false, true)) return;
-            zeroMemory();
+            zeroAndDetachMemory();
         }
 
         @Override
         public void close() {
             requireOwnerAndOpen();
             if (!blockClosed.compareAndSet(false, true)) return;
-            zeroMemory();
+            zeroAndDetachMemory();
             slice.unregister(this);
             reservation.close();
         }
@@ -806,9 +837,39 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private IsolatePolicy defaultSpawnPolicy() {
+        IsolatePolicy caller = currentActorPolicy();
+        return caller == null ? policyCeiling : caller;
+    }
+
+    private void requireWithinCallerPolicy(IsolatePolicy child) {
+        IsolatePolicy caller = currentActorPolicy();
+        if (caller == null) return;
+
+        if (!caller.capabilities().containsAll(child.capabilities())) {
+            java.util.Set<IsolatePolicy.Capability> excess = child.capabilities().isEmpty()
+                    ? java.util.EnumSet.noneOf(IsolatePolicy.Capability.class)
+                    : java.util.EnumSet.copyOf(child.capabilities());
+            excess.removeAll(caller.capabilities());
+            throw new SecurityException("child actor policy exceeds caller actor capabilities: " + excess);
+        }
+        if (child.maxHeapBytes() > caller.maxHeapBytes()) {
+            throw new SecurityException("child actor maxHeapBytes exceeds caller actor policy");
+        }
+        if (child.maxMailboxMessages() > caller.maxMailboxMessages()) {
+            throw new SecurityException("child actor mailbox limit exceeds caller actor policy");
+        }
+        if (child.maxWallTime().compareTo(caller.maxWallTime()) > 0) {
+            throw new SecurityException("child actor wall-time limit exceeds caller actor policy");
+        }
+        if (caller.adversarial() && !child.adversarial()) {
+            throw new SecurityException("child actor cannot weaken an adversarial caller policy");
+        }
+    }
+
     /** Backward-compatible default: an unqualified runtime actor is private. */
     public <M> ActorRef<M> spawn(Supplier<? extends Behavior<M>> behaviorFactory) {
-        return spawnPrivate(policyCeiling, behaviorFactory);
+        return spawnPrivate(defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawn(
@@ -828,6 +889,7 @@ public final class ActorRuntime implements AutoCloseable {
     public <M> ActorRef<M> spawnPrivate(
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        requireSupervisorContext("use trusted Supplier private actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(ActorKind.PRIVATE, policy, context -> behaviorFactory.get(), true);
@@ -839,7 +901,7 @@ public final class ActorRuntime implements AutoCloseable {
      * actor context is installed and stored in actor-owned memory.
      */
     public <M> ActorRef<M> spawnPrivate(BehaviorFactory<M> behaviorFactory) {
-        return spawn(ActorKind.PRIVATE, policyCeiling, behaviorFactory);
+        return spawn(ActorKind.PRIVATE, defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnPrivate(
@@ -854,31 +916,33 @@ public final class ActorRuntime implements AutoCloseable {
      * compiler lowering and forbidden for adversarial policies.
      */
     public <M> ActorRef<M> spawnPrivateTrusted(BehaviorFactory<M> behaviorFactory) {
-        return spawnPrivateTrusted(policyCeiling, behaviorFactory);
+        return spawnPrivateTrusted(defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnPrivateTrusted(
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
+        requireSupervisorContext("use trusted captured private actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(ActorKind.PRIVATE, policy, behaviorFactory, true);
     }
 
     public <M> ActorRef<M> spawnShared(Supplier<? extends Behavior<M>> behaviorFactory) {
-        return spawnShared(policyCeiling, behaviorFactory);
+        return spawnShared(defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnShared(
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        requireSupervisorContext("use trusted Supplier shared actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawn(ActorKind.SHARED, policy, context -> behaviorFactory.get());
     }
 
     public <M> ActorRef<M> spawnShared(BehaviorFactory<M> behaviorFactory) {
-        return spawn(ActorKind.SHARED, policyCeiling, behaviorFactory);
+        return spawn(ActorKind.SHARED, defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnShared(
@@ -892,6 +956,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        requireSupervisorContext("use trusted Supplier actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(kind, policy, context -> behaviorFactory.get(), kind == ActorKind.PRIVATE);
@@ -904,6 +969,81 @@ public final class ActorRuntime implements AutoCloseable {
                         "private actor BehaviorFactory must be stateless; captured host state is not actor-private memory");
             }
         }
+    }
+
+    private void validatePrivateBehaviorState(ActorId owner, Behavior<?> behavior) {
+        for (Class<?> type = behavior.getClass();
+             type != null && type != Object.class;
+             type = type.getSuperclass()) {
+            for (java.lang.reflect.Field field : type.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                if (!field.trySetAccessible()) {
+                    throw new SecurityException(
+                            "private actor behavior contains inaccessible captured state: " + field.getName());
+                }
+                final Object value;
+                try {
+                    value = field.get(behavior);
+                } catch (IllegalAccessException impossible) {
+                    throw new SecurityException(
+                            "cannot inspect private actor behavior capture: " + field.getName(),
+                            impossible);
+                }
+                validatePrivateBehaviorCapture(owner, field.getName(), value);
+            }
+        }
+    }
+
+    private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
+        if (value == null || isScalar(value) || value instanceof Class<?>) return;
+
+        if (value instanceof PrivateMemoryBlock block) {
+            if (!block.owner().equals(owner)) {
+                throw new SecurityException(
+                        "private actor behavior captured another actor's memory block in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof ActorMemorySlice slice) {
+            if (!slice.owner().equals(owner)) {
+                throw new SecurityException(
+                        "private actor behavior captured another actor's memory slice in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof MemoryReservation reservation) {
+            if (!reservation.owner().equals(owner)) {
+                throw new SecurityException(
+                        "private actor behavior captured another actor's memory reservation in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof ActorRef<?> ref) {
+            if (!ref.ownedBy(this)) {
+                throw new SecurityException(
+                        "private actor behavior captured an ActorRef from another runtime in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof ActorGroup<?> group) {
+            if (!group.ownedBy(this)) {
+                throw new SecurityException(
+                        "private actor behavior captured an ActorGroup from another runtime in " + fieldName);
+            }
+            return;
+        }
+        if (value instanceof ActorContext<?> actorContext) {
+            if (!actorContext.self().id().equals(owner) || actorContext.runtime() != this) {
+                throw new SecurityException(
+                        "private actor behavior captured a foreign actor context in " + fieldName);
+            }
+            return;
+        }
+
+        throw new SecurityException(
+                "private actor behavior captured mutable/non-private JVM state in "
+                        + fieldName + " (" + value.getClass().getName()
+                        + "); allocate persistent state through context.privateMemory()");
     }
 
     private void requireTrustedSupplierPolicy(IsolatePolicy policy) {
@@ -942,6 +1082,7 @@ public final class ActorRuntime implements AutoCloseable {
                         IsolatePolicy.Capability.SHARED_MEMORY,
                         IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
                 : policy;
+        requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
         } else if (!trustedPrivateFactory) {
@@ -955,7 +1096,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
             try {
-                ActorCell<M> cell = new ActorCell<>(ref, kind, effectivePolicy, behaviorFactory);
+                ActorCell<M> cell = new ActorCell<>(
+                    ref, kind, effectivePolicy, behaviorFactory, trustedPrivateFactory);
                 actors.put(id, cell);
                 return ref;
             } catch (RuntimeException | Error failure) {
@@ -970,7 +1112,7 @@ public final class ActorRuntime implements AutoCloseable {
             int current = actorCount.get();
             if (current >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
-                        "actor runtime limit exceeded: " + dispatcherConfig.maxActors());
+                        "actor limit exceeded: runtime maximum " + dispatcherConfig.maxActors());
             }
             if (actorCount.compareAndSet(current, current + 1)) return;
         }
@@ -989,7 +1131,12 @@ public final class ActorRuntime implements AutoCloseable {
     public <T> SyncCell<T> syncCell(T initialValue) {
         requireCallerRuntimeAffinity("create shared SyncCell values");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
+        IsolatePolicy callerPolicy = currentActorPolicy();
+        if (callerPolicy != null) {
+            callerPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
+        } else {
+            policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
+        }
         rejectPrivateActorSharedMemoryAccess("SyncCell creation");
         SyncCell<T> cell = new SyncCell<>(initialValue);
         syncCells.add(cell);
@@ -1189,13 +1336,20 @@ public final class ActorRuntime implements AutoCloseable {
             }
         } else {
             long actorRemaining = cell.memorySlice.remainingBytes();
-            long allowed = Math.min(actorRemaining, runtimeRemaining);
             try {
-                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, allowed);
+                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, actorRemaining);
             } catch (IllegalStateException tooLarge) {
                 throw new IllegalStateException(
                         "private actor mailbox limit exceeded for " + ref.id() + ": " + tooLarge.getMessage(),
                         tooLarge);
+            }
+            try {
+                estimatePrivateTransportBytes(message, new IdentityHashMap<>(), 0, runtimeRemaining);
+            } catch (IllegalStateException aggregateExceeded) {
+                throw new IllegalStateException(
+                        "private actor aggregate runtime limit exceeded for " + ref.id()
+                                + ": " + aggregateExceeded.getMessage(),
+                        aggregateExceeded);
             }
         }
 
@@ -1269,7 +1423,6 @@ public final class ActorRuntime implements AutoCloseable {
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
         requireCallerRuntimeAffinity("share readonly values");
-        rejectPrivateActorSharedMemoryAccess("shareReadonly");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         IsolatePolicy callerPolicy = currentActorPolicy();
         if (callerPolicy != null) {
@@ -1277,6 +1430,7 @@ public final class ActorRuntime implements AutoCloseable {
         } else {
             policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "shareReadonly");
         }
+        rejectPrivateActorSharedMemoryAccess("shareReadonly");
         requireOwnedSharedHandles(value, new IdentityHashMap<>(), 0);
         Object frozen = freeze(value);
         rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
@@ -1853,6 +2007,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (scalar >= 0) return requireWithinLimit(scalar, limit);
         if (value instanceof Shared<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.SyncCell<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof OresMutex.Shared<?>) return requireWithinLimit(64L, limit);
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
+        }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
         if (value instanceof ActorRuntime.ActorGroup<?>) return requireWithinLimit(64L, limit);
 
@@ -1974,6 +2132,7 @@ public final class ActorRuntime implements AutoCloseable {
             return estimatePrivateTransportBytes(shared.value(), visiting, depth + 1, limit);
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroup<?>) return requireWithinLimit(64L, limit);
         if (value instanceof ActorRuntime.ActorGroup<?>) return requireWithinLimit(64L, limit);
 
         if (visiting.put(value, Boolean.TRUE) != null) {
@@ -2231,6 +2390,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
+        private final boolean trustedPrivateFactory;
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
@@ -2243,18 +2403,19 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean finalized;
         private Behavior<M> behavior;
         private CompletableFuture<M> pendingReceive;
-        // Accessed only while this actor owns its serialized mailbox turn.
         private int manuallyReceivedThisBatch;
 
         private ActorCell(
                 ActorRef<M> ref,
                 ActorKind kind,
                 IsolatePolicy policy,
-                BehaviorFactory<M> behaviorFactory) {
+                BehaviorFactory<M> behaviorFactory,
+                boolean trustedPrivateFactory) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
+            this.trustedPrivateFactory = trustedPrivateFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -2398,19 +2559,19 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
-                    @Override public Optional<M> tryReceive() {
-                        return ActorCell.this.tryReceive();
-                    }
-                    @Override public CompletionStage<M> receiveAsync() {
-                        return ActorCell.this.receiveAsync();
-                    }
+                    @Override public Optional<M> tryReceive() { return ActorCell.this.tryReceive(); }
+                    @Override public CompletionStage<M> receiveAsync() { return ActorCell.this.receiveAsync(); }
                 };
 
                 manuallyReceivedThisBatch = 0;
                 if (behavior == null) {
-                    behavior = Objects.requireNonNull(
+                    Behavior<M> created = Objects.requireNonNull(
                             behaviorFactory.create(context),
                             "actor behaviorFactory returned null");
+                    if (kind == ActorKind.PRIVATE && !trustedPrivateFactory) {
+                        validatePrivateBehaviorState(ref.id(), created);
+                    }
+                    behavior = created;
                 }
 
                 int processed = 0;
@@ -2419,18 +2580,13 @@ public final class ActorRuntime implements AutoCloseable {
                     MessageEnvelope envelope = mailbox.poll();
                     if (envelope == null) break;
                     releaseMailboxSlot();
-
                     CompletableFuture<M> receiver = claimPendingReceive();
                     if (receiver != null) {
                         M message;
-                        try (envelope) {
-                            message = (M) envelope.value();
-                        }
+                        try (envelope) { message = (M) envelope.value(); }
                         receiver.complete(message);
                     } else {
-                        try (envelope) {
-                            behavior.onMessage((M) envelope.value(), context);
-                        }
+                        try (envelope) { behavior.onMessage((M) envelope.value(), context); }
                     }
                     processed++;
                 }
@@ -2465,14 +2621,11 @@ public final class ActorRuntime implements AutoCloseable {
         private Optional<M> tryReceive() {
             requireCurrentTurn("tryReceive");
             if (manuallyReceivedThisBatch >= dispatcherConfig.throughput()) return Optional.empty();
-
             MessageEnvelope envelope = mailbox.poll();
             if (envelope == null) return Optional.empty();
             releaseMailboxSlot();
             manuallyReceivedThisBatch++;
-            try (envelope) {
-                return Optional.ofNullable((M) envelope.value());
-            }
+            try (envelope) { return Optional.ofNullable((M) envelope.value()); }
         }
 
         private CompletionStage<M> receiveAsync() {
@@ -2481,8 +2634,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (stopped.get() || closed.get()) throw terminated(ref);
                 if (pendingReceive != null && !pendingReceive.isDone()) {
                     throw new IllegalStateException(
-                            "actor already has an outstanding receiveAsync; "
-                                    + "one mailbox must have exactly one pull consumer");
+                            "actor already has an outstanding receiveAsync; one mailbox must have exactly one pull consumer");
                 }
                 pendingReceive = new CompletableFuture<>();
                 return pendingReceive;
@@ -2521,9 +2673,7 @@ public final class ActorRuntime implements AutoCloseable {
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
-            if (receiver != null && !receiver.isDone()) {
-                receiver.completeExceptionally(terminated(ref));
-            }
+            if (receiver != null && !receiver.isDone()) receiver.completeExceptionally(terminated(ref));
         }
 
         private void stop() {
@@ -2534,9 +2684,7 @@ public final class ActorRuntime implements AutoCloseable {
                 drainMailboxReservations();
                 finalizeStopLocked();
             }
-            if (receiver != null && !receiver.isDone()) {
-                receiver.completeExceptionally(terminated(ref));
-            }
+            if (receiver != null && !receiver.isDone()) receiver.completeExceptionally(terminated(ref));
         }
     }
 }

@@ -340,7 +340,7 @@ final class ParserTest {
         assertDoesNotThrow(() -> Parser.parse("""
                 define module app
                   fnc main() => void {
-                    val shared = SharedMutex.new(arr[1, 2, 3]);
+                    val mutex = SharedMutex.new(arr[1, 2, 3]);
                     return;
                   }
                 end
