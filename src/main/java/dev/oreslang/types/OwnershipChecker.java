@@ -143,6 +143,7 @@ public final class OwnershipChecker {
         }
         if (stmt instanceof Ast.DeferStmt defer) {
             checkExpr(defer.expression(), scope, false);
+            for (Ast.Expr argument : defer.arguments()) checkExpr(argument, scope, false);
             return;
         }
         if (stmt instanceof Ast.IfStmt conditional) {
@@ -512,7 +513,12 @@ public final class OwnershipChecker {
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
-            else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
+            else if (stmt instanceof Ast.DeferStmt e) {
+                scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
+                for (Ast.Expr argument : e.arguments()) {
+                    scanExpr(argument, blockLocals, outer, recursiveBinding, captures, false);
+                }
+            }
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
                     scanExpr(b.condition(), blockLocals, outer, recursiveBinding, captures, false);
