@@ -958,6 +958,34 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void nestedSingletonCallsCannotExtendOuterDeadline() throws Exception {
+        String outerKey = "outer-deadline:" + UUID.randomUUID();
+        String innerKey = "inner-deadline:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> outer =
+                ProcessSingletonRegistry.getOrCreate(outerKey, Object::new);
+        ProcessSingletonRegistry.Handle<Object> inner =
+                ProcessSingletonRegistry.getOrCreate(innerKey, Object::new);
+
+        CompletableFuture<Object> call = outer.call(
+                List.of(), 8, Duration.ofMillis(100),
+                (outerState, ignored) -> inner.call(
+                        List.of(), 8, Duration.ofSeconds(5),
+                        (innerState, ignoredAgain) -> {
+                            while (true) ProcessSingletonRegistry.checkExecutionBudget();
+                        }).toCompletableFuture().join())
+                .toCompletableFuture();
+
+        RuntimeException failure = assertThrows(
+                RuntimeException.class,
+                () -> call.get(1, TimeUnit.SECONDS));
+        assertTrue(
+                causeChainContains(failure, "wall-time budget")
+                        || causeChainContains(failure, "expired in mailbox"),
+                String.valueOf(failure));
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
