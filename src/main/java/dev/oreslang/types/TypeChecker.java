@@ -750,6 +750,23 @@ public final class TypeChecker {
                     }
                     return resolve(fn.returnType(), fnGenerics, null);
                 }
+                if (receiver instanceof SingletonProxy proxy) {
+                    Ast.ClassDecl klass = findClass(proxy.target().name());
+                    if (klass == null) throw new IllegalArgumentException("unknown singleton proxy class '" + proxy.target().name() + "'");
+                    Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                    if (method == null) throw new IllegalArgumentException("no singleton proxy method '" + member.member()
+                            + "' with arity " + call.arguments().size() + " on " + proxy.target().name());
+                    Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
+                    methodGenerics.addAll(method.genericParameters());
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Type expected = resolveParam(method.parameters().get(i), methodGenerics, proxy.target());
+                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
+                                "singleton proxy argument " + (i + 1));
+                    }
+                    Type result = resolve(method.returnType(), methodGenerics, proxy.target());
+                    return new Named("Future", List.of(result));
+                }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
@@ -798,7 +815,14 @@ public final class TypeChecker {
                         if (decl instanceof Ast.FieldDecl field
                                 && field.visibility() == Ast.Visibility.PUBLIC
                                 && field.name().equals(member.member())) {
-                            throw new IllegalArgumentException("singleton module fields are actor-private; call an accessor function");
+                            Type declared = resolve(field.type(), Set.of(), null);
+                            if (!(declared instanceof Named named) || findClass(named.name()) == null) {
+                                throw new IllegalArgumentException("singleton module field '" + module.name() + "."
+                                        + field.name() + "' is not an exported class-instance proxy");
+                            }
+                            return module.name().equals(env.moduleName)
+                                    ? named
+                                    : new SingletonProxy(module.name(), field.name(), named);
                         }
                     }
                 }
@@ -813,6 +837,28 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
+
+            if (receiver instanceof SingletonProxy proxy) {
+                Ast.ClassDecl klass = findClass(proxy.target().name());
+                if (klass == null) throw new IllegalArgumentException("unknown singleton proxy class '" + proxy.target().name() + "'");
+                if (findFieldType(klass, member.member(), new LinkedHashSet<>()) != null) {
+                    throw new IllegalArgumentException("singleton object fields are actor-private; invoke a public method on "
+                            + proxy.moduleName() + "." + proxy.fieldName());
+                }
+                List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
+                if (methods.size() == 1) {
+                    Ast.MethodDecl method = methods.getFirst();
+                    Type logical = functionType(method.parameters(), method.returnType(),
+                            Set.copyOf(method.genericParameters()), proxy.target());
+                    Function fn = (Function) logical;
+                    return new Function(fn.parameters(), new Named("Future", List.of(fn.result())));
+                }
+                if (methods.size() > 1) {
+                    throw new IllegalArgumentException("overloaded singleton proxy method '" + member.member()
+                            + "' must be called so arity can select the overload");
+                }
+                throw new IllegalArgumentException("unknown singleton proxy method '" + member.member() + "'");
+            }
 
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
