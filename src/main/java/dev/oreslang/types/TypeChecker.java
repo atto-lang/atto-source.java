@@ -417,8 +417,14 @@ public final class TypeChecker {
     }
 
     private boolean patternLiteralEquals(Object left, Object right) {
-        if (left instanceof Ast.Imaginary a && right instanceof Ast.Imaginary b) {
-            return Double.compare(a.coefficient(), b.coefficient()) == 0;
+        if (left instanceof Ast.Imaginary a || right instanceof Ast.Imaginary) {
+            if (left instanceof Ast.Imaginary leftImaginary && right instanceof Ast.Imaginary rightImaginary) {
+                return Double.compare(leftImaginary.coefficient(), rightImaginary.coefficient()) == 0;
+            }
+            Ast.Imaginary imaginary = left instanceof Ast.Imaginary i ? i : (Ast.Imaginary) right;
+            Object scalar = left instanceof Ast.Imaginary ? right : left;
+            if (!(scalar instanceof Number number)) return false;
+            return Double.compare(imaginary.coefficient(), 0.0d) == 0 && numericLiteralIsZero(number);
         }
         if (left instanceof Number a && right instanceof Number b) {
             double x = a.doubleValue();
@@ -434,6 +440,14 @@ public final class TypeChecker {
             return leftDecimal.compareTo(rightDecimal) == 0;
         }
         return java.util.Objects.equals(left, right);
+    }
+
+    private boolean numericLiteralIsZero(Number number) {
+        if (number instanceof Byte || number instanceof Short || number instanceof Integer || number instanceof Long) {
+            return number.longValue() == 0L;
+        }
+        return Double.compare(number.doubleValue(), 0.0d) == 0
+                || Double.compare(number.doubleValue(), -0.0d) == 0;
     }
 
     private void checkPattern(Ast.Pattern pattern, Type source, Env env, Set<String> generics, Type self) {
