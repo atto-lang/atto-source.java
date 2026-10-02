@@ -190,7 +190,8 @@ public final class TypeChecker {
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
-        Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
+        String aggregateLabel = klass.isStruct() ? "struct " : "class ";
+        Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), aggregateLabel + klass.name());
         Type self = nominalClassType(klass);
 
         Set<String> parentNames = new HashSet<>();
@@ -256,7 +257,8 @@ public final class TypeChecker {
             Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
-                throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+                throw new IllegalArgumentException((klass.isStruct() ? "struct '" : "class '") + klass.name()
+                        + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
         }
     }
@@ -545,6 +547,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            if (klass.isStruct()) throw new IllegalArgumentException("struct '" + klass.name() + "' is a value type; initialize it with " + klass.name() + " { ... }, not new");
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
             Type nominal = nominalClassType(klass);
@@ -555,6 +558,49 @@ public final class TypeChecker {
                             resolve(field.type(), Set.copyOf(klass.genericParameters()), nominal), "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
+                }
+            }
+            return nominal;
+        }
+        if (expr instanceof Ast.StructInitExpr created) {
+            if (created.anonymous()) {
+                Map<String, Type> members = new LinkedHashMap<>();
+                for (Ast.ObjectField field : created.fields()) {
+                    if (members.putIfAbsent(field.name(), typeOf(field.value(), env, generics, self)) != null) {
+                        throw new IllegalArgumentException("duplicate anonymous struct field '" + field.name() + "'");
+                    }
+                }
+                return new Record(members);
+            }
+
+            Ast.ClassDecl struct = findClass(created.type().name());
+            if (struct == null || !struct.isStruct()) {
+                throw new IllegalArgumentException("'" + created.type().name() + "' is not a struct type");
+            }
+
+            LinkedHashMap<String, Ast.FieldDecl> declared = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : struct.fields()) declared.put(field.name(), field);
+
+            LinkedHashMap<String, Ast.Expr> supplied = new LinkedHashMap<>();
+            for (Ast.ObjectField field : created.fields()) {
+                if (!declared.containsKey(field.name())) {
+                    throw new IllegalArgumentException("unknown struct field '" + struct.name() + "." + field.name() + "'");
+                }
+                if (supplied.putIfAbsent(field.name(), field.value()) != null) {
+                    throw new IllegalArgumentException("duplicate struct field '" + struct.name() + "." + field.name() + "'");
+                }
+            }
+
+            Type nominal = nominalClassType(struct);
+            Set<String> structGenerics = Set.copyOf(struct.genericParameters());
+            for (Ast.FieldDecl field : struct.fields()) {
+                Ast.Expr value = supplied.get(field.name());
+                if (value != null) {
+                    requireAssignable(typeOf(value, env, generics, self),
+                            resolve(field.type(), structGenerics, nominal),
+                            "struct field " + struct.name() + "." + field.name());
+                } else if (field.initializer() == null) {
+                    throw new IllegalArgumentException("struct initializer for " + struct.name() + " is missing field '" + field.name() + "'");
                 }
             }
             return nominal;
@@ -871,6 +917,7 @@ public final class TypeChecker {
         if (parentRef.name().equals("obj") || parentRef.name().equals("arr")) throw new IllegalArgumentException("inline obj/arr values cannot be subclassed; extend Object or List instead");
         Ast.ClassDecl parent = findClass(parentRef.name());
         if (parent == null) throw new IllegalArgumentException("unknown parent class '" + parentRef.name() + "' for " + child.name());
+        if (parent.isStruct()) throw new IllegalArgumentException("struct '" + parent.name() + "' cannot be used as a base class");
         if (parent == child) throw new IllegalArgumentException("class '" + child.name() + "' cannot extend itself");
         return parent;
     }
