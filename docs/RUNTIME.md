@@ -60,3 +60,21 @@ Oreslang deliberately uses two executors:
 A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
 
 The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors.
+
+
+## Private actor memory confinement
+
+A private actor is assigned an `ActorMemorySlice` when it is created. The slice is keyed by actor identity rather than by dispatcher thread because actor turns may migrate between worker threads.
+
+Private mailbox admission is:
+
+1. reject explicitly shared mutable handles such as `SyncCell<T>`;
+2. isolation-copy/freeze the message graph;
+3. conservatively estimate its logical Oreslang heap size;
+4. reserve those bytes against the destination actor slice and the parent runtime budget;
+5. enqueue only after both reservations succeed;
+6. release transient mailbox bytes after the mailbox turn completes.
+
+Persistent generated actor state reserves from the same slice. Actor teardown closes the entire slice, so leaked host-side reservation handles cannot keep a dead actor's memory budget alive.
+
+The logical size metric intentionally does not claim to equal JVM object layout. It exists to enforce Oreslang memory-domain policy while actors remain multiplexed on one JVM. A hardened backend may replace the accounting implementation with arena/region allocation or a Graal/native isolate without changing source semantics.
