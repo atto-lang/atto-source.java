@@ -144,12 +144,23 @@ final class MutexRuntimeTest {
     }
 
     @Test
-    void sharedTryLockReportsBusyAndCancelledAsyncWaitDoesNotLeakPermit() {
+    void sharedTryLockReportsBusyAndCancelledAsyncWaitDoesNotLeakPermit() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var guard = mutex.lock();
 
         assertTrue(mutex.tryLock().isEmpty());
-        var waiting = mutex.lockAsync();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> waitingRef = new AtomicReference<>();
+        CountDownLatch queued = new CountDownLatch(1);
+        Thread requester = Thread.ofPlatform().start(() -> {
+            waitingRef.set(mutex.lockAsync());
+            queued.countDown();
+        });
+        requester.join();
+
+        assertTrue(queued.await(1, TimeUnit.SECONDS));
+        var waiting = waitingRef.get();
+        assertNotNull(waiting);
         assertFalse(waiting.isDone());
         assertTrue(waiting.cancel(true));
 
@@ -158,6 +169,33 @@ final class MutexRuntimeTest {
         var next = mutex.lock();
         next.release();
         assertTrue(waiting.isCancelled());
+    }
+
+    @Test
+    void sharedMutexRejectsSameDomainAsyncReentryBeforeDeadlock() {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lockAsync().join();
+
+        assertThrows(OresMutex.RecursiveLockException.class, mutex::lockAsync);
+
+        guard.release();
+        var next = mutex.lock();
+        next.release();
+    }
+
+    @Test
+    void releasedGuardsCannotExposeProtectedValues() {
+        var local = OresMutex.local(new int[]{1});
+        var localGuard = local.lock();
+        assertEquals(1, localGuard.value()[0]);
+        localGuard.release();
+        assertThrows(IllegalStateException.class, localGuard::value);
+
+        var shared = OresMutex.shared(new int[]{2});
+        var sharedGuard = shared.lock();
+        assertEquals(2, sharedGuard.value()[0]);
+        sharedGuard.release();
+        assertThrows(IllegalStateException.class, sharedGuard::value);
     }
 
     @Test
