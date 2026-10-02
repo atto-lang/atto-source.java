@@ -121,7 +121,7 @@ public final class ActorRuntime implements AutoCloseable {
                 result.put("failure_type", failure.type());
                 result.put("failure_message", failure.message() == null ? "" : failure.message());
             }
-            return Map.copyOf(result);
+            return immutableLinkedMap(result);
         }
     }
 
@@ -824,7 +824,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 "distinct set elements collapse to the same frozen value");
                     }
                 }
-                return Set.copyOf(frozen);
+                return immutableLinkedSet(frozen);
             }
             if (value instanceof Map<?, ?> map) {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
@@ -841,7 +841,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     frozen.put(key, item);
                 }
-                return Map.copyOf(frozen);
+                return immutableLinkedMap(frozen);
             }
             if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
@@ -998,6 +998,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private static <K, V> Map<K, V> immutableLinkedMap(Map<? extends K, ? extends V> source) {
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(source));
+    }
+
+    private static <T> Set<T> immutableLinkedSet(Set<? extends T> source) {
+        return java.util.Collections.unmodifiableSet(new java.util.LinkedHashSet<>(source));
+    }
+
     private static long safeAdd(long left, long right) {
         if (left == Long.MAX_VALUE || right == Long.MAX_VALUE || right > Long.MAX_VALUE - left) return Long.MAX_VALUE;
         return left + right;
@@ -1043,7 +1051,7 @@ public final class ActorRuntime implements AutoCloseable {
             down.put("error_message", failure.message() == null ? "" : failure.message());
         }
         try {
-            SendResult result = trySend((ActorRef<Object>) watcherCell.ref, Map.copyOf(down));
+            SendResult result = trySend((ActorRef<Object>) watcherCell.ref, immutableLinkedMap(down));
             if (result != SendResult.SENT) {
                 watcherCell.failControlPlane(new IllegalStateException(
                         "monitor DOWN delivery failed: " + result));
