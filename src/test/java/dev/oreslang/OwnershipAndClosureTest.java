@@ -1100,6 +1100,53 @@ final class OwnershipAndClosureTest {
                 """)));
     }
 
+    @Test
+    void concreteGenericStructFieldSubstitutesToCopyType() throws Exception {
+        String output = run("""
+                struct Box<T> {
+                  pub let T value;
+                }
+
+                fnc sum(Box<int> box) => int {
+                  let int first = box.value;
+                  let int second = box.value;
+                  return first + second;
+                }
+
+                pub fnc main() => void {
+                  stdio.stdout.write(sum(Box<int> { value = 3 }));
+                  return;
+                }
+                """);
+
+        assertEquals("6", output);
+    }
+
+    @Test
+    void concreteGenericMethodReturnSubstitutesBeforeOwnershipClassification() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct Box<T> {
+                  pub let T value;
+
+                  pub empty() => Option<T> {
+                    return None;
+                  }
+                }
+
+                fnc consume(Option<int> value) => void {
+                  return;
+                }
+
+                fnc ok() => void {
+                  let Box<int> box = Box<int> { value = 1 };
+                  let empty = box.empty();
+                  consume(empty);
+                  consume(empty);
+                  return;
+                }
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
