@@ -53,6 +53,38 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void privilegedFacadeAliasingCannotHideCapabilities() {
+        var program = TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val p = process;
+                  stdio.stdout.write(p.context_id);
+                }
+                """));
+
+        SecurityException missingInfo = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(missingInfo.getMessage().contains("PROCESS_INFO"));
+
+        SecurityException missingShare = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program,
+                        IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.PROCESS_INFO)));
+        assertTrue(missingShare.getMessage().contains("ACTOR_SHARE_READONLY"));
+
+        SecurityException missingSpawn = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program,
+                        IsolatePolicy.strictFaas().withCapabilities(
+                                IsolatePolicy.Capability.PROCESS_INFO,
+                                IsolatePolicy.Capability.ACTOR_SHARE_READONLY)));
+        assertTrue(missingSpawn.getMessage().contains("CHILD_PROCESS"));
+
+        assertDoesNotThrow(() -> CapabilityChecker.check(program,
+                IsolatePolicy.strictFaas().withCapabilities(
+                        IsolatePolicy.Capability.PROCESS_INFO,
+                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                        IsolatePolicy.Capability.CHILD_PROCESS)));
+    }
+
+    @Test
     void capabilityAdmissionTraversesMatchScrutineesAndArms() {
         var program = TypeChecker.check(Parser.parse("""
                 pub routine main() => void {
