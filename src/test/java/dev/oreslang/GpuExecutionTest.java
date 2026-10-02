@@ -505,6 +505,31 @@ final class GpuExecutionTest {
     }
 
     @Test
+    void gpuTypeAliasesResolveWithinTheirOwningModule() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module left
+                  type Scalar = i32;
+                  gpu fnc add(Scalar a, Scalar b) => Scalar {
+                    return a + b;
+                  }
+                end
+
+                define module right
+                  type Scalar = f32;
+                  gpu fnc add(Scalar a, Scalar b) => Scalar {
+                    return a + b;
+                  }
+                end
+                """);
+
+        assertEquals(2, compilation.gpuProgram().kernels().size());
+        assertTrue(compilation.gpuProgram().kernels().stream()
+                .anyMatch(k -> k.sourceName().equals("add") && k.resultType().equals("i32")));
+        assertTrue(compilation.gpuProgram().kernels().stream()
+                .anyMatch(k -> k.sourceName().equals("add") && k.resultType().equals("f32")));
+    }
+
+    @Test
     void generatedGpuProgramsPassARealOpenClFrontendWhenValidationIsEnabled() throws Exception {
         if (!"1".equals(System.getenv("ORES_GPU_VALIDATE_OPENCL"))) return;
 
