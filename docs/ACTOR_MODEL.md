@@ -51,43 +51,74 @@ This intentionally rejects Erlang's "scan old messages until one pattern matches
 
 The source front-end should expose the receive surface only when it can carry the actor's message protocol type through the type checker. Until that lowering exists, the host runtime primitive is implemented but the compiler should fail closed rather than invent an untyped `Any` mailbox API.
 
-### Source receive loops
+### Compiler-visible receive loops and actor state
 
-No additional `receive_loop` keyword is required. Ordinary loop syntax composes with the two mailbox operations:
+Receive/send/channel operations are language syntax, not ordinary library calls. The reserved concurrency vocabulary is `channel`, `send`, `try_send`, `receive`, `try_receive`, `select`, `case`, `default`, and `loop`.
+
+The actor mailbox is a special bounded typed channel. An `ActorRef<M>` is the send capability; only the owning actor has the mailbox receive capability.
 
 ```ores
-// Suspends the actor continuation until each next FIFO message arrives.
-for (;;) {
-  val Message msg = await receive();
-  handle(msg);
-}
+pub actor routine counter(int initial) => void {
+  let int count = initial;
 
-// Never waits: drain only messages that are immediately available.
-for (;;) {
-  match try_receive() {
-    Some(msg) => handle(msg),
-    None => break,
+  receive loop (msg) {
+    // match msg using the actor protocol
+    // Increment    => count = count + 1
+    // Add(value)   => count = count + value
+    // Get(reply)   => send(reply, count)
+    // Stop         => break
   }
 }
 ```
 
-At source level `receive() => Future<M>` and `try_receive() => Option<M>`, where `M` is the statically known actor protocol message type. The Java runtime's `ReceiveResult<M>` is an implementation detail used to preserve empty-vs-null host interop; Oreslang source has no ambient null and therefore uses `Option<M>`.
+`receive loop (msg) { ... }` is a dedicated resumable actor-loop node. It suspends when no message is available. `try_receive loop (msg) { ... }` drains immediately available messages without waiting and exits when the mailbox is empty. Both forms contain mandatory operation-accounting/backedge checkpoints; a continuously busy mailbox cannot monopolize a carrier.
 
-A non-blocking drain loop must still hit compiler-inserted scheduler safepoints / throughput quanta so an actor with a perpetually non-empty mailbox cannot monopolize a dispatcher worker. Cancellation of a pending receive removes that waiter atomically; the cancelled waiter must not steal the next message. A future `receive_for(Duration)` should return an explicit timeout result rather than encoding timeout as a synthetic mailbox message.
+State is not represented by recursive calls. Any local that is live across `receive`, blocking `send`, `select`, or `await` is hoisted by lowering into the actor continuation frame. Mutable actor-owned locals therefore remain single-owner and persist across suspension without Erlang-style `loop(NewState)` plumbing. Ordinary stack borrows may not cross a suspension boundary; actor-owned frame state is allowed because ownership is tied to the actor id, not the carrier thread.
+
+### Typed channels and select
+
+General channels are bounded by construction. `channel<T>(0)` is a rendezvous channel; positive capacities are bounded buffers. There is no implicit unbounded channel.
+
+Blocking channel operations are dedicated suspension syntax:
+
+```ores
+val Channel<Job> jobs = channel<Job>(64);
+
+send(jobs, job);          // suspend until admitted or closed
+val job = receive(jobs);  // suspend until a value or close result
+
+val sent = try_send(jobs, job);       // immediate admission result
+val polled = try_receive(jobs);       // immediate Ready/Empty/Closed result
+```
+
+`select` multiplexes receives and sends and commits exactly one ready operation:
+
+```ores
+select {
+  case receive(commands) as cmd => {
+    handle(cmd);
+  }
+
+  case send(events, next_event) => {
+    mark_sent();
+  }
+
+  default => {
+    do_other_work();
+  }
+}
+```
+
+Without `default`, `select` suspends the actor continuation until one operation can commit. With `default`, it is non-blocking. Channel expressions are evaluated once, registrations are installed without lost wakeups, and losing cases must be unregistered without consuming data or capacity. If several cases are simultaneously ready, selection uses per-actor rotating fairness rather than permanent lexical priority; this avoids starvation while keeping tests reproducible.
+
+A `select` registration, committed branch, `receive loop` iteration, `try_receive loop` iteration, and compiler-injected statement/backedge checkpoint all consume actor operation budget.
+
 
 ## Bounded queues and backpressure
 
 Actor mailboxes are bounded by `IsolatePolicy.maxMailboxMessages()` and by actor/runtime memory accounting. A send that cannot be admitted fails; it never silently creates an unbounded queue.
 
-The non-throwing `try_send` / typed protocol admission work should be preserved when the older Erlang-wart actor branch is reconciled with the newer private/shared dispatcher stack. The desired source contract is:
-
-```ores
-send(target, message);          // admission required or explicit failure
-try_send(target, message);      // immediate Result/SendResult
-await send_when_ready(target, message); // future backpressure primitive
-```
-
-No sender should be able to force unbounded receiver memory growth.
+The non-throwing `try_send` / typed protocol admission work should be preserved when the older Erlang-wart actor branch is reconciled with the newer private/shared dispatcher stack. Dedicated `send(target, message)` is the blocking/backpressured form and may suspend the sender continuation until capacity is available; `try_send(target, message)` is immediate. No sender should be able to force unbounded receiver memory growth.
 
 ## Typed actor capabilities, not untyped PIDs
 
@@ -131,8 +162,8 @@ Before actor/async v1 is declared stable:
 - [x] actor vs async separation;
 - [x] actor vs isolate distinction;
 - [ ] reconcile typed `Protocol<M>`, `try_send`, and typed `ask` from the Erlang-wart branch onto the dispatcher actor stack;
-- [ ] lower source `receive` only after the actor message protocol type is available to the static checker;
-- [ ] continuation lowering for executable source `async` / actor await;
-- [ ] indexed/channelized submailboxes for typed selective routing;
+- [ ] parse/lower dedicated `receive loop`, `try_receive loop`, channel send/receive, and `select` AST nodes after the actor message protocol type is available to the static checker;
+- [ ] continuation lowering for executable source `async`, actor receive/send/select suspension, and actor-frame state hoisting;
+- [ ] typed bounded channels plus atomic/fair select registration;
 - [ ] structured actor error reports with source-span/correlation metadata;
 - [ ] typed hot-upgrade migration protocol.
