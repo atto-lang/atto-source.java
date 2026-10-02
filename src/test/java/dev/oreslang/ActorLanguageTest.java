@@ -190,6 +190,28 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void literalSingletonNameCannotChangeItsActorContract() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc strings(String message) => void {
+                  return;
+                }
+
+                fnc numbers(int message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  val first = actor.singleton("registry", strings);
+                  val second = actor.singleton("registry", numbers);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("singleton") || failure.getMessage().contains("incompatible"));
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
