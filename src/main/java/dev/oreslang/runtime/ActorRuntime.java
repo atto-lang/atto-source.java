@@ -15,6 +15,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CancellationException;
 import java.util.function.Supplier;
 
@@ -31,9 +32,11 @@ public final class ActorRuntime implements AutoCloseable {
      * Actor-local allocation policy inside one tenant Graal isolate.
      *
      * SHARED_HEAP keeps ordinary actor objects on the tenant isolate's managed Java heap.
-     * PRIVATE_ARENA gives the actor one thread-confined native memory block and
-     * a small bump allocator. Actor language/runtime objects only live there
-     * when their representation explicitly allocates through ActorMemory.
+     * PRIVATE_ARENA gives the actor thread-confined native memory segments and
+     * a growing bump allocator. arenaBytes is the initial committed capacity;
+     * more segments are committed on demand up to the actor and tenant limits.
+     * Actor language/runtime objects only live there when their representation
+     * explicitly allocates through ActorMemory.
      */
     public enum MemoryMode {
         SHARED_HEAP,
@@ -67,10 +70,15 @@ public final class ActorRuntime implements AutoCloseable {
     public interface ActorMemory extends AutoCloseable {
         MemoryMode mode();
         long capacityBytes();
+        long maxCapacityBytes();
         long usedBytes();
+        int segmentCount();
 
         /**
-         * Allocates a slice from the private arena. Shared-heap actors should
+         * Allocates a slice from the private arena. PRIVATE_ARENA allocations
+         * grow the actor heap automatically when the current committed segments
+         * cannot satisfy the request, subject to the actor and tenant limits.
+         * Shared-heap actors should
          * use ordinary managed Oreslang/JVM allocation instead.
          */
         MemorySegment allocate(long byteSize, long byteAlignment);
@@ -81,6 +89,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicLong privateArenaReservedBytes = new AtomicLong();
     private final IsolatePolicy policyCeiling;
 
     public ActorRuntime() {
@@ -92,6 +101,15 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+
+    /** Native memory currently committed by PRIVATE_ARENA actors in this tenant runtime. */
+    public long privateArenaReservedBytes() { return privateArenaReservedBytes.get(); }
+
+    /**
+     * PRIVATE_ARENA actors share this tenant-level native-memory budget.
+     * An actor may have a stricter per-actor maxHeapBytes policy.
+     */
+    public long privateArenaBudgetBytes() { return policyCeiling.maxHeapBytes(); }
 
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
@@ -277,10 +295,12 @@ public final class ActorRuntime implements AutoCloseable {
         actors.clear();
     }
 
-    private static ActorMemory openActorMemory(MemoryPolicy policy) {
-        return switch (policy.mode()) {
+    private ActorMemory openActorMemory(MemoryPolicy memoryPolicy, IsolatePolicy actorPolicy) {
+        return switch (memoryPolicy.mode()) {
             case SHARED_HEAP -> SharedHeapMemory.INSTANCE;
-            case PRIVATE_ARENA -> new ConfinedArenaMemory(policy.arenaBytes());
+            case PRIVATE_ARENA -> new ConfinedArenaMemory(
+                    memoryPolicy.arenaBytes(),
+                    actorPolicy.maxHeapBytes());
         };
     }
 
@@ -289,7 +309,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override public MemoryMode mode() { return MemoryMode.SHARED_HEAP; }
         @Override public long capacityBytes() { return 0; }
+        @Override public long maxCapacityBytes() { return 0; }
         @Override public long usedBytes() { return 0; }
+        @Override public int segmentCount() { return 0; }
 
         @Override
         public MemorySegment allocate(long byteSize, long byteAlignment) {
@@ -301,51 +323,196 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * One contiguous native block owned by exactly one actor Thread. Slices
-     * preserve the Arena.ofConfined() thread-access checks and lifetime.
+     * Segmented native heap owned by exactly one actor Thread.
+     *
+     * The Arena itself stays confined to that actor. We commit an initial
+     * segment, then geometrically grow with additional segments when needed.
+     * Existing MemorySegments never move, so pointers/slices already handed to
+     * the actor remain stable across growth.
      */
-    private static final class ConfinedArenaMemory implements ActorMemory {
-        private final Arena arena;
-        private final MemorySegment heap;
-        private long cursor;
+    private final class ConfinedArenaMemory implements ActorMemory {
+        private final Arena arena = Arena.ofConfined();
+        private final ArrayList<ArenaChunk> chunks = new ArrayList<>();
+        private final long initialCapacityBytes;
+        private final long maxCapacityBytes;
+        private long capacityBytes;
+        private long usedBytes;
+        private boolean closed;
 
-        private ConfinedArenaMemory(long capacityBytes) {
-            this.arena = Arena.ofConfined();
-            this.heap = arena.allocate(capacityBytes, 8);
+        private ConfinedArenaMemory(long initialCapacityBytes, long maxCapacityBytes) {
+            if (initialCapacityBytes <= 0) {
+                throw new IllegalArgumentException("initial private arena capacity must be positive");
+            }
+            if (maxCapacityBytes < initialCapacityBytes) {
+                throw new IllegalArgumentException("private arena max capacity cannot be below initial capacity");
+            }
+            this.initialCapacityBytes = initialCapacityBytes;
+            this.maxCapacityBytes = maxCapacityBytes;
+            try {
+                addChunk(initialCapacityBytes, 8);
+            } catch (Throwable failure) {
+                arena.close();
+                throw failure;
+            }
         }
 
         @Override public MemoryMode mode() { return MemoryMode.PRIVATE_ARENA; }
-        @Override public long capacityBytes() { return heap.byteSize(); }
-        @Override public long usedBytes() { return cursor; }
+        @Override public long capacityBytes() { return capacityBytes; }
+        @Override public long maxCapacityBytes() { return maxCapacityBytes; }
+        @Override public long usedBytes() { return usedBytes; }
+        @Override public int segmentCount() { return chunks.size(); }
 
         @Override
         public MemorySegment allocate(long byteSize, long byteAlignment) {
+            ensureOpen();
             if (byteSize < 0) throw new IllegalArgumentException("byteSize must be non-negative");
             if (byteAlignment <= 0 || (byteAlignment & (byteAlignment - 1)) != 0) {
                 throw new IllegalArgumentException("byteAlignment must be a positive power of two");
             }
-            long mask = byteAlignment - 1;
+
+            // Prefer the newest chunk, but reuse an older tail if a smaller
+            // allocation still fits there. This keeps segmented growth from
+            // turning small tail fragments into permanent waste.
+            for (int i = chunks.size() - 1; i >= 0; i--) {
+                MemorySegment allocated = tryAllocate(chunks.get(i), byteSize, byteAlignment);
+                if (allocated != null) return allocated;
+            }
+
+            ArenaChunk grown = grow(byteSize, byteAlignment);
+            MemorySegment allocated = tryAllocate(grown, byteSize, byteAlignment);
+            if (allocated == null) {
+                throw new AssertionError("fresh actor heap segment cannot satisfy allocation");
+            }
+            return allocated;
+        }
+
+        private MemorySegment tryAllocate(ArenaChunk chunk, long byteSize, long byteAlignment) {
             final long aligned;
             final long end;
             try {
-                aligned = Math.addExact(cursor, mask) & ~mask;
+                long absolute = Math.addExact(chunk.segment.address(), chunk.cursor);
+                long mask = byteAlignment - 1;
+                long alignedAbsolute = Math.addExact(absolute, mask) & ~mask;
+                aligned = Math.subtractExact(alignedAbsolute, chunk.segment.address());
                 end = Math.addExact(aligned, byteSize);
             } catch (ArithmeticException overflow) {
                 throw new OutOfMemoryError("actor private arena allocation overflow");
             }
-            if (end > heap.byteSize()) {
-                throw new OutOfMemoryError(
-                        "actor private arena exhausted: requested=" + byteSize
-                                + " used=" + cursor + " capacity=" + heap.byteSize());
+            if (end > chunk.segment.byteSize()) return null;
+
+            long consumed;
+            try {
+                consumed = Math.subtractExact(end, chunk.cursor);
+                usedBytes = Math.addExact(usedBytes, consumed);
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError("actor private arena usage accounting overflow");
             }
-            MemorySegment slice = heap.asSlice(aligned, byteSize);
-            cursor = end;
+            MemorySegment slice = chunk.segment.asSlice(aligned, byteSize);
+            chunk.cursor = end;
             return slice;
+        }
+
+        private ArenaChunk grow(long byteSize, long byteAlignment) {
+            long remaining;
+            try {
+                remaining = Math.subtractExact(maxCapacityBytes, capacityBytes);
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError("actor private arena capacity accounting overflow");
+            }
+            if (byteSize > remaining) {
+                throw actorLimitExceeded(byteSize);
+            }
+
+            long previous = chunks.isEmpty()
+                    ? initialCapacityBytes
+                    : chunks.getLast().segment.byteSize();
+            long doubled = previous > Long.MAX_VALUE / 2 ? Long.MAX_VALUE : previous * 2;
+            long desired = Math.max(byteSize, Math.max(initialCapacityBytes, doubled));
+            long chunkBytes = Math.min(remaining, desired);
+            if (chunkBytes < byteSize) throw actorLimitExceeded(byteSize);
+
+            return addChunk(chunkBytes, Math.max(8, byteAlignment));
+        }
+
+        private ArenaChunk addChunk(long byteSize, long byteAlignment) {
+            reservePrivateArenaBytes(byteSize);
+            boolean committed = false;
+            try {
+                MemorySegment segment = arena.allocate(byteSize, byteAlignment);
+                ArenaChunk chunk = new ArenaChunk(segment);
+                chunks.add(chunk);
+                capacityBytes = Math.addExact(capacityBytes, byteSize);
+                committed = true;
+                return chunk;
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError("actor private arena capacity accounting overflow");
+            } finally {
+                if (!committed) releasePrivateArenaBytes(byteSize);
+            }
+        }
+
+        private OutOfMemoryError actorLimitExceeded(long requestedBytes) {
+            return new OutOfMemoryError(
+                    "actor private arena hard limit exceeded: requested=" + requestedBytes
+                            + " used=" + usedBytes
+                            + " committed=" + capacityBytes
+                            + " max=" + maxCapacityBytes);
+        }
+
+        private void ensureOpen() {
+            if (closed) throw new IllegalStateException("actor private arena is closed");
         }
 
         @Override
         public void close() {
-            arena.close();
+            if (closed) return;
+            closed = true;
+            long committed = capacityBytes;
+            try {
+                arena.close();
+            } finally {
+                chunks.clear();
+                capacityBytes = 0;
+                usedBytes = 0;
+                releasePrivateArenaBytes(committed);
+            }
+        }
+    }
+
+    private static final class ArenaChunk {
+        private final MemorySegment segment;
+        private long cursor;
+
+        private ArenaChunk(MemorySegment segment) {
+            this.segment = segment;
+        }
+    }
+
+    private void reservePrivateArenaBytes(long bytes) {
+        while (true) {
+            long current = privateArenaReservedBytes.get();
+            final long next;
+            try {
+                next = Math.addExact(current, bytes);
+            } catch (ArithmeticException overflow) {
+                throw new OutOfMemoryError("tenant private arena reservation overflow");
+            }
+            if (next > privateArenaBudgetBytes()) {
+                throw new OutOfMemoryError(
+                        "tenant private arena budget exhausted: requested=" + bytes
+                                + " reserved=" + current
+                                + " budget=" + privateArenaBudgetBytes());
+            }
+            if (privateArenaReservedBytes.compareAndSet(current, next)) return;
+        }
+    }
+
+    private void releasePrivateArenaBytes(long bytes) {
+        if (bytes == 0) return;
+        long remaining = privateArenaReservedBytes.addAndGet(-bytes);
+        if (remaining < 0) {
+            privateArenaReservedBytes.addAndGet(bytes);
+            throw new IllegalStateException("actor private arena reservation accounting underflow");
         }
     }
 
@@ -376,7 +543,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void run() {
-            try (ActorMemory memory = openActorMemory(memoryPolicy)) {
+            try (ActorMemory memory = openActorMemory(memoryPolicy, policy)) {
                 final Behavior<M> behavior = behaviorFactory.get();
                 final ActorContext<M> context = new ActorContext<>() {
                     @Override public ActorRef<M> self() { return ref; }
