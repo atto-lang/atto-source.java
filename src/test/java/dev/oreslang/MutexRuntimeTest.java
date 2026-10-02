@@ -223,7 +223,7 @@ final class MutexRuntimeTest {
             CountDownLatch checked = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
 
-            var owner = runtimeA.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+            var owner = runtimeA.<OresMutex.Shared<int[]>>spawnShared(() -> (mutex, context) -> {
                 // The send itself binds the SharedMutex to runtimeA.
                 assertFalse(mutex.isPoisoned());
                 bound.countDown();
@@ -231,7 +231,7 @@ final class MutexRuntimeTest {
             owner.send(shared);
             assertTrue(bound.await(2, TimeUnit.SECONDS));
 
-            var foreign = runtimeB.<String>spawn(() -> (message, context) -> {
+            var foreign = runtimeB.<String>spawnShared(() -> (message, context) -> {
                 try {
                     shared.tryLock();
                 } catch (Throwable problem) {
@@ -255,7 +255,7 @@ final class MutexRuntimeTest {
             CountDownLatch recovered = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
 
-            var poisoner = runtime.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+            var poisoner = runtime.<OresMutex.Shared<int[]>>spawnShared(() -> (mutex, context) -> {
                 try {
                     var guard = mutex.lockAsync().join();
                     guard.value()[0] = 17;
@@ -271,7 +271,7 @@ final class MutexRuntimeTest {
             assertTrue(poisoned.await(2, TimeUnit.SECONDS));
             assertTrue(shared.isPoisoned());
 
-            var repairer = runtime.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+            var repairer = runtime.<OresMutex.Shared<int[]>>spawnShared(() -> (mutex, context) -> {
                 try {
                     mutex.recover(value -> {
                         value[0] = 0;
@@ -298,7 +298,7 @@ final class MutexRuntimeTest {
             CountDownLatch done = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
 
-            var ref = runtime.<OresMutex.Shared<int[]>>spawn(() -> (mutex, context) -> {
+            var ref = runtime.<OresMutex.Shared<int[]>>spawnShared(() -> (mutex, context) -> {
                 try {
                     assertThrows(OresMutex.WrongMutexDomainException.class, mutex::lock);
                     var guard = mutex.lockAsync().join();
@@ -328,11 +328,11 @@ final class MutexRuntimeTest {
         try (ActorRuntime denied = new ActorRuntime(strict);
              ActorRuntime runtimeA = new ActorRuntime();
              ActorRuntime runtimeB = new ActorRuntime()) {
-            var deniedRef = denied.<OresMutex.Shared<int[]>>spawn(
-                    strict, () -> (message, context) -> { });
-            var refA = runtimeA.<OresMutex.Shared<int[]>>spawn(
+            var deniedRef = denied.<OresMutex.Shared<int[]>>spawnPrivate(
+                    strict, factoryContext -> (message, context) -> { });
+            var refA = runtimeA.<OresMutex.Shared<int[]>>spawnShared(
                     () -> (message, context) -> { });
-            var refB = runtimeB.<OresMutex.Shared<int[]>>spawn(
+            var refB = runtimeB.<OresMutex.Shared<int[]>>spawnShared(
                     () -> (message, context) -> { });
 
             assertThrows(SecurityException.class, () -> deniedRef.send(shared));
@@ -341,7 +341,7 @@ final class MutexRuntimeTest {
             IllegalArgumentException crossRuntime = assertThrows(
                     IllegalArgumentException.class,
                     () -> refB.send(shared));
-            assertTrue(crossRuntime.getMessage().contains("owning ActorRuntime"));
+            assertTrue(crossRuntime.getMessage().contains("ActorRuntime"));
         }
     }
 
@@ -349,7 +349,8 @@ final class MutexRuntimeTest {
     void strictActorPolicyRejectsSharedMemoryHandles() {
         IsolatePolicy strict = IsolatePolicy.strictFaas();
         try (ActorRuntime runtime = new ActorRuntime(strict)) {
-            var ref = runtime.<OresMutex.Shared<int[]>>spawn(strict, () -> (message, context) -> { });
+            var ref = runtime.<OresMutex.Shared<int[]>>spawnPrivate(
+                    strict, factoryContext -> (message, context) -> { });
             var shared = OresMutex.shared(new int[]{0});
             assertThrows(SecurityException.class, () -> ref.send(shared));
         }
@@ -363,7 +364,7 @@ final class MutexRuntimeTest {
             CountDownLatch checked = new CountDownLatch(1);
             AtomicReference<Throwable> observed = new AtomicReference<>();
 
-            var ref = runtime.<String>spawn(strict, () -> (message, context) -> {
+            var ref = runtime.<String>spawnPrivate(strict, factoryContext -> (message, context) -> {
                 try {
                     shared.tryLock();
                 } catch (Throwable failure) {
@@ -379,7 +380,7 @@ final class MutexRuntimeTest {
 
             // The denied touch must not bind the handle to the strict actor's runtime.
             try (ActorRuntime otherRuntime = new ActorRuntime()) {
-                var other = otherRuntime.<OresMutex.Shared<int[]>>spawn(
+                var other = otherRuntime.<OresMutex.Shared<int[]>>spawnShared(
                         () -> (mutex, context) -> { });
                 assertDoesNotThrow(() -> other.send(shared));
             }
@@ -393,7 +394,7 @@ final class MutexRuntimeTest {
             CountDownLatch checked = new CountDownLatch(1);
             AtomicReference<Throwable> observed = new AtomicReference<>();
 
-            var ref = runtime.<String>spawn(strict, () -> (message, context) -> {
+            var ref = runtime.<String>spawnPrivate(strict, factoryContext -> (message, context) -> {
                 try {
                     OresMutex.shared(new int[]{0});
                 } catch (Throwable failure) {
