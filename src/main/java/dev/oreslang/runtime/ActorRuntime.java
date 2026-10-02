@@ -326,6 +326,10 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public void close() {
             rejectPrivateActorSharedMemoryAccess("SyncCell.close");
+            closeFromRuntime();
+        }
+
+        private void closeFromRuntime() {
             lock.lock();
             try {
                 if (!cellClosed.compareAndSet(false, true)) return;
@@ -907,7 +911,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         for (ActorCell<?> cell : actors.values()) cell.stop();
         actors.clear();
-        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.close();
+        for (SyncCell<?> cell : List.copyOf(syncCells)) cell.closeFromRuntime();
         syncCells.clear();
         privateDispatcher.shutdownNow();
         sharedDispatcher.shutdownNow();
