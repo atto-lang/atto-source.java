@@ -213,6 +213,8 @@ increment(self &mut self)() => int {
 }
 ```
 
+A mutable-receiver method can only be called through a mutable owner (`let` / mutable parameter) or an explicit mutable borrow. Calling it through an immutable `val` owner is rejected by the ownership checker.
+
 A class may list multiple parent classes, satisfy interfaces with `is`, and compose reusable state/behavior with `with`:
 
 ```ores
