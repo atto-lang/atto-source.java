@@ -995,7 +995,18 @@ public final class TypeChecker {
             activeClassOwner = klass;
             pushLocalTypeScope(method.body());
             try {
-                Set<String> generics = new HashSet<>(classGenerics);
+                Set<String> inheritedGenerics = method.isStatic() ? Set.of() : classGenerics;
+                if (method.isStatic() && !classGenerics.isEmpty()) {
+                    LinkedHashSet<String> forbidden = new LinkedHashSet<>(classGenerics);
+                    forbidden.removeAll(method.genericParameters());
+                    if (!forbidden.isEmpty() && methodUsesTypeNames(method, forbidden)) {
+                        throw new IllegalArgumentException("static function '" + klass.name() + "." + method.name()
+                                + "' cannot use enclosing class generic parameter(s) " + forbidden
+                                + "; declare independent static-function generics instead");
+                    }
+                }
+
+                Set<String> generics = new HashSet<>(inheritedGenerics);
                 for (String generic : method.genericParameters()) {
                     if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
                 }
@@ -3253,6 +3264,160 @@ public final class TypeChecker {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
             }
+        }
+        return false;
+    }
+
+    private boolean methodUsesTypeNames(Ast.MethodDecl method, Set<String> names) {
+        if (typeRefUsesAnyName(method.explicitReceiverType(), names)
+                || typeRefUsesAnyName(method.returnType(), names)) return true;
+        for (Ast.Param param : method.parameters()) {
+            if (typeRefUsesAnyName(param.type(), names)) return true;
+        }
+        for (Ast.Annotation annotation : method.annotations()) {
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                if (typeRefUsesAnyName(argument, names)) return true;
+            }
+        }
+        return statementsUseAnyTypeName(method.body(), names);
+    }
+
+    private boolean declarationUsesAnyTypeName(Ast.Decl declaration, Set<String> names) {
+        if (declaration instanceof Ast.ClassDecl aggregate) {
+            for (Ast.TypeRef parent : aggregate.parents()) if (typeRefUsesAnyName(parent, names)) return true;
+            for (Ast.TypeRef iface : aggregate.interfaces()) if (typeRefUsesAnyName(iface, names)) return true;
+            for (Ast.TypeRef trait : aggregate.traits()) if (typeRefUsesAnyName(trait, names)) return true;
+            for (Ast.FieldDecl field : aggregate.fields()) {
+                if (typeRefUsesAnyName(field.type(), names) || exprUsesAnyTypeName(field.initializer(), names)) return true;
+            }
+            for (Ast.MethodDecl method : aggregate.methods()) {
+                if (methodUsesTypeNames(method, names)) return true;
+            }
+            return false;
+        }
+        if (declaration instanceof Ast.InterfaceDecl iface) {
+            for (Ast.TypeRef parent : iface.parents()) if (typeRefUsesAnyName(parent, names)) return true;
+            for (Ast.InterfaceMember member : iface.members()) {
+                Ast.InterfaceFunctionDecl fn = (Ast.InterfaceFunctionDecl) member;
+                if (typeRefUsesAnyName(fn.returnType(), names)) return true;
+                for (Ast.Param param : fn.parameters()) if (typeRefUsesAnyName(param.type(), names)) return true;
+            }
+            return false;
+        }
+        if (declaration instanceof Ast.TraitDecl trait) {
+            for (Ast.TypeRef iface : trait.interfaces()) if (typeRefUsesAnyName(iface, names)) return true;
+            for (Ast.TypeRef nested : trait.traits()) if (typeRefUsesAnyName(nested, names)) return true;
+            for (Ast.FieldDecl field : trait.fields()) {
+                if (typeRefUsesAnyName(field.type(), names) || exprUsesAnyTypeName(field.initializer(), names)) return true;
+            }
+            for (Ast.MethodDecl method : trait.methods()) if (methodUsesTypeNames(method, names)) return true;
+            return false;
+        }
+        if (declaration instanceof Ast.TypeAliasDecl alias) return typeRefUsesAnyName(alias.target(), names);
+        if (declaration instanceof Ast.FieldDecl field) {
+            return typeRefUsesAnyName(field.type(), names) || exprUsesAnyTypeName(field.initializer(), names);
+        }
+        return false;
+    }
+
+    private boolean statementsUseAnyTypeName(List<Ast.Stmt> statements, Set<String> names) {
+        for (Ast.Stmt stmt : statements) {
+            if (stmt instanceof Ast.TypeDeclStmt local) {
+                if (declarationUsesAnyTypeName(local.declaration(), names)) return true;
+            } else if (stmt instanceof Ast.BindingStmt binding) {
+                if (typeRefUsesAnyName(binding.declaredType(), names)
+                        || exprUsesAnyTypeName(binding.initializer(), names)) return true;
+            } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                if (exprUsesAnyTypeName(destructure.initializer(), names)) return true;
+            } else if (stmt instanceof Ast.ReturnStmt returned) {
+                if (exprUsesAnyTypeName(returned.value(), names)) return true;
+            } else if (stmt instanceof Ast.ExprStmt expression) {
+                if (exprUsesAnyTypeName(expression.expression(), names)) return true;
+            } else if (stmt instanceof Ast.DeferStmt deferred) {
+                if (exprUsesAnyTypeName(deferred.expression(), names)) return true;
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (exprUsesAnyTypeName(branch.condition(), names)
+                            || statementsUseAnyTypeName(branch.body(), names)) return true;
+                }
+                if (statementsUseAnyTypeName(conditional.elseBody(), names)) return true;
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                if (statementsUseAnyTypeName(attempted.body(), names)
+                        || statementsUseAnyTypeName(attempted.catchBody(), names)
+                        || statementsUseAnyTypeName(attempted.finallyBody(), names)) return true;
+            } else if (stmt instanceof Ast.ForOfStmt loop) {
+                if (exprUsesAnyTypeName(loop.iterable(), names)
+                        || statementsUseAnyTypeName(loop.body(), names)) return true;
+            } else if (stmt instanceof Ast.ForStmt loop) {
+                if ((loop.initializer() != null && statementsUseAnyTypeName(List.of(loop.initializer()), names))
+                        || exprUsesAnyTypeName(loop.condition(), names)
+                        || exprUsesAnyTypeName(loop.update(), names)
+                        || statementsUseAnyTypeName(loop.body(), names)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean exprUsesAnyTypeName(Ast.Expr expr, Set<String> names) {
+        if (expr == null || expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
+        if (expr instanceof Ast.NewExpr created) {
+            if (typeRefUsesAnyName(created.type(), names)) return true;
+            for (Ast.Expr argument : created.arguments()) if (exprUsesAnyTypeName(argument, names)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.StructInitExpr created) {
+            if (typeRefUsesAnyName(created.type(), names)) return true;
+            for (Ast.ObjectField field : created.fields()) if (exprUsesAnyTypeName(field.value(), names)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return exprUsesAnyTypeName(binary.left(), names) || exprUsesAnyTypeName(binary.right(), names);
+        }
+        if (expr instanceof Ast.UnaryExpr unary) return exprUsesAnyTypeName(unary.operand(), names);
+        if (expr instanceof Ast.AssignExpr assignment) {
+            return exprUsesAnyTypeName(assignment.target(), names) || exprUsesAnyTypeName(assignment.value(), names);
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return exprUsesAnyTypeName(conditional.condition(), names)
+                    || exprUsesAnyTypeName(conditional.whenTrue(), names)
+                    || exprUsesAnyTypeName(conditional.whenFalse(), names);
+        }
+        if (expr instanceof Ast.CallExpr call) {
+            if (exprUsesAnyTypeName(call.callee(), names)) return true;
+            for (Ast.Expr argument : call.arguments()) if (exprUsesAnyTypeName(argument, names)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.MemberExpr member) return exprUsesAnyTypeName(member.receiver(), names);
+        if (expr instanceof Ast.IndexExpr indexed) {
+            return exprUsesAnyTypeName(indexed.receiver(), names) || exprUsesAnyTypeName(indexed.index(), names);
+        }
+        if (expr instanceof Ast.AwaitExpr awaited) return exprUsesAnyTypeName(awaited.expression(), names);
+        if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) if (exprUsesAnyTypeName(item, names)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) if (exprUsesAnyTypeName(item, names)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) if (exprUsesAnyTypeName(field.value(), names)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.LambdaExpr lambda) {
+            for (Ast.Param param : lambda.parameters()) if (typeRefUsesAnyName(param.type(), names)) return true;
+            return exprUsesAnyTypeName(lambda.expressionBody(), names)
+                    || (lambda.blockBody() != null && statementsUseAnyTypeName(lambda.blockBody(), names));
+        }
+        return false;
+    }
+
+    private boolean typeRefUsesAnyName(Ast.TypeRef ref, Set<String> names) {
+        if (ref == null) return false;
+        if (ref.isBorrow()) return typeRefUsesAnyName(ref.borrowedTarget(), names);
+        if (names.contains(ref.name())) return true;
+        for (Ast.TypeRef argument : ref.arguments()) {
+            if (typeRefUsesAnyName(argument, names)) return true;
         }
         return false;
     }
