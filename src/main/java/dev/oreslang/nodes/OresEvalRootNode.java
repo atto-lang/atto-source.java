@@ -340,67 +340,23 @@ public final class OresEvalRootNode extends RootNode {
                     schema.append(field.name())
                             .append(':').append(field.bindingKind())
                             .append(':').append(field.type());
-                    appendPersistedTypeSchema(
-                            field.type(),
-                            module.name(),
-                            schema,
-                            new LinkedHashSet<>());
+                    Ast.ClassDecl stateClass = field.type() == null ? null : findClass(field.type().name());
+                    if (stateClass != null) {
+                        schema.append(":class=").append(runtimeClassId(stateClass)).append('{');
+                        for (Ast.FieldDecl classField : effectiveFields(stateClass, new LinkedHashSet<>()).stream()
+                                .sorted(Comparator.comparing(Ast.FieldDecl::name))
+                                .toList()) {
+                            schema.append(classField.name())
+                                    .append(':').append(classField.bindingKind())
+                                    .append(':').append(classField.type())
+                                    .append(';');
+                        }
+                        schema.append('}');
+                    }
                     schema.append(';');
                 }
                 return schema.toString();
             });
-        }
-
-        private void appendPersistedTypeSchema(
-                Ast.TypeRef type,
-                String lexicalModuleName,
-                StringBuilder schema,
-                Set<String> visitingClasses) {
-            if (type == null) return;
-
-            Ast.ClassDecl stateClass = findClassForSchema(type.name(), lexicalModuleName);
-            if (stateClass == null) {
-                for (Ast.TypeRef argument : type.arguments()) {
-                    appendPersistedTypeSchema(argument, lexicalModuleName, schema, visitingClasses);
-                }
-                return;
-            }
-
-            String classId = runtimeClassId(stateClass);
-            if (!visitingClasses.add(classId)) {
-                schema.append(":class-ref=").append(classId);
-                return;
-            }
-
-            schema.append(":class=").append(classId).append('{');
-            for (Ast.FieldDecl classField : effectiveFields(stateClass, new LinkedHashSet<>()).stream()
-                    .sorted(Comparator.comparing(Ast.FieldDecl::name))
-                    .toList()) {
-                schema.append(classField.name())
-                        .append(':').append(classField.bindingKind())
-                        .append(':').append(classField.type());
-                appendPersistedTypeSchema(
-                        classField.type(),
-                        classOwners.get(stateClass),
-                        schema,
-                        visitingClasses);
-                schema.append(';');
-            }
-            schema.append('}');
-            visitingClasses.remove(classId);
-        }
-
-        private Ast.ClassDecl findClassForSchema(String name, String lexicalModuleName) {
-            if (name == null || name.isBlank()) return null;
-            if (name.contains(".")) return classes.get(name);
-
-            if (lexicalModuleName != null) {
-                Ast.ClassDecl lexical = classes.get(lexicalModuleName + "." + name);
-                if (lexical != null) return lexical;
-            }
-
-            if (ambiguousClasses.contains(name)) return null;
-            return classes.get(name);
         }
 
         private String singletonCodeDigest(Ast.ModuleDecl module) {
