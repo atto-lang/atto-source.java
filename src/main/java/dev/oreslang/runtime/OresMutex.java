@@ -583,7 +583,13 @@ public final class OresMutex {
                 releasePermitOrHandoff();
                 throw new PoisonedMutexException();
             }
-            markOwner(ownerDomain);
+            try {
+                markOwner(ownerDomain);
+            } catch (RuntimeException | Error failure) {
+                releaseDomain(ownerDomain);
+                releasePermitOrHandoff();
+                throw failure;
+            }
             return new SharedGuard(ownerDomain, enforceOwnerDomain);
         }
 
@@ -698,10 +704,13 @@ public final class OresMutex {
                 } else if (permit.tryAcquire()) {
                     acquired = true;
                 } else {
+                    boolean waitRegistered = false;
                     try {
                         beginWait(ownerDomain);
+                        waitRegistered = true;
                         asyncQueue.addLast(waiter);
                     } catch (RuntimeException | Error failure) {
+                        if (waitRegistered) endWait(ownerDomain);
                         waitFailure = failure;
                     }
                 }
@@ -714,12 +723,18 @@ public final class OresMutex {
                 releaseDomain(ownerDomain);
                 future.failFromRuntime(new PoisonedMutexException());
             } else if (acquired) {
-                markOwner(ownerDomain);
-                SharedGuard guard = new SharedGuard(
-                        ownerDomain,
-                        enforceOwnerDomain);
-                if (!future.completeFromRuntime(guard)) {
-                    guard.releaseFromRuntime();
+                try {
+                    markOwner(ownerDomain);
+                    SharedGuard guard = new SharedGuard(
+                            ownerDomain,
+                            enforceOwnerDomain);
+                    if (!future.completeFromRuntime(guard)) {
+                        guard.releaseFromRuntime();
+                    }
+                } catch (RuntimeException | Error failure) {
+                    releaseDomain(ownerDomain);
+                    releasePermitOrHandoff();
+                    future.failFromRuntime(failure);
                 }
             }
 
