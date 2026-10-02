@@ -85,10 +85,25 @@ public final class OwnershipChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
-                // Receiver is immutable unless a future explicit "mut self"
-                // syntax is introduced. Methods can still mutate through an
-                // explicit &mut parameter.
-                scope.define("self", new VarState(Ast.TypeRef.simple(klass.name()), false, ValueKind.IMM_BORROW, Origin.PARAM));
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    // An actor mailbox turn is the exclusive mutation capability
+                    // for actor-owned state. Even shared actors process one turn
+                    // at a time, so let fields may mutate through self without a
+                    // mutex. The capability never escapes the actor method.
+                    scope.define("self", new VarState(
+                            Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
+                            false,
+                            ValueKind.MUT_BORROW,
+                            Origin.PARAM));
+                } else {
+                    // Ordinary class receivers remain immutable unless explicit
+                    // mutable receiver syntax is introduced.
+                    scope.define("self", new VarState(
+                            Ast.TypeRef.simple(klass.name()),
+                            false,
+                            ValueKind.IMM_BORROW,
+                            Origin.PARAM));
+                }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
             checkBlock(method.body(), scope, method.returnType());
