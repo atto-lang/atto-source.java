@@ -1211,6 +1211,38 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void cancellingQueuedSingletonRequestReleasesBackpressureImmediately() throws Exception {
+        String key = "cancel-queued:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<AtomicInteger> handle =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        CompletableFuture<Object> active = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> {
+                    entered.countDown();
+                    release.await(1, TimeUnit.SECONDS);
+                    return state.incrementAndGet();
+                }).toCompletableFuture();
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+
+        CompletableFuture<Object> queued = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+        assertTrue(queued.cancel(false));
+
+        CompletableFuture<Object> replacement = handle.call(
+                List.of(), 1, Duration.ofSeconds(2),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+
+        release.countDown();
+        assertEquals(1L, ((Number) active.join()).longValue());
+        assertEquals(2L, ((Number) replacement.join()).longValue());
+    }
+
+    @Test
     void registryEnforcesCallerBackpressureAndRecoversAfterTimeout() throws Exception {
         String key = "backpressure:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<AtomicInteger> handle =
