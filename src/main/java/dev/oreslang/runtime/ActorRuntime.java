@@ -665,9 +665,39 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private IsolatePolicy defaultSpawnPolicy() {
+        IsolatePolicy caller = currentActorPolicy();
+        return caller == null ? policyCeiling : caller;
+    }
+
+    private void requireWithinCallerPolicy(IsolatePolicy child) {
+        IsolatePolicy caller = currentActorPolicy();
+        if (caller == null) return;
+
+        if (!caller.capabilities().containsAll(child.capabilities())) {
+            java.util.Set<IsolatePolicy.Capability> excess = child.capabilities().isEmpty()
+                    ? java.util.EnumSet.noneOf(IsolatePolicy.Capability.class)
+                    : java.util.EnumSet.copyOf(child.capabilities());
+            excess.removeAll(caller.capabilities());
+            throw new SecurityException("child actor policy exceeds caller actor capabilities: " + excess);
+        }
+        if (child.maxHeapBytes() > caller.maxHeapBytes()) {
+            throw new SecurityException("child actor maxHeapBytes exceeds caller actor policy");
+        }
+        if (child.maxMailboxMessages() > caller.maxMailboxMessages()) {
+            throw new SecurityException("child actor mailbox limit exceeds caller actor policy");
+        }
+        if (child.maxWallTime().compareTo(caller.maxWallTime()) > 0) {
+            throw new SecurityException("child actor wall-time limit exceeds caller actor policy");
+        }
+        if (caller.adversarial() && !child.adversarial()) {
+            throw new SecurityException("child actor cannot weaken an adversarial caller policy");
+        }
+    }
+
     /** Backward-compatible default: an unqualified runtime actor is private. */
     public <M> ActorRef<M> spawn(Supplier<? extends Behavior<M>> behaviorFactory) {
-        return spawnPrivate(policyCeiling, behaviorFactory);
+        return spawnPrivate(defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawn(
@@ -687,6 +717,7 @@ public final class ActorRuntime implements AutoCloseable {
     public <M> ActorRef<M> spawnPrivate(
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        requireSupervisorContext("use trusted Supplier private actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(ActorKind.PRIVATE, policy, context -> behaviorFactory.get(), true);
@@ -698,7 +729,7 @@ public final class ActorRuntime implements AutoCloseable {
      * actor context is installed and stored in actor-owned memory.
      */
     public <M> ActorRef<M> spawnPrivate(BehaviorFactory<M> behaviorFactory) {
-        return spawn(ActorKind.PRIVATE, policyCeiling, behaviorFactory);
+        return spawn(ActorKind.PRIVATE, defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnPrivate(
@@ -713,31 +744,33 @@ public final class ActorRuntime implements AutoCloseable {
      * compiler lowering and forbidden for adversarial policies.
      */
     public <M> ActorRef<M> spawnPrivateTrusted(BehaviorFactory<M> behaviorFactory) {
-        return spawnPrivateTrusted(policyCeiling, behaviorFactory);
+        return spawnPrivateTrusted(defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnPrivateTrusted(
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
+        requireSupervisorContext("use trusted captured private actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(ActorKind.PRIVATE, policy, behaviorFactory, true);
     }
 
     public <M> ActorRef<M> spawnShared(Supplier<? extends Behavior<M>> behaviorFactory) {
-        return spawnShared(policyCeiling, behaviorFactory);
+        return spawnShared(defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnShared(
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        requireSupervisorContext("use trusted Supplier shared actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawn(ActorKind.SHARED, policy, context -> behaviorFactory.get());
     }
 
     public <M> ActorRef<M> spawnShared(BehaviorFactory<M> behaviorFactory) {
-        return spawn(ActorKind.SHARED, policyCeiling, behaviorFactory);
+        return spawn(ActorKind.SHARED, defaultSpawnPolicy(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnShared(
@@ -751,6 +784,7 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             IsolatePolicy policy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        requireSupervisorContext("use trusted Supplier actor construction");
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(kind, policy, context -> behaviorFactory.get(), kind == ActorKind.PRIVATE);
@@ -766,22 +800,25 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void validatePrivateBehaviorState(ActorId owner, Behavior<?> behavior) {
-        Class<?> type = behavior.getClass();
-        for (java.lang.reflect.Field field : type.getDeclaredFields()) {
-            if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
-            if (!field.trySetAccessible()) {
-                throw new SecurityException(
-                        "private actor behavior contains inaccessible captured state: " + field.getName());
+        for (Class<?> type = behavior.getClass();
+             type != null && type != Object.class;
+             type = type.getSuperclass()) {
+            for (java.lang.reflect.Field field : type.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
+                if (!field.trySetAccessible()) {
+                    throw new SecurityException(
+                            "private actor behavior contains inaccessible captured state: " + field.getName());
+                }
+                final Object value;
+                try {
+                    value = field.get(behavior);
+                } catch (IllegalAccessException impossible) {
+                    throw new SecurityException(
+                            "cannot inspect private actor behavior capture: " + field.getName(),
+                            impossible);
+                }
+                validatePrivateBehaviorCapture(owner, field.getName(), value);
             }
-            final Object value;
-            try {
-                value = field.get(behavior);
-            } catch (IllegalAccessException impossible) {
-                throw new SecurityException(
-                        "cannot inspect private actor behavior capture: " + field.getName(),
-                        impossible);
-            }
-            validatePrivateBehaviorCapture(owner, field.getName(), value);
         }
     }
 
@@ -866,6 +903,7 @@ public final class ActorRuntime implements AutoCloseable {
                         IsolatePolicy.Capability.SHARED_MEMORY,
                         IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
                 : policy;
+        requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
         } else if (!trustedPrivateFactory) {
