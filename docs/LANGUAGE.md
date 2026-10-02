@@ -190,7 +190,7 @@ define class Box<T> as
   val T value;
 
   @Ret<self>
-  identity() {
+  identity(take self)() {
     return self;
   }
 end
@@ -199,12 +199,12 @@ end
 The explicit receiver form remains available:
 
 ```ores
-find(self Box)(int key) => self {
-  return self;
+find(self Box)(int key) => int {
+  return key;
 }
 ```
 
-The receiver variable name is always `self`. The default receiver is immutable. A method that mutates `let` instance or trait state must opt into a mutable receiver:
+The receiver variable name is always `self`. Receiver ownership is explicit when needed: the default/explicit `self` form is a read borrow, `mut self` is an exclusive mutable borrow, and `take self` transfers ownership into the method. A method that mutates `let` instance or trait state must opt into a mutable receiver:
 
 ```ores
 increment(mut self)() => int {
@@ -212,6 +212,16 @@ increment(mut self)() => int {
   return self.count;
 }
 ```
+
+A consuming method uses `take self`:
+
+```ores
+into_self(take self)() => self {
+  return self;
+}
+```
+
+A borrowed `self` or `mut self` may not be returned as an owned value without an explicit return-provenance contract. This prevents a method from manufacturing a second owner.
 
 A mutable-receiver method can only be called through a mutable owner (`let`) or an existing `mut` parameter. Calling it through an immutable `val` owner or ordinary read-borrow parameter is rejected by the ownership checker. Extracting a mutable-receiver method as a bound method value is rejected in v0 because that would require a persistent exclusive lifetime tied to the captured receiver; call the method directly instead.
 
