@@ -62,6 +62,22 @@ final class DeferSemanticsTest {
     }
 
     @Test
+    void namedMoveOnlyCallableIsOwnedByTheDeferFrame() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub routine main() => void {
+                          val cleanup = || -> {
+                            stdio.stdout.write("D");
+                          };
+                          defer cleanup;
+                          cleanup();
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("moved"));
+    }
+
+    @Test
     void producerCallRunsNowAndReturnedFunctionRunsLater() throws Exception {
         String output = run("""
                 fnc make_cleanup() => typeof fnc() -> void {
