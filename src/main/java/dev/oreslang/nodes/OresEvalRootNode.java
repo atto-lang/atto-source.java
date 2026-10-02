@@ -592,6 +592,15 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(result.values());
         }
 
+        private String actorParameterContract(List<Ast.Param> parameters) {
+            List<String> parts = new ArrayList<>(parameters.size());
+            for (Ast.Param parameter : parameters) {
+                parts.add((parameter.structural() ? "structural:" : "nominal:")
+                        + parameter.type());
+            }
+            return parts.toString();
+        }
+
         private final class NamedFunctionValue implements Invokable {
             private final Ast.FunctionDecl function;
 
@@ -611,7 +620,7 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override
             public String actorContractKey() {
-                return function.parameters() + "=>" + function.returnType();
+                return actorParameterContract(function.parameters()) + "=>" + function.returnType();
             }
         }
 
@@ -658,7 +667,7 @@ public final class OresEvalRootNode extends RootNode {
 
             @Override
             public String actorContractKey() {
-                return lambda.parameters().toString();
+                return actorParameterContract(lambda.parameters());
             }
         }
 
