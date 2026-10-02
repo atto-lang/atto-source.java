@@ -176,6 +176,39 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void guardFutureCannotBeForgedOrTimeoutCompletedByCallers() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> waitingRef = new AtomicReference<>();
+        Thread requester = Thread.ofPlatform().start(() -> waitingRef.set(mutex.lockAsync()));
+        requester.join();
+
+        var waiting = waitingRef.get();
+        assertInstanceOf(OresMutex.GuardFuture.class, waiting);
+        assertFalse(waiting.isDone());
+
+        assertThrows(UnsupportedOperationException.class, () -> waiting.complete(null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.completeExceptionally(new RuntimeException("forged")));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.completeAsync(() -> null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.orTimeout(1, TimeUnit.MILLISECONDS));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.completeOnTimeout(null, 1, TimeUnit.MILLISECONDS));
+        assertThrows(UnsupportedOperationException.class, () -> waiting.obtrudeValue(null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.obtrudeException(new RuntimeException("forged")));
+
+        assertTrue(waiting.cancel(true));
+        guard.release();
+
+        var next = mutex.lock();
+        next.release();
+    }
+
+    @Test
     void sharedTryLockReportsBusyAndCancelledAsyncWaitDoesNotLeakPermit() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var guard = mutex.lock();
@@ -201,6 +234,109 @@ final class MutexRuntimeTest {
         var next = mutex.lock();
         next.release();
         assertTrue(waiting.isCancelled());
+    }
+
+    @Test
+    void cancelledQueuedWaiterIsSkippedByDirectHandoff() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> firstRef = new AtomicReference<>();
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> secondRef = new AtomicReference<>();
+
+        Thread firstRequester = Thread.ofPlatform().start(() -> firstRef.set(mutex.lockAsync()));
+        Thread secondRequester = Thread.ofPlatform().start(() -> secondRef.set(mutex.lockAsync()));
+        firstRequester.join();
+        secondRequester.join();
+
+        var first = firstRef.get();
+        var second = secondRef.get();
+        assertFalse(first.isDone());
+        assertFalse(second.isDone());
+        assertTrue(first.cancel(true));
+
+        guard.release();
+
+        var secondGuard = second.get(2, TimeUnit.SECONDS);
+        secondGuard.value()[0] = 9;
+        secondGuard.release();
+
+        assertTrue(first.isCancelled());
+        assertEquals(9, mutex.withLock(value -> value[0]).intValue());
+    }
+
+    @Test
+    void poisoningFailsQueuedAsyncWaitersAndRecoveryRestoresHandoff() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> firstRef = new AtomicReference<>();
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> secondRef = new AtomicReference<>();
+        Thread firstRequester = Thread.ofPlatform().start(() -> firstRef.set(mutex.lockAsync()));
+        Thread secondRequester = Thread.ofPlatform().start(() -> secondRef.set(mutex.lockAsync()));
+        firstRequester.join();
+        secondRequester.join();
+
+        guard.value()[0] = 17;
+        guard.fail();
+
+        for (var waiting : List.of(firstRef.get(), secondRef.get())) {
+            var failure = assertThrows(
+                    java.util.concurrent.ExecutionException.class,
+                    () -> waiting.get(2, TimeUnit.SECONDS));
+            assertInstanceOf(OresMutex.PoisonedMutexException.class, failure.getCause());
+        }
+
+        assertTrue(mutex.isPoisoned());
+        mutex.recover(value -> {
+            value[0] = 0;
+            return null;
+        });
+
+        var next = mutex.lockAsync().get(2, TimeUnit.SECONDS);
+        next.value()[0] = 3;
+        next.release();
+        assertEquals(3, mutex.withLock(value -> value[0]).intValue());
+    }
+
+    @Test
+    void blockingAndAsyncWaitersBothMakeProgress() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var initial = mutex.lock();
+        CountDownLatch blockingStarted = new CountDownLatch(1);
+        CountDownLatch blockingDone = new CountDownLatch(1);
+        AtomicReference<Throwable> blockingFailure = new AtomicReference<>();
+
+        Thread blocking = Thread.ofPlatform().start(() -> {
+            blockingStarted.countDown();
+            try {
+                var guard = mutex.lock();
+                guard.value()[0] += 1;
+                guard.release();
+            } catch (Throwable failure) {
+                blockingFailure.set(failure);
+            } finally {
+                blockingDone.countDown();
+            }
+        });
+        assertTrue(blockingStarted.await(1, TimeUnit.SECONDS));
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> asyncRef = new AtomicReference<>();
+        Thread asyncRequester = Thread.ofPlatform().start(() -> asyncRef.set(mutex.lockAsync()));
+        asyncRequester.join();
+        var async = asyncRef.get();
+        assertFalse(async.isDone());
+
+        initial.release();
+
+        var asyncGuard = async.get(2, TimeUnit.SECONDS);
+        asyncGuard.value()[0] += 10;
+        asyncGuard.release();
+
+        assertTrue(blockingDone.await(2, TimeUnit.SECONDS));
+        blocking.join();
+        assertNull(blockingFailure.get());
+        assertEquals(11, mutex.withLock(value -> value[0]).intValue());
     }
 
     @Test
