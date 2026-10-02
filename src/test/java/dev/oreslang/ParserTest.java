@@ -147,6 +147,74 @@ final class ParserTest {
         assertDoesNotThrow(() -> TypeChecker.check(program));
     }
 
+
+    @Test
+    void actorRoutineEntrypointsAreFirstClassActors() {
+        Ast.Program program = Parser.parse("""
+                pub actor routine counter(int initial) => void {
+                  let int count = initial;
+                  receive loop (int delta) {
+                    count = count + delta;
+                  }
+                  return;
+                }
+                """);
+
+        Ast.FunctionDecl actor = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.CallableKind.ROUTINE, actor.kind());
+        assertEquals(Ast.ActorKind.PRIVATE, actor.actorKind());
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void blockingChannelOperationsRequireAsyncOrActorContext() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<int> jobs) => void {
+                  send(jobs, 1);
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Channel<int> jobs) => int {
+                  return receive(jobs);
+                }
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc poll(Channel<int> jobs) => void {
+                  try_send(jobs, 1);
+                  try_receive(jobs);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void selectSendRejectsMoveOnlyValuesUntilOwnershipPhiLoweringExists() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub actor fnc worker() => void {
+                          val Channel<Array<int>> jobs = channel<Array<int>>(1);
+                          val Array<int> payload = [1, 2, 3];
+
+                          select {
+                            case send(jobs, payload) => {
+                              stdio.println("sent");
+                            }
+                            default => {
+                              stdio.println("busy");
+                            }
+                          }
+
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("ownership-phi")
+                        || failure.getMessage().contains("Copy/Shared-safe"),
+                failure::getMessage);
+    }
+
     @Test
     void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
         String source = """
