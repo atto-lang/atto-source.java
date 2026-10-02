@@ -31,6 +31,29 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void sharedMutexRejectsActorLocalStateGraph() {
+        var program = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val local = Mutex.new(new Counter());
+                    val shared = SharedMutex.new(local);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("SharedMutex<T> requires shared-safe owned data"));
+    }
+
+    @Test
     void mutexGuardTransparentlyProtectsClassStateAndReleasesLexically() throws Exception {
         String program = """
                 define module model
