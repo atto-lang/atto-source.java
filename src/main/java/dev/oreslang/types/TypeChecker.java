@@ -50,6 +50,7 @@ public final class TypeChecker {
         checker.collect(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
+        OwnershipChecker.check(program);
         return program;
     }
 
