@@ -1014,6 +1014,92 @@ final class OwnershipAndClosureTest {
         assertEquals("12", output);
     }
 
+    @Test
+    void copyStructMayReturnSelfByValueAsIndependentCopy() throws Exception {
+        String output = run("""
+                struct Point {
+                  pub let int x = 1;
+
+                  pub duplicate() => Point {
+                    return self;
+                  }
+                }
+
+                pub fnc main() => void {
+                  let first = Point {};
+                  let second = first.duplicate();
+                  second.x = 2;
+                  stdio.stdout.write(first.x);
+                  stdio.stdout.write(second.x);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void moveOnlyStructCannotReturnBorrowedSelfByValue() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        struct Holder {
+                          pub let Box box = new Box();
+
+                          pub duplicate() => Holder {
+                            return self;
+                          }
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot move non-Copy struct 'self'"));
+    }
+
+    @Test
+    void moveOnlyFieldCannotBeMovedOutOfLiveStructBinding() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        struct Holder {
+                          pub let Box box = new Box();
+                        }
+
+                        fnc bad() => Box {
+                          let Holder holder = Holder {};
+                          return holder.box;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot move non-Copy field 'Holder.box'"));
+    }
+
+    @Test
+    void moveOnlyFieldMayBeMovedOutOfOwnedTemporaryStruct() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Box as
+                  pub let int value = 1;
+                end
+
+                struct Holder {
+                  pub let Box box = new Box();
+                }
+
+                fnc make() => Holder {
+                  return Holder {};
+                }
+
+                fnc take() => Box {
+                  return make().box;
+                }
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
