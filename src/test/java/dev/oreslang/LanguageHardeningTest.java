@@ -244,6 +244,28 @@ final class LanguageHardeningTest {
                 end
                 """)));
         assertTrue(scope.getMessage().contains("unknown name 'value'"));
+
+        IllegalArgumentException listAgainstTuple = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match (1, 2) {
+                      [a, b] => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(listAgainstTuple.getMessage().contains("list match pattern"));
+
+        IllegalArgumentException tupleAgainstList = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    match [1, 2] {
+                      (a, b) => { return; }
+                    }
+                  }
+                end
+                """)));
+        assertTrue(tupleAgainstList.getMessage().contains("tuple match pattern"));
     }
 
     @Test
