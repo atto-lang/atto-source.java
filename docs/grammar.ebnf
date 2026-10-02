@@ -16,6 +16,8 @@ top_level_item  = annotated_module_decl
                 | init_decl
                 | callable_decl
                 | class_decl
+                | struct_decl
+                | trait_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -26,6 +28,8 @@ annotated_module_decl = { annotation } "define" [ "singleton" ] "module" IDENT "
 module_member   = init_decl
                 | callable_decl
                 | class_decl
+                | struct_decl
+                | trait_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -41,7 +45,8 @@ init_decl       = "init" "routine" "(" ")" "=>" "void" block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
-                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
                   "as" { class_member } "end" ;
 
 class_member    = field_decl
@@ -60,6 +65,17 @@ static_function_decl
                 = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
+struct_decl     = visibility "struct" IDENT [ generic_params ] struct_body
+                | "define" "struct" IDENT [ generic_params ] struct_body ;
+struct_body     = "{" { struct_field } "}"
+                | "as" { struct_field } "end" ;
+struct_field    = IDENT ":" type_ref struct_field_terminator ;
+
+trait_decl      = "define" "trait" IDENT [ generic_params ]
+                  [ ( "is" | "implements" | "impl" ) type_ref { "," type_ref } ]
+                  [ "with" type_ref { "," type_ref } ]
+                  "as" { field_decl | method_decl } "end" ;
+
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   interface_body
@@ -70,9 +86,7 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
-                | IDENT ":" type_ref member_terminator
-                | [ binding_kind ] type_ref IDENT member_terminator ;
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
@@ -91,7 +105,8 @@ destructure_stmt= "[" destructure_item { "," destructure_item } "]" "=" expressi
 destructure_item= binding_kind IDENT ;
 
 block           = "{" { statement } "}" ;
-statement       = binding_decl
+statement       = local_type_decl
+                | binding_decl
                 | destructure_stmt
                 | return_stmt
                 | if_stmt
@@ -99,6 +114,10 @@ statement       = binding_decl
                 | defer_stmt
                 | for_stmt
                 | expression stmt_terminator ;
+
+local_type_decl = [ "define" ] "struct" IDENT [ generic_params ] struct_body
+                | [ "define" ] "interface" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ] interface_body ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
@@ -189,6 +208,7 @@ qualified_name  = IDENT { "." IDENT } ;
 
 stmt_terminator   = ";" | SAFE_STRUCTURAL_BOUNDARY ;
 member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
+struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_BOUNDARY ;
 
 (* Semantic restrictions:
    - Each source file is a separately versioned compilation/code unit and is the
