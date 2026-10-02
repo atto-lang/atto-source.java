@@ -355,7 +355,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.UnaryExpr unary && unary.operator().equals("*")) {
                 Object value = eval(unary.operand(), env);
                 if (!(value instanceof ReferenceValue reference)) throw new IllegalArgumentException("dereference place requires a borrow reference");
-                return reference.place;
+                return new BorrowPlace(reference);
             }
             throw new IllegalArgumentException("expression is not an assignable/borrowable place");
         }
@@ -699,6 +699,14 @@ public final class OresEvalRootNode extends RootNode {
             object.fields.put(field.name(), value);
         }
         @Override public boolean mutable() { return field.bindingKind() == Ast.BindingKind.LET; }
+    }
+
+    private static final class BorrowPlace implements Place {
+        private final ReferenceValue reference;
+        private BorrowPlace(ReferenceValue reference) { this.reference = reference; }
+        @Override public Object get() { return reference.get(); }
+        @Override public void set(Object value) { reference.set(value); }
+        @Override public boolean mutable() { return reference.mutable && reference.place.mutable(); }
     }
 
     private static final class ReferenceValue {
