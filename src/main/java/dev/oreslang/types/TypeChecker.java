@@ -264,13 +264,19 @@ public final class TypeChecker {
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
+            Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
+            boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
+            if (recursiveLambda && declaredAhead instanceof Function) {
+                env.define(binding.name(), declaredAhead, binding.kind());
+            }
             Type actual = typeOf(binding.initializer(), env, generics, self);
-            Type declared = binding.declaredType() == null ? actual : resolve(binding.declaredType(), generics, self);
+            Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
                 throw new IllegalArgumentException("const '" + binding.name() + "' needs a compile-time constant initializer");
             }
-            env.define(binding.name(), declared, binding.kind());
+            if (recursiveLambda && declaredAhead instanceof Function) env.replace(binding.name(), declared, binding.kind());
+            else env.define(binding.name(), declared, binding.kind());
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
@@ -989,6 +995,10 @@ public final class TypeChecker {
         private Binding lookup(String name) {
             Binding binding = bindings.get(name);
             return binding != null ? binding : parent == null ? null : parent.lookup(name);
+        }
+        private void replace(String name, Type type, Ast.BindingKind kind) {
+            if (!bindings.containsKey(name)) throw new IllegalArgumentException("unknown binding '" + name + "'");
+            bindings.put(name, new Binding(type, kind));
         }
         private record Binding(Type type, Ast.BindingKind kind) { }
     }
