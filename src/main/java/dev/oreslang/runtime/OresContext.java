@@ -59,6 +59,13 @@ public final class OresContext implements AutoCloseable {
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         isolatePolicy.require(capability, api);
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        if (actorPolicy != null) {
+            if (ActorRuntime.currentActorRuntime() != actors) {
+                throw new SecurityException("actor capability check crossed ActorRuntime boundary for " + api);
+            }
+            actorPolicy.require(capability, api);
+        }
     }
 
     /**
