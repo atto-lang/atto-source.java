@@ -34,6 +34,7 @@ public final class GpuRuntime {
     /** Stable public representation for Oreslang Option values. */
     public record OptionValue(boolean present, Object value) {
         public OptionValue {
+            if (present && value == null) throw new IllegalArgumentException("Some cannot carry standalone null");
             if (!present && value != null) throw new IllegalArgumentException("None cannot carry a value");
         }
     }
@@ -88,7 +89,7 @@ public final class GpuRuntime {
                     + "' cannot execute gpu callable '" + callable + "'");
         }
         try {
-            return freezeValue(backend.invoke(invocation));
+            return freezeValue(backend.invoke(invocation), true);
         } catch (GpuException failure) {
             throw failure;
         } catch (RuntimeException failure) {
@@ -99,12 +100,16 @@ public final class GpuRuntime {
 
     private static List<?> freezeArguments(List<?> arguments) {
         ArrayList<Object> frozen = new ArrayList<>(arguments.size());
-        for (Object argument : arguments) frozen.add(freezeValue(argument));
+        for (Object argument : arguments) frozen.add(freezeValue(argument, false));
         return List.copyOf(frozen);
     }
 
-    private static Object freezeValue(Object value) {
-        if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+    private static Object freezeValue(Object value, boolean allowRootVoidNull) {
+        if (value == null) {
+            if (allowRootVoidNull) return null;
+            throw new GpuTransferException("standalone null cannot cross the Oreslang GPU boundary; use Option");
+        }
+        if (value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ComplexValue) {
@@ -112,7 +117,7 @@ public final class GpuRuntime {
         }
         if (value instanceof OptionValue option) {
             return option.present()
-                    ? new OptionValue(true, freezeValue(option.value()))
+                    ? new OptionValue(true, freezeValue(option.value(), false))
                     : new OptionValue(false, null);
         }
         if (value instanceof Transferable transferable) {
@@ -120,28 +125,28 @@ public final class GpuRuntime {
             if (transferred == value) {
                 throw new GpuTransferException("GPU transferable values must produce a distinct wire representation");
             }
-            return freezeValue(transferred);
+            return freezeValue(transferred, false);
         }
         if (value instanceof List<?> list) {
             ArrayList<Object> frozen = new ArrayList<>(list.size());
-            for (Object item : list) frozen.add(freezeValue(item));
+            for (Object item : list) frozen.add(freezeValue(item, false));
             return List.copyOf(frozen);
         }
         if (value instanceof Set<?> set) {
-            return set.stream().map(GpuRuntime::freezeValue)
+            return set.stream().map(item -> freezeValue(item, false))
                     .collect(java.util.stream.Collectors.toUnmodifiableSet());
         }
         if (value instanceof Map<?, ?> map) {
             LinkedHashMap<Object, Object> frozen = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) {
-                frozen.put(freezeValue(entry.getKey()), freezeValue(entry.getValue()));
+                frozen.put(freezeValue(entry.getKey(), false), freezeValue(entry.getValue(), false));
             }
             return Map.copyOf(frozen);
         }
         if (value.getClass().isArray()) {
             int length = Array.getLength(value);
             ArrayList<Object> frozen = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) frozen.add(freezeValue(Array.get(value, i)));
+            for (int i = 0; i < length; i++) frozen.add(freezeValue(Array.get(value, i), false));
             return List.copyOf(frozen);
         }
         throw new GpuTransferException("value of type " + value.getClass().getName()
