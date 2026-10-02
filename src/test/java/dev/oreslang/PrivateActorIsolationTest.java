@@ -31,6 +31,24 @@ final class PrivateActorIsolationTest {
         }
     }
 
+
+    @Test
+    void captureFreeFactoryStillCannotHideMutableJvmStateInBehavior() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnPrivate(factoryContext -> {
+                int[] ordinaryJvmState = new int[]{41};
+                return (message, context) -> ordinaryJvmState[0]++;
+            });
+
+            ref.send("run");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isPresent());
+            assertInstanceOf(SecurityException.class, ref.failure().orElseThrow());
+            assertTrue(ref.failure().orElseThrow().getMessage().contains("context.privateMemory"));
+            assertEquals(0L, runtime.privateMemoryBytes());
+        }
+    }
+
     @Test
     void trustedHostEscapeHatchIsExplicitAndUnavailableToAdversarialPolicy() {
         StringBuilder hostMutable = new StringBuilder("host");
