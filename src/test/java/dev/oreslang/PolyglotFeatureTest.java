@@ -10,7 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 final class PolyglotFeatureTest {
     @Test
@@ -25,6 +25,34 @@ final class PolyglotFeatureTest {
         assertTrue(interop.getArraySize(tuple) == 2);
         assertTrue(interop.readArrayElement(tuple, 0).equals("ok"));
         assertTrue(interop.readArrayElement(tuple, 1).equals(42L));
+    }
+
+    @Test
+    void nonExhaustiveMatchErrorsDoNotEchoPayloads() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    match ("super-secret-token", 42) {
+                      ("ok", value) => {
+                        stdio.println(value);
+                      }
+                    }
+                    return;
+                  }
+                end
+                """;
+
+        Source source = Source.newBuilder(OresLanguage.ID, program, "non-exhaustive-match.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .build()) {
+            RuntimeException error = assertThrows(RuntimeException.class, () -> context.eval(source));
+            assertTrue(error.getMessage().contains("tuple(arity=2)"));
+            assertFalse(error.getMessage().contains("super-secret-token"));
+        }
     }
 
     @Test
