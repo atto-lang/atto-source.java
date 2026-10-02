@@ -121,6 +121,112 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void hotReloadKeepsStateWhenSingletonSchemaIsStable() throws Exception {
+        String firstProgram = """
+                define singleton module reload_stable_counter
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int n = await reload_stable_counter.next();
+                    stdio.println(n);
+                    return;
+                  }
+                end
+                """;
+
+        String secondProgram = """
+                define singleton module reload_stable_counter
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 10;
+                    return count;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int n = await reload_stable_counter.next();
+                    stdio.println(n);
+                    return;
+                  }
+                end
+                """;
+
+        String first = eval(firstProgram, "reload-stable.ores");
+        String second = eval(secondProgram, "reload-stable.ores");
+
+        assertTrue(first.contains("1"), first);
+        assertTrue(second.contains("11"), second);
+    }
+
+    @Test
+    void hotReloadRejectsSingletonSchemaReinterpretationWithoutMigration() throws Exception {
+        String firstProgram = """
+                define singleton module reload_schema_guard_counter
+                  let int count = 0;
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int n = await reload_schema_guard_counter.next();
+                    stdio.println(n);
+                    return;
+                  }
+                end
+                """;
+
+        String incompatibleProgram = """
+                define singleton module reload_schema_guard_counter
+                  let int count = 0;
+                  let int extra = 5;
+
+                  pub fnc next() => int {
+                    count = count + extra;
+                    return count;
+                  }
+                end
+
+                define module app
+                  pub fnc main() => void {
+                    val int n = await reload_schema_guard_counter.next();
+                    stdio.println(n);
+                    return;
+                  }
+                end
+                """;
+
+        assertTrue(eval(firstProgram, "reload-schema-guard.ores").contains("1"));
+        RuntimeException error = assertThrows(RuntimeException.class,
+                () -> eval(incompatibleProgram, "reload-schema-guard.ores"));
+        assertTrue(String.valueOf(error.getMessage()).contains("schema changed"), error.getMessage());
+    }
+
+    @Test
+    void singletonStateRequiresExplicitFieldTypes() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module inferred_state
+                          let count = 0;
+                          pub fnc read() => int { return count; }
+                        end
+                        """)));
+        assertTrue(error.getMessage().contains("requires an explicit type"));
+    }
+
+    @Test
     void registryCreatesOneActorAndSerializesConcurrentCalls() {
         String key = "test:" + UUID.randomUUID();
         AtomicInteger initializations = new AtomicInteger();
