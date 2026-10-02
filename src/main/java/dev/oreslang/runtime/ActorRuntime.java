@@ -2299,7 +2299,9 @@ public final class ActorRuntime implements AutoCloseable {
                 if (memorySlice != null) memorySlice.close();
                 finalized = true;
                 workerThread = null;
-                unregisterActor(this);
+                // spawnInternal owns the reserved actor-count slot until it
+                // returns successfully, so abort removes only the map entry.
+                actors.remove(ref.id(), this);
                 lifecycleLock.notifyAll();
             }
         }
