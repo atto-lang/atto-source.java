@@ -184,11 +184,15 @@ Class interface satisfaction uses public members, including inherited public mem
 
 Oreslang does **not** have ambient nullable references. A bare `null` value is a compile-time error, and `null` is not a standalone variable/parameter/return type.
 
-Optionality is explicit:
+Optionality is explicit, using Rust-style `Some(value)` and `None`:
 
 ```ores
-fnc lookup(String key) => Option<Value> {
-  // explicit Option value construction API evolves separately
+fnc lookup(bool found) => Option<int> {
+  if found; do
+    return Some(42);
+  else
+    return None;
+  fi
 }
 ```
 
