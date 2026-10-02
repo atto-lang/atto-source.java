@@ -179,6 +179,11 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), all, null);
+            } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                if (!memberKeys.add(field.name())) {
+                    throw new IllegalArgumentException("duplicate interface data requirement '" + iface.name() + "." + field.name() + "'");
+                }
+                resolve(field.type(), generics, null);
             }
         }
     }
@@ -1450,6 +1455,8 @@ public final class TypeChecker {
                 all.addAll(fn.genericParameters());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()),
                         functionType(fn.parameters(), fn.returnType(), all, null), "interface " + iface.name());
+            } else if (member instanceof Ast.InterfaceFieldDecl field) {
+                mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
             }
         }
         stack.remove(iface);
