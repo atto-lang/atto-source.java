@@ -215,6 +215,50 @@ final class GpuExecutionTest {
         assertNotNull(kernels.getFirst().batchId());
         assertTrue(kernels.stream().allMatch(k -> kernels.getFirst().batchId().equals(k.batchId())));
         assertEquals(3, kernels.stream().map(GpuKernelCompiler.GpuKernel::kernelSymbol).distinct().count());
+
+        assertEquals(1, compilation.gpuProgram().batches().size());
+        GpuKernelCompiler.GpuBatch batch = compilation.gpuProgram().batches().getFirst();
+        assertEquals(3, batch.workItems());
+        assertTrue(batch.hasDispatcher());
+        assertTrue(compilation.gpuProgram().source().contains("__kernel void " + batch.dispatcherSymbol()));
+        assertTrue(compilation.gpuProgram().source().contains("switch (__ores_task)"));
+    }
+
+    @Test
+    void autoParallelizerFallsBackWhenMutableBufferAccessesWouldRace() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module math
+                  gpu fnc unsafe(Array<f32> mut xs, i64 n) => void {
+                    for (let i64 i = 0; i < n; i = i + 1) {
+                      xs[0] = xs[i];
+                    }
+                    return;
+                  }
+                end
+                """);
+
+        GpuKernelCompiler.GpuKernel kernel = compilation.gpuProgram().kernels().getFirst();
+        assertEquals(GpuKernelCompiler.ExecutionShape.SINGLE_WORK_ITEM, kernel.executionShape());
+        assertNull(kernel.launchExtentExpression());
+    }
+
+    @Test
+    void fp64ExtensionIsRequiredOnlyWhenGeneratedCodeUsesDouble() {
+        var ints = OresCompiler.compile("""
+                gpu fnc add(i32 a, i32 b) => i32 {
+                  return a + b;
+                }
+                """).gpuProgram();
+        assertFalse(ints.requiredExtensions().contains("cl_khr_fp64"));
+        assertFalse(ints.source().contains("cl_khr_fp64"));
+
+        var doubles = OresCompiler.compile("""
+                gpu fnc add(f64 a, f64 b) => f64 {
+                  return a + b;
+                }
+                """).gpuProgram();
+        assertTrue(doubles.requiredExtensions().contains("cl_khr_fp64"));
+        assertTrue(doubles.source().contains("#pragma OPENCL EXTENSION cl_khr_fp64 : enable"));
     }
 
     @Test
