@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -54,23 +55,35 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void privateArenaIsActorOwnedThreadConfinedMemory() throws Exception {
+    void privateArenaIsOwnedByStableVirtualActorThread() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
             AtomicReference<MemorySegment> segment = new AtomicReference<>();
             AtomicReference<Long> capacity = new AtomicReference<>();
             AtomicReference<Long> used = new AtomicReference<>();
+            AtomicReference<Thread> owner = new AtomicReference<>();
+            CountDownLatch secondTurn = new CountDownLatch(1);
 
             var ref = runtime.<String>spawn(
                     ActorRuntime.MemoryPolicy.privateArena(1024 * 1024),
                     () -> (message, context) -> {
                         assertEquals(ActorRuntime.MemoryMode.PRIVATE_ARENA, context.memory().mode());
-                        MemorySegment local = context.memory().allocate(8, 8);
-                        local.set(ValueLayout.JAVA_LONG, 0, 42L);
-                        segment.set(local);
-                        capacity.set(context.memory().capacityBytes());
-                        used.set(context.memory().usedBytes());
-                        received.countDown();
+                        assertTrue(Thread.currentThread().isVirtual());
+                        Thread firstOwner = owner.get();
+                        if (firstOwner == null) {
+                            owner.set(Thread.currentThread());
+                            MemorySegment local = context.memory().allocate(8, 8);
+                            local.set(ValueLayout.JAVA_LONG, 0, 42L);
+                            segment.set(local);
+                            capacity.set(context.memory().capacityBytes());
+                            used.set(context.memory().usedBytes());
+                            received.countDown();
+                        } else {
+                            assertSame(firstOwner, Thread.currentThread(),
+                                    "private actor must retain one virtual Thread identity");
+                            assertEquals(42L, segment.get().get(ValueLayout.JAVA_LONG, 0));
+                            secondTurn.countDown();
+                        }
                     });
 
             ref.send("allocate");
@@ -78,8 +91,13 @@ final class ActorRuntimeTest {
             assertEquals(1024 * 1024L, capacity.get());
             assertEquals(8L, used.get());
 
-            // The segment came from Arena.ofConfined() on the actor's virtual
-            // Thread, so a different thread cannot dereference actor memory.
+            // The actor virtual Thread can unmount/remount on carrier threads,
+            // but Arena.ofConfined() ownership remains tied to that virtual
+            // Thread identity.
+            ref.send("second-turn");
+            assertTrue(secondTurn.await(2, TimeUnit.SECONDS));
+
+            // A different Java Thread identity still cannot dereference it.
             assertThrows(WrongThreadException.class,
                     () -> segment.get().get(ValueLayout.JAVA_LONG, 0));
         }
@@ -237,6 +255,59 @@ final class ActorRuntimeTest {
                             ActorRuntime.MemoryPolicy.privateArena(17L * 1024 * 1024),
                             () -> (message, context) -> { }));
         }
+    }
+
+    @Test
+    void sharedActorsUseSeparatePoolAndNeverRunConcurrentTurns() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            int messages = 128;
+            CountDownLatch received = new CountDownLatch(messages);
+            AtomicInteger inFlight = new AtomicInteger();
+            AtomicInteger maxInFlight = new AtomicInteger();
+            AtomicReference<String> workerName = new AtomicReference<>();
+            AtomicReference<Boolean> virtual = new AtomicReference<>();
+
+            var ref = runtime.<Integer>spawn(() -> (message, context) -> {
+                int now = inFlight.incrementAndGet();
+                maxInFlight.accumulateAndGet(now, Math::max);
+                try {
+                    workerName.compareAndSet(null, Thread.currentThread().getName());
+                    virtual.compareAndSet(null, Thread.currentThread().isVirtual());
+                    Thread.sleep(1);
+                } finally {
+                    inFlight.decrementAndGet();
+                    received.countDown();
+                }
+            });
+
+            for (int i = 0; i < messages; i++) ref.send(i);
+
+            assertTrue(received.await(5, TimeUnit.SECONDS));
+            assertEquals(1, maxInFlight.get(),
+                    "one shared actor must never execute two mailbox turns concurrently");
+            assertNotNull(workerName.get());
+            assertTrue(workerName.get().startsWith("ores-shared-actor-"));
+            assertEquals(Boolean.FALSE, virtual.get(),
+                    "shared actors should run on the dedicated platform-thread pool");
+        }
+    }
+
+    @Test
+    void schedulerTargetsStayInsideConfiguredBounds() {
+        ActorRuntime.SchedulerConfig config = ActorRuntime.schedulerConfig();
+        ActorRuntime.SchedulerSnapshot snapshot = ActorRuntime.schedulerSnapshot();
+
+        assertEquals(20, config.privateCarrierMin());
+        assertEquals(40, config.privateCarrierMax());
+        assertEquals(10, config.sharedPoolMin());
+        assertEquals(20, config.sharedPoolMax());
+
+        if (snapshot.privateCarrierTarget() >= 0) {
+            assertTrue(snapshot.privateCarrierTarget() >= config.privateCarrierMin());
+            assertTrue(snapshot.privateCarrierTarget() <= config.privateCarrierMax());
+        }
+        assertTrue(snapshot.sharedTargetParallelism() >= config.sharedPoolMin());
+        assertTrue(snapshot.sharedTargetParallelism() <= config.sharedPoolMax());
     }
 
     @Test
