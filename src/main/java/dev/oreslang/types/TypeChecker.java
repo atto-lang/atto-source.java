@@ -621,6 +621,7 @@ public final class TypeChecker {
         Type self = nominalClassType(klass);
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic()) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
                     functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
         }
@@ -647,7 +648,7 @@ public final class TypeChecker {
             if (field.visibility() == Ast.Visibility.PUBLIC) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
         }
         for (Ast.MethodDecl method : klass.methods()) {
-            if (method.visibility() == Ast.Visibility.PUBLIC) {
+            if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members, methodKey(method.name(), method.arity()),
                         functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
             }
@@ -717,7 +718,7 @@ public final class TypeChecker {
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
-            if (method.name().equals(name) && method.arity() == arity) {
+            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
                 seen.remove(klass);
                 return method;
             }
@@ -738,7 +739,7 @@ public final class TypeChecker {
     private List<Ast.MethodDecl> findMethodsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return List.of();
         LinkedHashMap<Integer, Ast.MethodDecl> methods = new LinkedHashMap<>();
-        for (Ast.MethodDecl method : klass.methods()) if (method.name().equals(name)) methods.put(method.arity(), method);
+        for (Ast.MethodDecl method : klass.methods()) if (!method.isStatic() && method.name().equals(name)) methods.put(method.arity(), method);
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent == null) continue;
@@ -746,6 +747,40 @@ public final class TypeChecker {
         }
         seen.remove(klass);
         return List.copyOf(methods.values());
+    }
+
+    private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                seen.remove(klass);
+                return method;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.MethodDecl candidate = findStaticFunction(parent, name, arity, seen);
+            if (candidate != null) {
+                seen.remove(klass);
+                return candidate;
+            }
+        }
+        seen.remove(klass);
+        return null;
+    }
+
+    private List<Ast.MethodDecl> findStaticFunctionsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return List.of();
+        LinkedHashMap<Integer, Ast.MethodDecl> functions = new LinkedHashMap<>();
+        for (Ast.MethodDecl method : klass.methods()) if (method.isStatic() && method.name().equals(name)) functions.put(method.arity(), method);
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) functions.putIfAbsent(fn.arity(), fn);
+        }
+        seen.remove(klass);
+        return List.copyOf(functions.values());
     }
 
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {
