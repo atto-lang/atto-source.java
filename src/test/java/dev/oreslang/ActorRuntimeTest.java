@@ -184,4 +184,86 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void privateActorGetsConfinedMemorySliceOwnedByItsActorId() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorId> owner = new AtomicReference<>();
+            AtomicReference<Long> usedDuringTurn = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                var memory = context.privateMemory().orElseThrow();
+                owner.set(memory.owner());
+                usedDuringTurn.set(memory.usedBytes());
+                received.countDown();
+            });
+
+            ref.send("private-payload");
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertEquals(ref.id(), owner.get());
+            assertTrue(usedDuringTurn.get() > 0L, "mailbox payload must be charged to the private slice during delivery");
+        }
+    }
+
+    @Test
+    void sharedActorHasNoPrivateMemorySlice() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<Boolean> hasPrivateMemory = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnShared(() -> (message, context) -> {
+                hasPrivateMemory.set(context.privateMemory().isPresent());
+                received.countDown();
+            });
+
+            ref.send("shared-payload");
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertFalse(hasPrivateMemory.get());
+        }
+    }
+
+    @Test
+    void privateActorRejectsMessageThatExceedsItsMemorySlice() {
+        IsolatePolicy ceiling = IsolatePolicy.developer();
+        IsolatePolicy small = new IsolatePolicy(
+                ceiling.capabilities(),
+                16L * 1024 * 1024,
+                ceiling.maxMailboxMessages(),
+                ceiling.maxWallTime(),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(ceiling)) {
+            var ref = runtime.<String>spawnPrivate(small, () -> (message, context) -> { });
+            String tooLarge = "x".repeat(9 * 1024 * 1024);
+            IllegalStateException failure = assertThrows(IllegalStateException.class, () -> ref.send(tooLarge));
+            assertTrue(failure.getMessage().contains("private actor mailbox limit exceeded"));
+            assertEquals(0L, runtime.privateMemoryBytes(), "failed admission must roll back aggregate accounting");
+        }
+    }
+
+    @Test
+    void persistentPrivateHeapReservationsShareTheSameSliceBudget() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch reserved = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.MemoryReservation> stateReservation = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                var memory = context.privateMemory().orElseThrow();
+                stateReservation.set(memory.reserveHeap(1024));
+                assertTrue(memory.usedBytes() >= 1024);
+                reserved.countDown();
+                assertTrue(release.await(2, TimeUnit.SECONDS));
+                stateReservation.get().close();
+            });
+
+            ref.send("reserve");
+            assertTrue(reserved.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.privateMemoryBytes() >= 1024);
+            release.countDown();
+        }
+    }
+
 }
