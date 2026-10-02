@@ -402,6 +402,154 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void fileInitRunsOnceForEachActorLocalEvaluation() throws Exception {
+        String program = """
+                let int count = 1;
+
+                init routine() => void {
+                  count = count + 8;
+                  return;
+                }
+
+                pub routine main() => void {
+                  stdio.println(count);
+                  return;
+                }
+                """;
+
+        assertTrue(eval(program, "file-init-per-actor.ores").contains("9"));
+        assertTrue(eval(program, "file-init-per-actor.ores").contains("9"));
+    }
+
+    @Test
+    void ordinaryModuleInitRunsBeforeFirstActorLocalUse() throws Exception {
+        String output = eval("""
+                define module local_state as
+                  let int count = 2;
+
+                  init routine() => void {
+                    count = count + 5;
+                    return;
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(local_state.read());
+                    return;
+                  }
+                end
+                """, "module-init-per-actor.ores");
+
+        assertTrue(output.contains("7"), output);
+    }
+
+    @Test
+    void singletonModuleInitRunsExactlyOncePerOsProcessStateCell() throws Exception {
+        String program = """
+                define singleton module process_init_once_test as
+                  let int count = 0;
+
+                  init routine() => void {
+                    count = count + 10;
+                    return;
+                  }
+
+                  pub fnc next() => int {
+                    count = count + 1;
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await process_init_once_test.next());
+                    return;
+                  }
+                end
+                """;
+
+        assertTrue(eval(program, "process-init-once.ores").contains("11"));
+        assertTrue(eval(program, "process-init-once.ores").contains("12"));
+    }
+
+    @Test
+    void singletonModuleCanExportOneProcessOwnedClassInstanceThroughProxy() throws Exception {
+        String program = """
+                define class ProcessCounter as
+                  let int count = 0;
+
+                  pub bump() => int {
+                    self.count = self.count + 1;
+                    return self.count;
+                  }
+                end
+
+                define singleton module singleton_object_export_test as
+                  pub val ProcessCounter counter = new ProcessCounter();
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    val int value = await singleton_object_export_test.counter.bump();
+                    stdio.println(value);
+                    return;
+                  }
+                end
+                """;
+
+        assertTrue(eval(program, "singleton-object-export.ores").contains("1"));
+        assertTrue(eval(program, "singleton-object-export.ores").contains("2"));
+    }
+
+    @Test
+    void singletonObjectProxyCallsMustBeAwaitedAndFieldsStayPrivate() {
+        IllegalArgumentException unawaited = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class ProcessBox as
+                          let int value = 1;
+                          pub read() => int { return self.value; }
+                        end
+
+                        define singleton module singleton_proxy_await_test as
+                          pub val ProcessBox box = new ProcessBox();
+                        end
+
+                        define module app as
+                          pub routine main() => void {
+                            singleton_proxy_await_test.box.read();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(unawaited.getMessage().contains("immediately awaited"));
+
+        IllegalArgumentException fieldRead = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class ProcessBox2 as
+                          let int value = 1;
+                          pub read() => int { return self.value; }
+                        end
+
+                        define singleton module singleton_proxy_field_test as
+                          pub val ProcessBox2 box = new ProcessBox2();
+                        end
+
+                        define module app as
+                          pub routine main() => void {
+                            val int leaked = singleton_proxy_field_test.box.value;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(fieldRead.getMessage().contains("fields are actor-private"));
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
