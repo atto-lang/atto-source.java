@@ -757,7 +757,9 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             private Object actorOwnedInitialState(Object value) {
-                if (value instanceof ActorRuntime.Shared<?> shared) return shared.value();
+                if (value instanceof ActorRuntime.Shared<?> shared) {
+                    return context.actors().sharedValueForActorState(shared);
+                }
                 return context.actors().freezeForActorState(value);
             }
 
