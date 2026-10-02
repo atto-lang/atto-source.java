@@ -1350,6 +1350,41 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void oversizedSingletonResultCannotCommitState() throws Exception {
+        String output = eval("""
+                define singleton module oversized_result_guard as
+                  let int count = 0;
+
+                  pub fnc mutate_then_return_oversize() => String {
+                    count = count + 1;
+                    let String payload = "x";
+                    for (let i = 0; i < 23; i = i + 1) {
+                      payload = payload + payload;
+                    }
+                    return payload;
+                  }
+
+                  pub fnc read() => int {
+                    return count;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      val String ignored = await oversized_result_guard.mutate_then_return_oversize();
+                    } catch (err) {
+                    }
+                    stdio.println(await oversized_result_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-oversized-result.ores");
+
+        assertTrue(output.contains("0"), output);
+    }
+
+    @Test
     void singletonRequestSizeLimitAppliesAcrossAllArgumentsTogether() {
         String key = "aggregate-message-limit:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<Object> handle =
