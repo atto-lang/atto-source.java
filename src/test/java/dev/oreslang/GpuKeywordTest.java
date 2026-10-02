@@ -93,6 +93,117 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void gpuArrayAndStreamAreCoreDeviceTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc upload(Array<int> values) => GpuArray<int> {
+                  return GpuArray.from_cpu(values);
+                }
+
+                fnc as_stream(GpuArray<int> values) => GpuStream<int> {
+                  return values.stream();
+                }
+
+                fnc download(GpuArray<int> values) => Array<int> {
+                  return values.copy_to_cpu();
+                }
+
+                gpu fnc sum_array(GpuArray<int> values) => int {
+                  let int total = 0;
+                  for (val value of values) {
+                    total = total + value;
+                  }
+                  return total;
+                }
+
+                gpu fnc sum_stream(GpuStream<int> values) => int {
+                  let int total = 0;
+                  for (val value of values) {
+                    total = total + value;
+                  }
+                  return total;
+                }
+                """)));
+    }
+
+    @Test
+    void cpuCannotIndexOrConsumeGpuResidentData() {
+        IllegalArgumentException arrayFailure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(GpuArray<int> values) => int {
+                          return values[0];
+                        }
+                        """)));
+        assertTrue(arrayFailure.getMessage().contains("GpuArray indexing is GPU-only"));
+
+        IllegalArgumentException streamFailure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(GpuStream<int> values) => int {
+                          for (val value of values) {
+                            return value;
+                          }
+                          return 0;
+                        }
+                        """)));
+        assertTrue(streamFailure.getMessage().contains("GpuStream consumption is GPU-only"));
+    }
+
+    @Test
+    void gpuArrayAndStreamRoundTripThroughBackendWithoutCpuProcessing() throws Exception {
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "gpu-memory-test"; }
+
+            @Override
+            public Object invoke(GpuRuntime.Invocation invocation) {
+                throw new AssertionError("no gpu callable should execute in this transfer-only test");
+            }
+
+            @Override
+            public Object uploadArray(java.util.List<?> values) {
+                return values;
+            }
+
+            @Override
+            public java.util.List<?> downloadArray(Object backendToken, long length) {
+                assertTrue(backendToken instanceof java.util.List<?>);
+                assertEquals(length, ((java.util.List<?>) backendToken).size());
+                return (java.util.List<?>) backendToken;
+            }
+        });
+
+        String output = run("""
+                pub routine main() => void {
+                  val Array<int> host = arr[1, 2, 3];
+                  val GpuArray<int> device = GpuArray.from_cpu(host);
+                  val GpuStream<int> stream = device.stream();
+                  val GpuArray<int> collected = stream.collect();
+                  val Array<int> copied = collected.copy_to_cpu();
+                  copied[0] = 42;
+                  stdio.stdout.write(copied[0]);
+                }
+                """);
+
+        assertEquals("42", output);
+    }
+
+    @Test
+    void coreGpuResourcesRequireGpuCapabilityAtAdmission() {
+        String source = """
+                pub routine main() => void {
+                  val Array<int> host = arr[1, 2, 3];
+                  val GpuArray<int> device = GpuArray.from_cpu(host);
+                  return;
+                }
+                """;
+
+        assertThrows(SecurityException.class,
+                () -> OresCompiler.validateForIsolate(source, IsolatePolicy.strictFaas()));
+
+        assertDoesNotThrow(() -> OresCompiler.validateForIsolate(
+                source,
+                IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.GPU)));
+    }
+
+    @Test
     void gpuCallableCannotCallCpuCallable() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
