@@ -589,6 +589,28 @@ public final class TypeChecker {
             if (referencedModule != null && !referencedModule.singleton()) {
                 throw processEffectError(where, "caller/context-local module '" + referencedModule.name() + "'");
             }
+
+            Ast.FunctionDecl referencedFunction = findFunction(name.name());
+            if (referencedFunction != null) {
+                String ownerName = functionOwners.get(referencedFunction);
+                Ast.ModuleDecl functionOwner = ownerName == null ? null : modules.get(ownerName);
+                if (functionOwner == null || !functionOwner.singleton()
+                        || !functionOwner.name().equals(processOwner.name())) {
+                    throw processEffectError(where,
+                            "ordinary/foreign function value '" + name.name() + "'");
+                }
+            }
+
+            Ast.ClassDecl referencedClass = findClass(name.name());
+            if (referencedClass != null && referencedClass != processClass) {
+                String ownerName = classOwners.get(referencedClass);
+                Ast.ModuleDecl classOwner = ownerName == null ? null : modules.get(ownerName);
+                if (classOwner == null || !classOwner.singleton()
+                        || !classOwner.name().equals(processOwner.name())) {
+                    throw processEffectError(where,
+                            "ordinary/foreign class namespace '" + name.name() + "'");
+                }
+            }
             return;
         }
 
