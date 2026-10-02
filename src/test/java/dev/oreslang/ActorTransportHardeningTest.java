@@ -117,4 +117,26 @@ final class ActorTransportHardeningTest {
 
         assertTrue(error.getMessage().contains("live actor/shared capabilities"));
     }
+    @Test
+    void actorStartupFailureDoesNotLeaveUsableRefOrActorQuota() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            java.util.concurrent.CountDownLatch attempted = new java.util.concurrent.CountDownLatch(1);
+
+            var ref = runtime.<String>spawnPrivate(factoryContext -> {
+                attempted.countDown();
+                throw new IllegalStateException("startup failed");
+            });
+
+            ref.send("trigger");
+            assertTrue(attempted.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(ref.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertFalse(ref.isAlive());
+            assertEquals(0, runtime.actorCount());
+            assertTrue(ref.failure().isPresent());
+            assertEquals("startup failed", ref.failure().orElseThrow().getMessage());
+            assertThrows(ActorRuntime.ActorTerminatedException.class, () -> ref.send("after-failure"));
+        }
+    }
+
+
 }
