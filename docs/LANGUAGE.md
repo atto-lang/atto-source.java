@@ -855,18 +855,38 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 
 ## GPU execution placement
 
-`gpu` is a reserved execution-placement keyword. It is deliberately stronger than an optimization hint: code marked `gpu` must execute through a GPU lowering/backend and must never silently fall back to the ordinary CPU/Truffle evaluator.
+`gpu` is a reserved execution-placement keyword. It is stronger than an optimization hint: accepted `gpu` code is lowered into a device artifact during ordinary compilation and must never silently fall back to the CPU/Truffle evaluator.
 
-A named function can target its entire body:
+A named function targets its entire body. Buffer results use an explicit mutable output parameter so the device ABI has clear ownership and allocation semantics:
 
 ```ores
-gpu fnc saxpy(f32 a, Array<f32> x, Array<f32> y) => Array<f32> {
-  // the whole body is a GPU kernel candidate
-  return y;
+gpu fnc saxpy(
+  f32 a,
+  Array<f32> x,
+  Array<f32> y,
+  Array<f32> mut out,
+  i64 n
+) => void {
+  for (let i64 i = 0; i < n; i = i + 1) {
+    out[i] = a * x[i] + y[i];
+  }
+  return;
 }
 ```
 
-Static class functions may use the same placement. GPU instance methods are rejected for now because Oreslang does not yet define a stable device-side class/object layout.
+The compiler emits deterministic OpenCL C 1.2 source for admitted GPU code. Named GPU functions receive a device helper plus a kernel entrypoint. Scalar-returning callables receive an explicit result buffer in the generated kernel ABI. Array/List parameters become `__global` pointers; immutable buffers are emitted `const`, and ownership-safe buffers are emitted `restrict` so the device compiler can optimize aliasing aggressively.
+
+The compiler recognizes a conservative elementwise loop shape:
+
+```ores
+for (let i64 i = 0; i < n; i = i + 1) {
+  out[i] = ...;
+}
+```
+
+When the GPU function is void, the loop is the only top-level operation (apart from `return;`), the induction is canonical, the bound is device-safe, and every access to a mutable buffer is provably indexed by the same induction variable, the wrapper is lowered to `get_global_id(0)`. If race-freedom cannot be proven, the compiler keeps single-work-item semantics instead of performing an unsafe parallelization.
+
+Static class functions may use GPU placement. GPU instance methods remain rejected until Oreslang defines a stable device-side class/object layout.
 
 For one anonymous kernel, GPU lambda parameters are explicit so the device ABI is known at compile time:
 
@@ -886,10 +906,12 @@ const funcs = gpu parallel List.of(
 );
 ```
 
-The same batch form accepts a list or tuple literal. The outer `gpu parallel` applies GPU placement to every direct lambda in the collection, so repeating `gpu` on each element is unnecessary. The collection must be statically enumerable and contain only direct lambda literals; a dynamically assembled list of arbitrary closures is rejected because the compiler could not prove what must be lowered.
+Every direct lambda in that batch receives its own GPU kernel entrypoint. For a zero-argument, void batch, the compiler also emits a fused dispatcher kernel with one GPU work-item per function and records the dispatcher plus work-item count in the GPU manifest. That gives the runtime an actual concurrent launch shape without repeating `gpu` on each lambda.
 
-`parallel` means independent GPU work that the backend may co-dispatch. It does **not** mean "bind lambda 0 to GPU core 0". GPU execution units are scheduled as lanes/warps/wavefronts/work-groups and do not have stable CPU-thread-like core affinity. If Oreslang later exposes physical multi-GPU placement, that should be a separate device-affinity surface (for example a future `gpu device(...)` policy), not a core-number API.
+`parallel` does **not** mean "bind lambda 0 to physical GPU core 0". GPU schedulers map work-items onto lanes, warps/wavefronts, work-groups, SMs/CUs, and devices dynamically. Physical multi-GPU placement should therefore be a separate future device-affinity surface (for example `gpu device(...)`) rather than a core-number API.
 
-The current reference compiler uses a deliberately conservative GPU ABI while device lowering is being built. GPU callables must use explicit, GPU-transferable scalar/array/tuple types; generics, structural parameters, and inferred GPU-lambda parameter types are rejected. Host borrows/references, strings, bigint/decimal, classes/objects, records, `Option`, nested host-list layouts, `await`, `defer`, `try/catch`, object allocation, host/global captures, dynamic closure calls, and calls to non-`gpu` functions are rejected. This keeps the CPU/GPU boundary explicit and prevents accidental host execution from being smuggled into a kernel.
+The generated artifact contains kernel symbols, helper symbols, source-level names, argument ABI metadata, result type, batch IDs, launch-shape metadata, launch-extent expressions for proven 1-D loops, a source digest, and required device extensions. `cl_khr_fp64` is emitted only when generated code actually uses `double`.
 
-The interpreter currently has no GPU code generator. Reaching a checked `gpu` callable therefore fails closed with a backend-unavailable error instead of executing the body on the CPU. A future backend should consume the checked AST/IR and preserve these placement guarantees.
+The current device ABI is deliberately conservative. GPU parameters may be scalar values or flat `Array<T>`/`List<T>` buffers of supported scalar element types. GPU callables and lambdas return a scalar or `void`; array results must be written through a mutable buffer parameter. Generics, structural parameters, tuples in the device ABI, complex arithmetic, strings, bigint/decimal, classes/objects, records, `Option`, nested host-list layouts, host borrows/references, host/global captures, list/tuple allocation, destructuring, `for-of`, `await`, `defer`, `try/catch`, object allocation, nested closures, dynamic calls, recursion, and calls to non-`gpu` functions are rejected.
+
+Ordinary compilation now runs parsing, type/ownership checking, GPU admission, and GPU lowering. Incremental code units retain the generated GPU artifact. The reference runtime still has no physical GPU launcher wired into Truffle; invoking GPU-targeted code there fails closed instead of executing the GPU body on the CPU.
