@@ -25,6 +25,7 @@ public final class GpuSafetyChecker {
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Map<String, String> classOwners = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> aliases = new HashMap<>();
+    private final Set<String> ambiguousAliases = new HashSet<>();
 
     private GpuSafetyChecker() { }
 
@@ -47,7 +48,11 @@ public final class GpuSafetyChecker {
                     classOwners.putIfAbsent(klass.name(), module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     aliases.put(module.name() + "." + alias.name(), alias);
-                    aliases.putIfAbsent(alias.name(), alias);
+                    Ast.TypeAliasDecl previous = aliases.putIfAbsent(alias.name(), alias);
+                    if (previous != null && previous != alias) {
+                        ambiguousAliases.add(alias.name());
+                        aliases.remove(alias.name());
+                    }
                 }
             }
         }
@@ -87,7 +92,7 @@ public final class GpuSafetyChecker {
         if (fn.kind() != Ast.CallableKind.FNC) {
             throw new IllegalArgumentException("'gpu' is supported on fnc, not routine: " + module + "." + fn.name());
         }
-        validateSignature(module + "." + fn.name(), fn.genericParameters(), fn.parameters(), fn.returnType());
+        validateSignature(module, module + "." + fn.name(), fn.genericParameters(), fn.parameters(), fn.returnType());
         Scope scope = new Scope(null);
         for (Ast.Param param : fn.parameters()) scope.define(param.name());
         validateGpuStatements(module, scope, fn.body(), false);
@@ -97,14 +102,14 @@ public final class GpuSafetyChecker {
         if (!method.isStatic()) {
             throw new IllegalArgumentException("GPU instance methods are not supported until class layouts can be lowered safely; use 'gpu static fnc'");
         }
-        validateSignature(module + "." + klass.name() + "." + method.name(),
+        validateSignature(module, module + "." + klass.name() + "." + method.name(),
                 method.genericParameters(), method.parameters(), method.returnType());
         Scope scope = new Scope(null);
         for (Ast.Param param : method.parameters()) scope.define(param.name());
         validateGpuStatements(module, scope, method.body(), false);
     }
 
-    private void validateSignature(String label, List<String> generics, List<Ast.Param> parameters, Ast.TypeRef result) {
+    private void validateSignature(String module, String label, List<String> generics, List<Ast.Param> parameters, Ast.TypeRef result) {
         if (!generics.isEmpty()) {
             throw new IllegalArgumentException("GPU callable '" + label + "' cannot be generic until GPU monomorphization is implemented");
         }
@@ -115,17 +120,17 @@ public final class GpuSafetyChecker {
             if (param.type().isTupleType()) {
                 throw new IllegalArgumentException("GPU callable '" + label + "' cannot pass tuple parameters through the current device ABI");
             }
-            requireGpuType(param.type(), false, new HashSet<>(), label + " parameter " + param.name());
+            requireGpuType(module, param.type(), false, new HashSet<>(), label + " parameter " + param.name());
         }
-        requireGpuType(result, true, new HashSet<>(), label + " result");
-        Ast.TypeRef resolvedResult = resolveAlias(result, new HashSet<>());
+        requireGpuType(module, result, true, new HashSet<>(), label + " result");
+        Ast.TypeRef resolvedResult = resolveAlias(module, result, new HashSet<>());
         if (resolvedResult.isTupleType() || resolvedResult.name().equals("Array") || resolvedResult.name().equals("List")) {
             throw new IllegalArgumentException("GPU callable '" + label
                     + "' must return a scalar or void; write array results through an explicit mutable Array<T>/List<T> parameter");
         }
     }
 
-    private void requireGpuType(Ast.TypeRef type, boolean allowVoid, Set<String> resolving, String where) {
+    private void requireGpuType(String module, Ast.TypeRef type, boolean allowVoid, Set<String> resolving, String where) {
         if (type == null || type.name().equals("$infer$")) {
             throw new IllegalArgumentException(where + " must have an explicit GPU-transferable type");
         }
@@ -133,20 +138,20 @@ public final class GpuSafetyChecker {
             throw new IllegalArgumentException(where + " cannot be a host borrow/reference");
         }
         if (type.isTupleType()) {
-            for (Ast.TypeRef element : type.arguments()) requireGpuType(element, false, resolving, where);
+            for (Ast.TypeRef element : type.arguments()) requireGpuType(module, element, false, resolving, where);
             return;
         }
         if (type.isUnion() || type.isRecordType() || type.isStringLiteral()) {
             throw new IllegalArgumentException(where + " uses a type that is not in the current GPU ABI subset: " + type.name());
         }
 
-        Ast.TypeAliasDecl alias = aliases.get(type.name());
+        Ast.TypeAliasDecl alias = findAlias(module, type.name());
         if (alias != null) {
             if (!alias.genericParameters().isEmpty() || !type.arguments().isEmpty()) {
                 throw new IllegalArgumentException(where + " uses a generic alias; GPU monomorphization is not implemented");
             }
             if (!resolving.add(alias.name())) throw new IllegalArgumentException("GPU type alias cycle involving " + alias.name());
-            requireGpuType(alias.target(), allowVoid, resolving, where);
+            requireGpuType(module, alias.target(), allowVoid, resolving, where);
             resolving.remove(alias.name());
             return;
         }
@@ -167,7 +172,7 @@ public final class GpuSafetyChecker {
                 if (element.name().equals("Array") || element.name().equals("List")) {
                     throw new IllegalArgumentException(where + " cannot use nested host list layouts in the GPU ABI");
                 }
-                requireGpuType(element, false, resolving, where + " element");
+                requireGpuType(module, element, false, resolving, where + " element");
             }
             case "complex64", "complex128", "complex" -> throw new IllegalArgumentException(
                     where + " uses complex arithmetic, which is rejected until the GPU backend lowers Oreslang complex operators semantically");
@@ -176,14 +181,22 @@ public final class GpuSafetyChecker {
         }
     }
 
-    private Ast.TypeRef resolveAlias(Ast.TypeRef type, Set<String> resolving) {
-        Ast.TypeAliasDecl alias = aliases.get(type.name());
+    private Ast.TypeRef resolveAlias(String module, Ast.TypeRef type, Set<String> resolving) {
+        Ast.TypeAliasDecl alias = findAlias(module, type.name());
         if (alias == null) return type;
         if (!alias.genericParameters().isEmpty() || !type.arguments().isEmpty()) return type;
-        if (!resolving.add(alias.name())) throw new IllegalArgumentException("GPU type alias cycle involving " + alias.name());
-        Ast.TypeRef resolved = resolveAlias(alias.target(), resolving);
-        resolving.remove(alias.name());
+        String key = module + "." + alias.name();
+        if (!resolving.add(key)) throw new IllegalArgumentException("GPU type alias cycle involving " + alias.name());
+        Ast.TypeRef resolved = resolveAlias(module, alias.target(), resolving);
+        resolving.remove(key);
         return resolved;
+    }
+
+    private Ast.TypeAliasDecl findAlias(String module, String name) {
+        Ast.TypeAliasDecl local = aliases.get(module + "." + name);
+        if (local != null) return local;
+        if (ambiguousAliases.contains(name)) return null;
+        return aliases.get(name);
     }
 
     private void scanStatements(String module, List<Ast.Stmt> statements) {
