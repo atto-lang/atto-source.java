@@ -292,7 +292,7 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.CallExpr call) {
                 if (call.callee() instanceof Ast.MemberExpr builtin
                         && builtin.receiver() instanceof Ast.NameExpr namespace
-                        && builtinCollectionNamespaceAvailable(namespace.name())
+                        && builtinCollectionNamespaceAvailable(namespace.name(), env)
                         && namespace.name().equals("List")
                         && builtin.member().equals("of")) {
                     Object[] values = new Object[call.arguments().size()];
@@ -301,7 +301,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 if (call.callee() instanceof Ast.MemberExpr builtin
                         && builtin.receiver() instanceof Ast.NameExpr namespace
-                        && builtinCollectionNamespaceAvailable(namespace.name())
+                        && builtinCollectionNamespaceAvailable(namespace.name(), env)
                         && namespace.name().equals("Map")
                         && builtin.member().equals("of")) {
                     if ((call.arguments().size() & 1) != 0) {
@@ -313,10 +313,11 @@ public final class OresEvalRootNode extends RootNode {
                         if (!(rawKey instanceof String key)) {
                             throw new IllegalArgumentException("Map.of record keys must be strings");
                         }
-                        Object value = eval(call.arguments().get(i + 1), env);
-                        if (values.putIfAbsent(key, value) != null) {
+                        if (values.containsKey(key)) {
                             throw new IllegalArgumentException("duplicate Map.of record key '" + key + "'");
                         }
+                        Object value = eval(call.arguments().get(i + 1), env);
+                        values.put(key, value);
                     }
                     return values;
                 }
@@ -852,8 +853,11 @@ public final class OresEvalRootNode extends RootNode {
                     ref.inferArguments());
         }
 
-        private boolean builtinCollectionNamespaceAvailable(String name) {
-            return !modules.containsKey(name) && !classes.containsKey(name) && !ambiguousClasses.contains(name);
+        private boolean builtinCollectionNamespaceAvailable(String name, Env env) {
+            return env.lookup(name) == Env.MISSING
+                    && !modules.containsKey(name)
+                    && !classes.containsKey(name)
+                    && !ambiguousClasses.contains(name);
         }
 
         private List<?> sequenceValue(Object value) {
