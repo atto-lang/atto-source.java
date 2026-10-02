@@ -410,4 +410,61 @@ final class LanguageHardeningTest {
         assertTrue(lambdaError.getMessage().contains("await is only valid"));
     }
 
+
+    @Test
+    void gcRuntimeFacadesAreScopedAndTypedAsZeroArgumentCalls() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                actor Worker {
+                  pub fnc maintenance() => void {
+                    actor.gc();
+                    return;
+                  }
+                }
+
+                define module app
+                  fnc maintenance() => void {
+                    process.gc();
+                    return;
+                  }
+                end
+                """)));
+
+        IllegalArgumentException outsideActor = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module app
+                          fnc bad() => void {
+                            actor.gc();
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(outsideActor.getMessage().contains("actor.gc() is only valid"));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    process.gc(1);
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void processWideGcControlIsDeniedByStrictFaasPolicy() {
+        assertTrue(IsolatePolicy.developer().allows(IsolatePolicy.Capability.GC_CONTROL));
+        assertFalse(IsolatePolicy.strictFaas().allows(IsolatePolicy.Capability.GC_CONTROL));
+
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc maintenance() => void {
+                    process.gc();
+                    return;
+                  }
+                end
+                """));
+        assertThrows(SecurityException.class, () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertDoesNotThrow(() -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
+
 }
