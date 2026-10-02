@@ -40,6 +40,7 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (match(DEFINE)) {
+                if (modifiers.gpu) throw error(previous(), "'gpu' may only modify fnc or routine declarations");
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
                     if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.gpu || modifiers.isStatic || modifiers.isAbstract) {
@@ -122,6 +123,7 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (match(DEFINE)) {
+            if (modifiers.gpu) throw error(previous(), "'gpu' may only modify fnc or routine declarations");
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
             if (match(INTERFACE)) return parseInterface(modifiers.visibility);
