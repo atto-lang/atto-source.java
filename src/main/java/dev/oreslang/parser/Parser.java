@@ -408,7 +408,7 @@ public final class Parser {
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
         if (match(RETURN)) {
-            Ast.Expr value = isSafeStatementBoundary() ? null : parseExpression();
+            Ast.Expr value = check(SEMICOLON) || isSafeStatementBoundary() ? null : parseExpression();
             consumeStatementTerminator("return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
