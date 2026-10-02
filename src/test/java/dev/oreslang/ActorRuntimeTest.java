@@ -867,4 +867,166 @@ final class ActorRuntimeTest {
     }
 
 
+
+    @Test
+    void actorCannotUseClosureCapturedForeignRuntimeSendOrSpawn() throws Exception {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> sendFailure = new AtomicReference<>();
+            AtomicReference<Throwable> spawnFailure = new AtomicReference<>();
+
+            var target = runtimeA.<String>spawn(() -> (message, context) -> { });
+            var caller = runtimeB.<String>spawn(() -> (message, context) -> {
+                try {
+                    runtimeA.send(target, "cross-runtime");
+                } catch (Throwable problem) {
+                    sendFailure.set(problem);
+                }
+                try {
+                    runtimeA.<String>spawn(() -> (childMessage, childContext) -> { });
+                } catch (Throwable problem) {
+                    spawnFailure.set(problem);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            caller.send("go");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, sendFailure.get());
+            assertInstanceOf(SecurityException.class, spawnFailure.get());
+        }
+    }
+
+    @Test
+    void actorCannotInvokeClosureCapturedForeignActorRef() throws Exception {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            CountDownLatch targetReceived = new CountDownLatch(1);
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var target = runtimeA.<String>spawn(() -> (message, context) -> targetReceived.countDown());
+            var foreignCaller = runtimeB.<String>spawn(() -> (message, context) -> {
+                try {
+                    target.send("cross-runtime");
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            foreignCaller.send("go");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, failure.get());
+            assertEquals(1L, targetReceived.getCount());
+        }
+    }
+
+    @Test
+    void actorRuntimeEnforcesConfiguredActorCeiling() {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), 1)) {
+            runtime.<String>spawn(() -> (message, context) -> { });
+            IllegalStateException error = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.<String>spawn(() -> (message, context) -> { }));
+            assertTrue(error.getMessage().contains("actor runtime limit exceeded"));
+            assertEquals(1, runtime.maxActors());
+        }
+    }
+
+    @Test
+    void actorCodeCannotCloseItsOwnRuntime() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+
+            var ref = runtime.<String>spawn(() -> (message, context) -> {
+                try {
+                    assertThrows(SecurityException.class, context.runtime()::close);
+                } catch (Throwable problem) {
+                    failure.set(problem);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            ref.send("check");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get());
+        }
+    }
+
+    @Test
+    void strictActorCannotBypassReadonlyCapabilityThroughRuntimeHandle() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            IsolatePolicy strict = IsolatePolicy.strictFaas();
+            var ref = runtime.<String>spawnPrivate(
+                    strict,
+                    factoryContext -> (message, context) ->
+                            context.runtime().shareReadonly(List.of("secret")));
+
+            ref.send("check");
+            for (int i = 0; i < 500 && ref.failure().isEmpty(); i++) Thread.yield();
+
+            assertTrue(ref.failure().isPresent());
+            assertInstanceOf(SecurityException.class, ref.failure().orElseThrow());
+        }
+    }
+
+    @Test
+    void closeStopsActorEvenWhenBehaviorClearsInterruptBeforeReturning() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch cleared = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawn(() -> (message, context) -> {
+            started.countDown();
+            try {
+                Thread.sleep(30_000);
+            } catch (InterruptedException interrupted) {
+                Thread.interrupted();
+                cleared.countDown();
+            }
+        });
+
+        ref.send("block");
+        assertTrue(started.await(2, TimeUnit.SECONDS));
+
+        assertDoesNotThrow(runtime::close);
+        assertTrue(cleared.await(1, TimeUnit.SECONDS));
+        assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
+    }
+
+    @Test
+    void closeCanBeRetriedAfterInitialTerminationTimeout() throws Exception {
+        ActorRuntime runtime = new ActorRuntime();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        var ref = runtime.<String>spawn(() -> (message, context) -> {
+            started.countDown();
+            while (true) {
+                try {
+                    release.await();
+                    return;
+                } catch (InterruptedException ignored) {
+                    // Deliberately ignore the first shutdown interrupt.
+                }
+            }
+        });
+
+        ref.send("block");
+        assertTrue(started.await(2, TimeUnit.SECONDS));
+
+        IllegalStateException timedOut = assertThrows(IllegalStateException.class, runtime::close);
+        assertTrue(timedOut.getMessage().contains("did not observe full actor termination"));
+
+        release.countDown();
+        assertDoesNotThrow(runtime::close);
+        assertThrows(IllegalStateException.class, () -> ref.send("after-close"));
+    }
+
 }
