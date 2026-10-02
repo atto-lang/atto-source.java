@@ -209,6 +209,28 @@ public final class OwnershipChecker {
             rejectLoopMoves(before, scope);
             return;
         }
+        if (stmt instanceof Ast.ReceivePatternLoopStmt loop) {
+            ensureAwaitSuspensionSafe(scope);
+            Map<VarState,Boolean> before = movedSnapshot(scope);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+
+            for (Ast.ReceiveCase branch : loop.cases()) {
+                restoreState(base);
+                Scope caseScope = new Scope(scope);
+                definePatternBindings(branch.pattern(), caseScope);
+                checkBlock(branch.body(), caseScope, returnType);
+                caseScope.close();
+                rejectLoopMoves(before, scope);
+            }
+
+            if (!loop.defaultBody().isEmpty()) {
+                restoreState(base);
+                checkBlock(loop.defaultBody(), scope, returnType);
+                rejectLoopMoves(before, scope);
+            }
+            restoreState(base);
+            return;
+        }
         if (stmt instanceof Ast.SelectStmt select) {
             ensureAwaitSuspensionSafe(scope);
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
@@ -260,6 +282,51 @@ public final class OwnershipChecker {
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
             rejectLoopMoves(before, scope);
             loopScope.close();
+        }
+    }
+
+    private void definePatternBindings(Ast.Pattern pattern, Scope scope) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            Ast.TypeRef type = Ast.TypeRef.inferred();
+            scope.define(binding.name(), new VarState(
+                    type,
+                    binding.kind() == Ast.BindingKind.LET,
+                    kindOfType(type),
+                    Origin.LOCAL));
+            return;
+        }
+        if (pattern instanceof Ast.TypedBindingPattern binding) {
+            scope.define(binding.name(), new VarState(
+                    binding.type(),
+                    binding.kind() == Ast.BindingKind.LET,
+                    kindOfType(binding.type()),
+                    Origin.LOCAL));
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) definePatternBindings(element, scope);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern element : list.elements()) definePatternBindings(element, scope);
+        }
+    }
+
+    private void collectPatternBindingNames(Ast.Pattern pattern, Set<String> locals) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            locals.add(binding.name());
+            return;
+        }
+        if (pattern instanceof Ast.TypedBindingPattern binding) {
+            locals.add(binding.name());
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern element : tuple.elements()) collectPatternBindingNames(element, locals);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern element : list.elements()) collectPatternBindingNames(element, locals);
         }
     }
 
@@ -651,6 +718,30 @@ public final class OwnershipChecker {
                 caught.add(s.errorName());
                 scanStatements(s.catchBody(), caught, outer, recursiveBinding, captures);
                 scanStatements(s.finallyBody(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.ReceiveLoopStmt s) {
+                Set<String> loop = new HashSet<>(blockLocals);
+                loop.add(s.bindingName());
+                scanStatements(s.body(), loop, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.ReceivePatternLoopStmt s) {
+                for (Ast.ReceiveCase branch : s.cases()) {
+                    Set<String> branchLocals = new HashSet<>(blockLocals);
+                    collectPatternBindingNames(branch.pattern(), branchLocals);
+                    scanStatements(branch.body(), branchLocals, outer, recursiveBinding, captures);
+                }
+                scanStatements(s.defaultBody(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.SelectStmt s) {
+                for (Ast.SelectCase branch : s.cases()) {
+                    if (branch.operation().channel() != null) {
+                        scanExpr(branch.operation().channel(), blockLocals, outer, recursiveBinding, captures, false);
+                    }
+                    if (branch.operation().value() != null) {
+                        scanExpr(branch.operation().value(), blockLocals, outer, recursiveBinding, captures, false);
+                    }
+                    Set<String> branchLocals = new HashSet<>(blockLocals);
+                    if (branch.bindingName() != null) branchLocals.add(branch.bindingName());
+                    scanStatements(branch.body(), branchLocals, outer, recursiveBinding, captures);
+                }
+                scanStatements(s.defaultBody(), blockLocals, outer, recursiveBinding, captures);
             } else if (stmt instanceof Ast.ForOfStmt s) {
                 scanExpr(s.iterable(), blockLocals, outer, recursiveBinding, captures, false);
                 Set<String> loop = new HashSet<>(blockLocals);
@@ -902,7 +993,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void",
+                    "bool","Bool","string","String","Symbol","void",
                     "ActorId","ActorKind","ActorStatus","ActorHandle" -> true;
             default -> false;
         };
@@ -913,6 +1004,7 @@ public final class OwnershipChecker {
         if (value instanceof Long) return Ast.TypeRef.simple("int");
         if (value instanceof Double) return Ast.TypeRef.simple("float");
         if (value instanceof String) return Ast.TypeRef.simple("String");
+        if (value instanceof Ast.Symbol) return Ast.TypeRef.simple("Symbol");
         if (value instanceof Ast.Imaginary) return Ast.TypeRef.simple("complex");
         return Ast.TypeRef.inferred();
     }
