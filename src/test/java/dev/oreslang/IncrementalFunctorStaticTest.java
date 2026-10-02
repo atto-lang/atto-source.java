@@ -103,6 +103,26 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void inferredPublicBindingsParticipateInAbiInvalidation() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+        Map<String, String> first = Map.of(
+                "config.ores", "pub val setting = 1;",
+                "consumer.ores", """
+                        import * as config from "./config.ores";
+                        pub routine main() => void { return; }
+                        """);
+        compiler.compile(first);
+
+        Map<String, String> changed = Map.of(
+                "config.ores", "pub val setting = "one";",
+                "consumer.ores", first.get("consumer.ores"));
+        var result = compiler.compile(changed);
+
+        assertTrue(result.rebuilt("config.ores"));
+        assertTrue(result.rebuilt("consumer.ores"));
+    }
+
+    @Test
     void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var build = compiler.compile(Map.of(
