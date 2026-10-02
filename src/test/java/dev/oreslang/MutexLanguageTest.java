@@ -479,7 +479,7 @@ final class MutexLanguageTest {
                   end
                 end
                 define module app
-                  fnc mutate(Counter counter) => void {
+                  fnc mutate(Counter mut counter) => void {
                     counter.value = counter.value + 1;
                     return;
                   }
