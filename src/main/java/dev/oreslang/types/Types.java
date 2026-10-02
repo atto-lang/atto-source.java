@@ -1,5 +1,8 @@
 package dev.oreslang.types;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -24,7 +27,7 @@ public final class Types {
     public record ClassNamespace(String className) implements Type { }
 
     public record Record(Map<String, Type> members) implements Type {
-        public Record { members = Map.copyOf(members); }
+        public Record { members = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(members)); }
     }
 
     public record Function(List<Type> parameters, Type result) implements Type {
@@ -37,10 +40,10 @@ public final class Types {
         public Tuple { elements = List.copyOf(elements); }
     }
 
-    public record Union(List<Type> options) implements Type {
+    public record Union(List<Type> members) implements Type {
         public Union {
-            options = List.copyOf(options);
-            if (options.size() < 2) throw new IllegalArgumentException("union needs at least two distinct types");
+            if (members.isEmpty()) throw new IllegalArgumentException("union type requires at least one member");
+            members = List.copyOf(members);
         }
     }
 
@@ -56,14 +59,15 @@ public final class Types {
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
-        if (from instanceof StringLiteral && to == Primitive.STRING) return true;
-
         if (from instanceof Union source) {
-            return source.options().stream().allMatch(option -> isAssignable(option, to));
+            for (Type member : source.members()) if (!isAssignable(member, to)) return false;
+            return true;
         }
         if (to instanceof Union target) {
-            return target.options().stream().anyMatch(option -> isAssignable(from, option));
+            for (Type member : target.members()) if (isAssignable(from, member)) return true;
+            return false;
         }
+        if (from instanceof StringLiteral && to == Primitive.STRING) return true;
 
         if (from instanceof Borrow source && to instanceof Borrow target) {
             if (target.mutable() && !source.mutable()) return false;
@@ -110,6 +114,29 @@ public final class Types {
         return numericWidening(from, to);
     }
 
+    public static Type union(Type... members) {
+        return union(List.of(members));
+    }
+
+    public static Type union(List<Type> members) {
+        LinkedHashSet<Type> normalized = new LinkedHashSet<>();
+        for (Type member : members) {
+            if (member == Unknown.INSTANCE) return Unknown.INSTANCE;
+            if (member instanceof Union nested) {
+                for (Type nestedMember : nested.members()) normalized.add(normalizeUnionMember(nestedMember));
+            } else {
+                normalized.add(normalizeUnionMember(member));
+            }
+        }
+        if (normalized.isEmpty()) return Unknown.INSTANCE;
+        if (normalized.size() == 1) return normalized.getFirst();
+        return new Union(new ArrayList<>(normalized));
+    }
+
+    private static Type normalizeUnionMember(Type member) {
+        return member instanceof StringLiteral ? Primitive.STRING : member;
+    }
+
     private static boolean numericWidening(Type from, Type to) {
         if (from == Primitive.INT && (to == Primitive.FLOAT || to == Primitive.DECIMAL || to == Primitive.COMPLEX)) return true;
         if ((from == Primitive.FLOAT || from == Primitive.DECIMAL) && to == Primitive.COMPLEX) return true;
@@ -122,24 +149,6 @@ public final class Types {
         if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;
         if (left == Primitive.FLOAT || right == Primitive.FLOAT) return Primitive.FLOAT;
         return Primitive.INT;
-    }
-
-    public static Type unionOf(Type left, Type right) {
-        return unionOf(List.of(left, right));
-    }
-
-    public static Type unionOf(List<Type> types) {
-        java.util.ArrayList<Type> flattened = new java.util.ArrayList<>();
-        for (Type type : types) {
-            if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
-            if (type instanceof Union union) {
-                for (Type option : union.options()) if (!flattened.contains(option)) flattened.add(option);
-            } else if (!flattened.contains(type)) flattened.add(type);
-        }
-        if (flattened.isEmpty()) return Unknown.INSTANCE;
-        if (flattened.size() == 1) return flattened.getFirst();
-        flattened.sort(java.util.Comparator.comparing(Object::toString));
-        return new Union(flattened);
     }
 
     public static boolean isNumeric(Type type) {
