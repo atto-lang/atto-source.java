@@ -360,4 +360,56 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void readonlySharingRejectsNestedSyncCells() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var cell = runtime.syncCell(1);
+            assertThrows(IllegalArgumentException.class,
+                    () -> runtime.shareReadonly(Map.of("cell", cell)));
+        }
+    }
+
+    @Test
+    void syncCellMutationRequiresSharedActorTurn() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var cell = runtime.syncCell(1);
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> cell.update(value -> value + 1));
+            assertTrue(failure.getMessage().contains("shared actor mailbox turn"));
+        }
+    }
+
+    @Test
+    void privateActorRejectsNestedSharedMutableCells() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var cell = runtime.syncCell(0);
+            var ref = runtime.<Object>spawnPrivate(() -> (message, context) -> { });
+            assertThrows(IllegalArgumentException.class,
+                    () -> ref.send(Map.of("nested", List.of(cell))));
+        }
+    }
+
+    @Test
+    void capturedPrivateMemorySliceCannotBeUsedOutsideOwnerTurn() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorMemorySlice> captured = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                captured.set(context.privateMemory().orElseThrow());
+                received.countDown();
+            });
+
+            ref.send("capture");
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> captured.get().reserveHeap(64));
+            assertTrue(failure.getMessage().contains("owning actor"));
+        }
+    }
+
+
 }
