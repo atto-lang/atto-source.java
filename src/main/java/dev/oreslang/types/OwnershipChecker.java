@@ -147,6 +147,9 @@ public final class OwnershipChecker {
                     if (owner.origin == Origin.LOCAL) {
                         throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
                     }
+                    if (owner.debugName.equals("self") && owner.kind == ValueKind.MUT_BORROW) {
+                        throw error("actor self cannot escape its mailbox turn as a returned borrow");
+                    }
                 }
                 checkExpr(ret.value(), scope, true);
             }
@@ -262,6 +265,9 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
+            if (consuming && name.name().equals("self") && state.kind == ValueKind.MUT_BORROW) {
+                throw error("actor self is a non-escapable mailbox capability; access its fields/methods or pass an explicit borrow");
+            }
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
             return new ValueInfo(state.type, state.kind, state.borrowSource);
@@ -305,12 +311,25 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             checkExpr(member.receiver(), scope, false);
-            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
+            Ast.FieldDecl field = klass == null ? null : findField(klass, member.member(), new LinkedHashSet<>());
+            Ast.TypeRef memberType = field == null ? Ast.TypeRef.inferred() : ownershipFieldType(field);
+            ValueKind memberKind = kindOfType(memberType);
+            if (consuming && isRootedAtActorSelf(member.receiver(), scope) && memberKind != ValueKind.COPY) {
+                throw error("cannot move actor-owned field '" + member.member()
+                        + "' out of its mailbox turn; return a copy/immutable value or explicit shared snapshot");
+            }
+            return new ValueInfo(memberType, memberKind, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
-            checkExpr(indexed.receiver(), scope, false);
+            ValueInfo receiver = checkExpr(indexed.receiver(), scope, false);
             checkExpr(indexed.index(), scope, false);
-            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+            Ast.TypeRef elementType = collectionElementType(receiver.type);
+            ValueKind elementKind = kindOfType(elementType);
+            if (consuming && isRootedAtActorSelf(indexed.receiver(), scope) && elementKind != ValueKind.COPY) {
+                throw error("cannot move actor-owned indexed state out of its mailbox turn");
+            }
+            return new ValueInfo(elementType, elementKind, null);
         }
         if (expr instanceof Ast.NewExpr created) {
             for (Ast.Expr arg : created.arguments()) checkExpr(arg, scope, true);
@@ -719,6 +738,31 @@ public final class OwnershipChecker {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
         }
+    }
+
+    private boolean isRootedAtActorSelf(Ast.Expr expr, Scope scope) {
+        Ast.Expr current = expr;
+        while (current instanceof Ast.MemberExpr member) current = member.receiver();
+        while (current instanceof Ast.IndexExpr indexed) current = indexed.receiver();
+        if (!(current instanceof Ast.NameExpr name) || !name.name().equals("self")) return false;
+        VarState self = scope.lookup("self");
+        if (self == null || self.kind != ValueKind.MUT_BORROW) return false;
+        Ast.ClassDecl klass = classOfReceiver(new Ast.NameExpr("self"), scope);
+        return klass != null && klass.actorKind() != Ast.ActorKind.NONE;
+    }
+
+    private Ast.TypeRef ownershipFieldType(Ast.FieldDecl field) {
+        if (field.type() != null) return field.type();
+        if (field.initializer() instanceof Ast.LiteralExpr literal) return inferLiteralType(literal.value());
+        return Ast.TypeRef.inferred();
+    }
+
+    private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
+        if (type == null) return Ast.TypeRef.inferred();
+        if ((type.name().equals("Array") || type.name().equals("List")) && type.arguments().size() == 1) {
+            return type.arguments().getFirst();
+        }
+        return Ast.TypeRef.inferred();
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
