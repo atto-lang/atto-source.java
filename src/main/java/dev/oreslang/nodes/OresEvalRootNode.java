@@ -69,8 +69,8 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
-        private final Map<String, Env> actorModuleStates = new HashMap<>();
-        private final Set<String> actorModuleInitializing = new LinkedHashSet<>();
+        private final Map<String, Env> contextModuleStates = new HashMap<>();
+        private final Set<String> contextModuleInitializing = new LinkedHashSet<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -152,28 +152,44 @@ public final class OresEvalRootNode extends RootNode {
 
         private Env actorModuleState(Ast.ModuleDecl module) {
             if (module.singleton()) throw new IllegalArgumentException("singleton modules use process-owned state");
-            Env existing = actorModuleStates.get(module.name());
-            if (existing != null) return existing;
-            if (!actorModuleInitializing.add(module.name())) {
-                throw new IllegalStateException("actor-local module initialization cycle involving " + module.name());
-            }
 
-            Env state = new Env(null);
+            ActorModuleStateKey actorKey = new ActorModuleStateKey(
+                    codeUnitId,
+                    program.namespace() == null ? "<default>" : program.namespace(),
+                    module.name());
+            Env actorState = context.actors().currentActorLocal(
+                    actorKey,
+                    () -> initializeOrdinaryModuleState(module));
+            if (actorState != null) return actorState;
+
+            // Main/non-actor evaluation has its own context-local state. Actor
+            // cells never use this map; their module state dies with the cell.
+            Env existing = contextModuleStates.get(module.name());
+            if (existing != null) return existing;
+            if (!contextModuleInitializing.add(module.name())) {
+                throw new IllegalStateException("context-local module initialization cycle involving " + module.name());
+            }
             try {
-                for (Ast.Decl decl : module.declarations()) {
-                    if (!(decl instanceof Ast.FieldDecl field)) continue;
-                    if (field.initializer() == null) {
-                        throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + field.name());
-                    }
-                    state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
-                }
-                Ast.InitDecl init = findInit(module);
-                if (init != null) executeInitializer(init, state);
-                actorModuleStates.put(module.name(), state);
+                Env state = initializeOrdinaryModuleState(module);
+                contextModuleStates.put(module.name(), state);
                 return state;
             } finally {
-                actorModuleInitializing.remove(module.name());
+                contextModuleInitializing.remove(module.name());
             }
+        }
+
+        private Env initializeOrdinaryModuleState(Ast.ModuleDecl module) {
+            Env state = new Env(null);
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field)) continue;
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + field.name());
+                }
+                state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
+            }
+            Ast.InitDecl init = findInit(module);
+            if (init != null) executeInitializer(init, state);
+            return state;
         }
 
         private Ast.InitDecl findInit(Ast.ModuleDecl module) {
@@ -1230,6 +1246,7 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return klass.name()+fields;}
     }
 
+    private record ActorModuleStateKey(String codeUnitId, String namespace, String moduleName) { }
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
     private record SingletonObjectProxy(Ast.ModuleDecl module, String fieldName, Ast.ClassDecl klass) { }
