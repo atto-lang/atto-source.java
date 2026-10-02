@@ -38,6 +38,24 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void gpuModifierIsRestrictedToNamedTopLevelOrModuleCallables() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                gpu define class Bad
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module m
+                  define class Bad
+                    gpu work() => int {
+                      return 1;
+                    }
+                  end
+                end
+                """));
+    }
+
+    @Test
     void gpuCallablesMayComposeGpuCallables() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 gpu fnc square(int x) => int {
