@@ -614,6 +614,116 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void abstractMethodsCreateRequiredNameAndAritySlots() throws Exception {
+        String output = run("""
+                define module m
+                  define abstract class Base
+                    pub abstract pick() => int;
+                    pub abstract pick(int value) => int;
+                  end
+
+                  define class Child extends Base
+                    pub pick() => int { return 1; }
+                    pub pick(int value) => int { return value; }
+                  end
+                end
+
+                pub routine main() => void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.pick());
+                  stdio.stdout.write(child.pick(8));
+                }
+                """);
+
+        assertEquals("18", output);
+    }
+
+    @Test
+    void concreteClassMustImplementEveryInheritedAbstractArity() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define abstract class Base
+                            pub abstract pick() => int;
+                            pub abstract pick(int value) => int;
+                          end
+
+                          define class Child extends Base
+                            pub pick() => int { return 1; }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("unresolved abstract method 'pick' with arity 1"));
+    }
+
+    @Test
+    void abstractImplementationCannotChangeTheContractWithinTheSameAritySlot() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define abstract class Base
+                            pub abstract pick(int value) => int;
+                          end
+
+                          define class Child extends Base
+                            pub pick(String value) => String { return value; }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("conflicting member 'pick$arity1'"));
+    }
+
+    @Test
+    void abstractMethodCannotBePrivateBecauseTheSlotMustBeImplementable() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define abstract class Base
+                            abstract pick(int value) => int;
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("must be public"));
+    }
+
+    @Test
+    void concreteClassCannotDeclareAnUnresolvedAbstractSlot() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Concrete
+                            pub abstract pick(int value) => int;
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("concrete class 'Concrete'"));
+        assertTrue(error.getMessage().contains("arity 1"));
+    }
+
+    @Test
+    void abstractClassesCannotBeInstantiated() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define abstract class Base
+                            pub abstract pick(int value) => int;
+                          end
+                        end
+
+                        fnc bad() => void {
+                          val value = new m.Base();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot instantiate abstract class 'Base'"));
+    }
+
+    @Test
     void overloadedMethodValueRequiresCallArityForSelection() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
