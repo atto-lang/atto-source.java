@@ -1,6 +1,8 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
@@ -12,6 +14,22 @@ import java.nio.charset.StandardCharsets;
 import static org.junit.jupiter.api.Assertions.*;
 
 final class MutexLanguageTest {
+    @Test
+    void sharedMutexRequiresExplicitSharedMemoryCapability() {
+        var program = Parser.parse("""
+                define module app
+                  fnc main() => void {
+                    val shared = SharedMutex.new(arr[1, 2, 3]);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+
+        assertThrows(SecurityException.class, () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertDoesNotThrow(() -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+    }
+
     @Test
     void mutexGuardTransparentlyProtectsClassStateAndReleasesLexically() throws Exception {
         String program = """
