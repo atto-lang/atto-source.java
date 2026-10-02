@@ -288,20 +288,30 @@ final class TraitCompositionTest {
     }
 
     @Test
-    void traitsCannotMasqueradeAsRuntimeValueTypes() {
-        IllegalArgumentException parameter = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module app as
-                          define trait Stateful as
-                            private val int state = 1;
-                          end
+    void traitsAreCapabilityTypesButCannotBeAllocated() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  define trait Stateful as
+                    private val int state = 1;
 
-                          fnc bad(Stateful value) => void {
-                            return;
-                          }
-                        end
-                        """)));
-        assertTrue(parameter.getMessage().contains("no runtime/value type identity"));
+                    pub value() => int {
+                      return self.state;
+                    }
+                  end
+
+                  define class Host with Stateful as
+                  end
+
+                  fnc inspect(Stateful value) => int {
+                    return value.value();
+                  }
+
+                  fnc ok() => int {
+                    val host = new Host();
+                    return inspect(host);
+                  }
+                end
+                """)));
 
         IllegalArgumentException allocation = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -316,7 +326,7 @@ final class TraitCompositionTest {
                           }
                         end
                         """)));
-        assertTrue(allocation.getMessage().contains("no runtime/value type identity"));
+        assertTrue(allocation.getMessage().contains("cannot be instantiated"));
     }
 
     @Test
