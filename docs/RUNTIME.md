@@ -39,6 +39,64 @@ The strict production direction is:
 - cross-actor values must pass sendability/freezing rules;
 - hot-loaded code gets a new generation and new policy admission.
 
+## Program load, link, and initialization barrier
+
+Program startup is deliberately split into phases:
+
+1. **LOAD / LINKED** — parse every reachable source unit, resolve its import edges, and
+   register every module/class/function declaration. No user callable runs in this phase.
+2. **INITIALIZING** — after the complete reachable graph is linked, execute lifecycle
+   `init` hooks exactly once.
+3. **READY** — only after every required init hook finishes successfully may `main`
+   or any normal externally-entered callable run.
+4. **FAILED** — if an init hook exits with an unrecovered failure, startup is aborted.
+   `main` is not entered and ordinary calls remain unavailable.
+
+Within one parsed program, all module declarations are indexed before the first init hook.
+That means an init hook may call a helper from a module declared later in the source.
+
+`init` is startup-owned. Source code cannot invoke `init()` or `module.init()`
+directly. This preserves the exactly-once lifecycle guarantee.
+
+An init lifecycle callable must be synchronous and deterministic at the call boundary:
+
+- zero parameters;
+- no generic parameters;
+- `void` result;
+- not `async`;
+- not `actor` / `actor isolate`.
+
+Both `fnc init()` and `routine init()` are valid.
+
+### Circular imports
+
+Import cycles are legal. Project startup does **not** topologically execute modules while
+discovering them. Instead, the compiler/runtime contract is:
+
+```text
+discover reachable graph
+        ↓
+load + parse + link ALL reachable units
+        ↓
+initialization barrier
+        ↓
+run init hooks
+        ↓
+READY / main
+```
+
+The incremental compiler exposes this contract as a `StartupPlan` with:
+
+- `loadOrder`: the complete set of reachable source units that must be linked first;
+- `initializationUnitOrder`: deterministic dependency-first initialization traversal;
+- `initHooks`: concrete unit/module lifecycle hooks in execution order.
+
+A dependency back-edge encountered during initialization planning denotes an already-linked
+cycle member and is not an error. Thus `a.ores -> b.ores -> a.ores` is supported rather
+than rejected like a Go import cycle. Dependencies outside a cycle initialize before their
+importers. Members inside a cycle use deterministic traversal order after the entire cycle is
+already linked, so no init hook observes an only-partially-loaded module declaration graph.
+
 ## Actor failure isolation
 
 Each actor owns an independent mailbox lifecycle and fail-stop boundary. An uncaught guest panic
