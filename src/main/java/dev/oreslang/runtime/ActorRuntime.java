@@ -983,7 +983,7 @@ public final class ActorRuntime implements AutoCloseable {
             int current = actorCount.get();
             if (current >= dispatcherConfig.maxActors()) {
                 throw new IllegalStateException(
-                        "actor limit exceeded: runtime maximum " + dispatcherConfig.maxActors());
+                        "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
             }
             if (actorCount.compareAndSet(current, current + 1)) return;
         }
@@ -1223,6 +1223,8 @@ public final class ActorRuntime implements AutoCloseable {
                         aggregateExceeded);
             }
         }
+
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
         Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freezeForTransport(message);
         Runnable release;
@@ -2325,7 +2327,8 @@ public final class ActorRuntime implements AutoCloseable {
         private void reserveSharedMailbox(long bytes) {
             if (bytes < 0) throw new IllegalArgumentException("shared mailbox reservation cannot be negative");
             synchronized (lifecycleLock) {
-                if (stopped.get() || closed.get()) throw terminated(ref);
+                if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+                if (stopped.get()) throw terminated(ref);
                 long current = sharedMailboxBytes.get();
                 long next;
                 try {
