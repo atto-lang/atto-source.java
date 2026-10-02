@@ -1174,7 +1174,14 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            if (klass == null) {
+                if (created.type().inferArguments()) {
+                    throw new IllegalArgumentException("cannot infer generic arguments for unknown/imported class '"
+                            + created.type().name() + "' without its declaration; provide explicit type arguments");
+                }
+                return new Named(created.type().name(),
+                        created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            }
             if (klass.isStruct()) throw new IllegalArgumentException("struct '" + klass.name() + "' is a value type; initialize it with " + klass.name() + " { ... }, not new");
             String ownerName = classOwners.get(klass);
             Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
@@ -1880,6 +1887,10 @@ public final class TypeChecker {
 
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
         if (alias != null) {
+            if (ref.inferArguments()) {
+                throw new IllegalArgumentException("type alias '" + alias.name()
+                        + "' requires explicit type arguments; diamond inference is construction-only");
+            }
             if (alias.genericParameters().size() != ref.arguments().size()) {
                 throw new IllegalArgumentException("type alias '" + alias.name() + "' expects " + alias.genericParameters().size()
                         + " type argument(s), got " + ref.arguments().size());
@@ -1896,6 +1907,40 @@ public final class TypeChecker {
             }
         }
 
+        Ast.ClassDecl namedClass = findClass(ref.name());
+        if (namedClass != null) {
+            if (ref.inferArguments()) {
+                throw new IllegalArgumentException((namedClass.isStruct() ? "struct '" : "class '") + namedClass.name()
+                        + "' requires explicit type arguments in type positions; use <> only at construction");
+            }
+            if (ref.arguments().size() != namedClass.genericParameters().size()) {
+                throw new IllegalArgumentException((namedClass.isStruct() ? "struct '" : "class '") + namedClass.name()
+                        + "' expects " + namedClass.genericParameters().size() + " type argument(s), got "
+                        + ref.arguments().size());
+            }
+            return new Named(qualifiedClassName(namedClass),
+                    ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+        }
+
+        Ast.InterfaceDecl namedInterface = findInterface(ref.name());
+        if (namedInterface != null) {
+            if (ref.inferArguments()) {
+                throw new IllegalArgumentException("interface '" + namedInterface.name()
+                        + "' requires explicit type arguments in type positions");
+            }
+            if (ref.arguments().size() != namedInterface.genericParameters().size()) {
+                throw new IllegalArgumentException("interface '" + namedInterface.name() + "' expects "
+                        + namedInterface.genericParameters().size() + " type argument(s), got "
+                        + ref.arguments().size());
+            }
+            return new Named(qualifiedInterfaceName(namedInterface),
+                    ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+        }
+
+        if (ref.inferArguments()) {
+            throw new IllegalArgumentException("diamond inference '<>' is only valid for a known class/struct construction");
+        }
+
         return switch (ref.name()) {
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
@@ -1905,8 +1950,8 @@ public final class TypeChecker {
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
             case "Array", "List" -> {
-                if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
-                yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
+                if (ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+                yield new ListType(resolve(ref.arguments().getFirst(), generics, self));
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
@@ -2267,8 +2312,8 @@ public final class TypeChecker {
     private Type nominalLocalType(Ast.ClassDecl klass, Ast.TypeRef ref, Set<String> generics, Type self) {
         if (!klass.isStruct()) throw new IllegalArgumentException("callable-local classes are not supported");
         if (ref.inferArguments()) {
-            return new Named(qualifiedClassName(klass),
-                    klass.genericParameters().stream().map(ignored -> (Type) Unknown.INSTANCE).toList());
+            throw new IllegalArgumentException("struct '" + klass.name()
+                    + "' requires explicit type arguments in type positions; use <> only at construction");
         }
         if (ref.arguments().size() != klass.genericParameters().size()) {
             throw new IllegalArgumentException("struct '" + klass.name() + "' expects "
