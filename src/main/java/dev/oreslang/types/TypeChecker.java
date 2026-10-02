@@ -1225,7 +1225,7 @@ public final class TypeChecker {
                 continue; // arbitrary guards never count toward exhaustiveness
             }
             if (catchAll) throw new IllegalArgumentException("unreachable match arm after catch-all pattern");
-            Set<String> keys = coverageKeys(arm.pattern());
+            Set<String> keys = coverageKeys(arm.pattern(), subjectType);
             if (!keys.isEmpty() && covered.containsAll(keys)) {
                 throw new IllegalArgumentException("unreachable/redundant match pattern " + keys);
             }
@@ -1251,14 +1251,22 @@ public final class TypeChecker {
                 + "; add an unguarded '_' or binding arm");
     }
 
-    private Set<String> coverageKeys(Ast.Pattern pattern) {
+    private Set<String> coverageKeys(Ast.Pattern pattern, Type subjectType) {
         Set<String> keys = new LinkedHashSet<>();
+        Type subject = deref(subjectType);
         if (pattern instanceof Ast.LiteralPattern literal) {
             keys.add("literal:" + String.valueOf(literal.value()));
         } else if (pattern instanceof Ast.ConstructorPattern constructor) {
-            keys.add("ctor:" + constructor.name());
+            if (subject instanceof Named named && named.name().equals("Option")) {
+                if (constructor.name().equals("None") && constructor.arguments().isEmpty()) {
+                    keys.add("ctor:None");
+                } else if (constructor.name().equals("Some") && constructor.arguments().size() == 1) {
+                    Type payload = named.arguments().isEmpty() ? Unknown.INSTANCE : named.arguments().getFirst();
+                    if (patternCoversAll(constructor.arguments().getFirst(), payload)) keys.add("ctor:Some");
+                }
+            }
         } else if (pattern instanceof Ast.OrPattern or) {
-            for (Ast.Pattern alt : or.alternatives()) keys.addAll(coverageKeys(alt));
+            for (Ast.Pattern alt : or.alternatives()) keys.addAll(coverageKeys(alt, subject));
         }
         return keys;
     }
