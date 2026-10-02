@@ -1027,8 +1027,38 @@ public final class ActorRuntime implements AutoCloseable {
              type != null && type != Object.class;
              type = type.getSuperclass()) {
             for (java.lang.reflect.Field field : type.getDeclaredFields()) {
-                if (java.lang.reflect.Modifier.isStatic(field.getModifiers())) continue;
-                if (!java.lang.reflect.Modifier.isFinal(field.getModifiers())) {
+                int modifiers = field.getModifiers();
+                boolean isStatic = java.lang.reflect.Modifier.isStatic(modifiers);
+                boolean isFinal = java.lang.reflect.Modifier.isFinal(modifiers);
+
+                if (isStatic) {
+                    if (!isFinal) {
+                        throw new SecurityException(
+                                "private actor behavior class declares mutable static JVM state '"
+                                        + field.getName() + "'; private actors cannot share static state");
+                    }
+                    if (!field.trySetAccessible()) {
+                        throw new SecurityException(
+                                "private actor behavior contains inaccessible static state: " + field.getName());
+                    }
+                    final Object staticValue;
+                    try {
+                        staticValue = field.get(null);
+                    } catch (IllegalAccessException impossible) {
+                        throw new SecurityException(
+                                "cannot inspect private actor static state: " + field.getName(),
+                                impossible);
+                    }
+                    if (!isPrivateStaticConstant(staticValue)) {
+                        throw new SecurityException(
+                                "private actor behavior class declares shared static object '"
+                                        + field.getName()
+                                        + "'; only immutable scalar constants are allowed");
+                    }
+                    continue;
+                }
+
+                if (!isFinal) {
                     throw new SecurityException(
                             "private actor behavior field '" + field.getName()
                                     + "' is mutable JVM state; persistent mutable state must use context.privateMemory()");
@@ -1048,6 +1078,12 @@ public final class ActorRuntime implements AutoCloseable {
                 validatePrivateBehaviorCapture(owner, field.getName(), value);
             }
         }
+    }
+
+    private static boolean isPrivateStaticConstant(Object value) {
+        return value == null
+                || isScalar(value)
+                || value instanceof Class<?>;
     }
 
     private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
