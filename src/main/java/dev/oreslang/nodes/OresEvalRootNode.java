@@ -394,7 +394,7 @@ public final class OresEvalRootNode extends RootNode {
                     var future = stage.toCompletableFuture();
                     if (ActorRuntime.inActorExecution() && !future.isDone()) {
                         throw new IllegalStateException(
-                                "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
+                                "await would block this actor/worker and prevent mailbox progress; actor continuation lowering must suspend/resume the worker");
                     }
                     return future.join();
                 }
