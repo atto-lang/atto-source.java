@@ -9,6 +9,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.ActorRuntime;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -777,9 +778,68 @@ public final class OresEvalRootNode extends RootNode {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
             if (shared) {
                 context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex.new");
-                return OresMutex.shared(args.getFirst());
+                Object value = args.getFirst();
+                if (!runtimeSharedSafe(value, java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()))) {
+                    throw new IllegalArgumentException(
+                            "SharedMutex<T> runtime admission rejected non-shared-safe state");
+                }
+                return OresMutex.shared(value);
             }
             return OresMutex.local(args.getFirst());
+        }
+
+        private static boolean runtimeSharedSafe(Object value, Set<Object> seen) {
+            if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+                    || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
+                    || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
+                    || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
+                    || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                return true;
+            }
+
+            if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>
+                    || value instanceof CompletionStage<?> || value instanceof Invokable) {
+                return false;
+            }
+
+            // A nested SharedMutex has already crossed the same explicit
+            // SHARED_MEMORY admission boundary; do not acquire it just to
+            // inspect its protected state.
+            if (value instanceof OresMutex.Shared<?>) return true;
+
+            if (!seen.add(value)) return true;
+
+            if (value instanceof OptionValue option) {
+                return !option.present() || runtimeSharedSafe(option.value(), seen);
+            }
+            if (value instanceof ActorRuntime.Shared<?> readonly) {
+                return runtimeSharedSafe(readonly.value(), seen);
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) {
+                    if (!runtimeSharedSafe(field, seen)) return false;
+                }
+                return true;
+            }
+            if (value instanceof List<?> list) {
+                for (Object item : list) if (!runtimeSharedSafe(item, seen)) return false;
+                return true;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (!runtimeSharedSafe(entry.getKey(), seen) || !runtimeSharedSafe(entry.getValue(), seen)) return false;
+                }
+                return true;
+            }
+            if (value instanceof Object[] array) {
+                for (Object item : array) if (!runtimeSharedSafe(item, seen)) return false;
+                return true;
+            }
+
+            // Guest code has no unrestricted host access. Reject unknown host
+            // values rather than silently turning SharedMutex into an escape
+            // hatch for Java references.
+            return false;
         }
     }
     private record OptionValue(boolean present, Object value) {
