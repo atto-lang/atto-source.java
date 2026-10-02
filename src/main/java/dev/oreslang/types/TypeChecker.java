@@ -58,6 +58,8 @@ public final class TypeChecker {
     private String activeTraitOwner;
     // Lexical aggregate owner for ordinary private member access.
     private Ast.ClassDecl activeClassOwner;
+    // Method-context bit used to validate nested/projection calls that require &mut self.
+    private boolean activeMutableSelf;
 
     public static Ast.Program check(Ast.Program program) {
         Ast.Program composed = TraitComposer.compose(program);
@@ -991,8 +993,13 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             String previousTraitOwner = activeTraitOwner;
             Ast.ClassDecl previousClassOwner = activeClassOwner;
+            boolean previousMutableSelf = activeMutableSelf;
             activeTraitOwner = method.compositionOwner();
             activeClassOwner = klass;
+            activeMutableSelf = !method.isStatic()
+                    && method.explicitReceiverType() != null
+                    && method.explicitReceiverType().isBorrow()
+                    && method.explicitReceiverType().mutableBorrow();
             pushLocalTypeScope(method.body());
             try {
                 Set<String> inheritedGenerics = method.isStatic() ? Set.of() : classGenerics;
@@ -1041,6 +1048,7 @@ public final class TypeChecker {
                 popLocalTypeScope();
                 activeTraitOwner = previousTraitOwner;
                 activeClassOwner = previousClassOwner;
+                activeMutableSelf = previousMutableSelf;
             }
         }
 
@@ -1414,6 +1422,9 @@ public final class TypeChecker {
                     if (klass != null) {
                         Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
+                        if (requiresMutableReceiver(method)) {
+                            requireMutableReceiverExpression(member.receiver(), env, "method '" + named.name() + "." + method.name() + "'");
+                        }
                         requireTraitMethodAccessible(method, named.name() + "." + member.member());
                         List<Type> actualTypes = call.arguments().stream()
                                 .map(argument -> typeOf(argument, env, generics, self))
@@ -1978,6 +1989,51 @@ public final class TypeChecker {
 
     private boolean isStringLike(Type type) {
         return type == Primitive.STRING || type instanceof StringLiteral;
+    }
+
+    private static boolean requiresMutableReceiver(Ast.MethodDecl method) {
+        Ast.TypeRef receiver = method.explicitReceiverType();
+        return receiver != null && receiver.isBorrow() && receiver.mutableBorrow();
+    }
+
+    private void requireMutableReceiverExpression(Ast.Expr receiver, Env env, String where) {
+        if (receiver instanceof Ast.UnaryExpr unary && unary.operator().equals("&mut")) return;
+        if (receiver instanceof Ast.NewExpr || receiver instanceof Ast.StructInitExpr) return;
+
+        Ast.NameExpr root = receiverRootName(receiver);
+        if (root == null) {
+            throw new IllegalArgumentException(where + " requires a mutable receiver rooted in a named mutable owner or &mut borrow");
+        }
+        if (root.name().equals("self")) {
+            if (!activeMutableSelf) {
+                throw new IllegalArgumentException(where + " cannot mutate through immutable self");
+            }
+            return;
+        }
+
+        Env.Binding binding = env.lookup(root.name());
+        if (binding == null) {
+            // Module/class namespace receivers are not local mutable owners.
+            throw new IllegalArgumentException(where + " requires a mutable local/parameter receiver; '" + root.name() + "' is not mutable storage here");
+        }
+        boolean mutableBorrow = binding.type() instanceof Borrow borrow && borrow.mutable();
+        if (binding.kind() != Ast.BindingKind.LET && !mutableBorrow) {
+            throw new IllegalArgumentException(where + " cannot mutate through immutable root '" + root.name() + "'");
+        }
+        if (binding.type() instanceof Borrow borrow && !borrow.mutable()) {
+            throw new IllegalArgumentException(where + " cannot mutate through immutable borrow '" + root.name() + "'");
+        }
+    }
+
+    private Ast.NameExpr receiverRootName(Ast.Expr expression) {
+        if (expression instanceof Ast.NameExpr name) return name;
+        if (expression instanceof Ast.MemberExpr member) return receiverRootName(member.receiver());
+        if (expression instanceof Ast.IndexExpr indexed) return receiverRootName(indexed.receiver());
+        if (expression instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            return receiverRootName(unary.operand());
+        }
+        return null;
     }
 
     private static boolean isOwnershipIntrinsicName(String name) {
