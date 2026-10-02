@@ -121,6 +121,11 @@ public final class Ast {
             methods = List.copyOf(methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, List<MethodDecl> methods) {
+            this(name, isAbstract, genericParameters, parents, interfaces, List.of(), fields, methods);
+        }
+        public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
             this(name, isAbstract, genericParameters, List.of(), List.of(), List.of(), fields, methods);
         }
@@ -181,7 +186,13 @@ public final class Ast {
             Visibility visibility,
             BindingKind bindingKind,
             TypeRef type,
-            Expr initializer) implements Decl { }
+            Expr initializer,
+            String compositionOwner) implements Decl {
+        public FieldDecl(String name, Visibility visibility, BindingKind bindingKind, TypeRef type, Expr initializer) {
+            this(name, visibility, bindingKind, type, initializer, null);
+        }
+        public boolean composed() { return compositionOwner != null; }
+    }
 
     public record MethodDecl(
             String name,
