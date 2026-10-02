@@ -131,6 +131,65 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void actorSendRejectsWrongMessageTypeBeforeExecution() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc worker(String message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  val worker_ref = actor.spawn(worker);
+                  actor.send(worker_ref, 42);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("actor.send") || failure.getMessage().contains("assignable"));
+    }
+
+    @Test
+    void statefulActorRequiresHandlerToReturnItsStateType() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc bad_worker(String message, int state) => String {
+                  return "wrong";
+                }
+
+                pub routine main() => void {
+                  actor.spawn(bad_worker, 0);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("return state") || failure.getMessage().contains("assignable"));
+    }
+
+    @Test
+    void readonlySharedValuesAreTypedAndDoNotConsumeTheOriginal() throws Exception {
+        String output = run("""
+                fnc worker(Array<String> message) => void {
+                  stdio.stdout.write(message[0]);
+                  return;
+                }
+
+                pub routine main() => void {
+                  val values = arr["shared"];
+                  val shared = process.share_readonly(values);
+                  val worker_ref = actor.spawn(worker);
+                  actor.send(worker_ref, shared);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(values[0]);
+                  actor.stop(worker_ref);
+                  actor.join(worker_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("shared:shared", output);
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
