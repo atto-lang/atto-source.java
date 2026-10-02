@@ -49,7 +49,7 @@ Method code is stored once per class declaration. Direct calls dispatch to that 
 
 ## Process-wide singleton modules
 
-`define singleton module name` is implemented by the process singleton registry. The registry is static process-lifetime runtime state, independent of any one `OresContext`. The first access creates one virtual-thread actor with a serial mailbox and initializes the module bindings on that actor. Later contexts and isolates resolve the same canonical module key to the same actor identity.
+`define singleton module name` is implemented by the process singleton registry. The registry is static process-lifetime runtime state, independent of any one `OresContext`. The first access creates one virtual-thread actor with a serial mailbox and initializes the module bindings on that actor. Later contexts and isolates resolve the same canonical module key to the same actor identity. The key is based on the explicit source namespace when present; otherwise it includes the source code-unit identity plus module name, so unrelated files/tenants that happen to use the same module name cannot alias one another.
 
 Public functions are exposed through a typed module proxy. A call such as `await config.read()` enqueues a request to the singleton actor and waits for its reply. Calls made by singleton code to another function in the same singleton module are direct calls against the already-owned state environment, so self-calls do not enqueue to the same mailbox and cannot deadlock.
 
