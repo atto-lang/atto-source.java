@@ -912,7 +912,7 @@ final class ActorRecoverTest {
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("'stop' is only valid inside an actor body"));
+        assertTrue(error.getMessage().contains("'stop' requires actor context"));
     }
 
     @Test
