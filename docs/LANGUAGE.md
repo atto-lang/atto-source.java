@@ -1151,9 +1151,9 @@ The ownership intrinsics have type-aware effect semantics:
 | `borrow(x)` | no | no |
 | `take(x)` | no | no |
 | `copy(x)` | only when the copied type needs materialized storage | yes |
-| `share(x)` | only when the snapshot type needs materialized storage | yes |
+| `share(x)` | only when the snapshot type needs materialized storage | only when sharing requires a snapshot copy |
 
-For example, copying an `int` or a primitive-only struct is a copy effect but is not an allocation effect. Copying a class, array/list, map/object, closure, future, mutex state, or a struct containing such storage is potentially allocating.
+For example, copying an `int` or a primitive-only struct is a copy effect but is not an allocation effect. Copying a class, array/list, map/object, closure, future, mutex state, or a struct containing such storage is potentially allocating. `share(x)` is genuinely zero-copy for already-immutable scalar/string values; composite values still require snapshot-copy semantics.
 
 ```ores
 struct Point {
@@ -1197,7 +1197,7 @@ The checker currently treats these as allocation-producing semantic operations:
 - capturing closure environments;
 - asynchronous callables, because invoking one creates/schedules asynchronous result/task state;
 - `Mutex.new(...)` and `SharedMutex.new(...)`;
-- `copy(...)` / `share(...)` when the operand's recursively known representation needs materialized storage;
+- `copy(...)` / composite `share(...)` when the operand's recursively known representation needs materialized storage;
 - string `+` concatenation;
 - opaque calls without a provable `@NoAlloc` guarantee.
 
