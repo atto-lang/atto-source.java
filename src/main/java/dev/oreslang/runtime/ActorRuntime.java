@@ -270,19 +270,28 @@ public final class ActorRuntime implements AutoCloseable {
         List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
         try {
             Object frozen = freezeForThisRuntime(message);
-            if (containsSharedMutex(frozen)) {
+            boolean containsShared = containsSharedMutex(frozen);
+            if (containsShared) {
                 IsolatePolicy sender = CURRENT_ACTOR_POLICY.get();
                 if (sender != null) sender.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor send");
                 else policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
                 cell.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
-                sharedMutexReservations = reserveSharedMutexBindings(frozen);
             }
-            if (!cell.enqueueReserved(frozen)) {
-                throw new IllegalStateException(
-                        "actor terminated before message admission for " + ref.id());
+
+            synchronized (lifecycleLock) {
+                if (closed.get()) {
+                    throw new IllegalStateException("actor runtime is closed");
+                }
+                if (containsShared) {
+                    sharedMutexReservations = reserveSharedMutexBindings(frozen);
+                }
+                if (!cell.enqueueReserved(frozen)) {
+                    throw new IllegalStateException(
+                            "actor terminated before message admission for " + ref.id());
+                }
+                enqueued = true;
+                commitSharedMutexBindings(sharedMutexReservations);
             }
-            enqueued = true;
-            commitSharedMutexBindings(sharedMutexReservations);
         } finally {
             if (!enqueued) {
                 abortSharedMutexBindings(sharedMutexReservations);

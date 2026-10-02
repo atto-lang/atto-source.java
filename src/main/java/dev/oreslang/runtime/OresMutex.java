@@ -25,6 +25,14 @@ import java.util.function.Function;
 public final class OresMutex {
     private OresMutex() { }
 
+    private static long saturatedNanos(Duration timeout) {
+        try {
+            return timeout.toNanos();
+        } catch (ArithmeticException overflow) {
+            return Long.MAX_VALUE;
+        }
+    }
+
     public static <T> Local<T> local(T value) {
         return new Local<>(value);
     }
@@ -370,11 +378,18 @@ public final class OresMutex {
         public Optional<Guard<T>> tryLock() {
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
-            if (!permit.tryAcquire()) {
+            try {
+                if (!permit.tryAcquire(0L, TimeUnit.NANOSECONDS)) {
+                    releaseDomain(ownerDomain);
+                    return Optional.empty();
+                }
+                return Optional.of(checkedGuardAfterAcquire(ownerDomain, true));
+            } catch (InterruptedException interrupted) {
                 releaseDomain(ownerDomain);
-                return Optional.empty();
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException(
+                        "SharedMutex try_lock interrupted");
             }
-            return Optional.of(checkedGuardAfterAcquire(ownerDomain, true));
         }
 
         @Override
@@ -385,7 +400,7 @@ public final class OresMutex {
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
             try {
-                if (!permit.tryAcquire(timeout.toNanos(), TimeUnit.NANOSECONDS)) {
+                if (!permit.tryAcquire(saturatedNanos(timeout), TimeUnit.NANOSECONDS)) {
                     releaseDomain(ownerDomain);
                     return Optional.empty();
                 }
@@ -572,9 +587,10 @@ public final class OresMutex {
             @Override
             public void fail() {
                 requireOwnerDomain();
-                if (released()) return;
+                if (!released.compareAndSet(false, true)) return;
                 poisoned.set(true);
-                release();
+                releaseDomain(ownerDomain);
+                permit.release();
             }
         }
     }
