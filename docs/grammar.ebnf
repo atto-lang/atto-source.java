@@ -28,6 +28,7 @@ module_member   = init_decl
                 | class_decl
                 | interface_decl
                 | type_decl
+                | module_field_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
@@ -45,10 +46,21 @@ class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   "as" { class_member } "end" ;
 
 class_member    = field_decl
+                | constructor_decl
                 | method_decl
                 | static_function_decl ;
 
-field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
+module_field_decl
+                = visibility [ "static" ] data_member_decl ;
+
+field_decl      = visibility [ "static" ] data_member_decl ;
+
+data_member_decl
+                = [ binding_kind ] IDENT ":" type_ref [ "=" expression ] [ ";" ]
+                | binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
+
+constructor_decl
+                = { annotation } visibility "constructor" "(" [ param_list ] ")" block ;
 
 method_decl     = { annotation } visibility { callable_modifier } method_name [ generic_params ]
                   method_head return_spec ( block | stmt_terminator ) ;
@@ -218,6 +230,19 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - fnc declarations may recurse; routines may not participate in a call cycle.
    - fnc and routine declarations do not overload.
    - instance methods may overload only when arity differs.
+   - Data members use name-first syntax: name: Type. Omitting let/val/const
+     defaults to mutable let. The older "let Type name" form remains accepted as
+     a migration surface.
+   - Class data members may be static and are accessed through the declaring
+     class namespace. Static data is owned by the class's module actor/service;
+     it is never ambient JVM-global mutable state and is not inherited.
+   - A normal module may also spell a member "static". Because a module already
+     has one namespace-owned state cell per owning actor/service, module static
+     is an explicit declaration marker over that same storage model rather than
+     a second global-state mechanism.
+   - constructor(...) { ... } has implicit self, no declared return type, cannot
+     be static/abstract/async, and may overload by arity. Explicit constructors
+     must initialize every instance field that lacks a field initializer.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.
    - "=>" belongs to named callable return declarations.
