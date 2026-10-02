@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -149,6 +150,44 @@ final class ActorRuntimeTest {
         try (ActorRuntime runtime = new ActorRuntime(policy)) {
             ActorRuntime.ActorRef<Object> actor = runtime.spawn(() -> (message, context) -> { });
             String oversized = "x".repeat(5_000_000);
+
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> runtime.send(actor, oversized));
+
+            assertTrue(error.getMessage().contains("too large"));
+            assertEquals(0, runtime.snapshot(actor).mailboxMessages());
+        }
+    }
+
+    @Test
+    void cyclicMessagesAreRejectedDuringSizePreflight() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> actor = runtime.spawn(() -> (message, context) -> { });
+            ArrayList<Object> cyclic = new ArrayList<>();
+            cyclic.add(cyclic);
+
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> runtime.send(actor, cyclic));
+
+            assertTrue(error.getMessage().contains("cyclic"));
+            assertEquals(0, runtime.snapshot(actor).mailboxMessages());
+        }
+    }
+
+    @Test
+    void oversizedObjectArraysAreSizedBeforeFreezeAllocation() {
+        IsolatePolicy policy = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            ActorRuntime.ActorRef<Object> actor = runtime.spawn(() -> (message, context) -> { });
+            String[] oversized = new String[300_000];
+            Arrays.fill(oversized, "0123456789");
 
             IllegalArgumentException error = assertThrows(
                     IllegalArgumentException.class,
