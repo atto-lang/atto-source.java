@@ -8,6 +8,7 @@ import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.Reference;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
 import dev.oreslang.types.Types.Type;
@@ -176,7 +177,8 @@ public final class TypeChecker {
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null),
+                param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
         checkBlock(fn.body(), env, generics, returns, null);
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -236,8 +238,9 @@ public final class TypeChecker {
 
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), Ast.BindingKind.VAL);
+            if (!method.isStatic()) env.define("self", self, method.mutableReceiver() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf),
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
             checkBlock(method.body(), env, generics, returns, callableSelf);
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
@@ -889,6 +892,12 @@ public final class TypeChecker {
         }
 
         return switch (ref.name()) {
+            case "Ref", "MutRef" -> {
+                if (ref.arguments().size() != 1 || ref.inferArguments()) {
+                    throw new IllegalArgumentException(ref.name() + " requires exactly one referent type");
+                }
+                yield new Reference(resolve(ref.arguments().getFirst(), generics, self), ref.name().equals("MutRef"));
+            }
             case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
             case "decimal" -> Primitive.DECIMAL;
