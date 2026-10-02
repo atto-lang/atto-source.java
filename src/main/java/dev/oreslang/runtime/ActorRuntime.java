@@ -556,6 +556,9 @@ public final class ActorRuntime implements AutoCloseable {
         if (child.maxActors() > policyCeiling.maxActors()) {
             throw new SecurityException("child actor maxActors exceeds parent policy");
         }
+        if (child.maxAsyncTasks() > policyCeiling.maxAsyncTasks()) {
+            throw new SecurityException("child actor maxAsyncTasks exceeds parent policy");
+        }
         if (child.maxWallTime().compareTo(policyCeiling.maxWallTime()) > 0) {
             throw new SecurityException("child actor wall-time limit exceeds parent policy");
         }
