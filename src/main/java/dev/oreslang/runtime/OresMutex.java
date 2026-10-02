@@ -595,13 +595,11 @@ public final class OresMutex {
                     future);
 
             future.whenComplete((ignored, failure) -> {
-                if (future.isCancelled()) {
-                    boolean removed;
-                    synchronized (asyncQueueLock) {
-                        removed = asyncQueue.remove(waiter);
-                    }
-                    if (removed) releaseDomain(ownerDomain);
+                boolean removed;
+                synchronized (asyncQueueLock) {
+                    removed = asyncQueue.remove(waiter);
                 }
+                if (removed) releaseDomain(ownerDomain);
                 releaseAsyncWaiter();
                 releaseGlobalAsyncWaiter();
             });
