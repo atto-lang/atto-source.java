@@ -1138,22 +1138,41 @@ fnc checksum(int a, int b) => int {
 
 These annotations are compile-time contracts, not optimizer hints:
 
-- `@NoAlloc` rejects any operation that is known or conservatively assumed to allocate runtime storage.
-- `@NoCopy` rejects explicit or transitive value-copy effects.
-- both contracts are transitive across statically resolved Oreslang function and method calls;
-- an unresolved/dynamic/foreign call is conservatively treated as potentially allocating and copying, so a constrained callable cannot silently escape through an opaque callee;
-- contract violations include a call path to the first known effect source.
+- `@NoAlloc` forbids guest-language storage allocation/materialization that cannot be represented as an inline/fixed value.
+- `@NoCopy` forbids explicit or transitive ownership-copy effects.
+- contracts propagate transitively through statically resolved Oreslang functions, exact struct/private/static method calls, and other non-virtual calls;
+- unresolved/dynamic/foreign calls are conservative: a constrained caller must have a provable effect contract rather than silently escaping analysis;
+- diagnostics walk the call graph to the first concrete effect source, including through recursive call graphs.
 
-The ownership intrinsics intentionally have effect semantics:
+The ownership intrinsics have type-aware effect semantics:
 
 | operation | allocation effect | copy effect |
 | --- | --- | --- |
 | `borrow(x)` | no | no |
 | `take(x)` | no | no |
-| `copy(x)` | potential allocation | yes |
-| `share(x)` | yes (snapshot materialization) | yes |
+| `copy(x)` | only when the copied type needs materialized storage | yes |
+| `share(x)` | only when the snapshot type needs materialized storage | yes |
 
-This makes ownership-transfer pipelines expressible without hidden copying:
+For example, copying an `int` or a primitive-only struct is a copy effect but is not an allocation effect. Copying a class, array/list, map/object, closure, future, mutex state, or a struct containing such storage is potentially allocating.
+
+```ores
+struct Point {
+  x: int;
+  y: int;
+}
+
+@NoAlloc
+fnc duplicate(Point value) => Point {
+  return copy(value); // legal: fixed value copy, no heap/storage materialization
+}
+
+@NoCopy
+fnc forbidden(Point value) => Point {
+  return copy(value); // compile error: copy effect
+}
+```
+
+Ownership-transfer pipelines remain both zero-copy and zero-allocation:
 
 ```ores
 @NoAlloc
@@ -1169,20 +1188,65 @@ fnc pipeline(Buffer value) => int {
 }
 ```
 
-The current allocation checker treats the following as allocation-producing semantic operations:
+### Allocation sources
 
-- `new T(...)`;
-- array/list, tuple, and object/map literals;
-- closure/lambda creation;
-- `Some(...)` value construction;
+The checker currently treats these as allocation-producing semantic operations:
+
+- `new T(...)` for reference/identity classes;
+- array/list and object/map literals;
+- capturing closure environments;
+- asynchronous callables, because invoking one creates/schedules asynchronous result/task state;
 - `Mutex.new(...)` and `SharedMutex.new(...)`;
-- `copy(...)` and `share(...)` materialization;
-- string/potential-string `+` concatenation unless both operands are statically provable numeric expressions;
-- opaque calls whose allocation behavior cannot be proven.
+- `copy(...)` / `share(...)` when the operand's recursively known representation needs materialized storage;
+- string `+` concatenation;
+- opaque calls without a provable `@NoAlloc` guarantee.
 
-Named struct construction is value construction rather than an intrinsic heap-allocation effect. Backends are therefore free to lower structs inline, on the stack, in registers, or into caller/arena-provided storage while preserving the same source-level contract.
+Fixed-value forms do not intrinsically allocate:
 
-`@NoAlloc` and `@NoCopy` currently take no arguments. Budgeted effects such as bounded allocation counts/bytes and an arena-aware `@NoHeapAlloc` contract are intentionally left as a later extension; the zero forms establish the strict base semantics first.
+- named struct construction;
+- tuples;
+- `Some(value)` / `Option<T>` tag construction;
+- scalar arithmetic;
+- non-capturing lambdas, which may lower to static call targets;
+- `borrow(...)` and `take(...)`.
+
+Their nested expressions are still checked normally, so an inline value containing an allocating expression does not hide that effect.
+
+### Dynamic dispatch contracts
+
+A class instance method body being allocation-free is not enough to make an unconstrained virtual call allocation-free: a subclass may override it. Public class methods therefore need an explicit effect contract before constrained callers can rely on the guarantee.
+
+```ores
+define class Source as
+  @NoAlloc
+  @NoCopy
+  pub read() => int {
+    return 1;
+  }
+end
+
+@NoAlloc
+@NoCopy
+fnc consume(Source source) => int {
+  return source.read();
+}
+```
+
+Effect contracts are inherited behavioral contracts. An overriding method must satisfy the inherited `@NoAlloc` / `@NoCopy` guarantees even when it does not repeat the annotation. Private methods, static methods, and struct methods have exact dispatch and can propagate their inferred effects directly.
+
+### Async and callbacks
+
+An `async` callable has an allocation effect because its invocation creates/schedules asynchronous state. `@NoAlloc async fnc ...` is therefore rejected.
+
+Creating a lambda does not execute its body. The creator is charged for a closure allocation only when the lambda captures outer state. Effects inside a callback body are accounted for when that callback is invoked; calls through unverified dynamic callback values remain conservative.
+
+### Backend contract
+
+`@NoAlloc` is a source-language/guest allocation guarantee. Fixed value forms are deliberately specified so JVM/native backends can lower them to registers, stack slots, inline fields, or caller-provided storage. A backend must not introduce a guest-visible heap-allocation semantic requirement for those forms.
+
+A host VM or interpreter may still create implementation bookkeeping objects internally. Machine-level host-allocation verification is a separate backend/profiling concern and must not be claimed solely from the source effect pass.
+
+`@NoAlloc` and `@NoCopy` take no arguments. Budgeted effects and explicit arena/heap-only contracts can build on this strict zero baseline later.
 
 ## Multi-threaded targets
 
