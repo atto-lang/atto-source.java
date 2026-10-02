@@ -42,3 +42,17 @@ The strict production direction is:
 ## Receiver implementation
 
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
+
+## Defer frames
+
+Each callable invocation owns a private LIFO defer frame. Lexical blocks reuse the
+current callable frame; they never create or drain a defer stack.
+
+At a `defer expression` statement, the runtime evaluates `expression` immediately.
+The resulting value must be callable and is pushed onto the frame. At callable exit,
+the frame invokes each registered callable with zero arguments in LIFO order.
+
+All registered actions are attempted even if one fails. A body failure remains the
+primary failure and defer failures are suppressed onto it. With no body failure, the
+first defer failure in LIFO execution order is primary and subsequent failures are
+suppressed.
