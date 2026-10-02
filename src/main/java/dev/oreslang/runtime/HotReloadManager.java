@@ -120,7 +120,7 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public synchronized Map<String, Generation> activeGenerations() {
-        return Map.copyOf(activeByCodeUnit);
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(activeByCodeUnit));
     }
 
     /**
