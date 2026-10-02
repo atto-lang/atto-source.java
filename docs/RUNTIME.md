@@ -55,7 +55,15 @@ Each source actor turn receives an implicit `self` handle in addition to its one
 parameter. A mailbox delivery creates a fresh callable frame; captured actor-owned state persists,
 while defer/recovery stacks are strictly per-turn.
 
-Explicit `stop()` is graceful and ordered:
+`stop;` and `ActorRef.stop()` intentionally have different semantics.
+
+The language statement `stop;` is immediate clean actor termination. It uses a
+stackless internal control signal, runs lexical `finally` and callable defers,
+bypasses guest catch/recover, abandons queued mailbox work, and never marks the
+actor failed. The signal is recognized only by the actor boundary; outside actor
+source the type checker rejects `stop;`.
+
+Explicit `ActorRef.stop()` / `self.stop()` is graceful and ordered:
 
 1. messages accepted before stop remain FIFO;
 2. the actor stops accepting new messages atomically with the stop request;
