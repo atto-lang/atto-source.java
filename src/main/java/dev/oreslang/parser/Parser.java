@@ -141,10 +141,13 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(ACTOR)) {
+            if (modifiers.async) {
+                throw error(previous(), "'async' and 'actor' are mutually exclusive concurrency modifiers; actor calls return ActorHandle<T>, not Future<T>");
+            }
             Ast.ActorKind actorKind = modifiers.shared ? Ast.ActorKind.SHARED : Ast.ActorKind.PRIVATE;
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
-            if (modifiers.async || modifiers.isStatic || modifiers.isAbstract) {
-                throw error(previous(), "actor declarations do not accept async, static, or abstract modifiers");
+            if (modifiers.isStatic || modifiers.isAbstract) {
+                throw error(previous(), "actor declarations do not accept static or abstract modifiers");
             }
             return parseActorClass(actorKind);
         }
@@ -170,6 +173,9 @@ public final class Parser {
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         if (kind == Ast.CallableKind.ROUTINE && actorKind != Ast.ActorKind.NONE) {
             throw error(previous(), "actor entry points use fnc, not routine");
+        }
+        if (modifiers.async && actorKind != Ast.ActorKind.NONE) {
+            throw error(previous(), "'async' and 'actor' cannot be combined");
         }
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
@@ -226,6 +232,9 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
+            if (mods.async) {
+                throw error(previous(), "actor methods do not use 'async'; actor suspension is expressed with 'await' inside the actor turn");
+            }
 
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "actor state cannot be static");
