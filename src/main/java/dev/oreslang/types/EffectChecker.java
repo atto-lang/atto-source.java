@@ -555,9 +555,11 @@ public final class EffectChecker {
                 }
                 case "share" -> {
                     requireArity(call, "share", 1);
-                    addEffect(current, Effect.COPY, "share(...) creates a snapshot copy");
                     Ast.TypeRef operand = inferType(call.arguments().getFirst(), current, scope);
-                    if (copyMayAllocate(operand, current.module(), scope, new HashSet<>())) {
+                    if (!isZeroCopyShare(operand)) {
+                        addEffect(current, Effect.COPY, "share(...) creates a snapshot copy");
+                    }
+                    if (copyMayAllocate(operand, current.module(), scope, newIdentitySet())) {
                         addEffect(current, Effect.ALLOC,
                                 "share(...) materializes frozen heap/storage state");
                     }
@@ -647,9 +649,11 @@ public final class EffectChecker {
         Scope initializerScope = new Scope(callerScope);
         initializerScope.define("self", Ast.TypeRef.simple(klass.name()));
 
-        for (int i = 0; i < fields.size(); i++) {
-            Ast.FieldDecl field = fields.get(i);
-            boolean supplied = i < suppliedPositional || suppliedNames.contains(field.name());
+        int positionalIndex = 0;
+        for (Ast.FieldDecl field : fields) {
+            boolean positionalSupplied = !field.composed() && positionalIndex < suppliedPositional;
+            boolean supplied = positionalSupplied || suppliedNames.contains(field.name());
+            if (!field.composed()) positionalIndex++;
             if (!supplied && field.initializer() != null) {
                 scanExpr(field.initializer(), current, initializerScope);
             }
@@ -994,11 +998,13 @@ public final class EffectChecker {
 
         if (!active.add(klass)) return true;
         try {
+            Map<String, Ast.TypeRef> substitutions = classGenericSubstitutions(klass, target);
             for (Ast.FieldDecl field : effectiveFields(
                     klass, module, scope,
                     java.util.Collections.newSetFromMap(new IdentityHashMap<>()))) {
-                if (field.type() == null
-                        || copyMayAllocate(field.type(), module, scope, active)) {
+                Ast.TypeRef fieldType = substituteType(field.type(), substitutions);
+                if (fieldType == null
+                        || copyMayAllocate(fieldType, module, scope, active)) {
                     return true;
                 }
             }
@@ -1008,12 +1014,47 @@ public final class EffectChecker {
         }
     }
 
+    private static boolean isZeroCopyShare(Ast.TypeRef type) {
+        if (type == null || type.inferArguments()) return false;
+        Ast.TypeRef target = type.isBorrow() ? type.borrowedTarget() : type;
+        return target.arguments().isEmpty() && isScalarOrImmutableReference(target.name());
+    }
+
+    private static Map<String, Ast.TypeRef> classGenericSubstitutions(
+            Ast.ClassDecl klass,
+            Ast.TypeRef concrete) {
+        if (klass.genericParameters().isEmpty()) return Map.of();
+        if (concrete == null
+                || concrete.arguments().size() != klass.genericParameters().size()) {
+            return Map.of();
+        }
+        LinkedHashMap<String, Ast.TypeRef> result = new LinkedHashMap<>();
+        for (int i = 0; i < klass.genericParameters().size(); i++) {
+            result.put(klass.genericParameters().get(i), concrete.arguments().get(i));
+        }
+        return result;
+    }
+
+    private static Ast.TypeRef substituteType(
+            Ast.TypeRef type,
+            Map<String, Ast.TypeRef> substitutions) {
+        if (type == null || substitutions.isEmpty()) return type;
+        Ast.TypeRef direct = substitutions.get(type.name());
+        if (direct != null && type.arguments().isEmpty()) return direct;
+        if (type.arguments().isEmpty()) return type;
+        return new Ast.TypeRef(
+                type.name(),
+                type.arguments().stream()
+                        .map(argument -> substituteType(argument, substitutions))
+                        .toList(),
+                type.inferArguments());
+    }
+
     private static boolean isScalarOrImmutableReference(String name) {
         return switch (name) {
             case "int", "Int", "float", "Float", "decimal", "Decimal",
                     "complex", "Complex", "bool", "Bool", "boolean", "Boolean",
-                    "String", "string",
-                    "BytesView", "StringView", "Slice", "Span", "MutableSlice" -> true;
+                    "String", "string" -> true;
             default -> false;
         };
     }
