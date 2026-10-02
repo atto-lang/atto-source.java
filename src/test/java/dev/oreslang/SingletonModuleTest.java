@@ -192,6 +192,106 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void hotReloadAllowsReorderingUnchangedSingletonFields() throws Exception {
+        String firstProgram = """
+                define singleton module reordered_fields_service as
+                  let int alpha = 1;
+                  let int beta = 2;
+
+                  pub fnc next() => int {
+                    alpha = alpha + 1;
+                    return alpha + beta;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await reordered_fields_service.next());
+                    return;
+                  }
+                end
+                """;
+
+        String reorderedProgram = """
+                define singleton module reordered_fields_service as
+                  let int beta = 2;
+                  let int alpha = 1;
+
+                  pub fnc next() => int {
+                    alpha = alpha + 1;
+                    return alpha + beta;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await reordered_fields_service.next());
+                    return;
+                  }
+                end
+                """;
+
+        String first = eval(firstProgram, "reordered-singleton-fields.ores");
+        String second = eval(reorderedProgram, "reordered-singleton-fields.ores");
+
+        assertTrue(first.contains("4"), first);
+        assertTrue(second.contains("5"), second);
+    }
+
+    @Test
+    void hotReloadAllowsReorderingUnchangedPersistedClassFields() throws Exception {
+        String firstProgram = """
+                define class ReorderedPair as
+                  let int left;
+                  let int right;
+
+                  pub sum() => int {
+                    return self.left + self.right;
+                  }
+                end
+
+                define singleton module reordered_class_state_service as
+                  pub val ReorderedPair pair = new ReorderedPair(1, 10);
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await reordered_class_state_service.pair.sum());
+                    return;
+                  }
+                end
+                """;
+
+        String reorderedProgram = """
+                define class ReorderedPair as
+                  let int right;
+                  let int left;
+
+                  pub sum() => int {
+                    return self.left + self.right;
+                  }
+                end
+
+                define singleton module reordered_class_state_service as
+                  pub val ReorderedPair pair = new ReorderedPair(10, 1);
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await reordered_class_state_service.pair.sum());
+                    return;
+                  }
+                end
+                """;
+
+        String first = eval(firstProgram, "reordered-class-fields.ores");
+        String second = eval(reorderedProgram, "reordered-class-fields.ores");
+
+        assertTrue(first.contains("11"), first);
+        assertTrue(second.contains("11"), second);
+    }
+
+    @Test
     void hotReloadRejectsSingletonSchemaReinterpretationWithoutMigration() throws Exception {
         String firstProgram = """
                 define singleton module reload_schema_guard_counter as
