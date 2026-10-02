@@ -275,6 +275,11 @@ public final class OwnershipChecker {
             VarState owner = borrowOwner(unary.operand(), scope);
             beginPersistentBorrow(owner, mutableBorrow);
             value = new ValueInfo(Ast.TypeRef.borrowed(owner.type, mutableBorrow), mutableBorrow ? ValueKind.MUT_BORROW : ValueKind.IMM_BORROW, owner);
+        } else if (isIntrinsicCall(binding.initializer(), "borrow")) {
+            Ast.CallExpr borrow = (Ast.CallExpr) binding.initializer();
+            VarState owner = borrowOwner(borrow.arguments().getFirst(), scope);
+            beginPersistentBorrow(owner, false);
+            value = new ValueInfo(Ast.TypeRef.borrowed(owner.type, false), ValueKind.IMM_BORROW, owner);
         } else if (binding.initializer() instanceof Ast.LambdaExpr lambda) {
             value = checkLambda(lambda, scope, binding.name());
         } else {
@@ -345,6 +350,32 @@ public final class OwnershipChecker {
                     : new ValueInfo(left.type, ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr intrinsic && isOwnershipIntrinsic(intrinsic.name())) {
+                if (call.arguments().size() != 1) {
+                    throw error(intrinsic.name() + " expects exactly one value");
+                }
+                Ast.Expr argument = call.arguments().getFirst();
+                return switch (intrinsic.name()) {
+                    case "copy" -> {
+                        ValueInfo source = checkExpr(argument, scope, false);
+                        yield new ValueInfo(source.type,
+                                source.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                                null);
+                    }
+                    case "take" -> checkExpr(argument, scope, true);
+                    case "borrow" -> {
+                        VarState owner = borrowOwner(argument, scope);
+                        validateBorrow(owner, false);
+                        yield new ValueInfo(Ast.TypeRef.borrowed(owner.type, false), ValueKind.IMM_BORROW, owner);
+                    }
+                    case "share" -> {
+                        ValueInfo source = checkExpr(argument, scope, false);
+                        Ast.TypeRef target = source.type.isBorrow() ? source.type.borrowedTarget() : source.type;
+                        yield new ValueInfo(Ast.TypeRef.borrowed(target, false), ValueKind.IMM_BORROW, null);
+                    }
+                    default -> throw new IllegalStateException("unknown ownership intrinsic " + intrinsic.name());
+                };
+            }
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
@@ -436,6 +467,14 @@ public final class OwnershipChecker {
             }
             if (param.type().isBorrow()) {
                 boolean mutable = param.type().mutableBorrow();
+                if (isIntrinsicCall(arg, "borrow") || isIntrinsicCall(arg, "share")) {
+                    if (mutable) {
+                        throw error(callable + " argument " + (i + 1)
+                                + " requires an exclusive mutable borrow; borrow/share intrinsics are read-only");
+                    }
+                    checkExpr(arg, scope, false);
+                    continue;
+                }
                 if (arg instanceof Ast.UnaryExpr unary && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
                     if (mutable && !unary.operator().equals("&mut")) {
                         throw error(callable + " argument " + (i + 1) + " requires &mut borrow");
@@ -810,6 +849,17 @@ public final class OwnershipChecker {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
         }
+    }
+
+    private static boolean isOwnershipIntrinsic(String name) {
+        return name.equals("borrow") || name.equals("copy") || name.equals("take") || name.equals("share");
+    }
+
+    private static boolean isIntrinsicCall(Ast.Expr expr, String name) {
+        return expr instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.NameExpr callee
+                && callee.name().equals(name)
+                && call.arguments().size() == 1;
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
