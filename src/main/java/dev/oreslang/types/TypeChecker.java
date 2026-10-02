@@ -461,6 +461,15 @@ public final class TypeChecker {
                     }
                     return resolve(fn.returnType(), fnGenerics, null);
                 }
+                Function builtinMethod = builtinCollectionMethod(receiver, member.member(), call.arguments().size());
+                if (builtinMethod != null) {
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Type expected = builtinMethod.parameters().get(i);
+                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                    }
+                    return builtinMethod.result();
+                }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
@@ -519,6 +528,8 @@ public final class TypeChecker {
                 if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
                 return result;
             }
+            Function builtinMember = builtinCollectionMethod(receiver, member.member(), -1);
+            if (builtinMember != null) return builtinMember;
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
@@ -537,14 +548,87 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
-            requireAssignable(index, Primitive.INT, "array/list index");
-            if (receiver instanceof ListType list) return list.element();
-            if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-            throw new IllegalArgumentException("indexing requires an array/list or tuple");
+            if (receiver instanceof ListType list) {
+                requireAssignable(index, Primitive.INT, "array/list index");
+                return list.element();
+            }
+            Type mapKey = builtinMapKey(receiver);
+            if (mapKey != null) {
+                requireAssignable(index, mapKey, "map index");
+                return builtinMapValue(receiver);
+            }
+            if (receiver instanceof Tuple tuple) {
+                requireAssignable(index, Primitive.INT, "tuple index");
+                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+            }
+            throw new IllegalArgumentException("indexing requires an array/list, map, or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
-            Ast.ClassDecl klass = findClass(created.type().name());
-            if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            String typeName = created.type().name();
+
+            if (isBuiltinListName(typeName)) {
+                if (!created.entries().isEmpty()) throw new IllegalArgumentException(typeName + " does not accept keyed initializer entries; use constructor elements or arr[...]");
+                Type element = created.type().arguments().isEmpty()
+                        ? Unknown.INSTANCE
+                        : resolve(created.type().arguments().getFirst(), generics, self);
+                if (created.type().arguments().size() > 1) throw new IllegalArgumentException(typeName + " accepts at most one type argument");
+                for (Ast.Expr argument : created.arguments()) {
+                    Type actual = typeOf(argument, env, generics, self);
+                    if (element == Unknown.INSTANCE) element = element == Unknown.INSTANCE ? actual : commonType(element, actual);
+                    else requireAssignable(actual, element, "constructor element for " + typeName);
+                }
+                Type collection = new ListType(element);
+                validateAnonymousBuiltinMethods(created.methods(), collection, env, generics);
+                return collection;
+            }
+
+            if (isBuiltinMapName(typeName)) {
+                if (!created.arguments().isEmpty()) throw new IllegalArgumentException(typeName + " uses keyed initializer entries rather than positional constructor arguments");
+                Type key;
+                Type value;
+                if (typeName.equals("JsonMap")) {
+                    if (!created.type().arguments().isEmpty()) throw new IllegalArgumentException("JsonMap does not accept type arguments");
+                    key = Primitive.STRING;
+                    value = Unknown.INSTANCE;
+                } else {
+                    if (created.type().arguments().size() > 2) throw new IllegalArgumentException(typeName + " accepts exactly two type arguments when explicit");
+                    key = created.type().arguments().size() >= 1 ? resolve(created.type().arguments().get(0), generics, self) : Unknown.INSTANCE;
+                    value = created.type().arguments().size() >= 2 ? resolve(created.type().arguments().get(1), generics, self) : Unknown.INSTANCE;
+                }
+                Set<String> initializerKeys = new HashSet<>();
+                for (Ast.ObjectField entry : created.entries()) {
+                    if (!initializerKeys.add(entry.name())) throw new IllegalArgumentException("duplicate map initializer key '" + entry.name() + "'");
+                    if (key == Unknown.INSTANCE) key = Primitive.STRING;
+                    else requireAssignable(Primitive.STRING, key, "map initializer key '" + entry.name() + "'");
+                    Type actual = typeOf(entry.value(), env, generics, self);
+                    if (value == Unknown.INSTANCE) value = actual;
+                    else requireAssignable(actual, value, "map initializer value for '" + entry.name() + "'");
+                }
+                Type collection = new Named(typeName, List.of(key, value));
+                validateAnonymousBuiltinMethods(created.methods(), collection, env, generics);
+                return collection;
+            }
+
+            if (typeName.equals("Object")) {
+                if (!created.arguments().isEmpty()) throw new IllegalArgumentException("Object does not accept positional constructor arguments");
+                if (!created.methods().isEmpty()) throw new IllegalArgumentException("anonymous Object methods must implement a declared base method; Object declares none");
+                Map<String, Type> members = new LinkedHashMap<>();
+                for (Ast.ObjectField entry : created.entries()) {
+                    if (members.putIfAbsent(entry.name(), typeOf(entry.value(), env, generics, self)) != null) {
+                        throw new IllegalArgumentException("duplicate Object initializer field '" + entry.name() + "'");
+                    }
+                }
+                return new Record(members);
+            }
+
+            Ast.ClassDecl klass = findClass(typeName);
+            if (klass == null) {
+                if (created.hasAnonymousBody()) throw new IllegalArgumentException("anonymous construction requires a known class or builtin collection type, got '" + typeName + "'");
+                return new Named(typeName, created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            }
+            if (!created.entries().isEmpty()) {
+                throw new IllegalArgumentException("keyed initializer entries are supported by Object/Map/HashMap/JsonMap; class '" + klass.name() + "' uses declared fields");
+            }
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
             Type nominal = nominalClassType(klass);
@@ -557,6 +641,8 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
                 }
             }
+            validateAnonymousClassMethods(klass, created.methods(), nominal, env);
+            ensureInstantiable(klass, created.methods());
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
@@ -938,10 +1024,21 @@ public final class TypeChecker {
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
-            case "Array", "List" -> {
+            case "Array", "Arrays", "List", "LinkedList" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
             }
+            case "Map", "HashMap" -> {
+                if (!ref.arguments().isEmpty() && ref.arguments().size() != 2) throw new IllegalArgumentException(ref.name() + " requires exactly two type arguments");
+                Type key = ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().get(0), generics, self);
+                Type value = ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().get(1), generics, self);
+                yield new Named(ref.name(), List.of(key, value));
+            }
+            case "JsonMap" -> {
+                if (!ref.arguments().isEmpty()) throw new IllegalArgumentException("JsonMap does not accept type arguments");
+                yield new Named("JsonMap", List.of(Primitive.STRING, Unknown.INSTANCE));
+            }
+            case "Object" -> new Named("Object", List.of());
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
@@ -955,6 +1052,176 @@ public final class TypeChecker {
             }
             default -> new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
         };
+    }
+
+    private boolean isBuiltinListName(String name) {
+        return name.equals("Array") || name.equals("Arrays") || name.equals("List") || name.equals("LinkedList");
+    }
+
+    private boolean isBuiltinMapName(String name) {
+        return name.equals("Map") || name.equals("HashMap") || name.equals("JsonMap");
+    }
+
+    private Type builtinMapKey(Type receiver) {
+        if (!(receiver instanceof Named named) || !isBuiltinMapName(named.name())) return null;
+        return named.arguments().size() >= 1 ? named.arguments().get(0) : Unknown.INSTANCE;
+    }
+
+    private Type builtinMapValue(Type receiver) {
+        if (!(receiver instanceof Named named) || !isBuiltinMapName(named.name())) return null;
+        return named.arguments().size() >= 2 ? named.arguments().get(1) : Unknown.INSTANCE;
+    }
+
+    /**
+     * Builtin collections are compiler-known classes: their storage is runtime
+     * intrinsic, but their method surface is statically typed and overrideable.
+     * arity < 0 asks for an unambiguous method value by name.
+     */
+    private Function builtinCollectionMethod(Type receiver, String name, int arity) {
+        if (receiver instanceof ListType list) {
+            Type element = list.element();
+            return switch (name) {
+                case "get" -> arity < 0 || arity == 1 ? new Function(List.of(Primitive.INT), element) : null;
+                case "set" -> arity < 0 || arity == 2 ? new Function(List.of(Primitive.INT, element), Primitive.VOID) : null;
+                case "add", "push" -> arity < 0 || arity == 1 ? new Function(List.of(element), Primitive.VOID) : null;
+                case "remove_at" -> arity < 0 || arity == 1 ? new Function(List.of(Primitive.INT), element) : null;
+                case "size", "length" -> arity < 0 || arity == 0 ? new Function(List.of(), Primitive.INT) : null;
+                default -> null;
+            };
+        }
+        Type key = builtinMapKey(receiver);
+        if (key == null) return null;
+        Type value = builtinMapValue(receiver);
+        return switch (name) {
+            case "get", "find", "remove" -> arity < 0 || arity == 1
+                    ? new Function(List.of(key), new Named("Option", List.of(value))) : null;
+            case "put" -> arity < 0 || arity == 2 ? new Function(List.of(key, value), Primitive.VOID) : null;
+            case "contains_key" -> arity < 0 || arity == 1 ? new Function(List.of(key), Primitive.BOOL) : null;
+            case "size" -> arity < 0 || arity == 0 ? new Function(List.of(), Primitive.INT) : null;
+            case "keys" -> arity < 0 || arity == 0 ? new Function(List.of(), new ListType(key)) : null;
+            case "values" -> arity < 0 || arity == 0 ? new Function(List.of(), new ListType(value)) : null;
+            default -> null;
+        };
+    }
+
+    private boolean hasOverrideAnnotation(Ast.MethodDecl method) {
+        return method.annotations().stream().anyMatch(a -> a.name().equalsIgnoreCase("override"));
+    }
+
+    private void validateAnonymousBuiltinMethods(List<Ast.MethodDecl> methods, Type selfType, Env outer, Set<String> outerGenerics) {
+        Set<String> signatures = new HashSet<>();
+        for (Ast.MethodDecl method : methods) {
+            if (!hasOverrideAnnotation(method)) {
+                throw new IllegalArgumentException("anonymous method '" + method.name() + "' must be annotated @override");
+            }
+            String signature = methodKey(method.name(), method.arity());
+            if (!signatures.add(signature)) throw new IllegalArgumentException("duplicate anonymous override '" + method.name() + "' with arity " + method.arity());
+            Function expected = builtinCollectionMethod(selfType, method.name(), method.arity());
+            if (expected == null) throw new IllegalArgumentException("no builtin method '" + method.name() + "' with arity " + method.arity() + " to override");
+
+            Set<String> generics = new HashSet<>(outerGenerics);
+            generics.addAll(method.genericParameters());
+            if (method.parameters().size() != expected.parameters().size()) throw new IllegalArgumentException("override arity mismatch for " + method.name());
+            for (int i = 0; i < method.parameters().size(); i++) {
+                Type actualParam = resolveParam(method.parameters().get(i), generics, selfType);
+                Type expectedParam = expected.parameters().get(i);
+                if (!assignable(actualParam, expectedParam) || !assignable(expectedParam, actualParam)) {
+                    throw new IllegalArgumentException("override parameter " + (i + 1) + " for " + method.name() + " has type " + actualParam + " but builtin method uses " + expectedParam);
+                }
+            }
+            Type actualReturn = resolve(method.returnType(), generics, selfType);
+            if (!assignable(actualReturn, expected.result()) || !assignable(expected.result(), actualReturn)) {
+                throw new IllegalArgumentException("override return type for " + method.name() + " has type " + actualReturn + " but builtin method uses " + expected.result());
+            }
+
+            Env env = new Env(null);
+            env.define("self", selfType, Ast.BindingKind.VAL);
+            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, selfType), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            checkBlock(method.body(), env, generics, actualReturn, selfType);
+            if (actualReturn != Primitive.VOID && !definitelyReturns(method.body())) {
+                throw new IllegalArgumentException("non-void anonymous override '" + method.name() + "' must explicitly return on every path");
+            }
+        }
+    }
+
+    private void validateAnonymousClassMethods(Ast.ClassDecl klass, List<Ast.MethodDecl> methods, Type selfType, Env outer) {
+        Set<String> signatures = new HashSet<>();
+        for (Ast.MethodDecl method : methods) {
+            if (!hasOverrideAnnotation(method)) throw new IllegalArgumentException("anonymous method '" + method.name() + "' must be annotated @override");
+            if (!signatures.add(methodKey(method.name(), method.arity()))) throw new IllegalArgumentException("duplicate anonymous override '" + method.name() + "' with arity " + method.arity());
+            Ast.MethodDecl base = findMethodInParentsOrSelf(klass, method.name(), method.arity(), new LinkedHashSet<>());
+            if (base == null) throw new IllegalArgumentException("no method '" + klass.name() + "." + method.name() + "' with arity " + method.arity() + " to override");
+
+            Set<String> generics = new HashSet<>(klass.genericParameters());
+            generics.addAll(method.genericParameters());
+            Function expected = functionType(base.parameters(), base.returnType(), generics, selfType);
+            Function actual = functionType(method.parameters(), method.returnType(), generics, selfType);
+            if (!assignable(actual, expected) || !assignable(expected, actual)) {
+                throw new IllegalArgumentException("anonymous override '" + method.name() + "' is not signature-compatible with " + klass.name());
+            }
+            Env env = new Env(null);
+            env.define("self", selfType, Ast.BindingKind.VAL);
+            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, selfType), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            Type returns = resolve(method.returnType(), generics, selfType);
+            checkBlock(method.body(), env, generics, returns, selfType);
+            if (returns != Primitive.VOID && !definitelyReturns(method.body())) {
+                throw new IllegalArgumentException("non-void anonymous override '" + method.name() + "' must explicitly return on every path");
+            }
+        }
+    }
+
+    private Ast.MethodDecl findMethodInParentsOrSelf(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                seen.remove(klass);
+                return method;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.MethodDecl method = findMethodInParentsOrSelf(parent, name, arity, seen);
+            if (method != null) {
+                seen.remove(klass);
+                return method;
+            }
+        }
+        seen.remove(klass);
+        return null;
+    }
+
+    private void ensureInstantiable(Ast.ClassDecl klass, List<Ast.MethodDecl> anonymousMethods) {
+        Map<String, Ast.MethodDecl> overrides = new HashMap<>();
+        for (Ast.MethodDecl method : anonymousMethods) overrides.put(methodKey(method.name(), method.arity()), method);
+
+        Map<String, Ast.MethodDecl> abstractMethods = new LinkedHashMap<>();
+        collectAbstractMethods(klass, abstractMethods, new LinkedHashSet<>());
+        for (Map.Entry<String, Ast.MethodDecl> required : abstractMethods.entrySet()) {
+            Ast.MethodDecl resolved = findMethod(klass, required.getValue().name(), required.getValue().arity(), new LinkedHashSet<>());
+            if (resolved != null && !resolved.isAbstract()) continue;
+            if (!overrides.containsKey(required.getKey())) {
+                throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'; missing override for " + required.getValue().name() + "/" + required.getValue().arity());
+            }
+        }
+        if (klass.isAbstract() && abstractMethods.isEmpty() && anonymousMethods.isEmpty()) {
+            throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "' without an anonymous implementation");
+        }
+    }
+
+    private void collectAbstractMethods(Ast.ClassDecl klass, Map<String, Ast.MethodDecl> out, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return;
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null) collectAbstractMethods(parent, out, seen);
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic()) continue;
+            String key = methodKey(method.name(), method.arity());
+            if (method.isAbstract()) out.put(key, method);
+            else out.remove(key);
+        }
+        seen.remove(klass);
     }
 
     private Ast.TypeRef substituteAliasType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
