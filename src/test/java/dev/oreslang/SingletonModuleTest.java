@@ -1350,6 +1350,41 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void oversizedSingletonStateMutationIsRejectedWithoutCommit() throws Exception {
+        String output = eval("""
+                define singleton module oversized_state_guard as
+                  let String data = "small";
+
+                  pub routine grow_too_large() => void {
+                    let String payload = "x";
+                    for (let i = 0; i < 23; i = i + 1) {
+                      payload = payload + payload;
+                    }
+                    data = payload;
+                    return;
+                  }
+
+                  pub fnc read() => String {
+                    return data;
+                  }
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    try {
+                      await oversized_state_guard.grow_too_large();
+                    } catch (err) {
+                    }
+                    stdio.println(await oversized_state_guard.read());
+                    return;
+                  }
+                end
+                """, "singleton-oversized-state.ores");
+
+        assertTrue(output.contains("small"), output);
+    }
+
+    @Test
     void oversizedSingletonResultCannotCommitState() throws Exception {
         String output = eval("""
                 define singleton module oversized_result_guard as
