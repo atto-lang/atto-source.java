@@ -364,9 +364,10 @@ public final class Parser {
             boolean structural = false;
 
             // Name-first structural spelling: y structural Foo
-            if (check(IDENT) && checkNext(STRUCTURAL)) {
+            if (check(IDENT) && checkNextLexeme("structural")) {
                 String name = advance().lexeme();
-                consume(STRUCTURAL, "expected structural");
+                Token marker = consume(IDENT, "expected structural");
+                if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
                 Ast.TypeRef type = parseTypeRef();
                 params.add(new Ast.Param(type, name, true));
                 continue;
@@ -835,6 +836,10 @@ public final class Parser {
 
     private boolean check(Token.Type type) { return peek().type() == type; }
     private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+    private boolean checkNextLexeme(String lexeme) {
+        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals(lexeme);
+    }
     private Token advance() { if (!check(EOF)) current++; return previous(); }
     private Token peek() { return tokens.get(current); }
     private Token previous() { return tokens.get(current - 1); }
