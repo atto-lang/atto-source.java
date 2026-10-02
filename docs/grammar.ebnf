@@ -195,8 +195,14 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - "define singleton module X" declares exactly one actor-backed module
      instance per OS process. Its bindings are actor-private; external access is
      through public functions lowered to request/reply messages.
-   - Public singleton-module fields are illegal. Borrows and closure/function
-     values may not cross a singleton actor boundary.
+   - Public singleton-module fields are illegal. Singleton state fields require
+     explicit process-stable types and context-free initializers.
+   - Public singleton functions are actor transport boundaries: generic/async
+     exports, mut/structural parameters, borrows, classes, and function/closure
+     values are rejected until explicit Send constraints exist.
+   - External singleton calls must be immediately awaited; singleton helper
+     classes are actor-private outside their owning singleton module.
+   - Cross-singleton mailbox waits are cycle-checked and policy-bounded.
    - fnc declarations may recurse; routines may not participate in a call cycle.
    - fnc and routine declarations do not overload.
    - instance methods may overload only when arity differs.
