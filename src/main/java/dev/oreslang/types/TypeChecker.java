@@ -697,6 +697,15 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr name && name.name().equals("init")) {
+                throw new IllegalArgumentException(
+                        "init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
+            }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.member().equals("init")) {
+                throw new IllegalArgumentException(
+                        "init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
