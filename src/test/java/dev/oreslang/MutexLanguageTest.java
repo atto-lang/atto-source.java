@@ -77,6 +77,77 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void withLockProvidesMutableProtectedValue() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc good() => void {
+                    val mutex = Mutex.new(new Counter());
+                    mutex.with_lock(|counter| -> {
+                      counter.value = counter.value + 1;
+                      return;
+                    });
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void awaitInsideWithLockCriticalSectionIsRejected() {
+        var program = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  async fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    mutex.with_lock(|counter| -> {
+                      await mutex.lock_async();
+                      return;
+                    });
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("cannot await while holding a MutexGuard"));
+    }
+
+    @Test
+    void guardCannotBeStoredInAggregate() {
+        var program = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    val escaped = arr[guard];
+                    stdio.println(escaped);
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("MutexGuard cannot be stored"));
+    }
+
+    @Test
     void guardCannotEscapeThroughClosureCapture() {
         var program = Parser.parse("""
                 define module model
@@ -100,6 +171,6 @@ final class MutexLanguageTest {
                 """);
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
-        assertTrue(error.getMessage().contains("closure cannot capture MutexGuard"));
+        assertTrue(error.getMessage().contains("closure cannot capture guard-bearing value"));
     }
 }
