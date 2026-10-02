@@ -170,4 +170,46 @@ final class ParserTest {
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
+    @Test
+    void compactTraitSyntaxParsesLikeLongTraitSyntax() {
+        Ast.Program compact = Parser.parse("""
+                trait Counting {
+                  private val int count = 0;
+                  pub value() => int { return self.count; }
+                }
+                """);
+
+        Ast.Program longForm = Parser.parse("""
+                define trait Counting as
+                  private val int count = 0;
+                  pub value() => int { return self.count; }
+                end
+                """);
+
+        Ast.TraitDecl compactTrait = (Ast.TraitDecl) compact.modules().getFirst().declarations().getFirst();
+        Ast.TraitDecl longTrait = (Ast.TraitDecl) longForm.modules().getFirst().declarations().getFirst();
+        assertEquals(longTrait, compactTrait);
+    }
+
+    @Test
+    void callableLocalTraitsAreAcceptedAsTypeDeclarations() {
+        Ast.Program program = Parser.parse("""
+                fnc make() => T {
+                  trait Answering {
+                    private val int seed = 41;
+                    pub answer() => int { return self.seed + 1; }
+                  }
+
+                  struct T with Answering {
+                    value: int;
+                  }
+
+                  return T { value = 1 };
+                }
+                """);
+
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        assertTrue(fn.body().stream().anyMatch(stmt ->
+                stmt instanceof Ast.TypeDeclStmt local && local.declaration() instanceof Ast.TraitDecl));
+    }
 }
