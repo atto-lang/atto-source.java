@@ -542,8 +542,11 @@ public final class Parser {
         List<Ast.Param> result = new ArrayList<>(params.size());
         for (Ast.Param param : params) {
             boolean structural = param.structural() || allowed.contains(param.name());
+            if (structural && param.mode() != Ast.ParamMode.BORROW) {
+                throw error(previous(), "@AllowStructural parameters are read-only and cannot use mut or take: " + param.name());
+            }
             if (allowed.contains(param.name())) found.add(param.name());
-            result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
+            result.add(new Ast.Param(param.type(), param.name(), structural, param.mode()));
         }
         if (!found.equals(allowed)) {
             java.util.Set<String> missing = new java.util.HashSet<>(allowed);
@@ -962,12 +965,18 @@ public final class Parser {
             do {
                 if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
-                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, Ast.ParamMode.BORROW));
                 } else {
+                    Ast.ParamMode mode = Ast.ParamMode.BORROW;
+                    if (match(MUT)) mode = Ast.ParamMode.MUT;
+                    else if (check(IDENT) && peek().lexeme().equals("take")) {
+                        advance();
+                        mode = Ast.ParamMode.TAKE;
+                    }
                     Ast.TypeRef type = parseTypeRef();
-                    boolean mutable = match(MUT);
+                    if (match(MUT)) throw error(previous(), "put mut before the lambda parameter type: 'mut Type name'");
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mutable));
+                    params.add(new Ast.Param(type, name, false, mode));
                 }
             } while (match(COMMA));
         }
