@@ -52,10 +52,14 @@ final class MutexLanguageTest {
     @Test
     void actorCodeMayUseNonblockingSharedMutexOperations() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub shared actor fnc worker(SharedMutex<int> mutex) => void {
+                pub shared actor fnc try_worker(SharedMutex<int> mutex) => void {
                   val maybe_guard = mutex.try_lock();
-                  val future_guard = mutex.lock_async();
                   stdio.println(mutex.is_poisoned());
+                  return;
+                }
+
+                pub shared actor fnc async_worker(SharedMutex<int> mutex) => void {
+                  val future_guard = mutex.lock_async();
                   return;
                 }
                 """)));
