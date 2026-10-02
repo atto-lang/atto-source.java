@@ -294,7 +294,11 @@ try {
 
 ## Async / await
 
-`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
+`await` has one language meaning: unwrap one asynchronous completion and produce its value. Oreslang source does not need a different keyword for each JVM carrier. The runtime adapter recognizes Oreslang `Awaitable<T>`, `CompletionStage<T>` / `CompletableFuture<T>`, ordinary `Future<T>` values (including virtual-thread executor results), and thread/virtual-thread completion. Plain non-async values are already complete and pass through unchanged. Host completion wrappers are peeled so user code observes the underlying failure, and interrupted blocking waits restore the interrupt flag.
+
+`Future<T>` remains the canonical source-level async type; the wider adapter is an interop boundary so Java libraries do not leak their exact completion class into Oreslang.
+
+Inside an actor, `await` never means “park this dispatcher thread.” An already-complete value may unwrap immediately, but a pending await must be continuation-lowered so the mailbox turn suspends and releases its carrier. The reference interpreter fails closed if a pending host await reaches an actor carrier before that lowering has happened.
 
 ## Actors
 
@@ -353,6 +357,26 @@ This preserves the central invariant:
 Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private or shared actor invalidates dependent compiled units.
 
 Shared writable handles use transactional publication. A `SharedMutex<T>` is reserved to the destination runtime before mailbox visibility, committed only after queue admission, and unbound again when first publication fails. This prevents failed sends from accidentally claiming a writable capability for the wrong runtime.
+
+### Send, receive, and receive loops
+
+The primitive send operation is one-way: `ref.send(message)`. There is no ambient “current sender” or process dictionary. Replies carry an explicit reply `ActorRef<T>`, correlation id, or request object, keeping request/reply, forwarding, retries, and tracing visible in types.
+
+Reactive and pull-style consumption share one serialized mailbox. The runtime provides `tryReceive()` for immediate non-blocking pulls and `receiveAsync()` to claim exactly one future mailbox item without blocking a carrier. Only one async pull may be outstanding. Repeated `tryReceive()` calls are charged against the same per-turn throughput budget as reactive delivery, so polling cannot monopolize a dispatcher worker.
+
+The source-level blocking-looking `mailbox.receive()` is defined as compiler suspension over the async receive primitive, never as `BlockingQueue.take()`. The explicit async spelling is `await mailbox.receiveAsync()`. The mailbox facade is an actor-scoped API rather than a new globally reserved keyword.
+
+Arbitrary Erlang-style selective receive that repeatedly scans old unmatched messages is intentionally not the default. Prefer typed message unions plus ordinary pattern matching after dequeue, separate actors/mailboxes for independent traffic classes, or actor groups.
+
+### Actor groups and fan-out
+
+`ActorGroup<T>` is an explicit runtime-local fan-out capability. Actors may belong to multiple groups. A group has an opaque `ActorGroupId` and a human-readable category, but categories are metadata rather than globally interned names or hidden registry keys.
+
+Broadcast snapshots membership once and sends through the ordinary bounded send path for each member. Membership changes affect the next broadcast. A slow, full, or terminated target does not prevent unrelated members from receiving: `FanoutReceipt` reports delivered, terminated, and rejected counts plus per-actor failures, and terminated members encountered during fan-out are pruned.
+
+Group handles can cross mailboxes only inside their owning `ActorRuntime`, like actor refs. They cannot be frozen into ordinary `Shared<T>` data or smuggled into another runtime. Cross-runtime/distributed grouping requires an explicit bridge or membership protocol.
+
+This deliberately avoids several actor-system warts: no implicit sender, no process dictionary, no unbounded default mailbox, no globally interned atom-like group registry, no unbounded selective-receive scan, no carrier-thread identity as actor identity, and no blocking receive parked on a pooled dispatcher.
 
 ## Isolates
 
