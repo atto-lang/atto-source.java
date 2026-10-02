@@ -205,6 +205,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
         budget.addBytes(24);
 
+        if (value instanceof OresValues.Complex) {
+            return value;
+        }
+        if (value instanceof OresValues.OptionValue option) {
+            if (!option.present()) return option;
+            return new OresValues.OptionValue(
+                    true,
+                    freeze(option.value(), path, budget, depth + 1, allowedActorRuntime));
+        }
+
         /*
          * Shared is public host API, so do not trust an externally constructed
          * Shared wrapper to already contain frozen data. Re-freeze its payload.
@@ -275,16 +285,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        /*
-         * Sendable is implemented only by trusted/generated immutable Oreslang
-         * value types. Its contract is that freezeForSend() returns a deeply
-         * immutable representation.
-         */
-        if (value instanceof Sendable sendable) {
-            Object frozen = sendable.freezeForSend();
-            if (frozen == null) return null;
-            return frozen;
-        }
         throw new IllegalArgumentException("value of type " + value.getClass().getName()
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
     }
@@ -311,11 +311,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
             bytes += amount;
         }
-    }
-
-    /** Implemented by generated immutable Oreslang aggregate values. */
-    public interface Sendable {
-        Object freezeForSend();
     }
 
     @Override
