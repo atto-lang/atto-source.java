@@ -346,6 +346,38 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void staticFunctionCannotCaptureEnclosingClassGenericAsAnImplicitDispatchType() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define class Box<T>
+                            pub static fnc bad(T value) => T { return value; }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("cannot use enclosing class generic 'T'"));
+        assertTrue(error.getMessage().contains("declare a static-function generic instead"));
+    }
+
+    @Test
+    void staticFunctionMayUseItsOwnGenericWithoutChangingArityIdentity() throws Exception {
+        String output = run("""
+                define module m
+                  define class Box<T>
+                    pub static fnc identity<U>(U value) => U { return value; }
+                  end
+                end
+
+                pub routine main() => void {
+                  stdio.stdout.write(m.Box.identity(6));
+                }
+                """);
+
+        assertEquals("6", output);
+    }
+
+    @Test
     void staticAndInstanceNamespacesRemainDistinct() throws Exception {
         String output = run("""
                 define module m
