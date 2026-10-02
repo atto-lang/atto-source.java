@@ -419,22 +419,60 @@ public final class Parser {
         }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
-        if (match(FOR)) return parseForOf();
+        if (match(FOR)) return parseFor();
 
         Ast.Expr expression = parseExpression();
         consumeStatementTerminator("expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
     }
 
-    private Ast.ForOfStmt parseForOf() {
+    private Ast.Stmt parseFor() {
         consume(LPAREN, "expected '(' after for");
-        Ast.BindingKind kind = isBindingKind(peek().type()) ? parseBindingKind() : Ast.BindingKind.VAL;
-        String name = consume(IDENT, "expected loop binding name").lexeme();
-        consume(OF, "expected 'of' in for-of loop");
-        Ast.Expr iterable = parseExpression();
-        consume(RPAREN, "expected ')' after for-of header");
-        List<Ast.Stmt> body = parseBlock();
-        return new Ast.ForOfStmt(kind, name, iterable, body);
+
+        if (isBindingKind(peek().type())) {
+            Ast.BindingKind kind = parseBindingKind();
+            if (check(IDENT) && checkNext(OF)) {
+                String name = advance().lexeme();
+                consume(OF, "expected 'of' in for-of loop");
+                Ast.Expr iterable = parseExpression();
+                consume(RPAREN, "expected ')' after for-of header");
+                return new Ast.ForOfStmt(kind, name, iterable, parseBlock());
+            }
+
+            Ast.TypeRef type = null;
+            String name;
+            if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+            else {
+                type = parseTypeRef();
+                name = consume(IDENT, "expected loop initializer binding name").lexeme();
+            }
+            consume(EQUAL, "for initializer binding requires '='");
+            Ast.Expr initializer = parseExpression();
+            Ast.BindingStmt init = new Ast.BindingStmt(kind, type, name, initializer);
+            consume(SEMICOLON, "expected ';' after for initializer");
+            Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
+            consume(SEMICOLON, "expected ';' after for condition");
+            Ast.Expr update = check(RPAREN) ? null : parseExpression();
+            consume(RPAREN, "expected ')' after for header");
+            return new Ast.ForStmt(init, condition, update, parseBlock());
+        }
+
+        if (check(IDENT) && checkNext(OF)) {
+            String name = advance().lexeme();
+            consume(OF, "expected 'of' in for-of loop");
+            Ast.Expr iterable = parseExpression();
+            consume(RPAREN, "expected ')' after for-of header");
+            return new Ast.ForOfStmt(Ast.BindingKind.VAL, name, iterable, parseBlock());
+        }
+
+        Ast.Stmt initializer = null;
+        if (!check(SEMICOLON)) initializer = new Ast.ExprStmt(parseExpression());
+        consume(SEMICOLON, "expected ';' after for initializer");
+        Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
+        consume(SEMICOLON, "expected ';' after for condition");
+        Ast.Expr update = check(RPAREN) ? null : parseExpression();
+        consume(RPAREN, "expected ')' after for header");
+        return new Ast.ForStmt(initializer, condition, update, parseBlock());
     }
 
     private Ast.BindingStmt parseBindingStatement() {
