@@ -66,6 +66,31 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void sharedMutexPreservesParentGenericBindingsDuringSafetyCheck() {
+        var program = Parser.parse("""
+                define module model
+                  define class Parent<T>
+                    pub val T value;
+                  end
+
+                  define class Child<T> extends Parent<Mutex<T>>
+                  end
+                end
+
+                define module app
+                  fnc bad(model.Child<int> child) => void {
+                    val shared = SharedMutex.new(child);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("shared-safe owned data"));
+    }
+
+    @Test
     void sharedMutexRecursivelyChecksClassFields() {
         var program = Parser.parse("""
                 define module model
