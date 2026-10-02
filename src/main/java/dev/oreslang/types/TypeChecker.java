@@ -150,9 +150,13 @@ public final class TypeChecker {
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
-                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                Type signature = callableContractType(
+                        fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
                 mergeMember(members, fn.name(), signature, "module " + module.name());
-                mergeMember(members, methodKey(fn.name(), fn.parameters().size()), signature, "module " + module.name());
+                mergeMember(members,
+                        methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
+                        signature,
+                        "module " + module.name());
             } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
                 Type type = field.type() == null ? typeOf(field.initializer(), new Env(null), Set.of(), null) : resolve(field.type(), Set.of(), null);
                 mergeMember(members, field.name(), type, "module " + module.name());
@@ -1063,8 +1067,10 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) mergeMember(members, field.name(), resolve(field.type(), generics, self), "class " + klass.name());
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
-            mergeMember(members, methodKey(method.name(), method.arity()),
-                    functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+            mergeMember(members,
+                    methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                    "class " + klass.name());
         }
         stack.remove(klass);
         Record result = new Record(members);
@@ -1092,8 +1098,10 @@ public final class TypeChecker {
         }
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
-                mergeMember(members, methodKey(method.name(), method.arity()),
-                        functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                mergeMember(members,
+                        methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                        "class " + klass.name());
             }
         }
         stack.remove(klass);
@@ -1119,10 +1127,10 @@ public final class TypeChecker {
         }
         for (Ast.InterfaceMember member : iface.members()) {
             if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                Set<String> all = new HashSet<>(generics);
-                all.addAll(fn.genericParameters());
-                mergeMember(members, methodKey(fn.name(), fn.parameters().size()),
-                        functionType(fn.parameters(), fn.returnType(), all, null), "interface " + iface.name());
+                mergeMember(members,
+                        methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
+                        callableContractType(fn.genericParameters(), fn.parameters(), fn.returnType(), generics, null),
+                        "interface " + iface.name());
             } else if (member instanceof Ast.InterfaceFieldDecl field) {
                 mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
             }
@@ -1326,6 +1334,24 @@ public final class TypeChecker {
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
         return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
+    }
+
+    private Function callableContractType(
+            List<String> callableGenerics,
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            Set<String> ownerGenerics,
+            Type self) {
+        Set<String> all = new HashSet<>(ownerGenerics);
+        all.addAll(callableGenerics);
+        Function raw = functionType(params, returns, all, self);
+        if (callableGenerics.isEmpty()) return raw;
+
+        Map<String, Type> canonical = new HashMap<>();
+        for (int i = 0; i < callableGenerics.size(); i++) {
+            canonical.put(callableGenerics.get(i), new Generic("$callable" + i));
+        }
+        return (Function) substituteGenerics(raw, canonical);
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
@@ -1841,6 +1867,10 @@ public final class TypeChecker {
 
     private String methodKey(String name, int arity) {
         return name + "$arity" + arity;
+    }
+
+    private String methodContractKey(String name, int arity, int genericArity) {
+        return methodKey(name, arity) + "$generics" + genericArity;
     }
 
     private void validateRoutineRecursion() {
