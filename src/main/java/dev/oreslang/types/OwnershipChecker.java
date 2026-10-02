@@ -139,7 +139,7 @@ public final class OwnershipChecker {
                 definePatternBindings(arm.pattern(), armScope, source);
                 checkBlock(arm.body(), armScope, returnType);
                 armScope.close();
-                exits.add(stateSnapshot(scope));
+                if (!definitelyTerminates(arm.body())) exits.add(stateSnapshot(scope));
             }
 
             mergeBranchState(base, exits);
@@ -170,13 +170,13 @@ public final class OwnershipChecker {
                 restoreState(base);
                 checkExpr(branch.condition(), scope, false);
                 checkBlock(branch.body(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyTerminates(branch.body())) exits.add(stateSnapshot(scope));
             }
 
             restoreState(base);
             if (!conditional.elseBody().isEmpty()) {
                 checkBlock(conditional.elseBody(), scope, returnType);
-                exits.add(stateSnapshot(scope));
+                if (!definitelyTerminates(conditional.elseBody())) exits.add(stateSnapshot(scope));
             } else {
                 exits.add(base); // condition may be false with no else
             }
@@ -776,6 +776,30 @@ public final class OwnershipChecker {
         return state;
     }
 
+    private boolean definitelyTerminates(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                boolean allBranches = !conditional.branches().isEmpty()
+                        && conditional.branches().stream().allMatch(branch -> definitelyTerminates(branch.body()))
+                        && !conditional.elseBody().isEmpty()
+                        && definitelyTerminates(conditional.elseBody());
+                if (allBranches) return true;
+            }
+            if (stmt instanceof Ast.MatchStmt matched) {
+                if (!matched.arms().isEmpty()
+                        && matched.arms().stream().allMatch(arm -> definitelyTerminates(arm.body()))) {
+                    return true;
+                }
+            }
+            if (stmt instanceof Ast.TryStmt attempted) {
+                if (definitelyTerminates(attempted.finallyBody())) return true;
+                if (definitelyTerminates(attempted.body()) && definitelyTerminates(attempted.catchBody())) return true;
+            }
+        }
+        return false;
+    }
+
     private Map<VarState, StateSnapshot> stateSnapshot(Scope scope) {
         Map<VarState, StateSnapshot> result = new IdentityHashMap<>();
         for (VarState state : scope.visibleStates()) {
@@ -796,8 +820,9 @@ public final class OwnershipChecker {
 
     private void mergeBranchState(Map<VarState, StateSnapshot> base, List<Map<VarState, StateSnapshot>> exits) {
         restoreState(base);
+        if (exits.isEmpty()) return;
         for (VarState state : base.keySet()) {
-            boolean movedOnAnyPath = base.get(state).moved();
+            boolean movedOnAnyPath = false;
             for (Map<VarState, StateSnapshot> exit : exits) {
                 StateSnapshot saved = exit.get(state);
                 if (saved != null) movedOnAnyPath |= saved.moved();
