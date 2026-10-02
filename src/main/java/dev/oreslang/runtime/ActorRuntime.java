@@ -1143,9 +1143,8 @@ public final class ActorRuntime implements AutoCloseable {
                 @Override public IsolatePolicy policy() { return policy; }
                 @Override public long ownedStateBytes() { return ownedStateBytes.get(); }
                 @Override public void replaceOwnedStateBytes(long estimatedBytes) {
-                    if (closed.get() || state == ActorState.STOPPING
-                            || state == ActorState.STOPPED || state == ActorState.FAILED) {
-                        throw new CancellationException("actor is stopping and cannot publish new owned state");
+                    if (closed.get() || state == ActorState.STOPPED || state == ActorState.FAILED) {
+                        throw new CancellationException("actor is terminated and cannot publish new owned state");
                     }
                     requireOwnedStateBytes(policy, estimatedBytes);
                     long transientBytes = safeAdd(mailboxBytes.get(), activeMessageBytes.get());
