@@ -67,6 +67,34 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void routinesCannotHideRecursionInsideMatchOrAssignmentTargets() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                routine spin() => void {
+                  match ("go", 1) {
+                    ("go", value) => {
+                      spin();
+                      return;
+                    }
+                    _ => {
+                      return;
+                    }
+                  }
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Box
+                  pub let int value = 0;
+                end
+
+                routine spin() => Box {
+                  spin().value = 1;
+                  return new Box();
+                }
+                """)));
+    }
+
+    @Test
     void methodsOverloadOnlyByArity() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module m
