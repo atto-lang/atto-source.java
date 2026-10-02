@@ -165,7 +165,7 @@ public final class Parser {
             if (modifiers.async || modifiers.isAbstract) {
                 throw error(peek(), "data members do not accept async or abstract modifiers");
             }
-            return parseModuleBinding(modifiers.visibility, modifiers.isStatic);
+            return parseModuleBinding(annotations, modifiers.visibility, modifiers.isStatic);
         }
         return null;
     }
@@ -220,7 +220,7 @@ public final class Parser {
                 if (mods.async || mods.isAbstract) {
                     throw error(peek(), "data members do not accept async or abstract modifiers");
                 }
-                fields.add(parseField(mods.visibility, mods.isStatic));
+                fields.add(parseField(annotations, mods.visibility, mods.isStatic));
                 continue;
             }
             if (mods.isStatic) {
@@ -285,7 +285,7 @@ public final class Parser {
         return refs;
     }
 
-    private Ast.FieldDecl parseField(Ast.Visibility visibility, boolean isStatic) {
+    private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility, boolean isStatic) {
         boolean explicitKind = isBindingKind(peek().type());
         Ast.BindingKind kind = explicitKind ? parseBindingKind() : Ast.BindingKind.LET;
         Ast.TypeRef type;
@@ -305,10 +305,10 @@ public final class Parser {
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
         if (nameFirst) consumeDataMemberTerminator();
         else consumeStatementTerminator("legacy field declaration should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, isStatic, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, isStatic, initializer);
     }
 
-    private Ast.FieldDecl parseModuleBinding(Ast.Visibility visibility, boolean isStatic) {
+    private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility, boolean isStatic) {
         boolean explicitKind = isBindingKind(peek().type());
         Ast.BindingKind kind = explicitKind ? parseBindingKind() : Ast.BindingKind.LET;
         Ast.TypeRef type = null;
@@ -337,7 +337,7 @@ public final class Parser {
         }
         if (nameFirst) consumeDataMemberTerminator();
         else consumeStatementTerminator("legacy module binding should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, isStatic, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, isStatic, initializer);
     }
 
     private Ast.MethodDecl parseConstructor(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
