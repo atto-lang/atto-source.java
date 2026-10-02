@@ -441,7 +441,7 @@ public final class TypeChecker {
                         targetType = builtinMapValue(receiver);
                     } else if (receiver instanceof Tuple tuple) {
                         requireAssignable(index, Primitive.INT, "tuple index");
-                        targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                        targetType = tuple.elements().stream().reduce(this::commonType).orElse(Unknown.INSTANCE);
                     } else throw new IllegalArgumentException("indexed assignment requires an array/list, map, or tuple");
                 }
                 where = "index";
@@ -607,7 +607,7 @@ public final class TypeChecker {
             }
             if (receiver instanceof Tuple tuple) {
                 requireAssignable(index, Primitive.INT, "tuple index");
-                return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
+                return tuple.elements().stream().reduce(this::commonType).orElse(Unknown.INSTANCE);
             }
             throw new IllegalArgumentException("indexing requires an array/list, map, or tuple");
         }
@@ -621,10 +621,14 @@ public final class TypeChecker {
                 Type element = explicitElement
                         ? resolve(created.type().arguments().getFirst(), generics, self)
                         : Unknown.INSTANCE;
+                boolean sawInferredElement = false;
                 for (Ast.Expr argument : created.arguments()) {
                     Type actual = typeOf(argument, env, generics, self);
                     if (explicitElement) requireAssignable(actual, element, "constructor element for " + typeName);
-                    else element = element == Unknown.INSTANCE ? actual : commonType(element, actual);
+                    else if (!sawInferredElement) {
+                        element = actual;
+                        sawInferredElement = true;
+                    } else element = commonType(element, actual);
                 }
                 Type collection = new ListType(element);
                 validateAnonymousBuiltinMethods(created.methods(), collection, env, generics);
@@ -647,14 +651,19 @@ public final class TypeChecker {
                     value = created.type().arguments().size() == 2 ? resolve(created.type().arguments().get(1), generics, self) : Unknown.INSTANCE;
                 }
                 boolean inferredValue = !typeName.equals("JsonMap") && created.type().arguments().isEmpty();
+                boolean sawInferredValue = false;
                 Set<String> initializerKeys = new HashSet<>();
                 for (Ast.ObjectField entry : created.entries()) {
                     if (!initializerKeys.add(entry.name())) throw new IllegalArgumentException("duplicate map initializer key '" + entry.name() + "'");
                     if (key == Unknown.INSTANCE) key = Primitive.STRING;
                     else requireAssignable(Primitive.STRING, key, "map initializer key '" + entry.name() + "'");
                     Type actual = typeOf(entry.value(), env, generics, self);
-                    if (inferredValue) value = value == Unknown.INSTANCE ? actual : commonType(value, actual);
-                    else if (value != Unknown.INSTANCE) requireAssignable(actual, value, "map initializer value for '" + entry.name() + "'");
+                    if (inferredValue) {
+                        if (!sawInferredValue) {
+                            value = actual;
+                            sawInferredValue = true;
+                        } else value = commonType(value, actual);
+                    } else if (value != Unknown.INSTANCE) requireAssignable(actual, value, "map initializer value for '" + entry.name() + "'");
                 }
                 Type collection = new Named(typeName, List.of(key, value));
                 validateAnonymousBuiltinMethods(created.methods(), collection, env, generics);
