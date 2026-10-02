@@ -26,24 +26,24 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
-    private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
-    private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
-    private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
-    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
-    private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+    private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
+    private final Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
+    private final Map<String, Ast.InterfaceDecl> interfaces = new LinkedHashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new LinkedHashMap<>();
+    private final Map<String, Ast.ModuleDecl> modules = new LinkedHashMap<>();
 
     private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
 
-    private final Set<String> ambiguousFunctions = new HashSet<>();
-    private final Set<String> ambiguousClasses = new HashSet<>();
-    private final Set<String> ambiguousInterfaces = new HashSet<>();
-    private final Set<String> ambiguousTypeAliases = new HashSet<>();
-    private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
+    private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+    private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
+    private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
+    private final Set<String> importedValues = new LinkedHashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
-    private final Map<String, Function> singletonActorHandlers = new HashMap<>();
+    private final Map<String, Function> singletonActorHandlers = new LinkedHashMap<>();
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -56,7 +56,7 @@ public final class TypeChecker {
     }
 
     private void validateImports(Ast.Program program) {
-        Set<String> exposed = new HashSet<>();
+        Set<String> exposed = new LinkedHashSet<>();
         for (Ast.ImportDecl imported : program.imports()) {
             if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
             if (imported.wildcard()) {
@@ -440,6 +440,12 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr intrinsic
+                    && env.lookup(intrinsic.name()) == null
+                    && findFunction(intrinsic.name()) == null
+                    && isOwnershipIntrinsic(intrinsic.name())) {
+                return ownershipIntrinsicCall(intrinsic.name(), call.arguments(), env, generics, self);
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -1233,6 +1239,65 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    private boolean isOwnershipIntrinsic(String name) {
+        return name.equals("borrow") || name.equals("borrow_mut")
+                || name.equals("take") || name.equals("copy") || name.equals("share");
+    }
+
+    private Type ownershipIntrinsicCall(
+            String name,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        requireBuiltinArity(name, arguments, 1);
+        Type value = typeOf(arguments.getFirst(), env, generics, self);
+        return switch (name) {
+            case "borrow" -> new Borrow(value, false);
+            case "borrow_mut" -> new Borrow(value, true);
+            case "take" -> value;
+            case "copy" -> {
+                if (!isGuaranteedCopyType(value, new LinkedHashSet<>())) {
+                    throw new IllegalArgumentException(
+                            "copy(value) requires a statically Copy value; heap/class values must provide explicit copy semantics before they can be copied");
+                }
+                yield value;
+            }
+            case "share" -> {
+                requireActorTransportType(value, "share(value)", new LinkedHashSet<>());
+                yield new Named("Shared", List.of(value));
+            }
+            default -> throw new IllegalArgumentException("unknown ownership intrinsic '" + name + "'");
+        };
+    }
+
+    private boolean isGuaranteedCopyType(Type type, Set<Type> seen) {
+        Type actual = deref(type);
+        if (!seen.add(actual)) return true;
+        if (actual == Primitive.INT || actual == Primitive.FLOAT || actual == Primitive.DECIMAL
+                || actual == Primitive.COMPLEX || actual == Primitive.BOOL || actual == Primitive.STRING) {
+            return true;
+        }
+        if (actual instanceof StringLiteral) return true;
+        if (actual instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) if (!isGuaranteedCopyType(element, seen)) return false;
+            return true;
+        }
+        if (actual instanceof Record record) {
+            for (Type member : record.members().values()) if (!isGuaranteedCopyType(member, seen)) return false;
+            return true;
+        }
+        if (actual instanceof Named named) {
+            if (named.name().equals("ActorRef") || named.name().equals("MonitorRef") || named.name().equals("Shared")) {
+                return true;
+            }
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                return isGuaranteedCopyType(named.arguments().getFirst(), seen);
+            }
+        }
+        return false;
     }
 
     private Type actorMessageType(Type type, String where) {
