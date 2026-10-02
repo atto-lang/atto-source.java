@@ -14,14 +14,16 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -47,16 +49,25 @@ public final class ActorRuntime implements AutoCloseable {
 
     public enum ActorKind { PRIVATE, SHARED }
 
-    public record DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
+    public record DispatcherConfig(
+            int privateParallelism,
+            int sharedParallelism,
+            int throughput,
+            int maxActors) {
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
             if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
+            if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
+        }
+
+        public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
+            this(privateParallelism, sharedParallelism, throughput, 16_384);
         }
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, 64);
+            return new DispatcherConfig(cpus, cpus, 64, 16_384);
         }
     }
 
@@ -113,6 +124,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -137,14 +149,19 @@ public final class ActorRuntime implements AutoCloseable {
     public ActorRuntime(IsolatePolicy policyCeiling, DispatcherConfig dispatcherConfig) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
-        this.privateDispatcher = Executors.newFixedThreadPool(
-                dispatcherConfig.privateParallelism(), namedFactory("ores-private-actor-dispatcher-"));
-        this.sharedDispatcher = Executors.newFixedThreadPool(
-                dispatcherConfig.sharedParallelism(), namedFactory("ores-shared-actor-dispatcher-"));
+        this.privateDispatcher = newDispatcher(
+                dispatcherConfig.privateParallelism(),
+                dispatcherConfig.maxActors(),
+                "ores-private-actor-dispatcher-");
+        this.sharedDispatcher = newDispatcher(
+                dispatcherConfig.sharedParallelism(),
+                dispatcherConfig.maxActors(),
+                "ores-shared-actor-dispatcher-");
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
+    public int actorCount() { return actorCount.get(); }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
@@ -538,12 +555,39 @@ public final class ActorRuntime implements AutoCloseable {
         if (kind == ActorKind.SHARED) {
             policy.require(IsolatePolicy.Capability.ACTOR_SHARED_MEMORY, "shared actor spawn");
         }
+        reserveActorSlot();
 
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id, kind);
-        ActorCell<M> cell = new ActorCell<>(ref, kind, policy, behaviorFactory);
-        actors.put(id, cell);
-        return ref;
+        try {
+            ActorCell<M> cell = new ActorCell<>(ref, kind, policy, behaviorFactory);
+            actors.put(id, cell);
+            return ref;
+        } catch (RuntimeException | Error failure) {
+            actorCount.decrementAndGet();
+            throw failure;
+        }
+    }
+
+    private void reserveActorSlot() {
+        while (true) {
+            int current = actorCount.get();
+            if (current >= dispatcherConfig.maxActors()) {
+                throw new IllegalStateException(
+                        "actor runtime actor limit exceeded: " + dispatcherConfig.maxActors());
+            }
+            if (actorCount.compareAndSet(current, current + 1)) return;
+        }
+    }
+
+    private void unregisterActor(ActorCell<?> cell) {
+        if (actors.remove(cell.ref.id(), cell)) {
+            int remaining = actorCount.decrementAndGet();
+            if (remaining < 0) {
+                actorCount.incrementAndGet();
+                throw new IllegalStateException("actor count accounting underflow");
+            }
+        }
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
@@ -1321,8 +1365,9 @@ public final class ActorRuntime implements AutoCloseable {
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
 
-        for (ActorCell<?> cell : actors.values()) cell.stop();
+        for (ActorCell<?> cell : List.copyOf(actors.values())) cell.stop();
         actors.clear();
+        actorCount.set(0);
 
         // Interrupt carrier workers before touching shared-cell lifecycle. A
         // user callback may currently hold a SyncCell lock; runtime teardown
@@ -1342,6 +1387,22 @@ public final class ActorRuntime implements AutoCloseable {
 
     private ExecutorService dispatcherFor(ActorKind kind) {
         return kind == ActorKind.PRIVATE ? privateDispatcher : sharedDispatcher;
+    }
+
+    private static ExecutorService newDispatcher(
+            int parallelism,
+            int readyQueueCapacity,
+            String threadPrefix) {
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+                parallelism,
+                parallelism,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(readyQueueCapacity),
+                namedFactory(threadPrefix),
+                new ThreadPoolExecutor.AbortPolicy());
+        executor.prestartAllCoreThreads();
+        return executor;
     }
 
     private static ThreadFactory namedFactory(String prefix) {
@@ -1466,7 +1527,7 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduled.set(false);
 
                 if (stopped.get() || closed.get()) {
-                    actors.remove(ref.id(), this);
+                    unregisterActor(this);
                 } else if (!mailbox.isEmpty()) {
                     // Bounded batch/throughput handoff for dispatcher fairness.
                     schedule();
@@ -1485,7 +1546,7 @@ public final class ActorRuntime implements AutoCloseable {
                 stopped.set(true);
                 drainMailboxReservations();
                 if (memorySlice != null) memorySlice.close();
-                actors.remove(ref.id(), this);
+                unregisterActor(this);
             }
         }
 
@@ -1494,7 +1555,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!stopped.compareAndSet(false, true)) return;
                 drainMailboxReservations();
                 if (memorySlice != null) memorySlice.close();
-                actors.remove(ref.id(), this);
+                unregisterActor(this);
             }
         }
     }
