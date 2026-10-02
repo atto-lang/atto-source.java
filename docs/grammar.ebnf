@@ -29,7 +29,8 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "lex" | "lexical" | "nlex" ;\ncapture_modifier  = "lex" | "lexical" | "nlex" ;
+callable_modifier = "abstract" | "async" | "lex" | "nlex" ;
+capture_modifier  = "lex" | "nlex" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -198,7 +199,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      barrier for themselves and their nested lambdas.
    - nlex blocks activation-local captures only. Module members, imports,
      top-level callables/classes, and built-ins remain statically resolvable.
-   - lex and lexical are explicit aliases for normal lexical capture. They
+   - lex explicitly requests for normal lexical capture. They
      cannot override an inherited nlex barrier.
    - Lexical closure environments contain only compiler-identified free local
      bindings. Capture-free lexical lambdas use the no-environment path.
