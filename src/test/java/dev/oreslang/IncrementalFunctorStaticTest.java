@@ -280,6 +280,60 @@ final class IncrementalFunctorStaticTest {
                 """)));
     }
 
+    @Test
+    void escapedLocalStructAbiTracksOnlyPublicSurface() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> first = Map.of(
+                "factory.ores", """
+                        pub fnc make() => T {
+                          struct T {
+                            pub value: int;
+                            private hidden: int = 1;
+                          }
+                          return obj{value: 7};
+                        }
+                        """,
+                "consumer.ores", """
+                        import fnc {make} from "./factory.ores";
+                        pub fnc consume() => void { return; }
+                        """);
+        compiler.compile(first);
+
+        Map<String, String> privateLayoutChange = Map.of(
+                "factory.ores", """
+                        pub fnc make() => T {
+                          struct T {
+                            pub value: int;
+                            private hidden: String = "internal";
+                          }
+                          return obj{value: 7};
+                        }
+                        """,
+                "consumer.ores", first.get("consumer.ores"));
+        var second = compiler.compile(privateLayoutChange);
+        assertTrue(second.rebuilt("factory.ores"));
+        assertTrue(second.reused("consumer.ores"),
+                "private local-struct layout changes must not invalidate importers");
+
+        Map<String, String> publicShapeChange = Map.of(
+                "factory.ores", """
+                        pub fnc make() => T {
+                          struct T {
+                            pub value: int;
+                            pub label: String = "visible";
+                            private hidden: String = "internal";
+                          }
+                          return obj{value: 7};
+                        }
+                        """,
+                "consumer.ores", first.get("consumer.ores"));
+        var third = compiler.compile(publicShapeChange);
+        assertTrue(third.rebuilt("factory.ores"));
+        assertTrue(third.rebuilt("consumer.ores"),
+                "public local-struct shape changes must invalidate importers");
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "incremental-functors.ores")
