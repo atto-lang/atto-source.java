@@ -15,6 +15,37 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorRuntimeTest {
     @Test
+    void actorCannotUseClosureCapturedForeignRuntimeSendOrSpawn() throws Exception {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            CountDownLatch checked = new CountDownLatch(1);
+            AtomicReference<Throwable> sendFailure = new AtomicReference<>();
+            AtomicReference<Throwable> spawnFailure = new AtomicReference<>();
+
+            var target = runtimeA.<String>spawn(() -> (message, context) -> { });
+            var caller = runtimeB.<String>spawn(() -> (message, context) -> {
+                try {
+                    runtimeA.send(target, "cross-runtime");
+                } catch (Throwable problem) {
+                    sendFailure.set(problem);
+                }
+                try {
+                    runtimeA.<String>spawn(() -> (childMessage, childContext) -> { });
+                } catch (Throwable problem) {
+                    spawnFailure.set(problem);
+                } finally {
+                    checked.countDown();
+                }
+            });
+
+            caller.send("go");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, sendFailure.get());
+            assertInstanceOf(SecurityException.class, spawnFailure.get());
+        }
+    }
+
+    @Test
     void actorCannotInvokeClosureCapturedForeignActorRef() throws Exception {
         try (ActorRuntime runtimeA = new ActorRuntime();
              ActorRuntime runtimeB = new ActorRuntime()) {
