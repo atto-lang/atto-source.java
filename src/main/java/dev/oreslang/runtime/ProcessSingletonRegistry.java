@@ -420,7 +420,10 @@ public final class ProcessSingletonRegistry {
                 CURRENT_DEADLINE_NANOS.set(request.deadlineNanos);
                 try {
                     checkExecutionBudget();
-                    Object result = request.operation.apply(state, request.arguments);
+                    @SuppressWarnings("unchecked")
+                    List<Object> ownedArguments =
+                            (List<Object>) ActorRuntime.ownedCopyOfFrozen(request.arguments);
+                    Object result = request.operation.apply(state, ownedArguments);
                     checkExecutionBudget();
                     if (!request.reply.isDone()) request.reply.complete(ActorRuntime.freeze(result));
                 } catch (VirtualMachineError fatal) {
