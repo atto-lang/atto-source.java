@@ -1,0 +1,7 @@
+pub fnc main() => void {
+  // Ordinary Oreslang values are reclaimed according to ownership/lifetime
+  // rules. Manual GC is for VM/interop leftovers and diagnostics.
+  val report = process.gc();
+  stdio.println(report);
+  return;
+}
