@@ -857,14 +857,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         MessageEnvelope envelope = new MessageEnvelope(prepared, release);
-        synchronized (cell.lifecycleLock) {
-            if (closed.get() || cell.stopped.get()) {
-                envelope.close();
-                throw terminated(ref);
+        List<OresMutex.Shared<?>> sharedMutexReservations = List.of();
+        boolean admitted = false;
+        try {
+            if (cell.kind == ActorKind.SHARED) {
+                sharedMutexReservations = reserveSharedMutexBindings(prepared);
             }
-            if (!cell.mailbox.offer(envelope)) {
+            synchronized (cell.lifecycleLock) {
+                if (closed.get() || cell.stopped.get()) {
+                    throw terminated(ref);
+                }
+                if (!cell.mailbox.offer(envelope)) {
+                    throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
+                }
+                admitted = true;
+                commitSharedMutexBindings(sharedMutexReservations);
+            }
+        } finally {
+            if (!admitted) {
+                abortSharedMutexBindings(sharedMutexReservations);
                 envelope.close();
-                throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
             }
         }
         cell.schedule();
@@ -921,10 +933,17 @@ public final class ActorRuntime implements AutoCloseable {
             if (target.kind != ActorKind.SHARED) {
                 throw new SecurityException("private actors cannot receive SharedMutex<T>");
             }
-            target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor transport");
-            if (!sharedMutex.bindToRuntime(this)) {
-                throw new IllegalArgumentException("SharedMutex belongs to another ActorRuntime");
+            ActorKind senderKind = currentActorKind();
+            if (senderKind == ActorKind.PRIVATE) {
+                throw new SecurityException("private actors cannot send SharedMutex<T>");
             }
+            IsolatePolicy senderPolicy = currentActorPolicy();
+            if (senderPolicy != null) {
+                senderPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor send");
+            } else {
+                policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
+            }
+            target.policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor receive");
             requireOwnedActorRefs(sharedMutex.transportValue(), new IdentityHashMap<>(), depth + 1);
             return;
         }
@@ -1035,10 +1054,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (cell.closed()) throw new IllegalArgumentException("SyncCell is closed");
             return;
         }
-        if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            if (!sharedMutex.bindToRuntime(this)) {
-                throw new IllegalArgumentException("SharedMutex belongs to another ActorRuntime");
-            }
+        if (value instanceof OresMutex.Shared<?>) {
+            // Runtime affinity is reserved atomically immediately before mailbox admission.
             return;
         }
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -1065,6 +1082,80 @@ public final class ActorRuntime implements AutoCloseable {
             }
         } finally {
             visiting.remove(value);
+        }
+    }
+
+    private List<OresMutex.Shared<?>> reserveSharedMutexBindings(Object value) {
+        Set<OresMutex.Shared<?>> unique = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        collectSharedMutexes(value, unique, new IdentityHashMap<>(), 0);
+
+        List<OresMutex.Shared<?>> reserved = new ArrayList<>(unique.size());
+        try {
+            for (OresMutex.Shared<?> mutex : unique) {
+                if (!mutex.reserveRuntimePublication(this)) {
+                    throw new IllegalArgumentException(
+                            "SharedMutex may cross actor mailboxes only within its owning ActorRuntime");
+                }
+                reserved.add(mutex);
+            }
+            return List.copyOf(reserved);
+        } catch (RuntimeException | Error failure) {
+            abortSharedMutexBindings(reserved);
+            throw failure;
+        }
+    }
+
+    private static void collectSharedMutexes(
+            Object value,
+            Set<OresMutex.Shared<?>> out,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value)
+                || value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof SyncCell<?>) return;
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            out.add(sharedMutex);
+            return;
+        }
+        if (value instanceof Shared<?> shared) {
+            collectSharedMutexes(shared.value(), out, visiting, depth + 1);
+            return;
+        }
+        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) return;
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) collectSharedMutexes(item, out, visiting, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) collectSharedMutexes(item, out, visiting, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    collectSharedMutexes(entry.getKey(), out, visiting, depth + 1);
+                    collectSharedMutexes(entry.getValue(), out, visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    collectSharedMutexes(Array.get(value, i), out, visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
+    private void commitSharedMutexBindings(List<OresMutex.Shared<?>> reservations) {
+        for (OresMutex.Shared<?> mutex : reservations) {
+            mutex.commitRuntimePublication(this);
+        }
+    }
+
+    private void abortSharedMutexBindings(List<OresMutex.Shared<?>> reservations) {
+        for (int i = reservations.size() - 1; i >= 0; i--) {
+            reservations.get(i).abortRuntimePublication(this);
         }
     }
 
