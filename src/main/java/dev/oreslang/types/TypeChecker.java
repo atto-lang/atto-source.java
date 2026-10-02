@@ -47,13 +47,14 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
     public static Ast.Program check(Ast.Program program) {
+        Ast.Program composed = TraitComposer.compose(program);
         TypeChecker checker = new TypeChecker();
-        checker.validateImports(program);
-        checker.collect(program);
+        checker.validateImports(composed);
+        checker.collect(composed);
         checker.validateRoutineRecursion();
-        checker.validate(program);
-        OwnershipChecker.check(program);
-        return program;
+        checker.validate(composed);
+        OwnershipChecker.check(composed);
+        return composed;
     }
 
     private void validateImports(Ast.Program program) {
@@ -176,10 +177,6 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), all, null);
-            } else {
-                Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
-                if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
-                resolve(field.type(), generics, null);
             }
         }
     }
@@ -1121,12 +1118,13 @@ public final class TypeChecker {
                         + "' is actor-private inside singleton module '" + owner.name() + "'");
             }
             List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
-            if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
+            List<Ast.FieldDecl> constructorFields = fields.stream().filter(field -> !field.composed()).toList();
+            if (created.arguments().size() > constructorFields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
             Type nominal = nominalClassType(klass);
-            for (int i = 0; i < fields.size(); i++) {
-                Ast.FieldDecl field = fields.get(i);
-                if (i < created.arguments().size()) {
-                    requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
+            int argumentIndex = 0;
+            for (Ast.FieldDecl field : fields) {
+                if (!field.composed() && argumentIndex < created.arguments().size()) {
+                    requireAssignable(typeOf(created.arguments().get(argumentIndex++), env, generics, self),
                             resolve(field.type(), Set.copyOf(klass.genericParameters()), nominal), "constructor field " + field.name());
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
@@ -1448,8 +1446,6 @@ public final class TypeChecker {
                 all.addAll(fn.genericParameters());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()),
                         functionType(fn.parameters(), fn.returnType(), all, null), "interface " + iface.name());
-            } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                mergeMember(members, field.name(), resolve(field.type(), generics, null), "interface " + iface.name());
             }
         }
         stack.remove(iface);
