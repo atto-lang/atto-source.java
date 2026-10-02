@@ -361,6 +361,81 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void nestedSchemaResolutionUsesTheOwningModuleWhenClassNamesAreAmbiguous() throws Exception {
+        String firstProgram = """
+                define module nested_types_a as
+                  define class SharedLeafName as
+                    val int value;
+                    pub get() => int { return self.value; }
+                  end
+
+                  define class Root as
+                    val SharedLeafName leaf;
+                    pub read() => int { return self.leaf.get(); }
+                  end
+                end
+
+                define module nested_types_b as
+                  define class SharedLeafName as
+                    val String label;
+                  end
+                end
+
+                define singleton module nested_lexical_schema_service as
+                  pub val nested_types_a.Root root =
+                    new nested_types_a.Root(new nested_types_a.SharedLeafName(9));
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await nested_lexical_schema_service.root.read());
+                    return;
+                  }
+                end
+                """;
+
+        String changedNestedLayout = """
+                define module nested_types_a as
+                  define class SharedLeafName as
+                    val int value;
+                    val int generation;
+                    pub get() => int { return self.value; }
+                  end
+
+                  define class Root as
+                    val SharedLeafName leaf;
+                    pub read() => int { return self.leaf.get(); }
+                  end
+                end
+
+                define module nested_types_b as
+                  define class SharedLeafName as
+                    val String label;
+                  end
+                end
+
+                define singleton module nested_lexical_schema_service as
+                  pub val nested_types_a.Root root =
+                    new nested_types_a.Root(new nested_types_a.SharedLeafName(9, 2));
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await nested_lexical_schema_service.root.read());
+                    return;
+                  }
+                end
+                """;
+
+        assertTrue(eval(firstProgram, "nested-lexical-schema.ores").contains("9"));
+
+        RuntimeException failure = assertThrows(
+                RuntimeException.class,
+                () -> eval(changedNestedLayout, "nested-lexical-schema.ores"));
+        assertTrue(causeChainContains(failure, "state schema changed"), String.valueOf(failure));
+    }
+
+    @Test
     void hotReloadRejectsSingletonSchemaReinterpretationWithoutMigration() throws Exception {
         String firstProgram = """
                 define singleton module reload_schema_guard_counter as
