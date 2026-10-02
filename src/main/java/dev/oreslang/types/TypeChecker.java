@@ -493,6 +493,7 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
+                    String label = "function " + functionName.name();
                     return checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
@@ -500,14 +501,15 @@ public final class TypeChecker {
                             call.arguments(),
                             env, generics, self,
                             null,
-                            Map.of(),
-                            "function " + functionName.name());
+                            explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
+                            label);
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                     && factoryCall.member().equals("new")) {
+                if (!call.typeArguments().isEmpty()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
                 if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
@@ -517,6 +519,7 @@ public final class TypeChecker {
                 return new Named(factory.name(), List.of(element));
             }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
+                if (!call.typeArguments().isEmpty()) throw new IllegalArgumentException("Some does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
@@ -529,6 +532,7 @@ public final class TypeChecker {
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
                     List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
                     callableGenerics.addAll(fn.genericParameters());
+                    String label = "static function " + klass.name() + "." + fn.name();
                     return checkGenericCallable(
                             callableGenerics,
                             fn.parameters(),
@@ -536,8 +540,8 @@ public final class TypeChecker {
                             call.arguments(),
                             env, generics, self,
                             null,
-                            Map.of(),
-                            "static function " + klass.name() + "." + fn.name());
+                            explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
+                            label);
                 }
                 if (receiver instanceof Named named) {
                     if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
@@ -563,6 +567,9 @@ public final class TypeChecker {
                         if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
                         List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
                         callableGenerics.addAll(method.genericParameters());
+                        String label = "method " + klass.name() + "." + method.name();
+                        Map<String, Type> bindings = new HashMap<>(classGenericBindings(klass, named));
+                        bindings.putAll(explicitGenericBindings(method.genericParameters(), call.typeArguments(), generics, self, label));
                         return checkGenericCallable(
                                 callableGenerics,
                                 method.parameters(),
@@ -570,10 +577,13 @@ public final class TypeChecker {
                                 call.arguments(),
                                 env, generics, self,
                                 named,
-                                classGenericBindings(klass, named),
-                                "method " + klass.name() + "." + method.name());
+                                bindings,
+                                label);
                     }
                 }
+            }
+            if (!call.typeArguments().isEmpty()) {
+                throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
             Type callee = typeOf(call.callee(), env, generics, self);
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
@@ -1190,6 +1200,24 @@ public final class TypeChecker {
         return bindings;
     }
 
+    private Map<String, Type> explicitGenericBindings(
+            List<String> genericNames,
+            List<Ast.TypeRef> typeArguments,
+            Set<String> callerGenerics,
+            Type callerSelf,
+            String label) {
+        if (typeArguments.isEmpty()) return Map.of();
+        if (typeArguments.size() != genericNames.size()) {
+            throw new IllegalArgumentException(label + " expects " + genericNames.size()
+                    + " explicit type argument(s), got " + typeArguments.size());
+        }
+        Map<String, Type> bindings = new HashMap<>();
+        for (int i = 0; i < genericNames.size(); i++) {
+            bindings.put(genericNames.get(i), resolve(typeArguments.get(i), callerGenerics, callerSelf));
+        }
+        return bindings;
+    }
+
     private Type checkGenericCallable(
             List<String> genericNames,
             List<Ast.Param> params,
@@ -1204,11 +1232,12 @@ public final class TypeChecker {
         if (params.size() != arguments.size()) throw new IllegalArgumentException(label + " arity mismatch");
         Set<String> unique = uniqueGenerics(genericNames, label);
         Map<String, Type> bindings = new HashMap<>(initialBindings);
+        Set<String> fixedBindings = new HashSet<>(initialBindings.keySet());
         List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
         for (int i = 0; i < arguments.size(); i++) {
             Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
-            inferGenericBindings(patterns.get(i), actual, bindings, label);
+            inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         Set<String> unbound = new HashSet<>(unique);
         unbound.removeAll(bindings.keySet());
@@ -1229,8 +1258,9 @@ public final class TypeChecker {
         return result;
     }
 
-    private void inferGenericBindings(Type pattern, Type actual, Map<String, Type> bindings, String label) {
+    private void inferGenericBindings(Type pattern, Type actual, Map<String, Type> bindings, Set<String> fixedBindings, String label) {
         if (pattern instanceof Generic generic) {
+            if (fixedBindings.contains(generic.name())) return;
             Type previous = bindings.putIfAbsent(generic.name(), actual);
             if (previous != null) {
                 Type joined = commonType(previous, actual);
