@@ -223,7 +223,8 @@ public final class ActorRuntime implements AutoCloseable {
         ActorId existingId = singletonActors.get(name);
         if (existingId != null) {
             ActorCell<?> existing = actors.get(existingId);
-            if (existing != null && existing.state != ActorState.FAILED && existing.state != ActorState.STOPPED) {
+            if (existing != null
+                    && (existing.state == ActorState.STARTING || existing.state == ActorState.RUNNING)) {
                 return (ActorRef<M>) existing.ref;
             }
             singletonActors.remove(name, existingId);
@@ -231,6 +232,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         ActorRef<M> created = spawnOwned(policyCeiling, initialOwnedStateBytes, behaviorFactory);
         singletonActors.put(name, created.id());
+
+        // The virtual thread may fail during behavior construction before the
+        // registry insertion above. Remove that stale name immediately; if it
+        // exits after this check its normal lifecycle cleanup removes the name.
+        if (!actors.containsKey(created.id())) {
+            singletonActors.remove(name, created.id());
+        }
         return created;
     }
 
