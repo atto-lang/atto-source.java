@@ -138,7 +138,10 @@ public final class Parser {
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
-        if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
+        if (isBindingKind(peek().type())) {
+            if (modifiers.mutableReceiver) throw error(peek(), "'mut' is not a binding modifier; use let for mutable bindings");
+            return parseModuleBinding(modifiers.visibility);
+        }
         return null;
     }
 
@@ -171,6 +174,7 @@ public final class Parser {
             Modifiers mods = parseModifiers();
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
+                if (mods.mutableReceiver) throw error(peek(), "'mut' is a method-receiver modifier; use let for mutable fields");
                 fields.add(parseField(mods.visibility));
                 continue;
             }
