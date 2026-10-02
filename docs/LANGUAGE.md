@@ -365,9 +365,15 @@ Anonymous struct values are structural:
 val p = struct { x = 3, y = 4 };
 ```
 
-An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. That conversion requires the exact field set and assignable field types; arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
+An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding, return, function/method argument, or typed function-value argument/result. That conversion requires the exact field set and assignable field types; arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
 
-Struct equality is value equality within the same named struct identity. Structs are move-only under the current ownership model until a dedicated `Copy` facility is introduced.
+Struct equality is value equality within the same named struct identity.
+
+Named structs derive `Copy` structurally. A struct is implicitly copyable when every effective field is copyable. Primitive scalar fields, immutable strings, nested copyable structs, and `Option<T>` with copyable `T` preserve `Copy`. If any field is move-only—such as a class instance, array/list, structural object record, closure, or another move-only aggregate—the enclosing struct is move-only as well.
+
+A by-value copy creates independent struct storage recursively through nested structs. Mutating a copied struct or a nested copied struct therefore never mutates the source value. This applies consistently to bindings, arguments, returns, field initialization/assignment, destructuring, collection insertion, and closure capture. Borrows (`&T` / `&mut T`) and explicit structural parameters do not copy.
+
+Generic structs derive `Copy` from their concrete specialization. For example, `Box<int>` is copyable when its only field is `T`, while `Box<SomeClass>` remains move-only. The same rule applies when the specialization is inferred with `Box<>{...}` or reached through a type alias.
 
 
 ## Inline values
@@ -1018,14 +1024,16 @@ Class fields follow the same bias: a field declared with `val` or `const` cannot
 
 Oreslang uses Rust-style affine ownership for mutable/heap-backed values.
 
-The initial `Copy` family is:
+The `Copy` family is derived, not limited to a fixed list:
 
 - integer types;
 - floating/decimal/complex scalar types;
 - booleans;
-- immutable strings.
+- immutable strings;
+- named structs whose effective fields are all `Copy`;
+- `Option<T>` when `T` is `Copy`.
 
-Class instances, arrays/lists, object records, and closures are move-only by default.
+Class instances, arrays/lists, object records, closures, and structs containing any of those move-only values are move-only by default.
 
 A by-value binding, argument, or return consumes a non-`Copy` value:
 
