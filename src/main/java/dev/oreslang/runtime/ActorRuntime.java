@@ -27,7 +27,10 @@ import java.util.function.Supplier;
  * Frozen values rather than sharing Java object references.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final ThreadLocal<ActorExecution> CURRENT_ACTOR = new ThreadLocal<>();
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final Map<ActorId, Set<ActorId>> children = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
 
@@ -43,6 +46,22 @@ public final class ActorRuntime implements AutoCloseable {
 
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
+    }
+
+    private record ActorExecution(ActorRuntime runtime, ActorId actorId) { }
+
+    public static boolean inActorExecution() {
+        return CURRENT_ACTOR.get() != null;
+    }
+
+    public boolean isCurrentExecutionActor() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        return current != null && current.runtime() == this;
+    }
+
+    public ActorId currentActorId() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        return current != null && current.runtime() == this ? current.actorId() : null;
     }
 
     public record Shared<T>(T value) { }
@@ -77,19 +96,22 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final ActorId parentId;
         private final AtomicBoolean alive = new AtomicBoolean(true);
         private final AtomicBoolean accepting = new AtomicBoolean(true);
         private final AtomicReference<Throwable> failure = new AtomicReference<>();
         private final CompletableFuture<Void> terminated = new CompletableFuture<>();
         private volatile Thread runner;
 
-        private ActorRef(ActorId id, ActorKind kind) {
+        private ActorRef(ActorId id, ActorKind kind, ActorId parentId) {
             this.id = id;
             this.kind = kind;
+            this.parentId = parentId;
         }
 
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
+        public ActorId parentId() { return parentId; }
         public boolean isAlive() { return alive.get(); }
         public boolean failed() { return failure.get() != null; }
         public Throwable failure() { return failure.get(); }
@@ -143,12 +165,30 @@ public final class ActorRuntime implements AutoCloseable {
             Supplier<? extends Behavior<M>> behaviorFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         requireWithinCeiling(policy);
+
+        ActorId parentId = currentActorId();
+        if (parentId != null) {
+            ActorCell<?> parent = actors.get(parentId);
+            if (parent == null || parent.stopRequested.get() || !parent.ref.accepting.get()) {
+                throw new IllegalStateException("stopping actor cannot spawn child actors");
+            }
+        }
+
         ActorId id = ActorId.create();
-        ActorRef<M> ref = new ActorRef<>(id, java.util.Objects.requireNonNull(kind));
+        ActorRef<M> ref = new ActorRef<>(id, java.util.Objects.requireNonNull(kind), parentId);
         ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
         actors.put(id, cell);
-        cell.start();
-        return ref;
+        if (parentId != null) {
+            children.computeIfAbsent(parentId, ignored -> ConcurrentHashMap.newKeySet()).add(id);
+        }
+        try {
+            cell.start();
+            return ref;
+        } catch (RuntimeException | Error startupFailure) {
+            actors.remove(id, cell);
+            unlinkChild(ref);
+            throw startupFailure;
+        }
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
@@ -184,6 +224,49 @@ public final class ActorRuntime implements AutoCloseable {
     public <M> void stop(ActorRef<M> ref) {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell != null) cell.stop();
+    }
+
+    /**
+     * Implements the source-level `stop;` statement. The current actor stops
+     * accepting immediately; all descendants receive recursive graceful/FIFO
+     * stop requests. The caller then unwinds its own finally/defer frames and
+     * terminates through StopActorSignal.
+     */
+    public void beginCurrentActorTreeStop() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        if (current == null || current.runtime() != this) {
+            throw new IllegalStateException("stop requires an active actor execution");
+        }
+        ActorCell<?> self = actors.get(current.actorId());
+        if (self == null) {
+            throw new IllegalStateException("current actor is no longer registered");
+        }
+        self.beginImmediateStop();
+        stopDescendantsGracefully(current.actorId(), new java.util.HashSet<>());
+    }
+
+    private void stopDescendantsGracefully(ActorId parentId, Set<ActorId> visited) {
+        if (!visited.add(parentId)) return;
+        Set<ActorId> snapshot = children.get(parentId);
+        if (snapshot == null || snapshot.isEmpty()) return;
+        for (ActorId childId : List.copyOf(snapshot)) {
+            ActorCell<?> child = actors.get(childId);
+            if (child == null) continue;
+            child.stop();
+            stopDescendantsGracefully(childId, visited);
+        }
+    }
+
+    private void unlinkChild(ActorRef<?> ref) {
+        ActorId parentId = ref.parentId();
+        if (parentId != null) {
+            Set<ActorId> siblings = children.get(parentId);
+            if (siblings != null) {
+                siblings.remove(ref.id());
+                if (siblings.isEmpty()) children.remove(parentId, siblings);
+            }
+        }
+        children.remove(ref.id());
     }
 
     /**
@@ -281,6 +364,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private void run() {
             ref.runner = Thread.currentThread();
+            CURRENT_ACTOR.set(new ActorExecution(ActorRuntime.this, ref.id()));
             try {
                 final Behavior<M> behavior = behaviorFactory.get();
                 final ActorContext<M> context = new ActorContext<>() {
@@ -313,6 +397,8 @@ public final class ActorRuntime implements AutoCloseable {
                 ref.accepting.set(false);
                 ref.alive.set(false);
                 actors.remove(ref.id(), this);
+                unlinkChild(ref);
+                CURRENT_ACTOR.remove();
                 ref.terminated.complete(null);
             }
         }
@@ -324,6 +410,12 @@ public final class ActorRuntime implements AutoCloseable {
             if (!mailbox.offer(frozen)) {
                 throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
             }
+        }
+
+        private synchronized void beginImmediateStop() {
+            if (!ref.isAlive()) return;
+            ref.accepting.set(false);
+            stopRequested.set(true);
         }
 
         private synchronized void stop() {
