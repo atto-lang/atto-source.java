@@ -290,8 +290,9 @@ public final class Parser {
         Ast.BindingKind kind = explicitKind ? parseBindingKind() : Ast.BindingKind.LET;
         Ast.TypeRef type;
         String name;
+        boolean nameFirst = check(IDENT) && checkNext(COLON);
 
-        if (check(IDENT) && checkNext(COLON)) {
+        if (nameFirst) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after field name");
             type = parseTypeRef();
@@ -302,7 +303,8 @@ public final class Parser {
         }
 
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
-        consumeStatementTerminator("field declaration should end with ';'");
+        if (nameFirst) consumeDataMemberTerminator();
+        else consumeStatementTerminator("legacy field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, isStatic, initializer);
     }
 
@@ -311,8 +313,9 @@ public final class Parser {
         Ast.BindingKind kind = explicitKind ? parseBindingKind() : Ast.BindingKind.LET;
         Ast.TypeRef type = null;
         String name;
+        boolean nameFirst = check(IDENT) && checkNext(COLON);
 
-        if (check(IDENT) && checkNext(COLON)) {
+        if (nameFirst) {
             name = advance().lexeme();
             consume(COLON, "expected ':' after member name");
             type = parseTypeRef();
@@ -332,7 +335,8 @@ public final class Parser {
         if (initializer == null && kind != Ast.BindingKind.LET) {
             throw error(peek(), "uninitialized module members must be mutable 'let' members");
         }
-        consumeStatementTerminator("module member declaration should end with ';'");
+        if (nameFirst) consumeDataMemberTerminator();
+        else consumeStatementTerminator("legacy module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, isStatic, initializer);
     }
 
@@ -990,6 +994,15 @@ public final class Parser {
     private void consumeStatementTerminator(String message) {
         if (match(SEMICOLON) || isSafeStatementBoundary()) return;
         throw error(peek(), message);
+    }
+
+    private void consumeDataMemberTerminator() {
+        if (match(SEMICOLON) || check(END) || check(EOF)) return;
+        if (check(AT) || check(PUB) || check(PRIVATE) || check(STATIC)
+                || check(CONSTRUCTOR) || check(FNC) || check(ROUTINE) || check(DEFINE)
+                || check(INIT) || check(TYPE) || check(INTERFACE) || check(LBRACKET)
+                || isFieldDeclarationStart()) return;
+        throw error(peek(), "expected ';' or the next class/module member");
     }
 
     private boolean isSafeStatementBoundary() {
