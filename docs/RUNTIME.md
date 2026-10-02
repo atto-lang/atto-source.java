@@ -42,3 +42,32 @@ The strict production direction is:
 ## Receiver implementation
 
 Method code is stored once per class declaration. Direct calls dispatch to that definition with the receiver as an implicit immutable argument. Only first-class method extraction allocates a bound method pair. This provides Go-like receiver safety without allocating a closure for every instance or every direct method invocation.
+
+
+## Mutex and shared-memory model
+
+Oreslang has two deliberately different mutex domains:
+
+- `Mutex<T>` is actor/private-domain state. It owns the protected value, uses no JVM lock, is non-reentrant, and rejects cross-thread access.
+- `SharedMutex<T>` is an explicit same-OS-process shared-memory capability. It is non-reentrant, uses acquire/release synchronization, may cross actor mailboxes only when both sides have `SHARED_MEMORY`, and must never be treated as a distributed or cross-isolate lock.
+- `MutexGuard<T>` is a lexical linear capability. The runtime releases it on normal scope exit and poisons a shared mutex on abnormal scope exit. Guest code may call `guard.release()` for early release; there is intentionally no `mutex.unlock()`.
+- Guarded values transparently dereference through the guard, e.g. `guard.count = guard.count + 1`.
+- `await` while a guard is live and closure capture of a guard are compile-time ownership errors.
+- Blocking `SharedMutex.lock()`/timed acquisition is rejected while executing an actor. Actor code uses `await mutex.lock_async()`, allowing the scheduler to run other actors while waiting.
+- A poisoned `SharedMutex<T>` rejects ordinary acquisition until `recover(...)` repairs invariants and clears poison.
+
+Example:
+
+```ores
+val state = Mutex.new(new Counter());
+val guard = state.lock();
+guard.count = guard.count + 1;
+guard.release();
+
+val shared = SharedMutex.new(new Cache());
+val shared_guard = await shared.lock_async();
+shared_guard.put("key", "value");
+shared_guard.release();
+```
+
+The current reference runtime uses a one-permit JVM semaphore for `SharedMutex<T>`. Java semaphore release/acquire provides the required memory-ordering edge and, unlike a thread-owned `ReentrantLock`, allows an asynchronously acquired guard to be resumed and released by the actor execution context.
