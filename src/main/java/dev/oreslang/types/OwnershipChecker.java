@@ -158,6 +158,12 @@ public final class OwnershipChecker {
             checkExpr(panic.value(), scope, true);
             return;
         }
+        if (stmt instanceof Ast.ThrowStmt thrown) {
+            // A thrown payload may cross lexical/callable boundaries by value.
+            checkExpr(thrown.value(), scope, true);
+            return;
+        }
+        if (stmt instanceof Ast.RaiseStmt || stmt instanceof Ast.StopStmt) return;
         if (stmt instanceof Ast.IfStmt conditional) {
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
@@ -588,6 +594,9 @@ public final class OwnershipChecker {
                 scanExpr(e.handler(), blockLocals, outer, recursiveBinding, captures, false);
             }
             else if (stmt instanceof Ast.PanicStmt e) {
+                scanExpr(e.value(), blockLocals, outer, recursiveBinding, captures, false);
+            }
+            else if (stmt instanceof Ast.ThrowStmt e) {
                 scanExpr(e.value(), blockLocals, outer, recursiveBinding, captures, false);
             }
             else if (stmt instanceof Ast.IfStmt s) {
