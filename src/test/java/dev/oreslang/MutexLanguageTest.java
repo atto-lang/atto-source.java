@@ -31,6 +31,25 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void sharedMutexAcceptsOrdinaryOwnedClassState() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  fnc good() => void {
+                    val shared = SharedMutex.new(new Counter());
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void sharedMutexRejectsActorLocalStateGraph() {
         var program = Parser.parse("""
                 define module model
