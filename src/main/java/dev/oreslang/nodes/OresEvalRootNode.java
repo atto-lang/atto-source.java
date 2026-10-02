@@ -107,7 +107,10 @@ public final class OresEvalRootNode extends RootNode {
                 String module = functionOwners.getOrDefault(fn, "__root__");
                 String callable = module + "." + fn.name();
                 context.requireCapability(IsolatePolicy.Capability.GPU, "gpu callable " + callable);
-                return context.gpu().dispatch(callable, GpuRuntime.CallableKind.valueOf(fn.kind().name()), args);
+                return thawGpuValue(context.gpu().dispatch(
+                        callable,
+                        GpuRuntime.CallableKind.valueOf(fn.kind().name()),
+                        args));
             }
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -118,6 +121,34 @@ public final class OresEvalRootNode extends RootNode {
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) { return signal.value; }
+        }
+
+        private Object thawGpuValue(Object value) {
+            if (value instanceof GpuRuntime.ComplexValue complex) {
+                return new Complex(complex.real(), complex.imaginary());
+            }
+            if (value instanceof GpuRuntime.OptionValue option) {
+                return option.present()
+                        ? new OptionValue(true, thawGpuValue(option.value()))
+                        : new OptionValue(false, null);
+            }
+            if (value instanceof List<?> list) {
+                ArrayList<Object> thawed = new ArrayList<>(list.size());
+                for (Object item : list) thawed.add(thawGpuValue(item));
+                return thawed;
+            }
+            if (value instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, Object> thawed = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    thawed.put(thawGpuValue(entry.getKey()), thawGpuValue(entry.getValue()));
+                }
+                return Map.copyOf(thawed);
+            }
+            if (value instanceof Set<?> set) {
+                return set.stream().map(this::thawGpuValue)
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            }
+            return value;
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -651,7 +682,8 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) {
+    private record Complex(double real, double imaginary) implements GpuRuntime.Transferable {
+        @Override public Object freezeForGpu() { return new GpuRuntime.ComplexValue(real, imaginary); }
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
@@ -667,7 +699,12 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
     private record ClassFacade(Ast.ClassDecl klass) { }
-    private record OptionValue(boolean present, Object value) {
+    private record OptionValue(boolean present, Object value) implements GpuRuntime.Transferable {
+        @Override public Object freezeForGpu() {
+            return present
+                    ? new GpuRuntime.OptionValue(true, value)
+                    : new GpuRuntime.OptionValue(false, null);
+        }
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
     private record StdioFacade(OresContext context) {
