@@ -382,6 +382,34 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void closuresCannotBeMailboxValuesOrReadonlySharedRegions() {
+        Exception mailboxFailure = assertThrows(Exception.class, () -> run("""
+                fnc consumer(Fnc<int, int> callback) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  val ref = actor.spawn(consumer);
+                  return;
+                }
+                """));
+        assertTrue(mailboxFailure.getMessage().contains("callable")
+                || mailboxFailure.getMessage().contains("actor"));
+
+        Exception sharedFailure = assertThrows(Exception.class, () -> run("""
+                pub routine main() => void {
+                  val Fnc<int, int> callback = |int value| -> {
+                    return value + 1;
+                  };
+                  process.share_readonly(callback);
+                  return;
+                }
+                """));
+        assertTrue(sharedFailure.getMessage().contains("callable")
+                || sharedFailure.getMessage().contains("share_readonly"));
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
