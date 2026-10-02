@@ -24,6 +24,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -95,6 +96,147 @@ public final class ActorRuntime implements AutoCloseable {
 
     /** Deeply immutable value that shared actors may reference without copying. */
     public record Shared<T>(T value) { }
+
+    /**
+     * Actor-local memory accounting boundary. The Java reference heap is still
+     * the current storage backend, but all lowered actor-local allocations can
+     * be charged to this slice. PRIVATE slices additionally enforce that public
+     * reservations are made only while their owning actor is executing.
+     *
+     * This abstraction is intentionally backend-neutral: a future Native Image
+     * or polyglot-isolate backend can map the same slice contract to a true
+     * isolate heap without changing Oreslang actor semantics.
+     */
+    public interface MemorySlice {
+        UUID id();
+        ActorKind kind();
+        long limitBytes();
+        long usedBytes();
+        boolean closed();
+        MemoryReservation reserve(long bytes);
+    }
+
+    public static final class MemoryLimitExceededException extends IllegalStateException {
+        public MemoryLimitExceededException(String message) { super(message); }
+    }
+
+    public static final class MemoryReservation implements AutoCloseable {
+        private final AtomicBoolean released = new AtomicBoolean();
+        private final Runnable releaser;
+        private final long bytes;
+
+        private MemoryReservation(long bytes, Runnable releaser) {
+            this.bytes = bytes;
+            this.releaser = releaser;
+        }
+
+        public long bytes() { return bytes; }
+
+        @Override
+        public void close() {
+            if (released.compareAndSet(false, true)) releaser.run();
+        }
+    }
+
+    private abstract class AbstractMemorySlice implements MemorySlice, AutoCloseable {
+        private final UUID id = UUID.randomUUID();
+        private final ActorKind kind;
+        private final long limitBytes;
+        private final AtomicLong usedBytes = new AtomicLong();
+        private final AtomicBoolean sliceClosed = new AtomicBoolean();
+
+        private AbstractMemorySlice(ActorKind kind, long limitBytes) {
+            this.kind = kind;
+            this.limitBytes = limitBytes;
+        }
+
+        @Override public UUID id() { return id; }
+        @Override public ActorKind kind() { return kind; }
+        @Override public long limitBytes() { return limitBytes; }
+        @Override public long usedBytes() { return usedBytes.get(); }
+        @Override public boolean closed() { return sliceClosed.get(); }
+
+        protected abstract void requireAccess();
+
+        @Override
+        public MemoryReservation reserve(long bytes) {
+            requireAccess();
+            return reserveInternal(bytes);
+        }
+
+        private MemoryReservation reserveInternal(long bytes) {
+            if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
+            if (sliceClosed.get()) throw new IllegalStateException("actor memory slice is closed");
+            if (bytes == 0) return new MemoryReservation(0, () -> { });
+
+            while (true) {
+                long current = usedBytes.get();
+                long next;
+                try {
+                    next = Math.addExact(current, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new MemoryLimitExceededException("actor memory reservation overflow");
+                }
+                if (next > limitBytes) {
+                    throw new MemoryLimitExceededException(
+                            "actor memory slice exceeded: requested=" + bytes
+                                    + " used=" + current + " limit=" + limitBytes);
+                }
+                if (usedBytes.compareAndSet(current, next)) {
+                    return new MemoryReservation(bytes, () -> {
+                        if (sliceClosed.get()) return;
+                        long remaining = usedBytes.addAndGet(-bytes);
+                        if (remaining < 0) {
+                            usedBytes.set(0);
+                            throw new IllegalStateException("actor memory accounting underflow");
+                        }
+                    });
+                }
+            }
+        }
+
+        private MemoryReservation reserveTransport(long bytes) {
+            return reserveInternal(bytes);
+        }
+
+        @Override
+        public void close() {
+            if (sliceClosed.compareAndSet(false, true)) usedBytes.set(0);
+        }
+    }
+
+    public final class PrivateMemorySlice extends AbstractMemorySlice {
+        private final ActorId owner;
+
+        private PrivateMemorySlice(ActorId owner, long limitBytes) {
+            super(ActorKind.PRIVATE, limitBytes);
+            this.owner = owner;
+        }
+
+        public ActorId owner() { return owner; }
+
+        @Override
+        protected void requireAccess() {
+            ActorCell<?> cell = currentActor.get();
+            if (cell == null || !cell.ref.id().equals(owner)) {
+                throw new IllegalStateException("private actor memory slice may only be accessed by its owning actor");
+            }
+        }
+    }
+
+    public final class SharedMemorySlice extends AbstractMemorySlice {
+        private SharedMemorySlice(long limitBytes) {
+            super(ActorKind.SHARED, limitBytes);
+        }
+
+        @Override
+        protected void requireAccess() {
+            ActorCell<?> cell = currentActor.get();
+            if (cell == null || cell.kind != ActorKind.SHARED) {
+                throw new IllegalStateException("shared actor memory slice may only be reserved during shared-actor execution");
+            }
+        }
+    }
 
     /**
      * Explicit synchronized shared-memory cell.
@@ -581,6 +723,48 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
     }
 
+    private static long estimateFootprint(Object value) {
+        return estimateFootprint(value, new java.util.IdentityHashMap<>());
+    }
+
+    private static long estimateFootprint(Object value, java.util.IdentityHashMap<Object, Boolean> seen) {
+        if (value == null) return 8;
+        if (value instanceof Byte || value instanceof Boolean) return 16;
+        if (value instanceof Short || value instanceof Character) return 16;
+        if (value instanceof Integer || value instanceof Float) return 16;
+        if (value instanceof Long || value instanceof Double) return 24;
+        if (value instanceof BigInteger big) return 32L + Math.max(8, big.bitLength() / 8L);
+        if (value instanceof BigDecimal decimal) return 40L + estimateFootprint(decimal.unscaledValue(), seen);
+        if (value instanceof String text) return 24L + (long) text.length() * 2L;
+        if (value instanceof UUID || value instanceof ActorId || value instanceof ActorRuntime.ActorRef<?>) return 32;
+        if (value instanceof Enum<?>) return 16;
+        if (value instanceof SyncCell<?>) return 32;
+
+        if (seen.put(value, Boolean.TRUE) != null) return 8;
+        if (value instanceof Shared<?> shared) return 24L + estimateFootprint(shared.value(), seen);
+        if (value instanceof List<?> list) {
+            long bytes = 24L + 8L * list.size();
+            for (Object item : list) bytes += estimateFootprint(item, seen);
+            return bytes;
+        }
+        if (value instanceof Set<?> set) {
+            long bytes = 32L + 16L * set.size();
+            for (Object item : set) bytes += estimateFootprint(item, seen);
+            return bytes;
+        }
+        if (value instanceof Map<?, ?> map) {
+            long bytes = 48L + 32L * map.size();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                bytes += estimateFootprint(entry.getKey(), seen);
+                bytes += estimateFootprint(entry.getValue(), seen);
+            }
+            return bytes;
+        }
+        return 64;
+    }
+
+    private record Envelope(Object message, MemoryReservation reservation) { }
+
     /** Implemented by generated immutable Oreslang aggregate values. */
     public interface Sendable {
         Object freezeForSend();
@@ -629,6 +813,9 @@ public final class ActorRuntime implements AutoCloseable {
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
+            this.memory = kind == ActorKind.PRIVATE
+                    ? new PrivateMemorySlice(ref.id(), policy.maxHeapBytes())
+                    : new SharedMemorySlice(policy.maxHeapBytes());
             this.memorySlice = kind == ActorKind.PRIVATE ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes()) : null;
         }
 
@@ -657,6 +844,7 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public ActorRuntime runtime() { return ActorRuntime.this; }
                     @Override public IsolatePolicy policy() { return policy; }
                     @Override public ActorKind kind() { return kind; }
+                    @Override public MemorySlice memory() { return memory; }
                     @Override public Optional<ActorMemorySlice> privateMemory() { return Optional.ofNullable(memorySlice); }
                 };
 
@@ -693,6 +881,11 @@ public final class ActorRuntime implements AutoCloseable {
         private void drainMailboxReservations() {
             MessageEnvelope envelope;
             while ((envelope = mailbox.poll()) != null) envelope.close();
+        }
+
+        private void drainMailboxReservations() {
+            Envelope envelope;
+            while ((envelope = mailbox.poll()) != null) envelope.reservation().close();
         }
 
         private void stop() {
