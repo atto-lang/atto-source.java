@@ -110,17 +110,27 @@ Compiler-generated/context-aware `BehaviorFactory` values are capture-free for b
 
 ## Actor dispatchers
 
-The host actor runtime follows the same scheduling shape as Akka's event-based dispatcher: many actors share an executor, each actor has its own mailbox, and a scheduled actor drains only a bounded number of messages before yielding back to the executor. The configured throughput bound prevents one hot mailbox from monopolizing a worker.
+The host actor runtime follows an event-based dispatcher model: many actors share bounded executors, each actor owns one mailbox, and a per-actor atomic scheduling gate permits at most one ready/running drain task for that actor. Fixed-size dispatcher queues are FIFO. Actor identity is therefore independent of carrier-thread identity.
 
-Oreslang deliberately uses three executors:
+Oreslang uses exactly three **actor execution pools** as trust-domain bulkheads:
 
-- **private dispatcher** — private actors, isolation-copy message transport;
-- **shared dispatcher** — shared actors, immutable sharing plus explicit `SyncCell<T>` shared state;
-- **untrusted dispatcher** — adversarial, memory-isolated actors with enforced fuel/deadline checks, separated so hostile work cannot consume the trusted/private carrier pool.
+- **shared dispatcher** — shared actors in the process-memory domain, with mailbox-owned ordinary fields plus explicit synchronized shared-memory capabilities;
+- **private dispatcher** — trusted/cooperative memory-isolated actors using isolation-copy transport and actor-owned memory slices;
+- **untrusted dispatcher** — adversarial memory-isolated actors with fuel/deadline enforcement. Hostile sandbox work never consumes private/shared carrier capacity.
 
-A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
+Private and shared actors process at most `DispatcherConfig.throughput` mailbox messages per dispatch turn. If a mailbox remains non-empty, that actor re-enqueues at the tail of its pool's ready queue. Because one actor can own only one scheduled drain task, a hot mailbox cannot multiply queue slots, and a peer already waiting in the same pool gets a scheduling opportunity after the bounded batch.
 
-Normal private/shared actor cancellation does not interrupt a pooled carrier merely to stop one actor; cancellation is observed at compiler-injected scheduler safepoints. An untrusted actor additionally has a dedicated-dispatcher watchdog: when its hard deadline expires the runtime marks that actor stopped and interrupts only its currently active untrusted carrier as a wake-up/control signal. The turn clears that interrupt before the pooled carrier is reused. Security does not depend on the guest voluntarily yielding: untrusted statement/expression dispatch, loop backedges, and callable/recursion execution consume runtime fuel and recheck the deadline.
+Untrusted actors use a stricter quantum of **exactly one mailbox message per dispatch turn**, regardless of the trusted throughput setting. They re-enter the untrusted ready queue after every message. This prevents a large hostile mailbox from holding one untrusted carrier across a multi-message batch. Untrusted statement/expression dispatch, loop backedges, and callable/recursion execution also consume runtime fuel and recheck the deadline.
+
+Normal private/shared cancellation does not interrupt a pooled carrier merely to stop one actor. An untrusted actor additionally has a dedicated-dispatcher watchdog: when its hard deadline expires, the runtime marks that actor stopped and interrupts only its active untrusted carrier as a wake-up/control signal; the turn clears that interrupt before reuse. The hard adversarial boundary is the Graal UNTRUSTED isolate/resource sandbox plus mandatory Oreslang checkpoints. Arbitrary Java host callbacks are not safely force-preemptible and are outside the untrusted guest threat model.
+
+### Actor identities and groups
+
+Every actor retains a typed `ActorId(UUID)` internally. Its public/logging representation is `actor_id_<uuid>`. The UUID keeps RFC-4122 version/variant bits, uses a process-random high half, and carries a monotonic low payload. This preserves UUID-shaped identifiers while avoiding a plain process-global integer as the complete identity.
+
+`ActorGroup<T>` is the built-in runtime-local grouping and fan-out capability. Membership is deduplicated by `ActorId`, bounded by the runtime actor limit, and broadcasts use a point-in-time snapshot. Every fan-out target goes through the ordinary mailbox admission/backpressure path, so a group cannot bypass per-actor queue limits or the one-runnable-per-actor scheduling gate. Dead members are pruned, and `FanoutReceipt` reports delivered, terminated, and rejected targets.
+
+Groups are live runtime capabilities rather than immutable data. They cannot cross `ActorRuntime` boundaries or be wrapped by `Shared<T>`/`freeze()`. Same-runtime trusted actors may carry a group handle. **Untrusted actors may neither create/use groups nor receive an `ActorGroup` capability**, preventing a sandboxed actor from acquiring a built-in fan-out amplifier.
 
 
 ## Untrusted actor sandbox
