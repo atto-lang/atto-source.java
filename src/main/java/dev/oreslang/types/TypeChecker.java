@@ -1905,8 +1905,16 @@ public final class TypeChecker {
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Type field = findFieldType(klass, member.member(), named, new LinkedHashSet<>());
-                if (field != null) return field;
+                Ast.FieldDecl declaration = findFieldDecl(klass, member.member(), new LinkedHashSet<>());
+                if (declaration != null) {
+                    if (declaration.bindingKind() != Ast.BindingKind.LET) {
+                        throw new IllegalArgumentException("field '" + klass.name() + "." + member.member()
+                                + "' is " + declaration.bindingKind().name().toLowerCase()
+                                + " and cannot be assigned; declare it with let for mutable state");
+                    }
+                    Type field = findFieldType(klass, member.member(), named, new LinkedHashSet<>());
+                    if (field != null) return field;
+                }
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
@@ -2111,6 +2119,43 @@ public final class TypeChecker {
         for (Ast.FieldDecl field : klass.fields()) fields.put(field.name(), field);
         stack.remove(klass);
         return List.copyOf(fields.values());
+    }
+
+    private Ast.FieldDecl findFieldDecl(
+            Ast.ClassDecl klass,
+            String name,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.name().equals(name)) {
+                if (activeTraitOwner != null) {
+                    if (!field.composed() || !activeTraitOwner.equals(field.compositionOwner())) {
+                        throw new IllegalArgumentException(
+                                "trait '" + activeTraitOwner + "' cannot access host or foreign trait state field '" + name + "'");
+                    }
+                } else if (field.composed() && field.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "trait state field '" + field.compositionOwner() + "." + name
+                                    + "' is private to that trait");
+                } else if (field.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
+                    throw new IllegalArgumentException(
+                            "field '" + klass.name() + "." + name + "' is private to " + klass.name());
+                }
+                seen.remove(klass);
+                return field;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.FieldDecl found = findFieldDecl(parent, name, seen);
+            if (found != null) {
+                seen.remove(klass);
+                return found;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private Type findFieldType(
