@@ -759,8 +759,20 @@ public final class OresEvalRootNode extends RootNode {
                                     || value instanceof Integer
                                     || value instanceof Long
                                     || value instanceof java.math.BigInteger;
-                    case "f32", "f64", "float", "decimal" -> value instanceof Number;
-                    case "complex64", "complex128", "complex" -> value instanceof Complex;
+                    case "f32", "f64", "float" -> value instanceof Byte
+                            || value instanceof Short
+                            || value instanceof Integer
+                            || value instanceof Long
+                            || value instanceof java.math.BigInteger
+                            || value instanceof Float
+                            || value instanceof Double;
+                    case "decimal" -> value instanceof Byte
+                            || value instanceof Short
+                            || value instanceof Integer
+                            || value instanceof Long
+                            || value instanceof java.math.BigInteger
+                            || value instanceof java.math.BigDecimal;
+                    case "complex64", "complex128", "complex" -> value instanceof Number || value instanceof Complex;
                     case "bool", "Bool" -> value instanceof Boolean;
                     case "string", "String" -> value instanceof String;
                     case "Array", "List" -> {
@@ -787,7 +799,10 @@ public final class OresEvalRootNode extends RootNode {
                     case "Shared" -> value instanceof ActorRuntime.Shared<?>;
                     default -> {
                         if (value instanceof OresObject object) {
-                            yield object.klass.name().equals(type.name());
+                            Ast.ClassDecl declared = findClass(type.name());
+                            if (declared != null) {
+                                yield runtimeClassAssignable(object.klass, declared.name(), new LinkedHashSet<>());
+                            }
                         }
                         // Interfaces, structs, aliases, generics, and imported
                         // runtime values remain statically checked. The runtime
@@ -796,6 +811,20 @@ public final class OresEvalRootNode extends RootNode {
                         yield true;
                     }
                 };
+            }
+
+            private boolean runtimeClassAssignable(
+                    Ast.ClassDecl actual,
+                    String expectedName,
+                    Set<Ast.ClassDecl> seen) {
+                if (!seen.add(actual)) return false;
+                if (actual.name().equals(expectedName)) return true;
+                for (Ast.TypeRef parentRef : actual.parents()) {
+                    if (parentRef.name().equals(expectedName)) return true;
+                    Ast.ClassDecl parent = findClass(parentRef.name());
+                    if (parent != null && runtimeClassAssignable(parent, expectedName, seen)) return true;
+                }
+                return false;
             }
 
             private ActorRuntime.Behavior<Object> statefulBehavior(
