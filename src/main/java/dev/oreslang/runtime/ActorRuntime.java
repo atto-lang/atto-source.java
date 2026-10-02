@@ -92,7 +92,20 @@ public final class ActorRuntime implements AutoCloseable {
      * silently escalating it to process-wide GC.
      */
     public interface GarbageCollector {
+        /**
+         * Allocate/register backend memory for a new actor. Native backends can
+         * create an arena/private heap here and index it by actor id.
+         */
+        default void actorStarted(ActorId actorId, IsolatePolicy policy) { }
+
         void collectActor(ActorId actorId);
+
+        /**
+         * Release all backend-owned memory for the actor. Implementations must
+         * be idempotent because startup failure cleanup can call this hook.
+         */
+        default void actorExited(ActorId actorId) { }
+
         void collectProcess();
 
         static GarbageCollector hostDefault() {
@@ -172,9 +185,18 @@ public final class ActorRuntime implements AutoCloseable {
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id);
         ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
-        actors.put(id, cell);
-        cell.start();
-        return ref;
+        boolean backendStarted = false;
+        try {
+            garbageCollector.actorStarted(id, policy);
+            backendStarted = true;
+            actors.put(id, cell);
+            cell.start();
+            return ref;
+        } catch (Throwable failure) {
+            actors.remove(id, cell);
+            if (backendStarted) safeActorExit(id);
+            throw failure;
+        }
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
@@ -243,6 +265,16 @@ public final class ActorRuntime implements AutoCloseable {
 
     public GcStats gcStats() {
         return new GcStats(actorGcRequests.get(), processGcRequests.get());
+    }
+
+    private void safeActorExit(ActorId actorId) {
+        try {
+            garbageCollector.actorExited(actorId);
+        } catch (Throwable ignored) {
+            // Actor/runtime cleanup must not be prevented by a backend release
+            // failure. Production backends should surface this through their
+            // own telemetry and make actorExited idempotent.
+        }
     }
 
     /**
@@ -448,6 +480,7 @@ public final class ActorRuntime implements AutoCloseable {
                 mailbox.clear();
                 currentActor.remove();
                 actors.remove(ref.id(), this);
+                safeActorExit(ref.id());
             }
         }
 
