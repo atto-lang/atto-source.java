@@ -152,9 +152,10 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
+        List<Ast.ContractClause> contracts = parseContractClauses();
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, generics, params,
-                returnType, annotations, body);
+                returnType, annotations, contracts, body);
     }
 
     private Ast.ClassDecl parseClass(boolean isAbstract) {
@@ -279,13 +280,14 @@ public final class Parser {
         }
 
         Ast.TypeRef returnType = parseReturnType(annotations);
+        List<Ast.ContractClause> contracts = parseContractClauses();
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
-                receiverType, generics, params, returnType, annotations, body);
+                receiverType, generics, params, returnType, annotations, contracts, body);
     }
 
     private String parseMethodName() {
@@ -356,7 +358,24 @@ public final class Parser {
         if (annotated != null && arrow != null && !sameType(annotated, arrow)) {
             throw error(previous(), "@Ret type and => return type disagree");
         }
-        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.simple("void");
+        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.inferred();
+    }
+
+    private List<Ast.ContractClause> parseContractClauses() {
+        List<Ast.ContractClause> clauses = new ArrayList<>();
+        while (check(REQUIRES) || check(ENSURES) || check(DECREASES)) {
+            Ast.ContractKind kind;
+            if (match(REQUIRES)) kind = Ast.ContractKind.REQUIRES;
+            else if (match(ENSURES)) kind = Ast.ContractKind.ENSURES;
+            else {
+                consume(DECREASES, "expected decreases");
+                kind = Ast.ContractKind.DECREASES;
+            }
+            Ast.Expr expression = parseExpression();
+            consumeStatementTerminator("contract clause should end with ';'");
+            clauses.add(new Ast.ContractClause(kind, expression));
+        }
+        return List.copyOf(clauses);
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
@@ -540,6 +559,21 @@ public final class Parser {
             consumeStatementTerminator("defer statement should end with ';'");
             return new Ast.DeferStmt(expression);
         }
+        if (match(ASSERT)) {
+            Ast.Expr condition = parseExpression();
+            consumeStatementTerminator("assert statement should end with ';'");
+            return new Ast.AssertStmt(condition);
+        }
+        if (match(ASSUME)) {
+            Ast.Expr condition = parseExpression();
+            consumeStatementTerminator("assume statement should end with ';'");
+            return new Ast.AssumeStmt(condition);
+        }
+        if (match(INVARIANT)) {
+            Ast.Expr condition = parseExpression();
+            consumeStatementTerminator("invariant statement should end with ';'");
+            return new Ast.InvariantStmt(condition);
+        }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
         if (match(FOR)) return parseFor();
@@ -687,12 +721,32 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
-        Ast.Expr expr = parseConditional();
+        Ast.Expr expr = parsePipe();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
                 throw error(previous(), "assignment target must be a local, field, or index");
             }
             return new Ast.AssignExpr(expr, parseAssignment());
+        }
+        return expr;
+    }
+
+    private Ast.Expr parsePipe() {
+        Ast.Expr expr = parseConditional();
+        while (match(PIPE_FORWARD)) {
+            if (match(MATCH)) {
+                expr = parseMatchExpression(expr);
+                continue;
+            }
+            Ast.Expr target = parseConditional();
+            if (target instanceof Ast.CallExpr call) {
+                List<Ast.Expr> args = new ArrayList<>();
+                args.add(expr);
+                args.addAll(call.arguments());
+                expr = new Ast.CallExpr(call.callee(), args);
+            } else {
+                expr = new Ast.CallExpr(target, List.of(expr));
+            }
         }
         return expr;
     }
@@ -789,6 +843,13 @@ public final class Parser {
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
+        if (match(MATCH)) return parseMatchExpression(null);
+        if (match(OLD)) {
+            consume(LPAREN, "old(...) requires '('");
+            Ast.Expr expression = parseExpression();
+            consume(RPAREN, "expected ')' after old expression");
+            return new Ast.OldExpr(expression);
+        }
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
@@ -824,6 +885,95 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    private Ast.MatchExpr parseMatchExpression(Ast.Expr pipedSubject) {
+        Ast.Expr subject = pipedSubject == null ? parseAssignment() : pipedSubject;
+        consume(LBRACE, "expected '{' after match subject");
+        List<Ast.MatchArm> arms = new ArrayList<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            Ast.Pattern pattern = parsePattern();
+            Ast.Expr guard = match(IF) ? parseExpression() : null;
+            consume(FAT_ARROW, "expected '=>' after match pattern");
+            Ast.Expr value = parseExpression();
+            arms.add(new Ast.MatchArm(pattern, guard, value));
+            if (!match(COMMA, SEMICOLON) && !check(RBRACE)) {
+                throw error(peek(), "expected ',' or ';' between match arms");
+            }
+        }
+        consume(RBRACE, "expected '}' after match arms");
+        if (arms.isEmpty()) throw error(previous(), "match requires at least one arm");
+        return new Ast.MatchExpr(subject, arms);
+    }
+
+    private Ast.Pattern parsePattern() {
+        List<Ast.Pattern> alternatives = new ArrayList<>();
+        alternatives.add(parsePatternPrimary());
+        while (match(PIPE)) alternatives.add(parsePatternPrimary());
+        return alternatives.size() == 1 ? alternatives.getFirst() : new Ast.OrPattern(alternatives);
+    }
+
+    private Ast.Pattern parsePatternPrimary() {
+        if (match(INT)) return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
+        if (match(FLOAT)) return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
+        if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
+        if (match(FALSE)) return new Ast.LiteralPattern(Boolean.FALSE);
+
+        if (match(IDENT)) {
+            String name = previous().lexeme();
+            if (name.equals("_")) return new Ast.WildcardPattern();
+            if (match(LPAREN)) {
+                List<Ast.Pattern> arguments = new ArrayList<>();
+                if (!check(RPAREN)) {
+                    do arguments.add(parsePattern()); while (match(COMMA));
+                }
+                consume(RPAREN, "expected ')' after constructor pattern");
+                return new Ast.ConstructorPattern(name, arguments);
+            }
+            if (!name.isEmpty() && Character.isUpperCase(name.charAt(0))) {
+                return new Ast.ConstructorPattern(name, List.of());
+            }
+            return new Ast.BindingPattern(name);
+        }
+
+        if (match(LPAREN)) {
+            Ast.Pattern first = parsePattern();
+            if (match(COMMA)) {
+                List<Ast.Pattern> elements = new ArrayList<>();
+                elements.add(first);
+                do elements.add(parsePattern()); while (match(COMMA));
+                consume(RPAREN, "expected ')' after tuple pattern");
+                return new Ast.TuplePattern(elements);
+            }
+            consume(RPAREN, "expected ')' after pattern");
+            return first;
+        }
+
+        if (match(LBRACKET)) {
+            List<Ast.Pattern> elements = new ArrayList<>();
+            if (!check(RBRACKET)) {
+                do elements.add(parsePattern()); while (match(COMMA));
+            }
+            consume(RBRACKET, "expected ']' after list pattern");
+            return new Ast.ListPattern(elements);
+        }
+
+        if (match(OBJ)) {
+            consume(LBRACE, "expected '{' after obj in object pattern");
+            List<Ast.ObjectPatternField> fields = new ArrayList<>();
+            if (!check(RBRACE)) {
+                do {
+                    String name = consume(IDENT, "expected object pattern field").lexeme();
+                    Ast.Pattern pattern = match(COLON) ? parsePattern() : new Ast.BindingPattern(name);
+                    fields.add(new Ast.ObjectPatternField(name, pattern));
+                } while (match(COMMA));
+            }
+            consume(RBRACE, "expected '}' after object pattern");
+            return new Ast.ObjectPattern(fields);
+        }
+
+        throw error(peek(), "expected match pattern");
     }
 
     private Ast.ObjectExpr parseObjectLiteral() {
