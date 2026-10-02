@@ -377,9 +377,10 @@ public final class ActorRuntime implements AutoCloseable {
         final Object deliveryValue;
         final long mailboxBytes;
         if (message instanceof Shared<?> shared) {
-            if (shared.estimatedBytes() > cell.policy.maxHeapBytes()) {
-                throw new IllegalArgumentException("shared message exceeds actor heap policy");
-            }
+            // Shared regions are owned by the enclosing runtime/isolate, not
+            // copied into the recipient actor heap. The actor pays only for
+            // the immutable handle; shareReadonly() already admitted the
+            // backing region against the isolate-level policy ceiling.
             deliveryValue = shared.value();
             mailboxBytes = SHARED_HANDLE_BYTES;
         } else {
