@@ -394,18 +394,53 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.MemberExpr member) {
-            checkExpr(member.receiver(), scope, false);
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (method != null) {
+                checkMethodReceiver(member.receiver(), method, scope);
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
                 return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
             }
+            checkExpr(member.receiver(), scope, false);
         }
 
         checkExpr(call.callee(), scope, false);
         for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private void checkMethodReceiver(Ast.Expr receiver, Ast.MethodDecl method, Scope scope) {
+        Ast.TypeRef explicit = method.explicitReceiverType();
+        boolean requiresMutableReceiver = explicit != null
+                && explicit.isBorrow()
+                && explicit.mutableBorrow();
+
+        if (!requiresMutableReceiver) {
+            checkExpr(receiver, scope, false);
+            return;
+        }
+
+        if (receiver instanceof Ast.NameExpr || receiver instanceof Ast.UnaryExpr) {
+            ensureMutableReceiver(receiver, scope, "method '" + method.name() + "' receiver");
+            return;
+        }
+
+        // An owned temporary has no aliases, so taking the method's implicit
+        // mutable borrow is safe for the duration of this call. Projections are
+        // intentionally excluded here: mutating through obj.field must prove
+        // mutability from the root owner rather than treating the projection as
+        // a fresh temporary.
+        if (receiver instanceof Ast.NewExpr
+                || receiver instanceof Ast.StructInitExpr
+                || receiver instanceof Ast.CallExpr) {
+            ValueInfo value = checkExpr(receiver, scope, true);
+            if (value.kind == ValueKind.IMM_BORROW) {
+                throw error("method '" + method.name() + "' requires a mutable receiver");
+            }
+            return;
+        }
+
+        ensureMutableReceiver(receiver, scope, "method '" + method.name() + "' receiver");
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
