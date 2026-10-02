@@ -15,6 +15,79 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class MutexLanguageTest {
     @Test
+    void sharedMutexRejectsActorLocalMutexValues() {
+        var program = Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    val local = Mutex.new(arr[1, 2, 3]);
+                    val shared = SharedMutex.new(local);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("shared-safe owned data"));
+    }
+
+    @Test
+    void sharedMutexRejectsClosuresAndPendingFutures() {
+        var closureProgram = Parser.parse("""
+                define module app
+                  fnc bad() => void {
+                    val callback = || -> { return; };
+                    val shared = SharedMutex.new(callback);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(closureProgram));
+
+        var futureProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+
+                define module app
+                  async fnc bad() => void {
+                    val mutex = SharedMutex.new(new Counter());
+                    val pending = mutex.lock_async();
+                    val nested = SharedMutex.new(pending);
+                    stdio.println(nested.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(futureProgram));
+    }
+
+    @Test
+    void sharedMutexRecursivelyChecksClassFields() {
+        var program = Parser.parse("""
+                define module model
+                  define class UnsafeBox
+                    pub val Fnc<void> callback = || -> { return; };
+                  end
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val shared = SharedMutex.new(new UnsafeBox());
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+        assertTrue(error.getMessage().contains("shared-safe owned data"));
+    }
+
+    @Test
     void sharedMutexRequiresExplicitSharedMemoryCapability() {
         var program = Parser.parse("""
                 define module app
