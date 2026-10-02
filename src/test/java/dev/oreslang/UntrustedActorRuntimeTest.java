@@ -52,6 +52,26 @@ final class UntrustedActorRuntimeTest {
     }
 
     @Test
+    void earlyTerminationRemovesWatchdogRetentionRootImmediately() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var limits = new ActorRuntime.UntrustedActorLimits(
+                    Duration.ofSeconds(300), 100, 1024, 1024, 1024);
+
+            var ref = runtime.<String>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    limits,
+                    null,
+                    null,
+                    ignored -> (message, turn) -> turn.self().stop());
+
+            ref.send("done");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0, runtime.pendingUntrustedDeadlineCount(),
+                    "terminated untrusted actors must not remain retained by canceled watchdog tasks");
+        }
+    }
+
+    @Test
     void hardLifetimeReclaimsActorOwnedArenaMemory() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var limits = new ActorRuntime.UntrustedActorLimits(
