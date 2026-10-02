@@ -69,21 +69,27 @@ public final class ActorRuntime implements AutoCloseable {
             int privateParallelism,
             int sharedParallelism,
             int throughput,
-            int maxActors) {
+            int maxActors,
+            int operationBudget) {
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
             if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
+            if (operationBudget <= 0) throw new IllegalArgumentException("operationBudget must be > 0");
+        }
+
+        public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput, int maxActors) {
+            this(privateParallelism, sharedParallelism, throughput, maxActors, 4_096);
         }
 
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
-            this(privateParallelism, sharedParallelism, throughput, 16_384);
+            this(privateParallelism, sharedParallelism, throughput, 16_384, 4_096);
         }
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, 64, 16_384);
+            return new DispatcherConfig(cpus, cpus, 64, 16_384, 4_096);
         }
     }
 
@@ -845,19 +851,43 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Cooperative scheduler hook used by compiler-injected loop safepoints.
-     * Carrier threads remain an implementation detail.
+     * Charge compiler/runtime work against the current actor turn.
+     *
+     * Returning true means the actor's operation quantum is exhausted. Generated
+     * actor continuations must persist their program counter/live frame and
+     * return to the dispatcher at that point. This is the semantic fairness
+     * mechanism; Thread.yield() is not relied on for correctness.
      */
-    public void schedulerSafepoint() {
+    public boolean chargeActorOperations(int operations) {
+        if (operations <= 0) throw new IllegalArgumentException("operations must be > 0");
         if (closed.get()) throw new CancellationException("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
-        if (cell != null && cell.stopped.get()) {
-            throw new CancellationException("actor execution stopped");
+        if (cell == null) {
+            throw new IllegalStateException("actor operation accounting requires an active actor turn");
         }
+        if (cell.stopped.get()) throw new CancellationException("actor execution stopped");
         if (Thread.currentThread().isInterrupted()) {
             throw new CancellationException("actor execution interrupted");
         }
-        Thread.yield();
+        return cell.chargeOperations(operations);
+    }
+
+    /**
+     * Compatibility scheduler hook for the current interpreter. Compiler-lowered
+     * actor state machines use chargeActorOperations(...) and suspend when it
+     * returns true; ordinary host execution merely hints to the JVM scheduler.
+     */
+    public void schedulerSafepoint() {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) {
+            if (closed.get()) throw new CancellationException("actor runtime is closing");
+            if (Thread.currentThread().isInterrupted()) {
+                throw new CancellationException("actor execution interrupted");
+            }
+            Thread.yield();
+            return;
+        }
+        if (chargeActorOperations(1)) Thread.yield();
     }
 
     @SuppressWarnings("unchecked")
@@ -1483,6 +1513,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object lifecycleLock = new Object();
         private Behavior<M> behavior;
         private CompletableFuture<M> pendingReceive;
+        private int operationsRemaining;
 
         private ActorCell(
                 ActorRef<M> ref,
@@ -1504,6 +1535,14 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException(
                         operation + " may only be used by the owning actor during its mailbox turn");
             }
+        }
+
+        private boolean chargeOperations(int operations) {
+            requireCurrentTurn("actor operation accounting");
+            operationsRemaining -= operations;
+            if (operationsRemaining > 0) return false;
+            operationsRemaining = dispatcherConfig.operationBudget();
+            return true;
         }
 
         private CompletionStage<M> receive() {
@@ -1635,6 +1674,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
             currentActor.set(this);
+            operationsRemaining = dispatcherConfig.operationBudget();
             try {
                 if (stopped.get()) return;
 
