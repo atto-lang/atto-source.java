@@ -151,15 +151,12 @@ public final class IncrementalCompiler {
                 abi.append(" field ").append(field.bindingKind()).append(' ')
                         .append(typeRef(field.type())).append(' ').append(field.name()).append('\n');
             }
+            List<String> methodEntries = new ArrayList<>();
             for (Ast.MethodDecl method : klass.methods()) {
                 if (method.visibility() != Ast.Visibility.PUBLIC) continue;
-                abi.append(method.isStatic() ? " static-fnc " : " method ")
-                        .append(method.name())
-                        .append("#arity").append(method.arity());
-                appendGenerics(abi, method.genericParameters());
-                appendParams(abi, method.parameters());
-                abi.append("=>").append(typeRef(method.returnType())).append('\n');
+                methodEntries.add(classMethodAbi(method));
             }
+            methodEntries.stream().sorted().forEach(abi::append);
             return;
         }
         if (decl instanceof Ast.InterfaceDecl iface) {
@@ -168,17 +165,15 @@ public final class IncrementalCompiler {
             abi.append(" extends ");
             for (Ast.TypeRef parent : iface.parents()) abi.append(typeRef(parent)).append(',');
             abi.append('\n');
+            List<String> memberEntries = new ArrayList<>();
             for (Ast.InterfaceMember member : iface.members()) {
                 if (member instanceof Ast.InterfaceFunctionDecl fn) {
-                    abi.append(" iface-fnc ").append(fn.name())
-                            .append("#arity").append(fn.parameters().size());
-                    appendGenerics(abi, fn.genericParameters());
-                    appendParams(abi, fn.parameters());
-                    abi.append("=>").append(typeRef(fn.returnType())).append('\n');
+                    memberEntries.add(interfaceFunctionAbi(fn));
                 } else if (member instanceof Ast.InterfaceFieldDecl field) {
-                    abi.append(" iface-field ").append(field.name()).append(':').append(typeRef(field.type())).append('\n');
+                    memberEntries.add(" iface-field " + field.name() + ":" + typeRef(field.type()) + "\n");
                 }
             }
+            memberEntries.stream().sorted().forEach(abi::append);
             return;
         }
         if (decl instanceof Ast.TypeAliasDecl alias) {
@@ -192,6 +187,27 @@ public final class IncrementalCompiler {
                     .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
         }
+    }
+
+    private static String classMethodAbi(Ast.MethodDecl method) {
+        StringBuilder out = new StringBuilder();
+        out.append(method.isStatic() ? " static-fnc " : " method ")
+                .append(method.name())
+                .append("#arity").append(method.arity());
+        appendGenerics(out, method.genericParameters());
+        appendParams(out, method.parameters());
+        out.append("=>").append(typeRef(method.returnType())).append('\n');
+        return out.toString();
+    }
+
+    private static String interfaceFunctionAbi(Ast.InterfaceFunctionDecl fn) {
+        StringBuilder out = new StringBuilder();
+        out.append(" iface-fnc ").append(fn.name())
+                .append("#arity").append(fn.parameters().size());
+        appendGenerics(out, fn.genericParameters());
+        appendParams(out, fn.parameters());
+        out.append("=>").append(typeRef(fn.returnType())).append('\n');
+        return out.toString();
     }
 
     private static void appendGenerics(StringBuilder abi, List<String> generics) {
