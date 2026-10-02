@@ -12,7 +12,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
@@ -68,7 +67,7 @@ public final class OresContext implements AutoCloseable {
     }
 
     private void requireOpen() {
-        if (closed.get()) throw new CancellationException("Oreslang context is closing");
+        if (closed.get()) throw new ExecutionTerminated("Oreslang context is closing");
     }
 
     /**
