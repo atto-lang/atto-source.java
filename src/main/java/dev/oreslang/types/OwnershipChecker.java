@@ -323,8 +323,69 @@ public final class OwnershipChecker {
             for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
             return new ValueInfo(Ast.TypeRef.simple("obj"), ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.MatchExpr match) return checkMatch(match, scope, consuming);
         if (expr instanceof Ast.LambdaExpr lambda) return checkLambda(lambda, scope, null);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private ValueInfo checkMatch(Ast.MatchExpr match, Scope scope, boolean consuming) {
+        ValueInfo subject = checkExpr(match.scrutinee(), scope, false);
+        Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+        List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+        boolean allCopy = true;
+
+        for (Ast.MatchArm arm : match.arms()) {
+            restoreState(base);
+            Scope armScope = new Scope(scope);
+            definePatternBindings(arm.pattern(), subject.type, armScope);
+            if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+            ValueInfo value = checkExpr(arm.result(), armScope, consuming);
+            allCopy &= value.kind == ValueKind.COPY;
+            exits.add(stateSnapshot(scope));
+            armScope.close();
+        }
+
+        mergeBranchState(base, exits);
+        return new ValueInfo(Ast.TypeRef.inferred(), allCopy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+    }
+
+    private void definePatternBindings(Ast.Pattern pattern, Ast.TypeRef subjectType, Scope scope) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            Ast.TypeRef type = subjectType == null ? Ast.TypeRef.inferred() : subjectType;
+            scope.define(binding.name(), new VarState(type, false, kindOfType(type), Origin.LOCAL));
+            return;
+        }
+        if (pattern instanceof Ast.TypedPattern typed) {
+            definePatternBindings(typed.pattern(), typed.type(), scope);
+            return;
+        }
+        if (pattern instanceof Ast.ConstructorPattern constructor) {
+            Ast.TypeRef nestedType = Ast.TypeRef.inferred();
+            if (constructor.name().equals("Some") && subjectType != null
+                    && subjectType.name().equals("Option") && subjectType.arguments().size() == 1) {
+                nestedType = subjectType.arguments().getFirst();
+            }
+            for (Ast.Pattern nested : constructor.arguments()) definePatternBindings(nested, nestedType, scope);
+            return;
+        }
+        if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern nested : tuple.elements()) definePatternBindings(nested, Ast.TypeRef.inferred(), scope);
+            return;
+        }
+        if (pattern instanceof Ast.ListPattern list) {
+            Ast.TypeRef element = subjectType != null && !subjectType.arguments().isEmpty()
+                    ? subjectType.arguments().getFirst() : Ast.TypeRef.inferred();
+            for (Ast.Pattern nested : list.elements()) definePatternBindings(nested, element, scope);
+            return;
+        }
+        if (pattern instanceof Ast.RecordPattern record) {
+            for (Ast.PatternField field : record.fields()) definePatternBindings(field.pattern(), Ast.TypeRef.inferred(), scope);
+            return;
+        }
+        if (pattern instanceof Ast.OrPattern or && !or.alternatives().isEmpty()) {
+            // The type checker requires identical/no bindings across OR alternatives.
+            definePatternBindings(or.alternatives().getFirst(), subjectType, scope);
+        }
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
@@ -638,8 +699,33 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.MatchExpr e) {
+            scanExpr(e.scrutinee(), locals, outer, recursiveBinding, captures, false);
+            for (Ast.MatchArm arm : e.arms()) {
+                Set<String> armLocals = new HashSet<>(locals);
+                addPatternBindingNames(arm.pattern(), armLocals);
+                if (arm.guard() != null) scanExpr(arm.guard(), armLocals, outer, recursiveBinding, captures, false);
+                scanExpr(arm.result(), armLocals, outer, recursiveBinding, captures, false);
+            }
+        }
         else if (expr instanceof Ast.LambdaExpr) {
             // Nested lambda performs its own capture analysis when checked.
+        }
+    }
+
+    private void addPatternBindingNames(Ast.Pattern pattern, Set<String> names) {
+        if (pattern instanceof Ast.BindingPattern binding) names.add(binding.name());
+        else if (pattern instanceof Ast.TypedPattern typed) addPatternBindingNames(typed.pattern(), names);
+        else if (pattern instanceof Ast.ConstructorPattern constructor) {
+            for (Ast.Pattern nested : constructor.arguments()) addPatternBindingNames(nested, names);
+        } else if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern nested : tuple.elements()) addPatternBindingNames(nested, names);
+        } else if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern nested : list.elements()) addPatternBindingNames(nested, names);
+        } else if (pattern instanceof Ast.RecordPattern record) {
+            for (Ast.PatternField field : record.fields()) addPatternBindingNames(field.pattern(), names);
+        } else if (pattern instanceof Ast.OrPattern or && !or.alternatives().isEmpty()) {
+            addPatternBindingNames(or.alternatives().getFirst(), names);
         }
     }
 

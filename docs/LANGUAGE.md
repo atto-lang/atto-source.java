@@ -55,9 +55,9 @@ end
 
 Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(A, B)` may name more than one interface.
 
-## Functions and returns
+## Functions, returns, and bounded inference
 
-Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit: Oreslang has no implicit tail-expression return. A non-`void` callable must use `return` on every control-flow path.
 
 ```ores
 fnc add(int a, int b) => int {
@@ -70,7 +70,123 @@ fnc answer() {
 }
 ```
 
-`@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+`@Ret<T>` and `=> T` are equivalent. If both are present they must agree. An explicit return type is authoritative and is checked strictly; it never degrades to `any`.
+
+For `fnc` and `routine` declarations whose return type is omitted, the reference compiler performs **bounded inference**. If the callable body spans fewer than 10 source lines (the `{` through `}` span is 1–9 lines) and remains under the compiler's bounded inference-complexity budget, every value-bearing `return` participates in a type join. Numeric types widen safely, compatible aggregate types are joined recursively, and match-arm results participate directly.
+
+```ores
+fnc choose(bool flag) {
+  return match flag {
+    true => 10,
+    false => 20
+  };
+}
+```
+
+Here `choose` is inferred as returning `int`. If inference would exceed the source-line/complexity budget, or an unannotated recursive return-type cycle is encountered, a value-returning callable falls back to `any` until the author supplies `=> T`. The current reference budget is 192 AST-cost units. A cheap control-flow scan still distinguishes a callable with no value-return from one that returns values, so a long callable that has no value return remains `void`, not `any`.
+
+A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+
+### Generic call-site inference
+
+Generic callables are specialized from their arguments. Repeated generic occurrences must agree; numeric arguments may widen to a common numeric type.
+
+```ores
+fnc identity<T>(T value) {
+  return value;
+}
+
+fnc apply<T>(T value, Fnc<T, T> operation) => T {
+  return operation(value);
+}
+
+fnc use() => int {
+  return apply(41, |value| -> {
+    return value + 1;
+  });
+}
+```
+
+The first non-contextual arguments establish generic bindings before contextual arguments such as lambdas are checked. A generic that cannot be inferred safely becomes `unknown` at the call result rather than behaving like unchecked `any`.
+
+Generic class parameters can likewise be inferred from constructor fields:
+
+```ores
+define class Box<T>
+  pub val T value;
+end
+
+fnc make_box() => int {
+  val box = new Box(42);
+  return box.value;
+}
+```
+
+Short block lambdas use the same bounded return inference policy as short named callables when their parameter types are known or supplied by context. Long/expensive value-returning lambdas fall back to `any`; a lambda with no value-bearing return remains `void`. Inferred returns may not mix bare `return;` and value-bearing `return value;`.
+
+
+### `any` and `unknown`
+
+Both are first-class type keywords, with deliberately different safety semantics:
+
+- `any` is an explicit dynamic escape hatch. It is assignable to/from other types and unchecked operations may propagate `any`.
+- `unknown` is the safe top type. Any value may be stored as `unknown`, but calls, member/index access, arithmetic, and similar operations require narrowing first.
+
+```ores
+fnc normalize(unknown value) => int {
+  return match value {
+    n as int => n + 1,
+    _ => 0
+  };
+}
+```
+
+## Pattern matching and native proof obligations
+
+`match` is an expression, not a statement-only construct. The compiler checks its patterns before execution, proves supported finite exhaustiveness, rejects unreachable/redundant arms, type-checks guards as `bool`, and incorporates every arm result into return inference.
+
+```ores
+fnc unwrap(Option<int> value) => int {
+  return match value {
+    Some(x) => x,
+    None => 0
+  };
+}
+```
+
+An explicit result type such as `=> int` contextually checks **every** match arm against `int`. Guards do not count toward exhaustiveness because a guard may be false. Today the compiler proves exhaustiveness directly for `bool` and `Option<T>`; other/infinite domains require an explicit catch-all such as `_` unless a later verifier can prove full coverage.
+
+Supported pattern forms include wildcard/binding, literals, `Some(...)`/`None`, typed narrowing with `as Type`, tuples, exact-list patterns, structural record patterns, OR patterns, ranges, nested patterns, and guarded arms.
+
+```ores
+fnc bucket(int code) {
+  return match code {
+    0..=9 => "small",
+    404 | 410 => "gone",
+    _ => "other"
+  };
+}
+```
+
+This exhaustiveness/redundancy analysis is a native compiler proof obligation: there is no hidden runtime default arm. Oreslang's broader contract-verifier surface (`requires`, `ensures`, `invariant`, `decreases`, `assert`, `assume`, and `old(...)`) is reserved for the dedicated verifier pass; those spellings should not be treated as implemented contract syntax until that pass lands.
+
+## Pipe-forward operator
+
+`|>` is the method-chaining alternative. It feeds the left value into the first argument position of the right call:
+
+```ores
+val result = 2 |> add(3) |> twice;
+// equivalent to twice(add(2, 3))
+```
+
+It also composes directly with pattern matching:
+
+```ores
+val n = maybe_number |> match {
+  Some(x) => x,
+  None => 0
+};
+```
 
 ## Bindings
 

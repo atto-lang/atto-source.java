@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Never, Any, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -41,12 +41,23 @@ public final class Types {
 
     public record StringLiteral(String value) implements Type { }
 
+    /** Internal bottom type used for values such as None that contain no T. */
+    public enum Never implements Type { INSTANCE }
+
+    /** Explicit escape hatch: operations and assignments are intentionally unchecked. */
+    public enum Any implements Type { INSTANCE }
+
+    /** Safe top type: every value may become unknown, but unknown must be narrowed before use. */
     public enum Unknown implements Type { INSTANCE }
 
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
-        if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
+        if (from == Any.INSTANCE || to == Any.INSTANCE) return true;
+        if (from == Never.INSTANCE) return true;
+        if (to == Never.INSTANCE) return from == Never.INSTANCE;
+        if (to == Unknown.INSTANCE) return true;
+        if (from == Unknown.INSTANCE) return to == Unknown.INSTANCE;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
         if (from instanceof StringLiteral && to == Primitive.STRING) return true;
@@ -60,7 +71,11 @@ public final class Types {
             if (source.arguments().size() != target.arguments().size()) return false;
             for (int i = 0; i < source.arguments().size(); i++) {
                 Type a = source.arguments().get(i), b = target.arguments().get(i);
-                if (!isAssignable(a, b) || !isAssignable(b, a)) return false;
+                if (source.name().equals("Option")) {
+                    if (!isAssignable(a, b)) return false;
+                } else if (!isAssignable(a, b) || !isAssignable(b, a)) {
+                    return false;
+                }
             }
             return true;
         }
@@ -103,6 +118,7 @@ public final class Types {
     }
 
     public static Type numericJoin(Type left, Type right) {
+        if (left == Any.INSTANCE || right == Any.INSTANCE) return Any.INSTANCE;
         if (!isNumeric(left) || !isNumeric(right)) return Unknown.INSTANCE;
         if (left == Primitive.COMPLEX || right == Primitive.COMPLEX) return Primitive.COMPLEX;
         if (left == Primitive.DECIMAL || right == Primitive.DECIMAL) return Primitive.DECIMAL;

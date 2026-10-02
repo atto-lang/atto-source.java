@@ -367,12 +367,137 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return Map.copyOf(result);
             }
+            if (expr instanceof Ast.MatchExpr match) return evalMatch(match, env);
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
                 return new LambdaValue(lambda, captured, nonLexical);
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
+        }
+
+        private Object evalMatch(Ast.MatchExpr match, Env env) {
+            Object subject = eval(match.scrutinee(), env);
+            for (Ast.MatchArm arm : match.arms()) {
+                Map<String,Object> bindings = new LinkedHashMap<>();
+                if (!matchesPattern(arm.pattern(), subject, bindings)) continue;
+                Env armEnv = new Env(env);
+                try {
+                    for (Map.Entry<String,Object> entry : bindings.entrySet()) {
+                        armEnv.define(entry.getKey(), entry.getValue(), Ast.BindingKind.VAL);
+                    }
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    return eval(arm.result(), armEnv);
+                } finally {
+                    armEnv.release();
+                }
+            }
+            throw new IllegalStateException("non-exhaustive match reached runtime; static exhaustiveness checking should have rejected this program");
+        }
+
+        private boolean matchesPattern(Ast.Pattern pattern, Object value, Map<String,Object> bindings) {
+            if (pattern instanceof Ast.WildcardPattern) return true;
+            if (pattern instanceof Ast.BindingPattern binding) {
+                Object previous = bindings.putIfAbsent(binding.name(), value);
+                return previous == null || Objects.equals(previous, value);
+            }
+            if (pattern instanceof Ast.LiteralPattern literal) return patternLiteralEquals(literal.value(), value);
+            if (pattern instanceof Ast.TypedPattern typed) {
+                return runtimeTypeMatches(value, typed.type()) && matchesPattern(typed.pattern(), value, bindings);
+            }
+            if (pattern instanceof Ast.OrPattern or) {
+                for (Ast.Pattern alternative : or.alternatives()) {
+                    Map<String,Object> candidate = new LinkedHashMap<>(bindings);
+                    if (matchesPattern(alternative, value, candidate)) {
+                        bindings.clear();
+                        bindings.putAll(candidate);
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (pattern instanceof Ast.RangePattern range) {
+                return inRange(value, range.lower(), range.upper(), range.inclusive());
+            }
+            if (pattern instanceof Ast.ConstructorPattern constructor) {
+                if (constructor.name().equals("Some")) {
+                    if (!(value instanceof OptionValue option) || !option.present() || constructor.arguments().size() != 1) return false;
+                    return matchesPattern(constructor.arguments().getFirst(), option.value(), bindings);
+                }
+                if (constructor.name().equals("None")) {
+                    return value instanceof OptionValue option && !option.present() && constructor.arguments().isEmpty();
+                }
+                if (value instanceof OresObject object && object.klass.name().equals(constructor.name())
+                        && constructor.arguments().isEmpty()) return true;
+                return false;
+            }
+            if (pattern instanceof Ast.TuplePattern tuple) {
+                if (!(value instanceof List<?> items) || items.size() != tuple.elements().size()) return false;
+                for (int i = 0; i < items.size(); i++) {
+                    if (!matchesPattern(tuple.elements().get(i), items.get(i), bindings)) return false;
+                }
+                return true;
+            }
+            if (pattern instanceof Ast.ListPattern list) {
+                if (!(value instanceof List<?> items) || items.size() != list.elements().size()) return false;
+                for (int i = 0; i < items.size(); i++) {
+                    if (!matchesPattern(list.elements().get(i), items.get(i), bindings)) return false;
+                }
+                return true;
+            }
+            if (pattern instanceof Ast.RecordPattern record) {
+                for (Ast.PatternField field : record.fields()) {
+                    Object member;
+                    if (value instanceof Map<?,?> map) {
+                        if (!map.containsKey(field.name())) return false;
+                        member = map.get(field.name());
+                    } else if (value instanceof OresObject object) {
+                        if (!object.fields.containsKey(field.name())) return false;
+                        member = object.fields.get(field.name());
+                    } else return false;
+                    if (!matchesPattern(field.pattern(), member, bindings)) return false;
+                }
+                return true;
+            }
+            throw new IllegalArgumentException("unsupported runtime match pattern " + pattern);
+        }
+
+        private boolean patternLiteralEquals(Object patternValue, Object value) {
+            if (patternValue instanceof Number left && value instanceof Number right) {
+                return Double.compare(left.doubleValue(), right.doubleValue()) == 0;
+            }
+            return Objects.equals(patternValue, value);
+        }
+
+        private boolean runtimeTypeMatches(Object value, Ast.TypeRef type) {
+            String name = type.name();
+            if (name.equals("any") || name.equals("unknown")) return true;
+            return switch (name) {
+                case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> value instanceof Long;
+                case "f32", "f64", "float", "decimal" -> value instanceof Double || value instanceof Long;
+                case "complex64", "complex128", "complex" -> value instanceof Complex || value instanceof Double || value instanceof Long;
+                case "bool", "Bool" -> value instanceof Boolean;
+                case "string", "String" -> value instanceof String;
+                case "Option" -> value instanceof OptionValue;
+                case "Array", "List" -> value instanceof List<?>;
+                default -> value instanceof OresObject object && object.klass.name().equals(name);
+            };
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private boolean inRange(Object value, Object lower, Object upper, boolean inclusive) {
+            if (value instanceof Number n && lower instanceof Number lo && upper instanceof Number hi) {
+                double v = n.doubleValue(), l = lo.doubleValue(), h = hi.doubleValue();
+                return v >= l && (inclusive ? v <= h : v < h);
+            }
+            if (value instanceof Comparable comparable
+                    && lower != null && upper != null
+                    && value.getClass().isInstance(lower) && value.getClass().isInstance(upper)) {
+                int low = comparable.compareTo(lower);
+                int high = comparable.compareTo(upper);
+                return low >= 0 && (inclusive ? high <= 0 : high < 0);
+            }
+            return false;
         }
 
         private Object member(Object receiver, String name) {

@@ -79,6 +79,7 @@ public final class Ast {
             List<String> genericParameters,
             List<Param> parameters,
             TypeRef returnType,
+            int sourceLineSpan,
             List<Annotation> annotations,
             List<Stmt> body) implements Decl {
         public FunctionDecl {
@@ -86,15 +87,24 @@ public final class Ast {
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
+            if (sourceLineSpan < 1) sourceLineSpan = 1;
+        }
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async, boolean nonLexical,
+                            List<String> genericParameters, List<Param> parameters, TypeRef returnType,
+                            List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, nonLexical, genericParameters, parameters, returnType,
+                    Integer.MAX_VALUE, annotations, body);
         }
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, genericParameters, parameters, returnType,
+                    Integer.MAX_VALUE, annotations, body);
         }
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, false, genericParameters, parameters, returnType,
+                    Integer.MAX_VALUE, annotations, body);
         }
     }
 
@@ -226,7 +236,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr, MatchExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -263,13 +273,60 @@ public final class Ast {
         public ObjectExpr { fields = List.copyOf(fields); }
     }
 
-    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
+    public sealed interface Pattern permits WildcardPattern, LiteralPattern, BindingPattern, ConstructorPattern,
+            TuplePattern, ListPattern, RecordPattern, OrPattern, RangePattern, TypedPattern { }
+
+    public record WildcardPattern() implements Pattern { }
+    public record LiteralPattern(Object value) implements Pattern { }
+    public record BindingPattern(String name) implements Pattern { }
+
+    public record ConstructorPattern(String name, List<Pattern> arguments) implements Pattern {
+        public ConstructorPattern { arguments = List.copyOf(arguments); }
+    }
+
+    public record TuplePattern(List<Pattern> elements) implements Pattern {
+        public TuplePattern { elements = List.copyOf(elements); }
+    }
+
+    public record ListPattern(List<Pattern> elements) implements Pattern {
+        public ListPattern { elements = List.copyOf(elements); }
+    }
+
+    public record PatternField(String name, Pattern pattern) { }
+
+    public record RecordPattern(List<PatternField> fields) implements Pattern {
+        public RecordPattern { fields = List.copyOf(fields); }
+    }
+
+    public record OrPattern(List<Pattern> alternatives) implements Pattern {
+        public OrPattern { alternatives = List.copyOf(alternatives); }
+    }
+
+    public record RangePattern(Object lower, Object upper, boolean inclusive) implements Pattern { }
+    public record TypedPattern(Pattern pattern, TypeRef type) implements Pattern { }
+
+    public record MatchArm(Pattern pattern, Expr guard, Expr result) { }
+
+    public record MatchExpr(Expr scrutinee, List<MatchArm> arms, int sourceLineSpan) implements Expr {
+        public MatchExpr {
+            arms = List.copyOf(arms);
+            if (arms.isEmpty()) throw new IllegalArgumentException("match requires at least one arm");
+            if (sourceLineSpan < 1) sourceLineSpan = 1;
+        }
+    }
+
+    public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody,
+                             boolean nonLexical, int sourceLineSpan) implements Expr {
         public LambdaExpr {
             parameters = List.copyOf(parameters);
             blockBody = blockBody == null ? null : List.copyOf(blockBody);
+            if (sourceLineSpan < 1) sourceLineSpan = 1;
+        }
+        public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) {
+            this(parameters, expressionBody, blockBody, nonLexical, Integer.MAX_VALUE);
         }
         public LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody) {
-            this(parameters, expressionBody, blockBody, false);
+            this(parameters, expressionBody, blockBody, false, Integer.MAX_VALUE);
         }
     }
 }
