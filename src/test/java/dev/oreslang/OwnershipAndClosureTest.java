@@ -716,6 +716,98 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("moved value 'holder'"));
     }
 
+    @Test
+    void callableLocalStructParameterUsesHoistedCopySemantics() throws Exception {
+        String output = run("""
+                fnc sum(T value) => int {
+                  struct T {
+                    pub let int x;
+                  }
+
+                  let T copy = value;
+                  copy.x = copy.x + 1;
+                  return value.x + copy.x;
+                }
+
+                pub fnc main() => void {
+                  stdio.stdout.write(sum(obj{x: 3}));
+                  return;
+                }
+                """);
+
+        assertEquals("7", output);
+    }
+
+    @Test
+    void escapedCallableLocalStructRetainsCopySemanticsAtCaller() throws Exception {
+        String output = run("""
+                fnc make() => T {
+                  struct T {
+                    pub let int x;
+                  }
+                  return T { x = 1 };
+                }
+
+                pub fnc main() => void {
+                  let first = make();
+                  let second = first;
+                  second.x = 2;
+                  stdio.stdout.write(first.x);
+                  stdio.stdout.write(second.x);
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void escapedCallableLocalStructStillEnforcesMutableReceiverOnValOwner() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        fnc make() => T {
+                          struct T {
+                            pub let int x = 1;
+
+                            pub bump(self &mut self)() => int {
+                              self.x = self.x + 1;
+                              return self.x;
+                            }
+                          }
+                          return T {};
+                        }
+
+                        fnc bad() => void {
+                          val result = make();
+                          result.bump();
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("immutable parameter/binding 'result'"));
+    }
+
+    @Test
+    void escapedCallableLocalStructAllowsMutableReceiverOnOwnedTemporary() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc make() => T {
+                  struct T {
+                    pub let int x = 1;
+
+                    pub bump(self &mut self)() => int {
+                      self.x = self.x + 1;
+                      return self.x;
+                    }
+                  }
+                  return T {};
+                }
+
+                fnc ok() => int {
+                  return make().bump();
+                }
+                """)));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
