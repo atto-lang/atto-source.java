@@ -4,46 +4,144 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Host-side actor substrate used by the first interpreter.
  *
- * Oreslang actor state is owned by one actor. Messages pass through freeze(),
- * which only accepts values that can be made deeply immutable without leaving
- * a writable alias in the receiver. Cross-isolate transports should serialize
- * Frozen values rather than sharing Java object references.
+ * The execution model follows the important Akka dispatcher invariant: actors
+ * are multiplexed over executor threads, but a given actor drains exactly one
+ * mailbox serially. A carrier thread is not actor identity and may change from
+ * one mailbox turn to the next.
+ *
+ * PRIVATE actors and SHARED actors are deliberately bulkheaded onto separate
+ * dispatchers. Private messages are isolation-copied so private actors never
+ * receive shared-memory cells. Shared actors may additionally exchange
+ * explicitly shareable values: deeply immutable Shared values and SyncCell
+ * values whose updates are serialized by the cell itself.
  */
 public final class ActorRuntime implements AutoCloseable {
+    public enum ActorKind { PRIVATE, SHARED }
+
+    public record DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
+        public DispatcherConfig {
+            if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
+            if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
+            if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
+        }
+
+        public static DispatcherConfig defaults() {
+            int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
+            return new DispatcherConfig(cpus, cpus, 64);
+        }
+    }
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
+    private final DispatcherConfig dispatcherConfig;
+    private final ExecutorService privateDispatcher;
+    private final ExecutorService sharedDispatcher;
+    private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
 
     public ActorRuntime() {
-        this(IsolatePolicy.developer());
+        this(IsolatePolicy.developer(), DispatcherConfig.defaults());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling) {
-        this.policyCeiling = java.util.Objects.requireNonNull(policyCeiling);
+        this(policyCeiling, DispatcherConfig.defaults());
+    }
+
+    public ActorRuntime(IsolatePolicy policyCeiling, DispatcherConfig dispatcherConfig) {
+        this.policyCeiling = Objects.requireNonNull(policyCeiling);
+        this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.privateDispatcher = Executors.newFixedThreadPool(
+                dispatcherConfig.privateParallelism(), namedFactory("ores-private-actor-dispatcher-"));
+        this.sharedDispatcher = Executors.newFixedThreadPool(
+                dispatcherConfig.sharedParallelism(), namedFactory("ores-shared-actor-dispatcher-"));
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
+    public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
 
     public record ActorId(UUID value) {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
 
+    /** Deeply immutable value that shared actors may reference without copying. */
     public record Shared<T>(T value) { }
+
+    /**
+     * Explicit synchronized shared-memory cell.
+     *
+     * The stored state is always frozen. Readers only observe frozen snapshots,
+     * and updates run under one lock and must produce a replacement value. This
+     * keeps arbitrary mutable aliases from escaping while still allowing shared
+     * actors to coordinate through memory when message passing is not suitable.
+     */
+    public static final class SyncCell<T> {
+        private final ReentrantLock lock = new ReentrantLock();
+        private T value;
+
+        @SuppressWarnings("unchecked")
+        private SyncCell(T initialValue) {
+            this.value = (T) freeze(initialValue);
+        }
+
+        public T snapshot() {
+            lock.lock();
+            try {
+                return value;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public <R> R read(Function<? super T, ? extends R> reader) {
+            Objects.requireNonNull(reader);
+            lock.lock();
+            try {
+                @SuppressWarnings("unchecked")
+                R result = (R) freeze(reader.apply(value));
+                return result;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        public T update(UnaryOperator<T> updater) {
+            Objects.requireNonNull(updater);
+            lock.lock();
+            try {
+                value = (T) freeze(updater.apply(value));
+                return value;
+            } finally {
+                lock.unlock();
+            }
+        }
+    }
 
     @FunctionalInterface
     public interface Behavior<M> {
@@ -54,16 +152,20 @@ public final class ActorRuntime implements AutoCloseable {
         ActorRef<M> self();
         ActorRuntime runtime();
         IsolatePolicy policy();
+        ActorKind kind();
     }
 
     public final class ActorRef<M> {
         private final ActorId id;
+        private final ActorKind kind;
 
-        private ActorRef(ActorId id) {
+        private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
+            this.kind = kind;
         }
 
         public ActorId id() { return id; }
+        public ActorKind kind() { return kind; }
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
@@ -71,30 +173,69 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public String toString() {
-            return "ActorRef[" + id.value() + "]";
+            return "ActorRef[" + kind + ":" + id.value() + "]";
         }
     }
 
     /**
-     * Creates actor-local behavior inside the actor thread. The Supplier should
-     * be generated by Oreslang lowering, not supplied from untrusted guest code.
+     * Backward-compatible default: an unqualified actor is private.
      */
     public <M> ActorRef<M> spawn(Supplier<? extends Behavior<M>> behaviorFactory) {
-        return spawn(policyCeiling, behaviorFactory);
+        return spawnPrivate(policyCeiling, behaviorFactory);
     }
 
     public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawnPrivate(policy, behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnPrivate(Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawnPrivate(policyCeiling, behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnPrivate(
+            IsolatePolicy policy,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawn(ActorKind.PRIVATE, policy, behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnShared(Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawnShared(policyCeiling, behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnShared(
+            IsolatePolicy policy,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawn(ActorKind.SHARED, policy, behaviorFactory);
+    }
+
+    /**
+     * Creates actor-local behavior on its dispatcher the first time that actor
+     * is scheduled. The Supplier should be generated by Oreslang lowering, not
+     * supplied from untrusted guest code.
+     */
+    public <M> ActorRef<M> spawn(
+            ActorKind kind,
+            IsolatePolicy policy,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        Objects.requireNonNull(kind);
+        Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
+
         ActorId id = ActorId.create();
-        ActorRef<M> ref = new ActorRef<>(id);
-        ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
+        ActorRef<M> ref = new ActorRef<>(id, kind);
+        ActorCell<M> cell = new ActorCell<>(ref, kind, policy, behaviorFactory);
         actors.put(id, cell);
-        cell.start();
         return ref;
     }
 
+    public <T> SyncCell<T> syncCell(T initialValue) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        return new SyncCell<>(initialValue);
+    }
+
     private void requireWithinCeiling(IsolatePolicy child) {
+        Objects.requireNonNull(child);
         if (!policyCeiling.capabilities().containsAll(child.capabilities())) {
             java.util.Set<IsolatePolicy.Capability> excess = java.util.EnumSet.copyOf(child.capabilities());
             excess.removeAll(policyCeiling.capabilities());
@@ -118,25 +259,25 @@ public final class ActorRuntime implements AutoCloseable {
     public <M> void send(ActorRef<M> ref, M message) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
-        if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
-        Object frozen = freeze(message);
-        if (!cell.mailbox.offer(frozen)) {
+        if (cell == null || cell.stopped.get()) throw new IllegalStateException("unknown or stopped actor " + ref.id());
+
+        Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freeze(message);
+        if (!cell.mailbox.offer(prepared)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
+        cell.schedule();
     }
 
     /**
-     * Creates an explicitly read-only shared value. The returned graph is a
-     * frozen representation; no mutable source object itself is exposed.
-     */
-    /**
      * Cooperative scheduler hook used by compiler-injected loop safepoints.
-     * It observes runtime shutdown/interruption and yields the carrier so
-     * supervisor/control-plane work can run. This is intentionally a runtime
-     * hook rather than guest-accessible thread control.
+     * It checks both whole-runtime cancellation and the currently executing
+     * actor's cancellation token. It never exposes a carrier Thread to guest
+     * code because a carrier is shared by many actor identities.
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
+        ActorCell<?> cell = currentActor.get();
+        if (cell != null && cell.stopped.get()) throw new CancellationException("actor execution stopped");
         if (Thread.currentThread().isInterrupted()) throw new CancellationException("actor execution interrupted");
         Thread.yield();
     }
@@ -151,36 +292,94 @@ public final class ActorRuntime implements AutoCloseable {
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
-        if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
-                || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
-                || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
-            return value;
-        }
+        if (isScalar(value)) return value;
         if (value instanceof Shared<?> shared) return shared;
-        if (value instanceof ActorRef<?> ref) return ref;
+        if (value instanceof SyncCell<?> cell) return cell;
+        if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof List<?> list) {
             List<Object> frozen = new ArrayList<>(list.size());
             for (Object item : list) frozen.add(freeze(item));
             return List.copyOf(frozen);
         }
         if (value instanceof Set<?> set) {
-            return set.stream().map(ActorRuntime::freeze).collect(java.util.stream.Collectors.toUnmodifiableSet());
+            LinkedHashSet<Object> frozen = new LinkedHashSet<>();
+            for (Object item : set) frozen.add(freeze(item));
+            return Collections.unmodifiableSet(frozen);
         }
         if (value instanceof Map<?, ?> map) {
             Map<Object, Object> frozen = new LinkedHashMap<>();
             for (Map.Entry<?, ?> entry : map.entrySet()) frozen.put(freeze(entry.getKey()), freeze(entry.getValue()));
-            return Map.copyOf(frozen);
+            return Collections.unmodifiableMap(frozen);
         }
-        if (value.getClass().isArray()) {
+        if (value != null && value.getClass().isArray()) {
             int length = Array.getLength(value);
             List<Object> frozen = new ArrayList<>(length);
             for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i)));
             return List.copyOf(frozen);
         }
-        if (value instanceof Sendable sendable) return sendable.freezeForSend();
+        if (value instanceof Sendable sendable) {
+            Object frozen = sendable.freezeForSend();
+            if (frozen == value) {
+                throw new IllegalArgumentException("Sendable.freezeForSend() must not return the mutable source object");
+            }
+            return freeze(frozen);
+        }
         throw new IllegalArgumentException("value of type " + value.getClass().getName()
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
+    }
+
+    /**
+     * Isolation-copy transport for private actors. Explicit shared-memory cells
+     * are rejected; deeply immutable shared values are copied into the private
+     * actor's message graph rather than retaining the Shared wrapper.
+     */
+    private static Object isolateCopy(Object value) {
+        if (isScalar(value)) return value;
+        if (value instanceof SyncCell<?>) {
+            throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
+        }
+        if (value instanceof Shared<?> shared) return isolateCopy(shared.value());
+        if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>(list.size());
+            for (Object item : list) copy.add(isolateCopy(item));
+            return Collections.unmodifiableList(copy);
+        }
+        if (value instanceof Set<?> set) {
+            LinkedHashSet<Object> copy = new LinkedHashSet<>();
+            for (Object item : set) copy.add(isolateCopy(item));
+            return Collections.unmodifiableSet(copy);
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<Object, Object> copy = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                copy.put(isolateCopy(entry.getKey()), isolateCopy(entry.getValue()));
+            }
+            return Collections.unmodifiableMap(copy);
+        }
+        if (value != null && value.getClass().isArray()) {
+            int length = Array.getLength(value);
+            List<Object> copy = new ArrayList<>(length);
+            for (int i = 0; i < length; i++) copy.add(isolateCopy(Array.get(value, i)));
+            return Collections.unmodifiableList(copy);
+        }
+        if (value instanceof Sendable sendable) {
+            Object frozen = sendable.freezeForSend();
+            if (frozen == value) {
+                throw new IllegalArgumentException("Sendable.freezeForSend() must not return the mutable source object");
+            }
+            return isolateCopy(frozen);
+        }
+        if (value == null) return null;
+        throw new IllegalArgumentException("value of type " + value.getClass().getName()
+                + " is not Sendable; mutable host objects cannot cross actor boundaries");
+    }
+
+    private static boolean isScalar(Object value) {
+        return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+                || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
+                || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
     }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
@@ -193,55 +392,103 @@ public final class ActorRuntime implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) return;
         for (ActorCell<?> cell : actors.values()) cell.stop();
         actors.clear();
+        privateDispatcher.shutdownNow();
+        sharedDispatcher.shutdownNow();
+    }
+
+    private ExecutorService dispatcherFor(ActorKind kind) {
+        return kind == ActorKind.PRIVATE ? privateDispatcher : sharedDispatcher;
+    }
+
+    private static ThreadFactory namedFactory(String prefix) {
+        AtomicInteger next = new AtomicInteger();
+        return task -> {
+            Thread thread = new Thread(task, prefix + next.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     private final class ActorCell<M> {
-        private static final Object STOP = new Object();
         private final ActorRef<M> ref;
+        private final ActorKind kind;
         private final IsolatePolicy policy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
         private final BlockingQueue<Object> mailbox;
-        private volatile Thread thread;
+        private final AtomicBoolean scheduled = new AtomicBoolean();
+        private final AtomicBoolean stopped = new AtomicBoolean();
+        private Behavior<M> behavior;
 
-        private ActorCell(ActorRef<M> ref, IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
+        private ActorCell(
+                ActorRef<M> ref,
+                ActorKind kind,
+                IsolatePolicy policy,
+                Supplier<? extends Behavior<M>> behaviorFactory) {
             this.ref = ref;
+            this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
         }
 
-        private void start() {
-            thread = Thread.ofVirtual().name("ores-actor-" + ref.id().value()).start(this::run);
+        private void schedule() {
+            if (stopped.get() || closed.get()) return;
+            if (!scheduled.compareAndSet(false, true)) return;
+            try {
+                dispatcherFor(kind).execute(this::runBatch);
+            } catch (RejectedExecutionException rejected) {
+                scheduled.set(false);
+                if (!closed.get()) throw rejected;
+            }
         }
 
         @SuppressWarnings("unchecked")
-        private void run() {
-            final Behavior<M> behavior = behaviorFactory.get();
-            final ActorContext<M> context = new ActorContext<>() {
-                @Override public ActorRef<M> self() { return ref; }
-                @Override public ActorRuntime runtime() { return ActorRuntime.this; }
-                @Override public IsolatePolicy policy() { return policy; }
-            };
+        private void runBatch() {
+            currentActor.set(this);
             try {
-                while (true) {
-                    Object message = mailbox.take();
-                    if (message == STOP) return;
-                    behavior.onMessage((M) message, context);
+                if (stopped.get()) return;
+                if (behavior == null) {
+                    behavior = Objects.requireNonNull(behaviorFactory.get(), "actor behaviorFactory returned null");
                 }
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
+
+                ActorContext<M> context = new ActorContext<>() {
+                    @Override public ActorRef<M> self() { return ref; }
+                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                    @Override public IsolatePolicy policy() { return policy; }
+                    @Override public ActorKind kind() { return kind; }
+                };
+
+                int processed = 0;
+                while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                    Object message = mailbox.poll();
+                    if (message == null) break;
+                    behavior.onMessage((M) message, context);
+                    processed++;
+                }
             } catch (Throwable failure) {
-                // v0 fail-stop supervision policy. A later supervisor layer will
-                // expose restart/escalation strategies as typed Oreslang APIs.
-            } finally {
+                // v0 fail-stop supervision policy. Never allow a failing actor
+                // to poison a shared dispatcher worker or execute concurrently.
+                stopped.set(true);
+                mailbox.clear();
                 actors.remove(ref.id(), this);
+            } finally {
+                currentActor.remove();
+                scheduled.set(false);
+
+                if (stopped.get() || closed.get()) {
+                    actors.remove(ref.id(), this);
+                } else if (!mailbox.isEmpty()) {
+                    // Akka-style throughput/fairness handoff: after a bounded
+                    // batch, resubmit this actor so another mailbox can run.
+                    schedule();
+                }
             }
         }
 
         private void stop() {
-            mailbox.offer(STOP);
-            Thread t = thread;
-            if (t != null) t.interrupt();
+            if (!stopped.compareAndSet(false, true)) return;
+            mailbox.clear();
+            actors.remove(ref.id(), this);
         }
     }
 }
