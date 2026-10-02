@@ -40,6 +40,9 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (match(DEFINE)) {
+                if (modifiers.shared) {
+                    throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+                }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
                     if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
@@ -122,6 +125,9 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (match(DEFINE)) {
+            if (modifiers.shared) {
+                throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+            }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
             if (match(INTERFACE)) return parseInterface(modifiers.visibility);
