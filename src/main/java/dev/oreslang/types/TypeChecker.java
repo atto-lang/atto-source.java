@@ -736,7 +736,24 @@ public final class TypeChecker {
             Set<String> inheritedShadowed) {
         Set<String> shadowed = new LinkedHashSet<>(inheritedShadowed);
         for (Ast.Stmt stmt : statements) {
-            if (stmt instanceof Ast.BindingStmt binding) {
+            if (stmt instanceof Ast.TypeDeclStmt localType) {
+                if (localType.declaration() instanceof Ast.ClassDecl struct) {
+                    for (Ast.FieldDecl field : struct.fields()) {
+                        if (field.initializer() != null
+                                && referencesActorModuleBinding(field.initializer(), actorBindings, Set.of())) {
+                            return true;
+                        }
+                    }
+                    for (Ast.MethodDecl method : struct.methods()) {
+                        Set<String> methodShadowed = new LinkedHashSet<>();
+                        if (!method.isStatic()) methodShadowed.add("self");
+                        for (Ast.Param param : method.parameters()) methodShadowed.add(param.name());
+                        if (referencesActorModuleBinding(method.body(), actorBindings, methodShadowed)) {
+                            return true;
+                        }
+                    }
+                }
+            } else if (stmt instanceof Ast.BindingStmt binding) {
                 if (referencesActorModuleBinding(binding.initializer(), actorBindings, shadowed)) return true;
                 shadowed.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
