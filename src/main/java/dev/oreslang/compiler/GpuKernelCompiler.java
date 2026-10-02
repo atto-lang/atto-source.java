@@ -507,11 +507,11 @@ public final class GpuKernelCompiler {
             Ast.BindingStmt initializer = (Ast.BindingStmt) parallelLoop.loop.initializer();
             Ast.TypeRef inductionType = initializer.declaredType() == null ? Ast.TypeRef.simple("i64") : resolveAlias(initializer.declaredType(), target.module);
             env.define(initializer.name(), inductionType);
-            out.append("  ").append(cScalar(inductionType)).append(' ').append(sanitize(initializer.name()))
+            out.append("  ").append(cScalar(inductionType)).append(' ').append(variableName(initializer.name()))
                     .append(" = (").append(cScalar(inductionType)).append(")get_global_id(0);\n");
             String bound = renderExpr(target.module, parallelLoop.bound, env);
             launchExtent = bound;
-            out.append("  if (!(").append(sanitize(initializer.name())).append(' ')
+            out.append("  if (!(").append(variableName(initializer.name())).append(' ')
                     .append(parallelLoop.operator).append(' ').append(bound).append(")) return;\n");
             emitStatements(out, target.module, parallelLoop.loop.body(), env, "  ");
         } else {
@@ -675,7 +675,7 @@ public final class GpuKernelCompiler {
                 requireLocalScalar(type, binding.name());
                 String qualifier = binding.kind() == Ast.BindingKind.LET ? "" : "const ";
                 out.append(indent).append(qualifier).append(cScalar(type)).append(' ')
-                        .append(sanitize(binding.name())).append(" = ")
+                        .append(variableName(binding.name())).append(" = ")
                         .append(renderExpr(module, binding.initializer(), env)).append(";\n");
                 env.define(binding.name(), type);
             } else if (stmt instanceof Ast.ReturnStmt returned) {
@@ -707,7 +707,7 @@ public final class GpuKernelCompiler {
                             : inferExprType(module, binding.initializer(), loopEnv);
                     requireLocalScalar(type, binding.name());
                     out.append(binding.kind() == Ast.BindingKind.LET ? "" : "const ")
-                            .append(cScalar(type)).append(' ').append(sanitize(binding.name())).append(" = ")
+                            .append(cScalar(type)).append(' ').append(variableName(binding.name())).append(" = ")
                             .append(renderExpr(module, binding.initializer(), loopEnv));
                     loopEnv.define(binding.name(), type);
                 } else if (loop.initializer() instanceof Ast.ExprStmt expression) {
@@ -731,7 +731,7 @@ public final class GpuKernelCompiler {
 
     private String renderExpr(String module, Ast.Expr expr, LoweringEnv env) {
         if (expr instanceof Ast.LiteralExpr literal) return renderLiteral(literal.value());
-        if (expr instanceof Ast.NameExpr name) return sanitize(name.name());
+        if (expr instanceof Ast.NameExpr name) return variableName(name.name());
         if (expr instanceof Ast.UnaryExpr unary) {
             Ast.TypeRef operandType = inferExprType(module, unary.operand(), env);
             String operand = renderExpr(module, unary.operand(), env);
@@ -807,8 +807,8 @@ public final class GpuKernelCompiler {
                 if (actualType == null || !isBuffer(actualType)) {
                     throw new IllegalArgumentException("GPU buffer argument '" + actualName.name() + "' is not a device buffer");
                 }
-                args.add(sanitize(actualName.name()));
-                args.add(sanitize(actualName.name()) + "__len");
+                args.add(variableName(actualName.name()));
+                args.add(bufferLengthName(actualName.name()));
             } else {
                 args.add(renderExpr(module, actual, env));
             }
@@ -861,11 +861,11 @@ public final class GpuKernelCompiler {
         }
         Ast.TypeRef elementType = resolveAlias(bufferType.arguments().getFirst(), module);
         String index = renderExpr(module, indexed.index(), env);
-        String length = sanitize(buffer.name()) + "__len";
+        String length = bufferLengthName(buffer.name());
         String condition = isSignedInteger(indexType)
                 ? "((" + index + ") >= 0 && (ulong)(" + index + ") < " + length + ")"
                 : "((ulong)(" + index + ") < " + length + ")";
-        return new BufferAccess(sanitize(buffer.name()), index, condition, elementType);
+        return new BufferAccess(variableName(buffer.name()), index, condition, elementType);
     }
 
     private boolean pureIndexExpression(Ast.Expr expr) {
@@ -1038,7 +1038,7 @@ public final class GpuKernelCompiler {
         for (Ast.Param param : parameters) {
             parts.add(cParameter(param, module));
             Ast.TypeRef type = resolveAlias(param.type(), module);
-            if (isBuffer(type)) parts.add("ulong " + sanitize(param.name()) + "__len");
+            if (isBuffer(type)) parts.add("ulong " + bufferLengthName(param.name()));
         }
         return String.join(", ", parts);
     }
@@ -1053,9 +1053,9 @@ public final class GpuKernelCompiler {
     private String argumentNames(List<Ast.Param> parameters, String module) {
         ArrayList<String> args = new ArrayList<>();
         for (Ast.Param param : parameters) {
-            args.add(sanitize(param.name()));
+            args.add(variableName(param.name()));
             Ast.TypeRef type = resolveAlias(param.type(), module);
-            if (isBuffer(type)) args.add(sanitize(param.name()) + "__len");
+            if (isBuffer(type)) args.add(bufferLengthName(param.name()));
         }
         args.add("__ores_error");
         return String.join(", ", args);
@@ -1066,9 +1066,9 @@ public final class GpuKernelCompiler {
         if (isBuffer(type)) {
             Ast.TypeRef element = resolveAlias(type.arguments().getFirst(), module);
             return "__global " + (param.mutable() ? "" : "const ") + cScalar(element)
-                    + "* restrict " + sanitize(param.name());
+                    + "* restrict " + variableName(param.name());
         }
-        return cScalar(type) + " " + sanitize(param.name());
+        return cScalar(type) + " " + variableName(param.name());
     }
 
     private List<GpuHiddenParameter> hiddenParameters(Target target, Ast.TypeRef resultType) {
@@ -1077,7 +1077,7 @@ public final class GpuKernelCompiler {
             Ast.TypeRef type = resolveAlias(param.type(), target.module);
             if (isBuffer(type)) {
                 hidden.add(new GpuHiddenParameter(
-                        sanitize(param.name()) + "__len",
+                        bufferLengthName(param.name()),
                         "ulong",
                         HiddenPurpose.BUFFER_LENGTH,
                         param.name()));
@@ -1191,6 +1191,14 @@ public final class GpuKernelCompiler {
 
     private String symbolBase(String module, String name, int arity) {
         return sanitize(module) + "_" + sanitize(name) + "_a" + arity;
+    }
+
+    private static String variableName(String sourceName) {
+        return "ores_v_" + sanitize(sourceName);
+    }
+
+    private static String bufferLengthName(String sourceName) {
+        return "__ores_len_" + sanitize(sourceName);
     }
 
     private static String sanitize(String name) {
