@@ -485,18 +485,11 @@ public final class TypeChecker {
                             throw new IllegalArgumentException(member.member() + " expects exactly one callback");
                         }
                         Ast.Expr callback = call.arguments().getFirst();
-                        if (callback instanceof Ast.LambdaExpr lambda) {
-                            validateMutexCallback(lambda, named.arguments().getFirst(), env, generics, self);
-                        } else {
-                            Type callbackType = typeOf(callback, env, generics, self);
-                            if (!(callbackType instanceof Function fn) || fn.parameters().size() != 1) {
-                                throw new IllegalArgumentException(member.member() + " expects a one-argument function");
-                            }
-                            requireAssignable(named.arguments().getFirst(), fn.parameters().getFirst(), member.member() + " callback parameter");
-                            if (fn.result() != Primitive.VOID) {
-                                throw new IllegalArgumentException(member.member() + " callback must return void");
-                            }
+                        if (!(callback instanceof Ast.LambdaExpr lambda)) {
+                            throw new IllegalArgumentException(
+                                    member.member() + " requires an inline one-argument lambda so the protected borrow cannot escape");
                         }
+                        validateMutexCallback(lambda, named.arguments().getFirst(), env, generics, self);
                         return Primitive.VOID;
                     }
                     Ast.ClassDecl klass = findClass(named.name());
