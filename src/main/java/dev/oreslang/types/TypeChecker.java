@@ -1395,7 +1395,20 @@ public final class TypeChecker {
         if (expr instanceof Ast.ListExpr list) return list.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.ObjectExpr object) return object.fields().stream().allMatch(field -> constant(field.value()));
+        if (expr instanceof Ast.GpuExpr gpu) return constantGpuPlacement(gpu);
         return false;
+    }
+
+    private boolean constantGpuPlacement(Ast.GpuExpr gpu) {
+        if (gpu.mode() == Ast.GpuMode.SINGLE) {
+            return gpu.expression() instanceof Ast.LambdaExpr;
+        }
+        try {
+            List<Ast.Expr> elements = gpuParallelElements(gpu.expression());
+            return !elements.isEmpty() && elements.stream().allMatch(Ast.LambdaExpr.class::isInstance);
+        } catch (IllegalArgumentException invalidShape) {
+            return false;
+        }
     }
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
