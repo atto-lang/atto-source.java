@@ -97,6 +97,40 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void largeReadonlyRegionCanBeSharedWithActorWhosePrivateHeapIsSmaller() throws Exception {
+        IsolatePolicy ceiling = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                64L * 1024L * 1024L,
+                64,
+                Duration.ofSeconds(5));
+        IsolatePolicy smallActor = new IsolatePolicy(
+                ceiling.capabilities(),
+                16L * 1024L * 1024L,
+                32,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(ceiling)) {
+            CountDownLatch received = new CountDownLatch(1);
+            AtomicReference<Object> seen = new AtomicReference<>();
+            ActorRuntime.ActorRef<Object> actor = runtime.spawn(
+                    smallActor,
+                    () -> (message, context) -> {
+                        seen.set(message);
+                        received.countDown();
+                    });
+
+            String payload = "x".repeat(9_000_000);
+            ActorRuntime.Shared<String> shared = runtime.shareReadonly(payload);
+            assertTrue(shared.estimatedBytes() > smallActor.maxHeapBytes());
+
+            runtime.send(actor, shared);
+
+            assertTrue(received.await(2, TimeUnit.SECONDS));
+            assertSame(payload, seen.get());
+        }
+    }
+
+    @Test
     void cyclicMutableMessagesAreRejectedInsteadOfRecursingForever() {
         ArrayList<Object> cyclic = new ArrayList<>();
         cyclic.add(cyclic);
