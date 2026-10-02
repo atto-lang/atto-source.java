@@ -54,6 +54,11 @@ public final class ActorRuntime implements AutoCloseable {
         return CURRENT_ACTOR.get() != null;
     }
 
+    public static ActorId currentActorIdOrNull() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        return current == null ? null : current.actorId();
+    }
+
     public boolean isCurrentExecutionActor() {
         ActorExecution current = CURRENT_ACTOR.get();
         return current != null && current.runtime() == this;
@@ -115,6 +120,10 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean isAlive() { return alive.get(); }
         public boolean failed() { return failure.get() != null; }
         public Throwable failure() { return failure.get(); }
+        public String failureTrace() {
+            Throwable current = failure.get();
+            return current == null ? "" : OresTrace.format(current);
+        }
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
@@ -217,7 +226,10 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || !ref.isAlive()) throw new IllegalStateException("actor is not alive " + ref.id());
         Object frozen = freeze(message);
-        cell.enqueue(frozen);
+        OresTrace.Snapshot trace = OresTrace.captureBoundary(
+                "actor-send",
+                ref.kind().name().toLowerCase() + ":" + ref.id().value());
+        cell.enqueue(new MessageEnvelope(frozen, trace));
     }
 
     @SuppressWarnings("unchecked")
@@ -341,6 +353,8 @@ public final class ActorRuntime implements AutoCloseable {
         Object freezeForSend();
     }
 
+    private record MessageEnvelope(Object message, OresTrace.Snapshot trace) { }
+
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
@@ -383,9 +397,12 @@ public final class ActorRuntime implements AutoCloseable {
                 };
 
                 while (true) {
-                    Object message = mailbox.take();
-                    if (message == STOP) return;
-                    behavior.onMessage((M) message, context);
+                    Object queued = mailbox.take();
+                    if (queued == STOP) return;
+                    MessageEnvelope envelope = (MessageEnvelope) queued;
+                    try (OresTrace.Scope ignored = OresTrace.install(envelope.trace())) {
+                        behavior.onMessage((M) envelope.message(), context);
+                    }
                     if (stopRequested.get() && mailbox.isEmpty()) return;
                 }
             } catch (StopActorSignal stopped) {
@@ -401,9 +418,12 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             } catch (Throwable failure) {
                 // Fail-stop by actor: never escape onto the spawning/main thread.
-                // Supervisors may observe failure through the ActorRef and choose
-                // an explicit restart/escalation policy.
-                ref.failure.compareAndSet(null, failure);
+                // Preserve the logical Ores trace rather than the carrier-thread
+                // stack so diagnostics survive actor/thread boundaries.
+                Throwable recorded = failure instanceof RuntimeException runtimeFailure
+                        ? OresTrace.attach(runtimeFailure)
+                        : failure;
+                ref.failure.compareAndSet(null, recorded);
             } finally {
                 ref.accepting.set(false);
                 ref.alive.set(false);
