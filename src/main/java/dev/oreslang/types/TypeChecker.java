@@ -301,10 +301,14 @@ public final class TypeChecker {
                 if (tuple.elements().size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
                 for (int i = 0; i < destructure.bindings().size(); i++) {
                     Ast.DestructureBinding binding = destructure.bindings().get(i);
-                    env.define(binding.name(), tuple.elements().get(i), binding.kind());
+                    if (!binding.isDiscard()) {
+                        env.define(binding.name(), tuple.elements().get(i), binding.kind());
+                    }
                 }
             } else if (source instanceof ListType list) {
-                for (Ast.DestructureBinding binding : destructure.bindings()) env.define(binding.name(), list.element(), binding.kind());
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) env.define(binding.name(), list.element(), binding.kind());
+                }
             } else throw new IllegalArgumentException("destructuring requires a tuple or array/list value");
             return;
         }
