@@ -28,6 +28,19 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
         return new OresContext(this, env);
     }
 
+    /**
+     * Guest AST execution is still single-context-thread-at-a-time.
+     *
+     * ActorRuntime dispatchers are a host scheduling substrate; source-level
+     * actor lowering must not execute Truffle guest ASTs concurrently until the
+     * language opts into and initializes Truffle multi-threading explicitly.
+     * Sequential migration between carrier threads remains allowed.
+     */
+    @Override
+    protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
+        return singleThreaded;
+    }
+
     @Override
     protected void disposeContext(OresContext context) {
         context.close();
