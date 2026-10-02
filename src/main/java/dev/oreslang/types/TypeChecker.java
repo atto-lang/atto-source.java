@@ -38,6 +38,7 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.FunctionDecl, Type> inferredFunctionReturns = new IdentityHashMap<>();
     private final Set<Ast.FunctionDecl> inferringFunctionReturns = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<Ast.MethodDecl> inferringMethodReturns = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -246,7 +247,7 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = isInferredReturn(method.returnType())
-                    ? inferReturnType(method.body(), env, generics, callableSelf)
+                    ? inferMethodReturn(method, generics, callableSelf)
                     : resolve(method.returnType(), generics, callableSelf);
             checkContracts(method.contracts(), env, generics, returns, callableSelf, klass.name() + "." + method.name());
             checkBlock(method.body(), env, generics, returns, callableSelf);
@@ -498,7 +499,7 @@ public final class TypeChecker {
                         validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                         requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                     }
-                    return resolve(fn.returnType(), fnGenerics, null);
+                    return methodReturnType(fn, fnGenerics, null);
                 }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
@@ -512,7 +513,7 @@ public final class TypeChecker {
                             validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                             requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                         }
-                        return resolve(method.returnType(), methodGenerics, named);
+                        return methodReturnType(method, methodGenerics, named);
                     }
                 }
             }
@@ -547,7 +548,9 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                    Set<String> fnGenerics = new HashSet<>(klass.genericParameters());
+                    fnGenerics.addAll(fn.genericParameters());
+                    return methodFunctionType(fn, fnGenerics, null);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -566,7 +569,9 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
-                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
+                        Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
+                        methodGenerics.addAll(method.genericParameters());
+                        return methodFunctionType(method, methodGenerics, named);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -759,7 +764,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
-                    functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                    methodFunctionType(method, generics, self), "class " + klass.name());
         }
         stack.remove(klass);
         Record result = new Record(members);
@@ -786,7 +791,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members, methodKey(method.name(), method.arity()),
-                        functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                        methodFunctionType(method, generics, self), "class " + klass.name());
             }
         }
         stack.remove(klass);
@@ -961,6 +966,33 @@ public final class TypeChecker {
             return inferred;
         } finally {
             inferringFunctionReturns.remove(fn);
+        }
+    }
+
+    private Function methodFunctionType(Ast.MethodDecl method, Set<String> generics, Type self) {
+        Type returns = methodReturnType(method, generics, self);
+        return new Function(
+                method.parameters().stream().map(p -> resolveParam(p, generics, self)).toList(),
+                returns);
+    }
+
+    private Type methodReturnType(Ast.MethodDecl method, Set<String> generics, Type self) {
+        if (!isInferredReturn(method.returnType())) return resolve(method.returnType(), generics, self);
+        return inferMethodReturn(method, generics, self);
+    }
+
+    private Type inferMethodReturn(Ast.MethodDecl method, Set<String> generics, Type self) {
+        if (!inferringMethodReturns.add(method)) return Unknown.INSTANCE;
+        try {
+            Env env = new Env(null);
+            if (!method.isStatic() && self != null) env.define("self", self, Ast.BindingKind.VAL);
+            for (Ast.Param param : method.parameters()) {
+                env.define(param.name(), resolveParam(param, generics, self),
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            return inferReturnType(method.body(), env, generics, self);
+        } finally {
+            inferringMethodReturns.remove(method);
         }
     }
 
