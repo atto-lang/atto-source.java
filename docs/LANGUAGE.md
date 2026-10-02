@@ -289,6 +289,10 @@ val counter = actor |int n| -> {
 
 Calling `self.join()` is rejected at runtime instead of deadlocking the actor thread.
 
+Each mailbox delivery is a fresh actor **turn**. Actor-owned captured state persists across turns,
+but callable-scoped `defer` and `recover` frames belong only to the current turn and are drained
+or discarded before the actor accepts the next message.
+
 Actor failure is fail-stop and isolated from the caller: an uncaught panic/exception terminates
 that actor without unwinding the spawning function, killing sibling actors, or terminating the
 main process. `join()` waits for termination but deliberately does not rethrow actor failure;
