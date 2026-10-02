@@ -694,7 +694,7 @@ public final class TypeChecker {
                 }
             }
             validateAnonymousClassMethods(klass, created.methods(), nominal, env);
-            ensureInstantiable(klass, created.methods());
+            ensureInstantiable(klass, created.methods(), created.hasAnonymousBody());
             return nominal;
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
@@ -1264,7 +1264,7 @@ public final class TypeChecker {
         return null;
     }
 
-    private void ensureInstantiable(Ast.ClassDecl klass, List<Ast.MethodDecl> anonymousMethods) {
+    private void ensureInstantiable(Ast.ClassDecl klass, List<Ast.MethodDecl> anonymousMethods, boolean anonymousBody) {
         Map<String, Ast.MethodDecl> overrides = new HashMap<>();
         for (Ast.MethodDecl method : anonymousMethods) overrides.put(methodKey(method.name(), method.arity()), method);
 
@@ -1277,8 +1277,8 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "'; missing override for " + required.getValue().name() + "/" + required.getValue().arity());
             }
         }
-        if (klass.isAbstract() && abstractMethods.isEmpty() && anonymousMethods.isEmpty()) {
-            throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "' without an anonymous implementation");
+        if (klass.isAbstract() && abstractMethods.isEmpty() && !anonymousBody) {
+            throw new IllegalArgumentException("cannot instantiate abstract class '" + klass.name() + "' directly; use an anonymous implementation body");
         }
     }
 
