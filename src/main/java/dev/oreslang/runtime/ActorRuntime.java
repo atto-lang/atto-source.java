@@ -76,6 +76,10 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRuntime.this.send(this, message);
         }
 
+        private boolean belongsTo(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
         @Override
         public String toString() {
             return "ActorRef[" + id.value() + "]";
@@ -126,7 +130,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
-        Object frozen = freeze(message);
+        Object frozen = freezeForThisRuntime(message);
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
@@ -150,7 +154,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
-        return new Shared<>((T) freeze(value));
+        return new Shared<>((T) freezeForThisRuntime(value));
     }
 
     /**
@@ -158,14 +162,19 @@ public final class ActorRuntime implements AutoCloseable {
      * Unknown host objects are rejected instead of being passed by reference.
      */
     public static Object freeze(Object value) {
-        return freeze(value, new IdentityHashMap<>(), new FreezeBudget(), 0);
+        return freeze(value, new IdentityHashMap<>(), new FreezeBudget(), 0, null);
+    }
+
+    private Object freezeForThisRuntime(Object value) {
+        return freeze(value, new IdentityHashMap<>(), new FreezeBudget(), 0, this);
     }
 
     private static Object freeze(
             Object value,
             IdentityHashMap<Object, Boolean> path,
             FreezeBudget budget,
-            int depth) {
+            int depth,
+            ActorRuntime allowedActorRuntime) {
         if (depth > MAX_FREEZE_DEPTH) {
             throw new IllegalArgumentException("actor message exceeds maximum nesting depth " + MAX_FREEZE_DEPTH);
         }
@@ -201,15 +210,20 @@ public final class ActorRuntime implements AutoCloseable {
          * Shared wrapper to already contain frozen data. Re-freeze its payload.
          */
         if (value instanceof Shared<?> shared) {
-            return new Shared<>(freeze(shared.value(), path, budget, depth + 1));
+            return new Shared<>(freeze(shared.value(), path, budget, depth + 1, allowedActorRuntime));
         }
-        if (value instanceof ActorRef<?> ref) return ref;
+        if (value instanceof ActorRef<?> ref) {
+            if (allowedActorRuntime == null || !ref.belongsTo(allowedActorRuntime)) {
+                throw new IllegalArgumentException("ActorRef capabilities may cross only within their owning ActorRuntime");
+            }
+            return ref;
+        }
 
         if (value instanceof List<?> list) {
             enterComposite(value, path);
             try {
                 List<Object> frozen = new ArrayList<>(list.size());
-                for (Object item : list) frozen.add(freeze(item, path, budget, depth + 1));
+                for (Object item : list) frozen.add(freeze(item, path, budget, depth + 1, allowedActorRuntime));
                 return Collections.unmodifiableList(frozen);
             } finally {
                 path.remove(value);
@@ -220,7 +234,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 Set<Object> frozen = new LinkedHashSet<>();
                 for (Object item : set) {
-                    Object copy = freeze(item, path, budget, depth + 1);
+                    Object copy = freeze(item, path, budget, depth + 1, allowedActorRuntime);
                     if (!frozen.add(copy)) {
                         throw new IllegalArgumentException("actor message set elements collide after freezing");
                     }
@@ -235,8 +249,8 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 Map<Object, Object> frozen = new LinkedHashMap<>();
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    Object key = freeze(entry.getKey(), path, budget, depth + 1);
-                    Object item = freeze(entry.getValue(), path, budget, depth + 1);
+                    Object key = freeze(entry.getKey(), path, budget, depth + 1, allowedActorRuntime);
+                    Object item = freeze(entry.getValue(), path, budget, depth + 1, allowedActorRuntime);
                     if (frozen.containsKey(key)) {
                         throw new IllegalArgumentException("actor message map keys collide after freezing");
                     }
@@ -253,7 +267,7 @@ public final class ActorRuntime implements AutoCloseable {
                 int length = Array.getLength(value);
                 List<Object> frozen = new ArrayList<>(length);
                 for (int i = 0; i < length; i++) {
-                    frozen.add(freeze(Array.get(value, i), path, budget, depth + 1));
+                    frozen.add(freeze(Array.get(value, i), path, budget, depth + 1, allowedActorRuntime));
                 }
                 return Collections.unmodifiableList(frozen);
             } finally {
