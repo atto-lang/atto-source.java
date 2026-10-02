@@ -23,7 +23,7 @@ final class IncrementalFunctorStaticTest {
         var program = TypeChecker.check(Parser.parse("""
                 namespace payments;
 
-                define module api
+                define module api as
                   pub fnc ping() => int { return 1; }
                 end
                 """));
@@ -41,8 +41,8 @@ final class IncrementalFunctorStaticTest {
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define module outer
-                  define module inner
+                define module outer as
+                  define module inner as
                   end
                 end
                 """));
@@ -157,8 +157,8 @@ final class IncrementalFunctorStaticTest {
     @Test
     void staticClassFunctionsUseStaticFncAndDoNotReceiveSelf() throws Exception {
         String output = run("""
-                define module model
-                  define class Counter
+                define module model as
+                  define class Counter as
                     pub val int value = 9;
 
                     pub static fnc twice(int x) => int {
@@ -179,19 +179,19 @@ final class IncrementalFunctorStaticTest {
         assertEquals("18", output);
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define class Bad
+                define class Bad as
                   static nope() => int { return 1; }
                 end
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define class Bad
+                define class Bad as
                   static fnc nope() => int { return self.value; }
                 end
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define class Bad
+                define class Bad as
                   static fnc make() => int { return 1; }
                 end
                 fnc bad() => int {
