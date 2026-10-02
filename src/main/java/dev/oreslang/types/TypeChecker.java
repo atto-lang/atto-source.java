@@ -27,6 +27,8 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
+    private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
@@ -565,13 +567,16 @@ public final class TypeChecker {
                     }
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
-                        Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
-                        if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
-                        validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + klass.name() + "." + method.name());
-                        List<String> callableGenerics = new ArrayList<>(klass.genericParameters());
+                        ResolvedMethod target = findMethodTarget(klass, named, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                        if (target == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
+                        Ast.MethodDecl method = target.method();
+                        Ast.ClassDecl owner = target.owner();
+                        Named ownerType = target.ownerType();
+                        validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + owner.name() + "." + method.name());
+                        List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
                         callableGenerics.addAll(method.genericParameters());
-                        String label = "method " + klass.name() + "." + method.name();
-                        Map<String, Type> bindings = new HashMap<>(classGenericBindings(klass, named));
+                        String label = "method " + owner.name() + "." + method.name();
+                        Map<String, Type> bindings = new HashMap<>(classGenericBindings(owner, ownerType));
                         bindings.putAll(explicitGenericBindings(method.genericParameters(), call.typeArguments(), generics, self, label));
                         return checkGenericCallable(
                                 callableGenerics,
@@ -579,7 +584,7 @@ public final class TypeChecker {
                                 method.returnType(),
                                 call.arguments(),
                                 env, generics, self,
-                                named,
+                                ownerType,
                                 bindings,
                                 label);
                     }
@@ -636,15 +641,20 @@ public final class TypeChecker {
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
-                    Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
-                    if (field != null) return substituteGenerics(field, classGenericBindings(klass, named));
+                    ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
+                    if (field != null) {
+                        Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
+                        return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
+                    }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
-                        Set<String> memberGenerics = new HashSet<>(klass.genericParameters());
+                        ResolvedMethod target = findMethodTarget(klass, named, member.member(), method.arity(), new LinkedHashSet<>());
+                        if (target == null) throw new IllegalArgumentException("cannot resolve method owner for '" + member.member() + "'");
+                        Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
                         memberGenerics.addAll(method.genericParameters());
-                        Type signature = functionType(method.parameters(), method.returnType(), memberGenerics, named);
-                        return substituteGenerics(signature, classGenericBindings(klass, named));
+                        Type signature = functionType(method.parameters(), method.returnType(), memberGenerics, target.ownerType());
+                        return substituteGenerics(signature, classGenericBindings(target.owner(), target.ownerType()));
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -666,14 +676,14 @@ public final class TypeChecker {
             if (!(resolvedCreated instanceof Named nominal)) {
                 throw new IllegalArgumentException("constructor target must resolve to a named class type");
             }
-            List<Ast.FieldDecl> fields = effectiveFields(klass, new LinkedHashSet<>());
+            List<ResolvedField> fields = effectiveFieldTargets(klass, nominal, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
-            Map<String, Type> classBindings = classGenericBindings(klass, nominal);
             for (int i = 0; i < fields.size(); i++) {
-                Ast.FieldDecl field = fields.get(i);
+                ResolvedField resolvedField = fields.get(i);
+                Ast.FieldDecl field = resolvedField.field();
                 if (i < created.arguments().size()) {
-                    Type fieldPattern = resolve(field.type(), Set.copyOf(klass.genericParameters()), nominalClassType(klass));
-                    Type expected = substituteGenerics(fieldPattern, classBindings);
+                    Type fieldPattern = resolve(field.type(), Set.copyOf(resolvedField.owner().genericParameters()), resolvedField.ownerType());
+                    Type expected = substituteGenerics(fieldPattern, classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
                     requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
                             expected, "constructor field " + field.name());
                 } else if (field.initializer() == null) {
@@ -980,8 +990,10 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
+                Map<String, Type> parentBindings = parentBindings(parentRef, klass, parent);
                 for (Map.Entry<String, Type> inherited : classShape(parent, stack).members().entrySet()) {
-                    mergeMember(members, inherited.getKey(), inherited.getValue(), "multiple inheritance of " + klass.name());
+                    mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
+                            "multiple inheritance of " + klass.name());
                 }
             }
         }
@@ -1005,8 +1017,10 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
             if (parent != null) {
+                Map<String, Type> parentBindings = parentBindings(parentRef, klass, parent);
                 for (Map.Entry<String, Type> inherited : publicClassShape(parent, stack).members().entrySet()) {
-                    mergeMember(members, inherited.getKey(), inherited.getValue(), "public inheritance of " + klass.name());
+                    mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
+                            "public inheritance of " + klass.name());
                 }
             }
         }
@@ -1031,8 +1045,15 @@ public final class TypeChecker {
         for (Ast.TypeRef parentRef : iface.parents()) {
             Ast.InterfaceDecl parent = findInterface(parentRef.name());
             if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            Type resolvedParent = resolve(parentRef, generics, null);
+            if (!(resolvedParent instanceof Named parentType)) {
+                throw new IllegalArgumentException("parent interface must resolve to a named type");
+            }
+            Map<String, Type> parentBindings = genericBindings(parent.genericParameters(), parentType.arguments(),
+                    "interface " + parent.name());
             for (Map.Entry<String, Type> inherited : interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack).members().entrySet()) {
-                mergeMember(members, inherited.getKey(), inherited.getValue(), "interface inheritance of " + iface.name());
+                mergeMember(members, inherited.getKey(), substituteGenerics(inherited.getValue(), parentBindings),
+                        "interface inheritance of " + iface.name());
             }
         }
         for (Ast.InterfaceMember member : iface.members()) {
@@ -1047,6 +1068,86 @@ public final class TypeChecker {
         }
         stack.remove(iface);
         return new Record(members);
+    }
+
+    private Map<String, Type> genericBindings(List<String> names, List<Type> arguments, String owner) {
+        if (names.size() != arguments.size()) {
+            throw new IllegalArgumentException(owner + " expects " + names.size() + " type argument(s), got " + arguments.size());
+        }
+        Map<String, Type> result = new HashMap<>();
+        for (int i = 0; i < names.size(); i++) result.put(names.get(i), arguments.get(i));
+        return result;
+    }
+
+    private Map<String, Type> parentBindings(Ast.TypeRef parentRef, Ast.ClassDecl child, Ast.ClassDecl parent) {
+        Type resolved = resolve(parentRef, Set.copyOf(child.genericParameters()), nominalClassType(child));
+        if (!(resolved instanceof Named named)) throw new IllegalArgumentException("parent class must resolve to a named type");
+        return genericBindings(parent.genericParameters(), named.arguments(), "class " + parent.name());
+    }
+
+    private Named concreteParentType(Ast.TypeRef parentRef, Ast.ClassDecl child, Named childType) {
+        Type parentPattern = resolve(parentRef, Set.copyOf(child.genericParameters()), nominalClassType(child));
+        Type concrete = substituteGenerics(parentPattern, classGenericBindings(child, childType));
+        if (!(concrete instanceof Named named)) throw new IllegalArgumentException("parent class must resolve to a named type");
+        return named;
+    }
+
+    private List<ResolvedField> effectiveFieldTargets(Ast.ClassDecl klass, Named concreteType, Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
+        LinkedHashMap<String, ResolvedField> fields = new LinkedHashMap<>();
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Named parentType = concreteParentType(parentRef, klass, concreteType);
+            for (ResolvedField field : effectiveFieldTargets(parent, parentType, stack)) fields.putIfAbsent(field.field().name(), field);
+        }
+        for (Ast.FieldDecl field : klass.fields()) fields.put(field.name(), new ResolvedField(klass, concreteType, field));
+        stack.remove(klass);
+        return List.copyOf(fields.values());
+    }
+
+    private ResolvedField findFieldTarget(Ast.ClassDecl klass, Named concreteType, String name, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.name().equals(name)) {
+                seen.remove(klass);
+                return new ResolvedField(klass, concreteType, field);
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Named parentType = concreteParentType(parentRef, klass, concreteType);
+            ResolvedField result = findFieldTarget(parent, parentType, name, seen);
+            if (result != null) {
+                seen.remove(klass);
+                return result;
+            }
+        }
+        seen.remove(klass);
+        return null;
+    }
+
+    private ResolvedMethod findMethodTarget(Ast.ClassDecl klass, Named concreteType, String name, int arity, Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                seen.remove(klass);
+                return new ResolvedMethod(klass, concreteType, method);
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Named parentType = concreteParentType(parentRef, klass, concreteType);
+            ResolvedMethod result = findMethodTarget(parent, parentType, name, arity, seen);
+            if (result != null) {
+                seen.remove(klass);
+                return result;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
