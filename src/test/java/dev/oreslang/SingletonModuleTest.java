@@ -296,7 +296,7 @@ final class SingletonModuleTest {
 
                   pub fnc bump() => Array<int> {
                     values[0] = values[0] + 1;
-                    return values;
+                    return arr[values[0]];
                   }
                 end
 
