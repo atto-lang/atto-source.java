@@ -302,6 +302,8 @@ The static type system mirrors that rule: `Future<T>`, `CompletionStage<T>`, `Co
 
 Inside an actor, `await` never means “park this dispatcher thread.” An already-complete value may unwrap immediately, but a pending await must be continuation-lowered so the mailbox turn suspends and releases its carrier. The reference interpreter fails closed if a pending host await reaches an actor carrier before that lowering has happened.
 
+Ordinary callables must be declared `async` before using `await`. Actor-dispatched callables are inherently suspension-capable, so they may await without a redundant `async` modifier. Plain lambdas are not async-capable yet; an async outer function does not implicitly make nested lambdas suspension-capable.
+
 ## Actors
 
 Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
@@ -380,7 +382,7 @@ Arbitrary Erlang-style selective receive that repeatedly scans old unmatched mes
 
 Group close and membership mutation are lifecycle-linearized. An already-terminated actor cannot be newly admitted; an actor that terminates after admission is reported/pruned by fan-out. Two groups may use the same category without aliasing because identity is the opaque group id, not the category string.
 
-Broadcast snapshots membership once and sends through the ordinary bounded send path for each member. Membership changes affect the next broadcast. A slow, full, or terminated target does not prevent unrelated members from receiving: `FanoutReceipt` reports delivered, terminated, and rejected counts plus per-actor failures, and terminated members encountered during fan-out are pruned.
+Broadcast snapshots membership once and sends through the ordinary bounded send path for each member. Membership changes affect the next broadcast. A slow, full, or terminated target does not prevent unrelated members from receiving: `FanoutReceipt` reports delivered, terminated, and rejected counts plus per-actor failures, and terminated members encountered during fan-out are pruned. The snapshot is linearized with group close/membership mutation: close before the snapshot rejects the broadcast, while close after the snapshot does not retroactively cancel that already-started fan-out.
 
 Group handles can cross mailboxes only inside their owning `ActorRuntime`, like actor refs. They cannot be frozen into ordinary `Shared<T>` data or smuggled into another runtime. Cross-runtime/distributed grouping requires an explicit bridge or membership protocol.
 
