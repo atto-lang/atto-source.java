@@ -586,12 +586,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
-                if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
+                long constructorFieldCount = classFields.stream().filter(field -> !field.composed()).count();
+                if (args.size() > constructorFieldCount) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
                 LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
-                for (int i = 0; i < classFields.size(); i++) {
-                    Ast.FieldDecl field = classFields.get(i);
+                int argumentIndex = 0;
+                for (Ast.FieldDecl field : classFields) {
                     Object value;
-                    if (i < args.size()) value = args.get(i);
+                    if (!field.composed() && argumentIndex < args.size()) value = args.get(argumentIndex++);
                     else if (field.initializer() != null) value = eval(field.initializer(), env);
                     else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
                     fields.put(field.name(), value);
