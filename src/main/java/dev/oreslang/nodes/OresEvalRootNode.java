@@ -695,16 +695,26 @@ public final class OresEvalRootNode extends RootNode {
                     context.isolatePolicy().maxMailboxMessages(),
                     context.isolatePolicy().maxWallTime(),
                     (state, frozenArgs) -> {
+                        String currentSchema = singletonSchema(proxy.module());
+                        if (!state.schema.equals(currentSchema)) {
+                            throw new IllegalStateException("singleton module state schema changed for "
+                                    + proxy.module().name()
+                                    + "; process-lifetime state cannot be reinterpreted without an explicit migration");
+                        }
                         authorizeSingletonCodeGeneration(state, proxy.module());
                         Object value = state.fields.lookup(proxy.fieldName());
-                        if (!(value instanceof OresObject object) || object.klass != proxy.klass()) {
+                        if (!(value instanceof OresObject object)
+                                || !object.klass.name().equals(proxy.klass().name())) {
                             throw new IllegalStateException("singleton object proxy target changed for "
                                     + proxy.module().name() + "." + proxy.fieldName());
                         }
-                        Ast.MethodDecl method = findMethod(object.klass, methodName, frozenArgs.size(), new LinkedHashSet<>());
+
+                        // The object state survives hot reload, but behavior is
+                        // selected from the currently authorized code generation.
+                        Ast.MethodDecl method = findMethod(proxy.klass(), methodName, frozenArgs.size(), new LinkedHashSet<>());
                         if (method == null || method.visibility() != Ast.Visibility.PUBLIC) {
                             throw new IllegalArgumentException("no public singleton proxy method "
-                                    + object.klass.name() + "." + methodName + " with arity " + frozenArgs.size());
+                                    + proxy.klass().name() + "." + methodName + " with arity " + frozenArgs.size());
                         }
                         return callMethod(object, method, frozenArgs, state);
                     });
