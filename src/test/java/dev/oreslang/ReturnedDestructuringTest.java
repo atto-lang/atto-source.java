@@ -160,6 +160,27 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
+    void prefixedPatternSyntaxDoesNotStealFiniteTupleOrRecordTypedBindings() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc fixed() => [int, bool, string] {
+                  return [3, true, "yes"];
+                }
+
+                fnc result() => {foo: int, bar: string} {
+                  return obj{foo: 5, bar: "x"};
+                }
+
+                pub fnc main() => void {
+                  val [int, bool, string] tupleValue = fixed();
+                  val {foo: int, bar: string} recordValue = result();
+                  stdio.println(tupleValue[0]);
+                  stdio.println(recordValue.foo);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
     void returnedTupleAndRecordDestructureAtRuntime() throws Exception {
         String program = """
                 fnc fixed() => [int, bool, string] {
