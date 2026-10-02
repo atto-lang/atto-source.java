@@ -54,6 +54,15 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public enum ActorKind { SHARED, ISOLATE }
 
+    /**
+     * Internal non-failure control transfer used by the Oreslang `stop;`
+     * statement. It is deliberately stackless: the actor is terminating
+     * normally, not reporting an error.
+     */
+    public static final class StopActorSignal extends RuntimeException {
+        public StopActorSignal() { super(null, null, false, false); }
+    }
+
     @FunctionalInterface
     public interface Behavior<M> {
         void onMessage(M message, ActorContext<M> context) throws Exception;
@@ -286,6 +295,9 @@ public final class ActorRuntime implements AutoCloseable {
                     behavior.onMessage((M) message, context);
                     if (stopRequested.get() && mailbox.isEmpty()) return;
                 }
+            } catch (StopActorSignal stopped) {
+                // `stop;` is immediate clean actor termination. Queued mailbox
+                // work is abandoned and the actor is not marked failed.
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } catch (CancellationException cancellation) {
