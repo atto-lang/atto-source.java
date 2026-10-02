@@ -79,8 +79,24 @@ shared.with_lock(|cache| -> {
 
 A process-wide `singleton module` is **not** raw shared memory. It is owned by one hidden singleton actor and accessed through its typed mailbox/proxy, so its mutable state is serialized by actor execution and normally requires no mutex. Do not wrap singleton-module state in `SharedMutex<T>` merely because multiple actors can call it. Use `SharedMutex<T>` only when code deliberately opts into a writable same-process memory object that multiple actor/execution domains may dereference directly.
 
-When the private-arena/`isoactor` runtime is stacked with this work, isolated actors must run without `SHARED_MEMORY` authority. An `isoactor` may receive copied/frozen messages, but it must not receive a `SharedMutex<T>` or any other writable JVM-heap alias; otherwise the language would no longer be able to claim true actor memory isolation.
+The private-arena/`isoactor` runtime enforces this separation directly. `PRIVATE_ARENA` actor policies are derived with both `SHARED_MEMORY` and `ACTOR_SHARE_READONLY` removed. Their mailbox admission rejects both `SharedMutex<T>` and read-only `Shared<T>` JVM-heap aliases, and raw FFM `MemorySegment` values are never Sendable.
 
 The current reference runtime uses a one-permit JVM semaphore for `SharedMutex<T>`. Java semaphore release/acquire provides the required memory-ordering edge and, unlike a thread-owned `ReentrantLock`, allows an asynchronously acquired guard to be resumed and released by the actor execution context.
 
 Actor transport is independently hardened from mutex synchronization. Ordinary messages are recursively frozen with cycle detection and hard depth/node/byte budgets (256 levels, 100,000 nodes, 16 MiB estimated frozen size). Read-only shared wrappers are runtime-constructed and revalidated on every boundary. `ActorRef` capabilities may cross only inside their owning `ActorRuntime`; a wrapper cannot be used to smuggle a foreign actor reference into another runtime. Generated `Sendable` values are not trusted blindly—the representation returned by `freezeForSend()` is recursively frozen and validated again.
+
+
+## Actor execution and memory modes
+
+`ActorRuntime` has two execution/memory modes.
+
+- **SHARED_HEAP** actors are serialized mailbox state machines multiplexed over a dedicated process-wide `ForkJoinPool`. The default target is 10–20 platform workers and is dynamically rebalanced. An actor has a stable semantic `ActorDomain(runtime, actor_id)`; local ownership and `Mutex<T>` confinement use this domain rather than the transient worker thread.
+- **PRIVATE_ARENA** actors own one stable virtual-thread identity and a confined, segmented FFM arena. The initial arena can grow geometrically up to the actor policy ceiling and the tenant-wide private-arena budget. Committed bytes are returned when the actor terminates. The process virtual-thread carrier target defaults to 20–40.
+
+Shared actors never execute concurrent mailbox turns for the same actor. The scheduler processes a bounded number of messages per shared turn and reschedules remaining work, which prevents one mailbox from monopolizing the pool. Shutdown tracks the worker currently executing a shared actor so cancellation interrupts only that actor's active turn; interrupt state is cleared before the worker returns to unrelated pool work.
+
+Message admission is linearized against actor termination. Mailbox slots are reserved before potentially expensive freezing, an actor that terminates during freezing rejects the late admission, and in-flight reservations are released by their owning senders instead of being zeroed during actor cleanup. `close()` is bounded and retryable if a deliberately non-cooperative actor initially misses the termination deadline.
+
+`SharedMutex<T>` publication is transactional with mailbox admission. A failed send, full/terminated target, shutdown race, or mixed-runtime handle set cannot permanently bind previously unbound mutex handles. Successful publication binds all included handles to exactly one `ActorRuntime`.
+
+Source-level `actor` and `isoactor` callables lower to `ActorRuntime.invoke(...)`, which creates a fresh actor, sends one frozen argument vector, freezes the result, propagates failure to the caller, and terminates the actor. Private-arena startup failures complete the invocation exceptionally rather than leaving the caller waiting forever.
