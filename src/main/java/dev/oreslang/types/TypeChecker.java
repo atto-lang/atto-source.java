@@ -134,7 +134,11 @@ public final class TypeChecker {
             for (Ast.TypeRef ref : annotation.arguments()) {
                 Ast.InterfaceDecl iface = findInterface(ref.name());
                 if (iface == null) throw new IllegalArgumentException("unknown module interface '" + ref.name() + "'");
-                Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+                Type resolvedRef = resolve(ref, Set.of(), null);
+                if (!(resolvedRef instanceof Named namedRef)) throw new IllegalArgumentException("@AdheresTo target must be a named interface type");
+                Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+                Record expected = (Record) substituteGenerics(expectedTemplate,
+                        genericBindings(iface.genericParameters(), namedRef.arguments(), "interface " + iface.name()));
                 if (!assignable(actual, expected)) {
                     throw new IllegalArgumentException("module '" + module.name() + "' does not adhere to interface '" + ref.name() + "': expected " + expected + " but got " + actual);
                 }
@@ -261,8 +265,11 @@ public final class TypeChecker {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
             Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
-            resolve(interfaceRef, classGenerics, self);
-            Record expected = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
+            if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
+            Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            Record expected = (Record) substituteGenerics(expectedTemplate,
+                    genericBindings(iface.genericParameters(), interfaceType.arguments(), "interface " + iface.name()));
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
@@ -512,7 +519,7 @@ public final class TypeChecker {
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                     && factoryCall.member().equals("new")) {
-                if (!call.typeArguments().isEmpty()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
+                if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
                 if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
@@ -522,7 +529,7 @@ public final class TypeChecker {
                 return new Named(factory.name(), List.of(element));
             }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
-                if (!call.typeArguments().isEmpty()) throw new IllegalArgumentException("Some does not accept call-site type arguments");
+                if (call.typeArgumentsPresent()) throw new IllegalArgumentException("Some does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
@@ -804,8 +811,11 @@ public final class TypeChecker {
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
-                if (field != null) return substituteGenerics(field, classGenericBindings(klass, named));
+                ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
+                if (field != null) {
+                    Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
+                    return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
+                }
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
@@ -1275,10 +1285,19 @@ public final class TypeChecker {
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
         if (!param.structural()) return resolve(param.type(), generics, self);
+        Type concrete = resolve(param.type(), generics, self);
         Ast.InterfaceDecl iface = findInterface(param.type().name());
-        if (iface != null) return interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        if (iface != null) {
+            if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural interface must resolve to a named type");
+            Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            return substituteGenerics(shape, genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+        }
         Ast.ClassDecl klass = findClass(param.type().name());
-        if (klass != null) return publicClassShape(klass, new LinkedHashSet<>());
+        if (klass != null) {
+            if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural class must resolve to a named type");
+            Type shape = publicClassShape(klass, new LinkedHashSet<>());
+            return substituteGenerics(shape, classGenericBindings(klass, named));
+        }
         throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
     }
 
