@@ -46,6 +46,7 @@ import java.util.function.UnaryOperator;
  */
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
+    private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     @FunctionalInterface
     public interface TurnExecutor {
@@ -54,6 +55,10 @@ public final class ActorRuntime implements AutoCloseable {
         static TurnExecutor direct() {
             return Runnable::run;
         }
+    }
+
+    public static boolean isActorCarrierThread() {
+        return Boolean.TRUE.equals(ACTOR_CARRIER.get());
     }
 
     public enum ActorKind { PRIVATE, SHARED }
@@ -1503,6 +1508,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void runBatch() {
+            ACTOR_CARRIER.set(Boolean.TRUE);
             try {
                 turnExecutor.execute(this::runBatchEntered);
             } catch (Throwable failure) {
@@ -1511,6 +1517,8 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                ACTOR_CARRIER.remove();
             }
         }
 
