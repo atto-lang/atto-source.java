@@ -365,6 +365,10 @@ public final class TypeChecker {
 
                 Set<String> generics = Set.copyOf(fn.genericParameters());
                 for (Ast.Param param : fn.parameters()) {
+                    if (param.mutable()) {
+                        throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
+                                + "' cannot accept mut parameters because mailbox transport passes frozen snapshots");
+                    }
                     if (param.structural()) {
                         throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
                                 + "' cannot use structural parameters until structural Send is explicit");
@@ -447,6 +451,10 @@ public final class TypeChecker {
                         + "' cannot be generic until proxy Send constraints are explicit");
             }
             for (Ast.Param param : method.parameters()) {
+                if (param.mutable()) {
+                    throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
+                            + "' cannot accept mut transported parameters because mailbox transport passes frozen snapshots");
+                }
                 if (param.structural()) {
                     throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
                             + "' cannot use structural transported parameters");
