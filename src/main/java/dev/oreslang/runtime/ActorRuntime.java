@@ -30,7 +30,7 @@ public final class ActorRuntime implements AutoCloseable {
     /**
      * Actor-local allocation policy inside one tenant Graal isolate.
      *
-     * SHARED_HEAP keeps ordinary actor objects on the tenant isolate's JVM heap.
+     * SHARED_HEAP keeps ordinary actor objects on the tenant isolate's managed Java heap.
      * PRIVATE_ARENA gives the actor one thread-confined native memory block and
      * a small bump allocator. Actor language/runtime objects only live there
      * when their representation explicitly allocates through ActorMemory.
