@@ -225,7 +225,7 @@ public final class TypeChecker {
 
         for (Map.Entry<Ast.MethodArity, List<Ast.ClassDecl>> entry : inherited.entrySet()) {
             if (locallyResolved.contains(entry.getKey())) continue;
-            List<Ast.ClassDecl> origins = mostSpecificMethodOrigins(entry.getValue());
+            List<Ast.ClassDecl> origins = entry.getValue();
             if (origins.size() <= 1) continue;
 
             String label = staticNamespace ? "static function" : "method";
@@ -274,22 +274,6 @@ public final class TypeChecker {
                 if (!alreadyPresent) origins.add(candidate);
             }
         }
-    }
-
-    private List<Ast.ClassDecl> mostSpecificMethodOrigins(List<Ast.ClassDecl> origins) {
-        List<Ast.ClassDecl> result = new ArrayList<>();
-        for (Ast.ClassDecl candidate : origins) {
-            boolean shadowedByMoreSpecificOrigin = false;
-            for (Ast.ClassDecl other : origins) {
-                if (other == candidate) continue;
-                if (classExtends(other, candidate, new LinkedHashSet<>())) {
-                    shadowedByMoreSpecificOrigin = true;
-                    break;
-                }
-            }
-            if (!shadowedByMoreSpecificOrigin) result.add(candidate);
-        }
-        return result;
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
