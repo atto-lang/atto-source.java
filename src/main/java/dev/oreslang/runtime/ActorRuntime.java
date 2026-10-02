@@ -2396,6 +2396,14 @@ public final class ActorRuntime implements AutoCloseable {
                     releaseMailboxSlot();
                     try (envelope) {
                         behavior.onMessage((M) envelope.value(), context);
+                        if (kind == ActorKind.PRIVATE && !trustedPrivateFactory) {
+                            // Private state that survives a mailbox turn must
+                            // remain in actor-owned storage/capabilities. This
+                            // catches behavior fields that were null/immutable
+                            // at construction but later retain a mutable JVM
+                            // object across turns.
+                            validatePrivateBehaviorState(ref.id(), behavior);
+                        }
                     }
                     processed++;
                 }
