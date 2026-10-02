@@ -117,8 +117,15 @@ param           = type_ref [ "mut" ] IDENT
 binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
 
-destructure_stmt= "[" destructure_item { "," destructure_item } "]" "=" expression stmt_terminator ;
-destructure_item= binding_kind IDENT ;
+destructure_stmt= [ destructure_prefix ] destructure_pattern "=" expression stmt_terminator ;
+destructure_prefix
+                = binding_kind [ "mut" ]
+                | "mut" ;
+destructure_pattern
+                = "[" destructure_item { "," destructure_item } "]"
+                | "{" destructure_item { "," destructure_item } "}" ;
+destructure_item= [ binding_kind ] [ "mut" ] IDENT
+                | "_" ;
 
 block           = "{" { statement } "}" ;
 statement       = local_type_decl
