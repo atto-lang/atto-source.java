@@ -110,8 +110,9 @@ public final class TypeChecker {
 
         for (Ast.ModuleDecl module : program.modules()) {
             checkModuleAdherence(module);
+            if (module.singleton()) validateSingletonModule(module);
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
+                if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                 else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
@@ -175,18 +176,72 @@ public final class TypeChecker {
         }
     }
 
-    private void checkFunction(String module, Ast.FunctionDecl fn) {
+    private void checkFunction(Ast.ModuleDecl module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
-        Env env = new Env(null);
+        Env env = module.singleton() ? singletonModuleEnv(module) : new Env(null, module.name());
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
         checkBlock(fn.body(), env, generics, returns, null);
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
-            throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
+            throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module.name() + "." + fn.name() + "' must explicitly return on every path");
         }
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
             throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
         }
+    }
+
+    private Env singletonModuleEnv(Ast.ModuleDecl module) {
+        Env env = new Env(null, module.name());
+        for (Ast.Decl decl : module.declarations()) {
+            if (!(decl instanceof Ast.FieldDecl field)) continue;
+            if (field.initializer() == null) {
+                throw new IllegalArgumentException("singleton module binding '" + module.name() + "." + field.name() + "' requires an initializer");
+            }
+            Type actual = typeOf(field.initializer(), env, Set.of(), null);
+            Type declared = field.type() == null ? actual : resolve(field.type(), Set.of(), null);
+            requireAssignable(actual, declared, "initializer for " + module.name() + "." + field.name());
+            env.define(field.name(), declared, field.bindingKind());
+        }
+        return env;
+    }
+
+    private void validateSingletonModule(Ast.ModuleDecl module) {
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("singleton module field '" + module.name() + "." + field.name()
+                        + "' cannot be public; expose actor-safe accessor functions instead");
+            }
+            if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
+                Set<String> generics = Set.copyOf(fn.genericParameters());
+                for (Ast.Param param : fn.parameters()) {
+                    Type parameter = resolveParam(param, generics, null);
+                    if (containsActorLocalReference(parameter)) {
+                        throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
+                                + "' cannot accept borrows or function/closure values across the actor boundary");
+                    }
+                }
+                Type result = resolve(fn.returnType(), generics, null);
+                if (containsActorLocalReference(result)) {
+                    throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
+                            + "' cannot return borrows or function/closure values across the actor boundary");
+                }
+            }
+        }
+    }
+
+    private boolean containsActorLocalReference(Type type) {
+        if (type instanceof Borrow || type instanceof Function) return true;
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsActorLocalReference);
+        if (type instanceof ListType list) return containsActorLocalReference(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsActorLocalReference);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsActorLocalReference);
+        return false;
+    }
+
+    private Function singletonTransportType(Ast.FunctionDecl fn) {
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+        Function logical = (Function) functionType(fn.parameters(), fn.returnType(), generics, null);
+        return new Function(logical.parameters(), new Named("Future", List.of(logical.result())));
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
@@ -374,7 +429,14 @@ public final class TypeChecker {
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
-            if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+            if (fn != null) {
+                String ownerName = functionOwners.get(fn);
+                Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
+                if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
+                    return singletonTransportType(fn);
+                }
+                return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+            }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -488,8 +550,25 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
+                Ast.ModuleDecl module = modules.get(namespace.name());
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
+                if (module.singleton()) {
+                    for (Ast.Decl decl : module.declarations()) {
+                        if (decl instanceof Ast.FunctionDecl fn
+                                && fn.visibility() == Ast.Visibility.PUBLIC
+                                && fn.name().equals(member.member())) {
+                            return module.name().equals(env.moduleName)
+                                    ? functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null)
+                                    : singletonTransportType(fn);
+                        }
+                        if (decl instanceof Ast.FieldDecl field
+                                && field.visibility() == Ast.Visibility.PUBLIC
+                                && field.name().equals(member.member())) {
+                            throw new IllegalArgumentException("singleton module fields are actor-private; call an accessor function");
+                        }
+                    }
+                }
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("stdio")) {
                 if (member.member().equals("print") || member.member().equals("println")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -1193,8 +1272,17 @@ public final class TypeChecker {
 
     private static final class Env {
         private final Env parent;
+        private final String moduleName;
         private final Map<String, Binding> bindings = new HashMap<>();
-        private Env(Env parent) { this.parent = parent; }
+
+        private Env(Env parent) {
+            this(parent, parent == null ? null : parent.moduleName);
+        }
+
+        private Env(Env parent, String moduleName) {
+            this.parent = parent;
+            this.moduleName = moduleName;
+        }
         private void define(String name, Type type, Ast.BindingKind kind) {
             if (bindings.putIfAbsent(name, new Binding(type, kind)) != null) throw new IllegalArgumentException("duplicate binding '" + name + "'");
         }
