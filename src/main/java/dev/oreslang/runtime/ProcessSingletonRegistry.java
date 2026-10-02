@@ -100,7 +100,8 @@ public final class ProcessSingletonRegistry {
         Long deadline = CURRENT_DEADLINE_NANOS.get();
         if (deadline == null) return;
         if (System.nanoTime() - deadline >= 0) {
-            throw new CancellationException("singleton call wall-time budget exceeded for " + CURRENT_CELL.get());
+            throw new CancellationException("singleton call wall-time budget exceeded for "
+                    + diagnosticId(CURRENT_CELL.get()));
         }
     }
 
@@ -173,14 +174,14 @@ public final class ProcessSingletonRegistry {
             int admissionLimit = Math.min(callerMailboxLimit, MAILBOX_CAPACITY);
             if (!cell.reserveQueuedSlot(admissionLimit)) {
                 reply.completeExceptionally(new IllegalStateException(
-                        "singleton mailbox limit exceeded for " + cell.key
+                        "singleton mailbox limit exceeded for " + cell.diagnosticId
                                 + " (caller limit " + admissionLimit + ")"));
                 return reply;
             }
             if (!cell.mailbox.offer(request)) {
                 cell.releaseQueuedSlot();
                 reply.completeExceptionally(new IllegalStateException(
-                        "singleton mailbox process ceiling exceeded for " + cell.key));
+                        "singleton mailbox process ceiling exceeded for " + cell.diagnosticId));
                 return reply;
             }
 
@@ -213,6 +214,7 @@ public final class ProcessSingletonRegistry {
 
     private static final class Cell {
         private final String key;
+        private final String diagnosticId;
         private final UUID instanceId = UUID.randomUUID();
         private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY);
         private final AtomicInteger queuedRequests = new AtomicInteger();
@@ -223,6 +225,7 @@ public final class ProcessSingletonRegistry {
 
         private Cell(String key, Supplier<?> stateFactory) {
             this.key = key;
+            this.diagnosticId = diagnosticId(key);
             this.stateFactory = stateFactory;
         }
 
@@ -244,14 +247,14 @@ public final class ProcessSingletonRegistry {
             int remaining = queuedRequests.decrementAndGet();
             if (remaining < 0) {
                 queuedRequests.incrementAndGet();
-                throw new IllegalStateException("singleton queued-request accounting underflow for " + key);
+                throw new IllegalStateException("singleton queued-request accounting underflow for " + diagnosticId);
             }
         }
 
         private void ensureStarted() {
             if (!started.compareAndSet(false, true)) return;
             Thread.ofVirtual()
-                    .name("ores-process-singleton-" + Integer.toUnsignedString(key.hashCode(), 16)
+                    .name("ores-process-singleton-" + diagnosticId
                             + "-" + instanceId.toString().substring(0, 8))
                     .start(this::run);
         }
@@ -276,7 +279,7 @@ public final class ProcessSingletonRegistry {
                     releaseQueuedSlot();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    failTerminal(new CancellationException("singleton actor interrupted: " + key));
+                    failTerminal(new CancellationException("singleton actor interrupted: " + diagnosticId));
                     return;
                 }
 
@@ -288,7 +291,7 @@ public final class ProcessSingletonRegistry {
                 }
                 if (expired(request.deadlineNanos)) {
                     request.reply.completeExceptionally(
-                            new TimeoutException("singleton call expired in mailbox for " + key));
+                            new TimeoutException("singleton call expired in mailbox for " + diagnosticId));
                     continue;
                 }
 
@@ -326,12 +329,14 @@ public final class ProcessSingletonRegistry {
 
     private static WaitEdge registerWaitEdge(String caller, String target) {
         if (caller.equals(target)) {
-            throw new IllegalStateException("reentrant singleton mailbox call would deadlock: " + caller);
+            throw new IllegalStateException("reentrant singleton mailbox call would deadlock: "
+                    + diagnosticId(caller));
         }
         synchronized (WAIT_GRAPH_LOCK) {
             if (pathExists(target, caller)) {
                 throw new IllegalStateException(
-                        "singleton wait cycle rejected before deadlock: " + caller + " -> " + target);
+                        "singleton wait cycle rejected before deadlock: "
+                                + diagnosticId(caller) + " -> " + diagnosticId(target));
             }
             WAIT_GRAPH.computeIfAbsent(caller, ignored -> new HashMap<>())
                     .merge(target, 1, Integer::sum);
@@ -379,6 +384,11 @@ public final class ProcessSingletonRegistry {
         public void close() {
             if (closed.compareAndSet(false, true)) removeWaitEdge(caller, target);
         }
+    }
+
+    private static String diagnosticId(String key) {
+        if (key == null) return "unknown";
+        return Integer.toUnsignedString(key.hashCode(), 16);
     }
 
     private static long deadlineAfter(Duration duration) {
