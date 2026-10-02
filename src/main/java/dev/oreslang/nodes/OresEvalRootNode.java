@@ -94,7 +94,14 @@ public final class OresEvalRootNode extends RootNode {
         private Object execute(Object[] arguments) {
             Ast.FunctionDecl main = findFunction("main");
             if (main == null) return null;
-            return callFunction(main, List.of(arguments));
+            Object result = callFunction(main, List.of(arguments));
+            if (main.async()) {
+                if (!(result instanceof CompletionStage<?> stage)) {
+                    throw new IllegalStateException("async main did not produce a Future");
+                }
+                return awaitStage(stage);
+            }
+            return result;
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
