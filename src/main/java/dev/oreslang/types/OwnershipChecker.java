@@ -349,6 +349,14 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.MemberExpr member) {
             checkExpr(member.receiver(), scope, false);
+            Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
+            if (klass != null
+                    && findField(klass, member.member(), new LinkedHashSet<>()) == null
+                    && hasMutableReceiverMethod(klass, member.member(), new LinkedHashSet<>())) {
+                throw error("mutable-receiver method value '" + member.member()
+                        + "' cannot be extracted; call it directly through a mutable owner"
+                        + " until persistent &mut bound-method lifetimes are modeled");
+            }
             return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.IndexExpr indexed) {
@@ -399,6 +407,9 @@ public final class OwnershipChecker {
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (method != null) {
+                if (requiresMutableReceiver(method)) {
+                    ensureMutableReceiver(member.receiver(), scope, "method '" + method.name() + "' receiver");
+                }
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
                 return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
             }
@@ -407,6 +418,11 @@ public final class OwnershipChecker {
         checkExpr(call.callee(), scope, false);
         for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private boolean requiresMutableReceiver(Ast.MethodDecl method) {
+        Ast.TypeRef receiver = method.explicitReceiverType();
+        return receiver != null && receiver.isBorrow() && receiver.mutableBorrow();
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
@@ -671,6 +687,31 @@ public final class OwnershipChecker {
         }
         seen.remove(klass);
         return null;
+    }
+
+    private boolean hasMutableReceiverMethod(
+            Ast.ClassDecl klass,
+            String name,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return false;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic()
+                    && method.name().equals(name)
+                    && requiresMutableReceiver(method)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        for (Ast.TypeRef parent : klass.parents()) {
+            Ast.ClassDecl parentClass = findClass(parent.name());
+            if (parentClass != null
+                    && hasMutableReceiverMethod(parentClass, name, seen)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        seen.remove(klass);
+        return false;
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
