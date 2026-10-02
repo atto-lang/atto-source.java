@@ -1015,6 +1015,7 @@ public final class TypeChecker {
             case "send" -> {
                 requireBuiltinArity("actor.send", arguments, 2);
                 Type messageType = actorMessageType(typeOf(arguments.getFirst(), env, generics, self), "actor.send target");
+                requireActorTransportType(messageType, "actor.send mailbox type", new HashSet<>());
                 Type actual = unwrapShared(typeOfWithExpected(
                         arguments.get(1),
                         messageType,
@@ -1130,12 +1131,14 @@ public final class TypeChecker {
         }
 
         Type messageType = handler.parameters().getFirst();
+        requireActorTransportType(messageType, api + " mailbox type", new HashSet<>());
         if (messageType instanceof Named namedMessage && namedMessage.name().equals("Shared")) {
             throw new IllegalArgumentException(
                     api + " mailbox type must be T, not Shared<T>; Shared<T> is a send-time transport handle");
         }
         if (stateful) {
             Type stateType = handler.parameters().get(1);
+            requireActorTransportType(stateType, api + " state type", new HashSet<>());
             Type initialType = unwrapShared(typeOfWithExpected(
                     arguments.get(stateIndex),
                     stateType,
@@ -1184,10 +1187,45 @@ public final class TypeChecker {
             case "share_readonly" -> {
                 requireBuiltinArity("process.share_readonly", arguments, 1);
                 Type value = typeOf(arguments.getFirst(), env, generics, self);
+                requireActorTransportType(value, "process.share_readonly value", new HashSet<>());
                 yield new Named("Shared", List.of(value));
             }
             default -> throw new IllegalArgumentException("unknown process API '" + member + "'");
         };
+    }
+
+    private void requireActorTransportType(Type type, String where, Set<Type> seen) {
+        Type actual = deref(type);
+        if (actual == Unknown.INSTANCE || actual instanceof Generic || actual instanceof StringLiteral) return;
+        if (!seen.add(actual)) return;
+
+        if (actual instanceof Function || actual instanceof ClassNamespace || type instanceof Borrow) {
+            throw new IllegalArgumentException(where + " cannot contain callable, namespace, or borrowed values");
+        }
+        if (actual == Primitive.VOID) {
+            throw new IllegalArgumentException(where + " cannot be void");
+        }
+        if (actual instanceof ListType list) {
+            requireActorTransportType(list.element(), where, seen);
+            return;
+        }
+        if (actual instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) requireActorTransportType(element, where, seen);
+            return;
+        }
+        if (actual instanceof Record record) {
+            for (Type member : record.members().values()) requireActorTransportType(member, where, seen);
+            return;
+        }
+        if (actual instanceof Named named) {
+            if (named.name().equals("Shared")) {
+                throw new IllegalArgumentException(
+                        where + " must use the underlying T; Shared<T> is a transport handle, not a delivered value");
+            }
+            for (Type argument : named.arguments()) {
+                requireActorTransportType(argument, where, seen);
+            }
+        }
     }
 
     private Type actorMessageType(Type type, String where) {
