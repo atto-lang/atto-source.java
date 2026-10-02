@@ -427,6 +427,8 @@ A same-name/same-arity member inherited from one parent is an override slot, not
 
 Abstract methods use the same slot identity. Every caller-visible arity of an abstract method is a separate required slot, and a concrete subclass must provide a concrete compatible implementation for each inherited abstract slot. Abstract classes cannot be instantiated.
 
+Special symbol methods such as `[Symbol.iterator]` are not exempt: they use the same name + arity identity, inheritance ambiguity checks, and override-contract rules as ordinary methods.
+
 Top-level/module `fnc` and `routine` declarations never overload.
 
 ## Ternary expressions
