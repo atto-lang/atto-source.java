@@ -317,7 +317,7 @@ public final class TypeChecker {
             List<Ast.Pattern> priorPatterns = new ArrayList<>();
             for (Ast.MatchArm arm : matched.arms()) {
                 for (Ast.Pattern prior : priorPatterns) {
-                    if (patternSubsumes(prior, arm.pattern())) {
+                    if (isIrrefutablePattern(prior, source) || patternSubsumes(prior, arm.pattern())) {
                         throw new IllegalArgumentException("unreachable match arm; an earlier pattern already covers it");
                     }
                 }
@@ -388,6 +388,18 @@ public final class TypeChecker {
         if (pattern instanceof Ast.ListPattern list) {
             for (Ast.Pattern element : list.elements()) validateUniquePatternBindings(element, names);
         }
+    }
+
+    private boolean isIrrefutablePattern(Ast.Pattern pattern, Type source) {
+        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
+        if (pattern instanceof Ast.TuplePattern tuplePattern && source instanceof Tuple tuple) {
+            if (tuplePattern.elements().size() != tuple.elements().size()) return false;
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                if (!isIrrefutablePattern(tuplePattern.elements().get(i), tuple.elements().get(i))) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     private boolean patternSubsumes(Ast.Pattern earlier, Ast.Pattern later) {
