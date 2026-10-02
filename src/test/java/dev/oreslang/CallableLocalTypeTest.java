@@ -192,4 +192,69 @@ final class CallableLocalTypeTest {
         assertTrue(text.contains("hello"));
         assertTrue(text.contains("hello world"));
     }
+    @Test
+    void contextualObjectPromotionFillsDefaultedLocalStructFields() throws Exception {
+        String output = runProgram("""
+                define module app as
+                  fnc make() => T {
+                    struct T {
+                      pub name: string;
+                      pub count: int = 7;
+                    }
+                    return obj{name: "hello"};
+                  }
+
+                  pub fnc main() => void {
+                    val result = make();
+                    stdio.stdout.write(result.name);
+                    stdio.stdout.write(result.count);
+                    return;
+                  }
+                end
+                """);
+
+        assertEquals("hello7", output);
+    }
+
+    @Test
+    void methodLocalStructCanEscapeThroughMethodSignatureAndKeepDispatch() throws Exception {
+        String output = runProgram("""
+                define class Factory as
+                  pub make() => T {
+                    struct T {
+                      pub value: int;
+
+                      pub doubled() => int {
+                        return self.value * 2;
+                      }
+                    }
+                    return obj{value: 21};
+                  }
+                end
+
+                pub fnc main() => void {
+                  val factory = new Factory();
+                  val result = factory.make();
+                  stdio.stdout.write(result.doubled());
+                  return;
+                }
+                """);
+
+        assertEquals("42", output);
+    }
+
+    private static String runProgram(String program) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "callable-local-types.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
+    }
 }
