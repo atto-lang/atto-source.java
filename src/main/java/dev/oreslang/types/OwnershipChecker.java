@@ -445,12 +445,14 @@ public final class OwnershipChecker {
             return new ValueInfo(Ast.TypeRef.simple("Array"), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            boolean copy = true;
             for (Ast.Expr item : tuple.elements()) {
-                ValueInfo info = checkExpr(item, scope, true);
-                copy &= info.kind == ValueKind.COPY;
+                checkExpr(item, scope, true);
             }
-            return new ValueInfo(Ast.TypeRef.inferred(), copy ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+            // Tuples currently share the general List runtime representation.
+            // Until tuples have a distinct value container that can be copied
+            // recursively, treating them as Copy could alias nested mutable
+            // struct storage. Keep the tuple container affine/move-only.
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) checkExpr(field.value(), scope, true);
