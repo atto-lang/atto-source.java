@@ -536,9 +536,20 @@ public final class Parser {
             return new Ast.ReturnStmt(value);
         }
         if (match(DEFER)) {
+            Token deferToken = previous();
             Ast.Expr expression = parseExpression();
             consumeStatementTerminator("defer statement should end with ';'");
-            return new Ast.DeferStmt(expression);
+
+            if (expression instanceof Ast.LambdaExpr lambda) {
+                return new Ast.DeferStmt(lambda, List.of());
+            }
+            if (expression instanceof Ast.CallExpr call && call.callee() instanceof Ast.LambdaExpr lambda) {
+                return new Ast.DeferStmt(lambda, call.arguments());
+            }
+
+            throw error(deferToken,
+                    "defer requires an explicit lambda: use 'defer || -> { ... };' "
+                            + "or 'defer |T x| -> { ... }(value);'; plain deferred calls are forbidden");
         }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
