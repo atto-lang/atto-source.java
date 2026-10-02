@@ -186,8 +186,12 @@ public final class ActorRuntime implements AutoCloseable {
             UUID.fromString(value.substring(PREFIX.length()));
         }
 
+        public ActorId(UUID uuid) {
+            this(PREFIX + Objects.requireNonNull(uuid));
+        }
+
         public static ActorId create() {
-            return new ActorId(PREFIX + UUID.randomUUID());
+            return new ActorId(UUID.randomUUID());
         }
 
         public UUID uuid() {
@@ -2470,7 +2474,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
-        if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
+        if (value instanceof UUID || value instanceof ActorGroupId) return 40L;
+        if (value instanceof ActorId) return 64L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
     }
@@ -2521,7 +2526,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
-        if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
+        if (value instanceof UUID || value instanceof ActorGroupId) return 40L;
+        if (value instanceof ActorId) return 64L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.ActorGroup<?>) return 64L;
