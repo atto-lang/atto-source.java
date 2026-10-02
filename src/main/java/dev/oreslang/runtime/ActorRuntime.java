@@ -1401,7 +1401,7 @@ public final class ActorRuntime implements AutoCloseable {
                 new ArrayBlockingQueue<>(readyQueueCapacity),
                 namedFactory(threadPrefix),
                 new ThreadPoolExecutor.AbortPolicy());
-        executor.prestartAllCoreThreads();
+        // Core workers are created lazily on first scheduled actor turn.
         return executor;
     }
 
