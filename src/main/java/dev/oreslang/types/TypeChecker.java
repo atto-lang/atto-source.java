@@ -2,6 +2,7 @@ package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.types.Types.Function;
+import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
@@ -27,6 +28,7 @@ public final class TypeChecker {
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
@@ -37,6 +39,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
+    private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
 
     public static Ast.Program check(Ast.Program program) {
@@ -79,6 +82,8 @@ public final class TypeChecker {
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
         }
@@ -106,6 +111,7 @@ public final class TypeChecker {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
+                else if (decl instanceof Ast.TypeAliasDecl alias) resolveAlias(alias, Set.of(), null, new LinkedHashSet<>());
                 else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
             }
         }
