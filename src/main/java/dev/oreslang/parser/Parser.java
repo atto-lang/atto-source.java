@@ -428,7 +428,7 @@ public final class Parser {
     }
 
     private java.util.Set<String> structuralAnnotationNames(List<Ast.Annotation> annotations) {
-        java.util.Set<String> allowed = new java.util.HashSet<>();
+        java.util.Set<String> allowed = new java.util.LinkedHashSet<>();
         for (Ast.Annotation annotation : annotations) {
             if (!annotation.name().equals("AllowStructural")) continue;
             for (Ast.TypeRef argument : annotation.arguments()) {
@@ -442,9 +442,9 @@ public final class Parser {
     }
 
     private List<Ast.Param> applyStructuralAnnotations(List<Ast.Param> params, List<Ast.Annotation> annotations) {
-        java.util.Set<String> allowed = new java.util.HashSet<>(structuralAnnotationNames(annotations));
+        java.util.Set<String> allowed = new java.util.LinkedHashSet<>(structuralAnnotationNames(annotations));
         if (allowed.isEmpty()) return params;
-        java.util.Set<String> found = new java.util.HashSet<>();
+        java.util.Set<String> found = new java.util.LinkedHashSet<>();
         List<Ast.Param> result = new ArrayList<>(params.size());
         for (Ast.Param param : params) {
             boolean structural = param.structural() || allowed.contains(param.name());
@@ -452,7 +452,7 @@ public final class Parser {
             result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
         }
         if (!found.equals(allowed)) {
-            java.util.Set<String> missing = new java.util.HashSet<>(allowed);
+            java.util.Set<String> missing = new java.util.LinkedHashSet<>(allowed);
             missing.removeAll(found);
             throw error(previous(), "@AllowStructural names unknown parameter(s): " + missing);
         }
