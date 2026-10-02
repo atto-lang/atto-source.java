@@ -1279,6 +1279,39 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonDeferCannotMaskExecutionDeadline() {
+        IsolatePolicy shortBudget = new IsolatePolicy(
+                Set.of(
+                        IsolatePolicy.Capability.STDOUT,
+                        IsolatePolicy.Capability.PROCESS_SINGLETON),
+                64L * 1024 * 1024,
+                64,
+                Duration.ofMillis(35));
+
+        RuntimeException failure = assertThrows(RuntimeException.class,
+                () -> evalWithPolicy("""
+                        define singleton module uncatchable_defer_budget as
+                          pub routine attempt_to_mask() => void {
+                            let Array<int> values = arr[1];
+                            defer values[99];
+                            for (;;) {
+                            }
+                            return;
+                          }
+                        end
+
+                        define module app as
+                          pub routine main() => void {
+                            await uncatchable_defer_budget.attempt_to_mask();
+                            return;
+                          }
+                        end
+                        """, "uncatchable-singleton-defer-budget.ores", shortBudget));
+
+        assertTrue(causeChainContains(failure, "wall-time budget"), String.valueOf(failure));
+    }
+
+    @Test
     void registryRejectsCrossSingletonWaitCyclesBeforeDeadlock() {
         String aKey = "cycle-a:" + UUID.randomUUID();
         String bKey = "cycle-b:" + UUID.randomUUID();
