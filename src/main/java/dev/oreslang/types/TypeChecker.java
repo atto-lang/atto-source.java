@@ -361,6 +361,8 @@ public final class TypeChecker {
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleShape(moduleNamespace);
+            Ast.ClassDecl classNamespace = findClass(name.name());
+            if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
@@ -418,6 +420,20 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = typeOf(member.receiver(), env, generics, self);
+                if (receiver instanceof ClassNamespace classNamespace) {
+                    Ast.ClassDecl klass = findClass(classNamespace.className());
+                    if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
+                    Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                    if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
+                    Set<String> fnGenerics = new HashSet<>(klass.genericParameters());
+                    fnGenerics.addAll(fn.genericParameters());
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Type expected = resolveParam(fn.parameters().get(i), fnGenerics, null);
+                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
+                    }
+                    return resolve(fn.returnType(), fnGenerics, null);
+                }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
@@ -426,8 +442,9 @@ public final class TypeChecker {
                         Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
                         methodGenerics.addAll(method.genericParameters());
                         for (int i = 0; i < call.arguments().size(); i++) {
-                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self),
-                                    resolveParam(method.parameters().get(i), methodGenerics, named), "argument " + (i + 1));
+                            Type expected = resolveParam(method.parameters().get(i), methodGenerics, named);
+                            validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                            requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                         }
                         return resolve(method.returnType(), methodGenerics, named);
                     }
@@ -437,6 +454,7 @@ public final class TypeChecker {
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
             for (int i = 0; i < fn.parameters().size(); i++) {
+                validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
                 requireAssignable(typeOf(call.arguments().get(i), env, generics, self), fn.parameters().get(i), "argument " + (i + 1));
             }
             return fn.result();
@@ -452,6 +470,18 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
+
+            if (receiver instanceof ClassNamespace classNamespace) {
+                Ast.ClassDecl klass = findClass(classNamespace.className());
+                if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
+                List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
+                if (functions.size() == 1) {
+                    Ast.MethodDecl fn = functions.getFirst();
+                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                }
+                if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
+                throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
+            }
 
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
