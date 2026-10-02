@@ -899,11 +899,31 @@ public final class GpuKernelCompiler {
     }
 
     private String parameterList(List<Ast.Param> parameters, String module) {
-        return String.join(", ", parameters.stream().map(param -> cParameter(param, module)).toList());
+        ArrayList<String> parts = new ArrayList<>();
+        for (Ast.Param param : parameters) {
+            parts.add(cParameter(param, module));
+            Ast.TypeRef type = resolveAlias(param.type(), module);
+            if (isBuffer(type)) parts.add("ulong " + sanitize(param.name()) + "__len");
+        }
+        return String.join(", ", parts);
     }
 
-    private String argumentNames(List<Ast.Param> parameters) {
-        return String.join(", ", parameters.stream().map(param -> sanitize(param.name())).toList());
+    private String helperParameterList(List<Ast.Param> parameters, String module) {
+        String params = parameterList(parameters, module);
+        return params.isEmpty()
+                ? "__global int* restrict __ores_error"
+                : params + ", __global int* restrict __ores_error";
+    }
+
+    private String argumentNames(List<Ast.Param> parameters, String module) {
+        ArrayList<String> args = new ArrayList<>();
+        for (Ast.Param param : parameters) {
+            args.add(sanitize(param.name()));
+            Ast.TypeRef type = resolveAlias(param.type(), module);
+            if (isBuffer(type)) args.add(sanitize(param.name()) + "__len");
+        }
+        args.add("__ores_error");
+        return String.join(", ", args);
     }
 
     private String cParameter(Ast.Param param, String module) {
