@@ -56,7 +56,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new LinkedHashMap<>();
-        private static final int MAX_GUEST_CALL_DEPTH = 1024;
+        private static final int MAX_GUEST_CALL_DEPTH = 128;
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final ThreadLocal<Integer> guestCallDepth = ThreadLocal.withInitial(() -> 0);
@@ -132,18 +132,19 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callFunctionSync(Ast.FunctionDecl fn, List<?> args) {
             enterGuestCall("function " + fn.name());
-            Env env = new Env(null, fn.nonLexical());
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+            Env env = null;
             try {
+                env = new Env(null, fn.nonLexical());
+                for (int i = 0; i < fn.parameters().size(); i++) {
+                    Ast.Param param = fn.parameters().get(i);
+                    env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) {
                 return signal.value;
             } finally {
-                env.release();
+                if (env != null) env.release();
                 exitGuestCall();
             }
         }
@@ -161,19 +162,20 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callMethodSync(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             enterGuestCall("method " + method.name());
-            Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
-                Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+            Env env = null;
             try {
+                env = new Env(null);
+                if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
+                for (int i = 0; i < method.parameters().size(); i++) {
+                    Ast.Param param = method.parameters().get(i);
+                    env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
                 executeBlock(method.body(), env);
                 return null;
             } catch (ReturnSignal signal) {
                 return signal.value;
             } finally {
-                env.release();
+                if (env != null) env.release();
                 exitGuestCall();
             }
         }
@@ -733,19 +735,20 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("lambda arity mismatch");
                 }
                 enterGuestCall("lambda");
-                Env local = new Env(captured, nonLexical);
-                for (int i = 0; i < lambda.parameters().size(); i++) {
-                    Ast.Param param = lambda.parameters().get(i);
-                    local.define(param.name(), arguments.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-                }
+                Env local = null;
                 try {
+                    local = new Env(captured, nonLexical);
+                    for (int i = 0; i < lambda.parameters().size(); i++) {
+                        Ast.Param param = lambda.parameters().get(i);
+                        local.define(param.name(), arguments.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                    }
                     if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
                     executeBlock(lambda.blockBody(), local);
                     return null;
                 } catch (ReturnSignal signal) {
                     return signal.value;
                 } finally {
-                    local.release();
+                    if (local != null) local.release();
                     exitGuestCall();
                 }
             }
