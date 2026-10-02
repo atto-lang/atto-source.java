@@ -220,6 +220,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Traits may contain initialized state, concrete methods, and abstract method
      requirements, but are never directly instantiated and have no object identity.
      Trait state is flattened into the host class before runtime.
+   - Traits are composition units, not runtime types. Trait names are rejected in
+     parameter/field/return/alias/generic-argument type positions, and a trait name
+     may not collide with a class/interface/type alias in the same module.
    - Trait fields require initializers and are not positional constructor parameters.
      Private trait state remains lexical to the defining trait.
    - Multiple traits that contribute the same field are rejected. Multiple concrete
