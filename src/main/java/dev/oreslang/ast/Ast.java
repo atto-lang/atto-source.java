@@ -5,19 +5,36 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
-    public record Program(List<ModuleDecl> modules) {
+    public record Program(List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
+            imports = List.copyOf(imports);
             modules = List.copyOf(modules);
         }
+        public Program(List<ModuleDecl> modules) { this(List.of(), modules); }
     }
 
-    public record ModuleDecl(String name, List<Decl> declarations) {
-        public ModuleDecl {
-            declarations = List.copyOf(declarations);
+    public enum ImportKind { MODULE, CLASS, FUNCTION, ALL }
+
+    public record ImportDecl(
+            ImportKind kind,
+            List<String> names,
+            boolean wildcard,
+            String namespace,
+            String path) {
+        public ImportDecl {
+            names = List.copyOf(names);
         }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, FieldDecl, TypeAliasDecl { }
+    public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+        public ModuleDecl {
+            annotations = List.copyOf(annotations);
+            declarations = List.copyOf(declarations);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
+    }
+
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
 
     public enum Visibility { PRIVATE, PUBLIC }
 
@@ -60,12 +77,45 @@ public final class Ast {
             String name,
             boolean isAbstract,
             List<String> genericParameters,
+            List<TypeRef> parents,
+            List<TypeRef> interfaces,
             List<FieldDecl> fields,
             List<MethodDecl> methods) implements Decl {
         public ClassDecl {
             genericParameters = List.copyOf(genericParameters);
+            parents = List.copyOf(parents);
+            interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+        }
+        public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
+                         List<FieldDecl> fields, List<MethodDecl> methods) {
+            this(name, isAbstract, genericParameters, List.of(), List.of(), fields, methods);
+        }
+    }
+
+    public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
+
+    public record InterfaceFunctionDecl(
+            String name,
+            List<String> genericParameters,
+            List<Param> parameters,
+            TypeRef returnType) implements InterfaceMember {
+        public InterfaceFunctionDecl {
+            genericParameters = List.copyOf(genericParameters);
+            parameters = List.copyOf(parameters);
+        }
+    }
+
+    public record InterfaceFieldDecl(String name, TypeRef type) implements InterfaceMember { }
+
+    public record InterfaceDecl(
+            String name,
+            List<String> genericParameters,
+            List<InterfaceMember> members) implements Decl {
+        public InterfaceDecl {
+            genericParameters = List.copyOf(genericParameters);
+            members = List.copyOf(members);
         }
     }
 
@@ -143,7 +193,8 @@ public final class Ast {
         }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, CallExpr, MemberExpr, NewExpr, AwaitExpr, ListExpr, LambdaExpr { }
+    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, CallExpr,
+            MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
 
@@ -155,6 +206,8 @@ public final class Ast {
 
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
 
+    public record AssignExpr(Expr target, Expr value) implements Expr { }
+
     public record CallExpr(Expr callee, List<Expr> arguments) implements Expr {
         public CallExpr {
             arguments = List.copyOf(arguments);
@@ -162,6 +215,8 @@ public final class Ast {
     }
 
     public record MemberExpr(Expr receiver, String member) implements Expr { }
+
+    public record IndexExpr(Expr receiver, Expr index) implements Expr { }
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
         public NewExpr {
@@ -174,6 +229,20 @@ public final class Ast {
     public record ListExpr(List<Expr> elements) implements Expr {
         public ListExpr {
             elements = List.copyOf(elements);
+        }
+    }
+
+    public record TupleExpr(List<Expr> elements) implements Expr {
+        public TupleExpr {
+            elements = List.copyOf(elements);
+        }
+    }
+
+    public record ObjectField(String name, Expr value) { }
+
+    public record ObjectExpr(List<ObjectField> fields) implements Expr {
+        public ObjectExpr {
+            fields = List.copyOf(fields);
         }
     }
 

@@ -20,24 +20,63 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        List<Ast.ImportDecl> imports = new ArrayList<>();
+        while (match(IMPORT)) imports.add(parseImport());
+
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         while (!check(EOF)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
             consume(DEFINE, "expected 'define'");
             consume(MODULE, "expected 'module' after 'define'");
-            modules.add(parseModule());
+            modules.add(parseModule(annotations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one named module");
-        return new Ast.Program(modules);
+        return new Ast.Program(imports, modules);
     }
 
-    private Ast.ModuleDecl parseModule() {
+    private Ast.ImportDecl parseImport() {
+        Ast.ImportKind kind;
+        List<String> names = new ArrayList<>();
+        boolean wildcard = false;
+        String namespace = null;
+
+        if (match(STAR)) {
+            kind = Ast.ImportKind.ALL;
+            wildcard = true;
+            consume(AS, "'import *' requires 'as <namespace>'");
+            namespace = consume(IDENT, "expected import namespace").lexeme();
+        } else {
+            if (match(MODULE)) kind = Ast.ImportKind.MODULE;
+            else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
+            else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
+            else throw error(peek(), "expected module, class, fnc, or * after import");
+
+            if (match(STAR)) {
+                wildcard = true;
+                consume(AS, "wildcard import requires 'as <namespace>'");
+                namespace = consume(IDENT, "expected import namespace").lexeme();
+            } else if (match(LBRACE)) {
+                if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
+                do names.add(consume(IDENT, "expected imported name").lexeme()); while (match(COMMA));
+                consume(RBRACE, "expected '}' after imported names");
+            } else {
+                names.add(consume(IDENT, "expected imported name").lexeme());
+            }
+        }
+
+        consume(FROM, "expected 'from' in import");
+        String path = consume(STRING, "expected quoted import path").lexeme();
+        if (path.isBlank()) throw error(previous(), "import path cannot be empty");
+        consume(SEMICOLON, "expected ';' after import");
+        return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+    }
+
+    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
         String name = parseQualifiedName();
         List<Ast.Decl> declarations = new ArrayList<>();
-        while (!check(END) && !check(EOF)) {
-            declarations.add(parseModuleMember());
-        }
+        while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
-        return new Ast.ModuleDecl(name, declarations);
+        return new Ast.ModuleDecl(name, annotations, declarations);
     }
 
     private Ast.Decl parseModuleMember() {
@@ -46,13 +85,15 @@ public final class Parser {
 
         if (match(FNC)) return parseFunction(annotations, modifiers);
         if (match(DEFINE)) {
-            if (match(CLASS)) return parseClass(modifiers.isAbstract);
-            throw error(previous(), "expected 'class' after 'define' inside module");
+            boolean afterDefineAbstract = match(ABSTRACT);
+            if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
+            if (match(INTERFACE)) return parseInterface();
+            throw error(previous(), "expected class or interface after 'define'");
         }
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
 
-        throw error(peek(), "expected function, class, type, or binding declaration");
+        throw error(peek(), "expected function, class, interface, type, or binding declaration");
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers) {
@@ -70,6 +111,8 @@ public final class Parser {
     private Ast.ClassDecl parseClass(boolean isAbstract) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
+        List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
 
@@ -83,7 +126,41 @@ public final class Parser {
             methods.add(parseMethod(annotations, mods));
         }
         consume(END, "expected 'end' to close class " + name);
-        return new Ast.ClassDecl(name, isAbstract, generics, fields, methods);
+        return new Ast.ClassDecl(name, isAbstract, generics, parents, interfaces, fields, methods);
+    }
+
+    private Ast.InterfaceDecl parseInterface() {
+        String name = consume(IDENT, "expected interface name").lexeme();
+        List<String> generics = parseGenericParameters();
+        List<Ast.InterfaceMember> members = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            parseAnnotations();
+            parseModifiers();
+            if (match(FNC)) {
+                String memberName = consume(IDENT, "expected interface function name").lexeme();
+                List<String> memberGenerics = parseGenericParameters();
+                consume(LPAREN, "expected '(' after interface function name");
+                List<Ast.Param> params = parseParametersUntil(RPAREN);
+                consume(RPAREN, "expected ')' after interface parameters");
+                Ast.TypeRef returns = match(FAT_ARROW) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                consume(SEMICOLON, "interface function signature must end with ';'");
+                members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
+            } else {
+                if (isBindingKind(peek().type())) advance();
+                Ast.TypeRef type = parseTypeRef();
+                String fieldName = consume(IDENT, "expected interface field name").lexeme();
+                consume(SEMICOLON, "interface field signature must end with ';'");
+                members.add(new Ast.InterfaceFieldDecl(fieldName, type));
+            }
+        }
+        consume(END, "expected 'end' to close interface " + name);
+        return new Ast.InterfaceDecl(name, generics, members);
+    }
+
+    private List<Ast.TypeRef> parseTypeRefList() {
+        List<Ast.TypeRef> refs = new ArrayList<>();
+        do refs.add(parseTypeRef()); while (match(COMMA));
+        return refs;
     }
 
     private Ast.FieldDecl parseField(Ast.Visibility visibility) {
@@ -134,9 +211,7 @@ public final class Parser {
         if (mods.isAbstract) {
             consume(SEMICOLON, "abstract method must end with ';'");
             body = List.of();
-        } else {
-            body = parseBlock();
-        }
+        } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
                 receiverType, generics, params, returnType, annotations, body);
     }
@@ -155,11 +230,12 @@ public final class Parser {
         while (match(AT)) {
             String name = consume(IDENT, "expected annotation name").lexeme();
             List<Ast.TypeRef> args = new ArrayList<>();
-            if (match(LT)) {
-                if (!check(GT)) {
-                    do args.add(parseTypeRef()); while (match(COMMA));
-                }
-                consume(GT, "expected '>' after annotation arguments");
+            Token.Type close = null;
+            if (match(LT)) close = GT;
+            else if (match(LPAREN)) close = RPAREN;
+            if (close != null) {
+                if (!check(close)) do args.add(parseTypeRef()); while (match(COMMA));
+                consume(close, "expected annotation terminator");
             }
             result.add(new Ast.Annotation(name, args));
         }
@@ -226,14 +302,14 @@ public final class Parser {
         String name;
         if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
+        else if (match(NULL)) name = "null";
         else name = parseQualifiedName();
 
         List<Ast.TypeRef> args = new ArrayList<>();
         boolean infer = false;
         if (match(LT)) {
-            if (match(GT)) {
-                infer = true;
-            } else {
+            if (match(GT)) infer = true;
+            else {
                 do args.add(parseTypeRef()); while (match(COMMA));
                 consume(GT, "expected '>' after type arguments");
             }
@@ -279,9 +355,8 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) {
-            name = advance().lexeme();
-        } else {
+        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
         }
@@ -315,20 +390,20 @@ public final class Parser {
         Ast.Expr condition = parseCondition();
         consume(SEMICOLON, "expected ';' before do");
         consume(DO, "expected 'do'");
-        List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, END);
+        List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
         while (match(ELSEIF)) {
             condition = parseCondition();
             consume(SEMICOLON, "expected ';' before do");
             consume(DO, "expected 'do'");
-            body = parseUntil(ELSEIF, ELSE, END);
+            body = parseUntil(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
 
         List<Ast.Stmt> elseBody = List.of();
-        if (match(ELSE)) elseBody = parseUntil(END);
-        consume(END, "expected 'fi' terminator token; lexer currently maps terminator as identifier 'fi'");
+        if (match(ELSE)) elseBody = parseUntil(FI);
+        consume(FI, "expected 'fi' to close if");
         return new Ast.IfStmt(branches, elseBody);
     }
 
@@ -362,8 +437,15 @@ public final class Parser {
         return body;
     }
 
-    public Ast.Expr parseExpression() {
-        return parseOr();
+    public Ast.Expr parseExpression() { return parseAssignment(); }
+
+    private Ast.Expr parseAssignment() {
+        Ast.Expr expr = parseOr();
+        if (match(EQUAL)) {
+            if (!(expr instanceof Ast.NameExpr)) throw error(previous(), "assignment target must be a local name in v1");
+            return new Ast.AssignExpr(expr, parseAssignment());
+        }
+        return expr;
     }
 
     private Ast.Expr parseOr() {
@@ -424,6 +506,10 @@ public final class Parser {
             } else if (match(DOT)) {
                 String member = consume(IDENT, "expected member name after '.'").lexeme();
                 expr = new Ast.MemberExpr(expr, member);
+            } else if (match(LBRACKET)) {
+                Ast.Expr index = parseExpression();
+                consume(RBRACKET, "expected ']' after index");
+                expr = new Ast.IndexExpr(expr, index);
             } else break;
         }
         return expr;
@@ -439,7 +525,7 @@ public final class Parser {
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
-        if (match(NULL)) return new Ast.LiteralExpr(null);
+        if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T> (Option<null> is type-only when explicitly needed)");
         if (match(SELF)) return new Ast.NameExpr("self");
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
@@ -449,11 +535,25 @@ public final class Parser {
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
+        if (match(OBJ)) return parseObjectLiteral();
+        if (match(ARR)) {
+            consume(LBRACKET, "expected '[' after arr");
+            List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
+            consume(RBRACKET, "expected ']' after arr literal");
+            return new Ast.ListExpr(items);
+        }
         if (check(LPAREN) && looksLikeLambda()) return parseLambda();
         if (match(LPAREN)) {
-            Ast.Expr expr = parseExpression();
+            Ast.Expr first = parseExpression();
+            if (match(COMMA)) {
+                List<Ast.Expr> items = new ArrayList<>();
+                items.add(first);
+                do items.add(parseExpression()); while (match(COMMA));
+                consume(RPAREN, "expected ')' after tuple");
+                return new Ast.TupleExpr(items);
+            }
             consume(RPAREN, "expected ')' after expression");
-            return expr;
+            return first;
         }
         if (match(LBRACKET)) {
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
@@ -461,6 +561,22 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    private Ast.ObjectExpr parseObjectLiteral() {
+        consume(LBRACE, "expected '{' after obj");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                String name;
+                if (match(IDENT, STRING)) name = previous().lexeme();
+                else throw error(peek(), "expected object field name");
+                consume(COLON, "expected ':' after object field name");
+                fields.add(new Ast.ObjectField(name, parseExpression()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after obj literal");
+        return new Ast.ObjectExpr(fields);
     }
 
     private Ast.LambdaExpr parseLambda() {
@@ -499,16 +615,11 @@ public final class Parser {
         throw error(peek(), "expected const, val, or let");
     }
 
-    private boolean isBindingKind(Token.Type type) {
-        return type == CONST || type == VAL || type == LET;
-    }
+    private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
 
     private boolean match(Token.Type... types) {
         for (Token.Type type : types) {
-            if (check(type)) {
-                advance();
-                return true;
-            }
+            if (check(type)) { advance(); return true; }
         }
         return false;
     }
@@ -518,27 +629,11 @@ public final class Parser {
         throw error(peek(), message);
     }
 
-    private boolean check(Token.Type type) {
-        return peek().type() == type;
-    }
-
-    private boolean checkNext(Token.Type type) {
-        return current + 1 < tokens.size() && tokens.get(current + 1).type() == type;
-    }
-
-    private Token advance() {
-        if (!check(EOF)) current++;
-        return previous();
-    }
-
-    private Token peek() {
-        return tokens.get(current);
-    }
-
-    private Token previous() {
-        return tokens.get(current - 1);
-    }
-
+    private boolean check(Token.Type type) { return peek().type() == type; }
+    private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+    private Token advance() { if (!check(EOF)) current++; return previous(); }
+    private Token peek() { return tokens.get(current); }
+    private Token previous() { return tokens.get(current - 1); }
     private IllegalArgumentException error(Token token, String message) {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }

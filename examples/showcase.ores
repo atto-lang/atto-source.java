@@ -1,5 +1,12 @@
+define module contracts
+  define interface MathApi
+    fnc add(int a, int b) => int;
+  end
+end
+
+@AdheresTo(contracts.MathApi)
 define module math
-  fnc add(int a, int b) => int {
+  pub fnc add(int a, int b) => int {
     return a + b;
   }
 
@@ -9,7 +16,11 @@ define module math
 end
 
 define module model
-  define class Box<T>
+  define class Base
+    pub seven() => int { return 7; }
+  end
+
+  define class Box<T> extends Base
     val T value;
 
     @Ret<self>
@@ -21,18 +32,22 @@ end
 
 define module app
   pub fnc main() => void {
-    const answer = 40 + 2;
+    let answer = math.add(40, 2);
+    answer = answer + 1;
     val complex z = 3 + 4i;
-    [const first, let second] = [1, 2];
+    val values = arr[answer, 2];
+    val info = obj{name: "oreslang", stable: true};
+    [const first, let second] = (values[0], values[1]);
 
-    if answer == 42, first == 1 | false; do
+    if first == 43, info.stable | false; do
       stdio.println("oreslang-ok");
     else
       stdio.println("unexpected");
     fi
 
-    stdio.println("complex value follows");
+    stdio.println(info.name);
     stdio.println(z);
+    stdio.println(second);
     return;
   }
 end
