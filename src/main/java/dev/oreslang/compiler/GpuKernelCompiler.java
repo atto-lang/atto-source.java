@@ -448,7 +448,7 @@ public final class GpuKernelCompiler {
         }
 
         List<GpuBatch> batches = emitBatchDispatchers(body);
-        boolean fp64 = body.indexOf("double") >= 0;
+        boolean fp64 = containsCToken(body, "double");
         LinkedHashSet<String> requiredExtensions = new LinkedHashSet<>();
         if (fp64) requiredExtensions.add("cl_khr_fp64");
 
@@ -1489,6 +1489,25 @@ public final class GpuKernelCompiler {
         }
         if (out.isEmpty() || Character.isDigit(out.charAt(0))) out.insert(0, '_');
         return out.toString();
+    }
+
+    private static boolean containsCToken(CharSequence source, String token) {
+        int from = 0;
+        while (from < source.length()) {
+            int index = source.toString().indexOf(token, from);
+            if (index < 0) return false;
+            int before = index - 1;
+            int after = index + token.length();
+            boolean leftBoundary = before < 0 || !isCIdentifierChar(source.charAt(before));
+            boolean rightBoundary = after >= source.length() || !isCIdentifierChar(source.charAt(after));
+            if (leftBoundary && rightBoundary) return true;
+            from = index + token.length();
+        }
+        return false;
+    }
+
+    private static boolean isCIdentifierChar(char c) {
+        return c == '_' || Character.isLetterOrDigit(c);
     }
 
     private static String canonicalManifest(
