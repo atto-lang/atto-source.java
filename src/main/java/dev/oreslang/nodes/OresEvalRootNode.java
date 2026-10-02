@@ -113,11 +113,105 @@ public final class OresEvalRootNode extends RootNode {
                     if (decl instanceof Ast.FunctionDecl fn) {
                         index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                         functionOwners.put(fn, module.name());
+                        indexLocalClasses(fn.body(), module.name());
+                    } else if (decl instanceof Ast.InitDecl init) {
+                        indexLocalClasses(init.body(), module.name());
                     } else if (decl instanceof Ast.ClassDecl klass) {
                         index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                         classOwners.put(klass, module.name());
+                        indexLocalClasses(klass, module.name());
+                    } else if (decl instanceof Ast.FieldDecl field && field.initializer() != null) {
+                        indexLocalClasses(field.initializer(), module.name());
                     }
                 }
+            }
+        }
+
+        private void indexLocalClasses(Ast.ClassDecl klass, String moduleName) {
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.initializer() != null) indexLocalClasses(field.initializer(), moduleName);
+            }
+            for (Ast.MethodDecl method : klass.methods()) {
+                indexLocalClasses(method.body(), moduleName);
+            }
+        }
+
+        private void indexLocalClasses(List<Ast.Stmt> statements, String moduleName) {
+            for (Ast.Stmt stmt : statements) {
+                if (stmt instanceof Ast.TypeDeclStmt local) {
+                    if (local.declaration() instanceof Ast.ClassDecl klass) {
+                        localClassOwners.putIfAbsent(klass, moduleName);
+                        indexLocalClasses(klass, moduleName);
+                    }
+                } else if (stmt instanceof Ast.BindingStmt binding) {
+                    indexLocalClasses(binding.initializer(), moduleName);
+                } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                    indexLocalClasses(destructure.initializer(), moduleName);
+                } else if (stmt instanceof Ast.ReturnStmt returned) {
+                    if (returned.value() != null) indexLocalClasses(returned.value(), moduleName);
+                } else if (stmt instanceof Ast.ExprStmt expression) {
+                    indexLocalClasses(expression.expression(), moduleName);
+                } else if (stmt instanceof Ast.DeferStmt deferred) {
+                    indexLocalClasses(deferred.expression(), moduleName);
+                } else if (stmt instanceof Ast.IfStmt conditional) {
+                    for (Ast.IfBranch branch : conditional.branches()) {
+                        indexLocalClasses(branch.condition(), moduleName);
+                        indexLocalClasses(branch.body(), moduleName);
+                    }
+                    indexLocalClasses(conditional.elseBody(), moduleName);
+                } else if (stmt instanceof Ast.TryStmt attempted) {
+                    indexLocalClasses(attempted.body(), moduleName);
+                    indexLocalClasses(attempted.catchBody(), moduleName);
+                    indexLocalClasses(attempted.finallyBody(), moduleName);
+                } else if (stmt instanceof Ast.ForOfStmt loop) {
+                    indexLocalClasses(loop.iterable(), moduleName);
+                    indexLocalClasses(loop.body(), moduleName);
+                } else if (stmt instanceof Ast.ForStmt loop) {
+                    if (loop.initializer() != null) indexLocalClasses(List.of(loop.initializer()), moduleName);
+                    if (loop.condition() != null) indexLocalClasses(loop.condition(), moduleName);
+                    if (loop.update() != null) indexLocalClasses(loop.update(), moduleName);
+                    indexLocalClasses(loop.body(), moduleName);
+                }
+            }
+        }
+
+        private void indexLocalClasses(Ast.Expr expr, String moduleName) {
+            if (expr == null || expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return;
+            if (expr instanceof Ast.AssignExpr e) {
+                indexLocalClasses(e.target(), moduleName);
+                indexLocalClasses(e.value(), moduleName);
+            } else if (expr instanceof Ast.BinaryExpr e) {
+                indexLocalClasses(e.left(), moduleName);
+                indexLocalClasses(e.right(), moduleName);
+            } else if (expr instanceof Ast.UnaryExpr e) {
+                indexLocalClasses(e.operand(), moduleName);
+            } else if (expr instanceof Ast.ConditionalExpr e) {
+                indexLocalClasses(e.condition(), moduleName);
+                indexLocalClasses(e.whenTrue(), moduleName);
+                indexLocalClasses(e.whenFalse(), moduleName);
+            } else if (expr instanceof Ast.CallExpr e) {
+                indexLocalClasses(e.callee(), moduleName);
+                for (Ast.Expr argument : e.arguments()) indexLocalClasses(argument, moduleName);
+            } else if (expr instanceof Ast.MemberExpr e) {
+                indexLocalClasses(e.receiver(), moduleName);
+            } else if (expr instanceof Ast.IndexExpr e) {
+                indexLocalClasses(e.receiver(), moduleName);
+                indexLocalClasses(e.index(), moduleName);
+            } else if (expr instanceof Ast.NewExpr e) {
+                for (Ast.Expr argument : e.arguments()) indexLocalClasses(argument, moduleName);
+            } else if (expr instanceof Ast.StructInitExpr e) {
+                for (Ast.ObjectField field : e.fields()) indexLocalClasses(field.value(), moduleName);
+            } else if (expr instanceof Ast.AwaitExpr e) {
+                indexLocalClasses(e.expression(), moduleName);
+            } else if (expr instanceof Ast.ListExpr e) {
+                for (Ast.Expr item : e.elements()) indexLocalClasses(item, moduleName);
+            } else if (expr instanceof Ast.TupleExpr e) {
+                for (Ast.Expr item : e.elements()) indexLocalClasses(item, moduleName);
+            } else if (expr instanceof Ast.ObjectExpr e) {
+                for (Ast.ObjectField field : e.fields()) indexLocalClasses(field.value(), moduleName);
+            } else if (expr instanceof Ast.LambdaExpr e) {
+                if (e.expressionBody() != null) indexLocalClasses(e.expressionBody(), moduleName);
+                if (e.blockBody() != null) indexLocalClasses(e.blockBody(), moduleName);
             }
         }
 
