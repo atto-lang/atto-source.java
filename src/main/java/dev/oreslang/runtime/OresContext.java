@@ -10,6 +10,11 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class OresContext implements AutoCloseable {
@@ -23,6 +28,8 @@ public final class OresContext implements AutoCloseable {
     private final GcController gc;
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
+    private final ConcurrentHashMap<CompletableFuture<?>, Thread> asyncTasks = new ConcurrentHashMap<>();
+    private final Semaphore asyncPermits;
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
 
@@ -35,6 +42,7 @@ public final class OresContext implements AutoCloseable {
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.actors = new ActorRuntime(isolatePolicy);
         this.gc = new GcController(actors);
+        this.asyncPermits = new Semaphore(Math.max(1, isolatePolicy.maxActors()), true);
     }
 
     public static OresContext get(Node node) {
@@ -67,6 +75,46 @@ public final class OresContext implements AutoCloseable {
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
+    /**
+     * Bounded structured-at-context async execution. Async callables use virtual
+     * threads, but task creation is admission-controlled and every live task is
+     * owned by this context so close() can cancel it.
+     */
+    public <T> CompletionStage<T> submitAsync(Callable<T> task) {
+        java.util.Objects.requireNonNull(task, "task");
+        if (!asyncPermits.tryAcquire()) {
+            throw new IllegalStateException(
+                    "async task limit exceeded for isolate: maxAsyncTasks=" + isolatePolicy.maxActors());
+        }
+
+        CompletableFuture<T> future = new CompletableFuture<>();
+        final Thread[] holder = new Thread[1];
+        try {
+            Thread thread = Thread.ofVirtual().name("ores-async-" + contextId).unstarted(() -> {
+                try {
+                    future.complete(task.call());
+                } catch (Throwable failure) {
+                    future.completeExceptionally(failure);
+                } finally {
+                    asyncTasks.remove(future);
+                    asyncPermits.release();
+                }
+            });
+            holder[0] = thread;
+            asyncTasks.put(future, thread);
+            thread.start();
+            return future;
+        } catch (Throwable startFailure) {
+            asyncTasks.remove(future);
+            asyncPermits.release();
+            throw startFailure;
+        }
+    }
+
+    public int activeAsyncTasks() {
+        return asyncTasks.size();
+    }
+
     public Map<String, Object> processDescriptor() {
         return Map.ofEntries(
                 Map.entry("context_id", contextId.toString()),
@@ -85,6 +133,10 @@ public final class OresContext implements AutoCloseable {
 
     @Override
     public void close() {
+        for (Thread thread : asyncTasks.values()) {
+            thread.interrupt();
+        }
+        asyncTasks.clear();
         actors.close();
         output.flush();
     }
