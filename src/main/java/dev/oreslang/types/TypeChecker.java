@@ -317,7 +317,10 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
-        if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            checkDefer(defer, env, generics, self);
+            return;
+        }
         if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 requireAssignable(typeOf(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
@@ -348,6 +351,39 @@ public final class TypeChecker {
             if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+        }
+    }
+
+    private void checkDefer(Ast.DeferStmt defer, Env env, Set<String> generics, Type self) {
+        if (defer.kind() == Ast.DeferKind.EXPLICIT_LAMBDA_CALL) {
+            if (!(defer.expression() instanceof Ast.LambdaExpr lambda)) {
+                throw new IllegalArgumentException("internal defer invariant: explicit deferred calls require a lambda");
+            }
+            Type callable = typeOf(lambda, env, generics, self);
+            if (!(callable instanceof Function fn)) {
+                throw new IllegalArgumentException("deferred lambda is not callable");
+            }
+            if (fn.parameters().size() != defer.arguments().size()) {
+                throw new IllegalArgumentException("deferred lambda arity " + fn.parameters().size()
+                        + " does not match " + defer.arguments().size() + " captured argument(s)");
+            }
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Type expected = fn.parameters().get(i);
+                Ast.Expr argument = defer.arguments().get(i);
+                validateLambdaArgument(argument, expected, env, generics, self);
+                requireAssignable(typeOf(argument, env, generics, self), expected,
+                        "deferred argument " + (i + 1));
+            }
+            return;
+        }
+
+        Type produced = typeOf(defer.expression(), env, generics, self);
+        if (!(produced instanceof Function fn) || !fn.parameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "defer expression must produce an arity-0 function; got " + produced);
+        }
+        if (!defer.arguments().isEmpty()) {
+            throw new IllegalArgumentException("internal defer invariant: callable-value defer cannot carry arguments");
         }
     }
 
@@ -1132,7 +1168,10 @@ public final class TypeChecker {
         else if (stmt instanceof Ast.DestructureStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
-        else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
+        else if (stmt instanceof Ast.DeferStmt s) {
+            collectCalls(s.expression(), module, out);
+            for (Ast.Expr argument : s.arguments()) collectCalls(argument, module, out);
+        }
         else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch b : s.branches()) {
                 collectCalls(b.condition(), module, out);
