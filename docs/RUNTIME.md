@@ -179,4 +179,4 @@ The JVM's own collector remains responsible for ordinary Java/Graal heap pages. 
 
 ### Lifetime interaction
 
-Borrow checking is intentionally independent of runtime GC. A borrow is invalid if it outlives its owner even if the host object would happen to remain reachable. Returned borrows preserve their source provenance across call boundaries. Until explicit named lifetime parameters are introduced, a borrowed return must be anchored to exactly one compatible borrowed parameter; ambiguous multi-source lifetime signatures are rejected rather than inferred unsafely.
+Borrow checking is intentionally independent of runtime GC. A borrow is invalid if it outlives its owner even if the host object would happen to remain reachable. Returned borrows preserve their source provenance across call boundaries. Until explicit named lifetime parameters are introduced, ambiguous multi-source borrowed-return signatures are rejected rather than inferred unsafely; single-source borrowed returns preserve their source provenance automatically.
