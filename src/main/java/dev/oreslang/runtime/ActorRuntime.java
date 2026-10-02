@@ -1,5 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.lang.foreign.Arena;
+import java.lang.foreign.MemorySegment;
+import java.lang.management.ManagementFactory;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -14,12 +17,21 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.ForkJoinWorkerThread;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CancellationException;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
+import jdk.management.VirtualThreadSchedulerMXBean;
 
 /**
  * Host-side actor substrate used by the first interpreter.
@@ -36,13 +48,97 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int DEFAULT_MAX_ACTORS = 16_384;
     private static final Duration MAX_CLOSE_WAIT = Duration.ofSeconds(2);
 
+    public record SchedulerConfig(
+            int privateCarrierMin,
+            int privateCarrierMax,
+            int sharedPoolMin,
+            int sharedPoolMax) {
+
+        public SchedulerConfig {
+            if (privateCarrierMin < 1 || privateCarrierMax < privateCarrierMin) {
+                throw new IllegalArgumentException("invalid private actor carrier bounds");
+            }
+            if (sharedPoolMin < 1 || sharedPoolMax < sharedPoolMin) {
+                throw new IllegalArgumentException("invalid shared actor pool bounds");
+            }
+        }
+
+        public static SchedulerConfig defaults() {
+            return new SchedulerConfig(
+                    intProperty("ores.actor.private.carriers.min", 20),
+                    intProperty("ores.actor.private.carriers.max", 40),
+                    intProperty("ores.actor.shared.pool.min", 10),
+                    intProperty("ores.actor.shared.pool.max", 20));
+        }
+
+        private static int intProperty(String name, int fallback) {
+            String raw = System.getProperty(name);
+            if (raw == null || raw.isBlank()) return fallback;
+            try {
+                return Integer.parseInt(raw);
+            } catch (NumberFormatException invalid) {
+                throw new IllegalArgumentException(name + " must be an integer", invalid);
+            }
+        }
+    }
+
+    public record SchedulerSnapshot(
+            int privateCarrierTarget,
+            int privateCarrierPoolSize,
+            long privateQueuedVirtualThreads,
+            int sharedTargetParallelism,
+            int sharedPoolSize,
+            long sharedQueuedTasks) { }
+
+    private static final ProcessActorSchedulers PROCESS_SCHEDULERS =
+            new ProcessActorSchedulers(SchedulerConfig.defaults());
+
+    public enum MemoryMode {
+        SHARED_HEAP,
+        PRIVATE_ARENA
+    }
+
+    public record MemoryPolicy(MemoryMode mode, long arenaBytes) {
+        public MemoryPolicy {
+            java.util.Objects.requireNonNull(mode, "mode");
+            if (mode == MemoryMode.SHARED_HEAP && arenaBytes != 0) {
+                throw new IllegalArgumentException("shared-heap actors must use arenaBytes=0");
+            }
+            if (mode == MemoryMode.PRIVATE_ARENA && arenaBytes <= 0) {
+                throw new IllegalArgumentException("private-arena actors require arenaBytes > 0");
+            }
+        }
+
+        public static MemoryPolicy sharedHeap() {
+            return new MemoryPolicy(MemoryMode.SHARED_HEAP, 0);
+        }
+
+        public static MemoryPolicy privateArena(long bytes) {
+            return new MemoryPolicy(MemoryMode.PRIVATE_ARENA, bytes);
+        }
+
+        public long initialArenaBytes() { return arenaBytes; }
+    }
+
+    public interface ActorMemory extends AutoCloseable {
+        MemoryMode mode();
+        long capacityBytes();
+        long maxCapacityBytes();
+        long usedBytes();
+        int segmentCount();
+        MemorySegment allocate(long byteSize, long byteAlignment);
+        @Override void close();
+    }
+
     private static final ThreadLocal<IsolatePolicy> CURRENT_ACTOR_POLICY = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_ACTOR_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_ACTOR_DOMAIN = new ThreadLocal<>();
+    private static final ThreadLocal<MemoryMode> CURRENT_ACTOR_MEMORY_MODE = new ThreadLocal<>();
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicInteger actorCount = new AtomicInteger();
+    private final AtomicLong privateArenaReservedBytes = new AtomicLong();
     private final Object lifecycleLock = new Object();
     private final IsolatePolicy policyCeiling;
     private final int maxActors;
@@ -66,6 +162,11 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public int maxActors() { return maxActors; }
+
+    public static SchedulerConfig schedulerConfig() { return PROCESS_SCHEDULERS.config; }
+    public static SchedulerSnapshot schedulerSnapshot() { return PROCESS_SCHEDULERS.snapshot(); }
+    public long privateArenaReservedBytes() { return privateArenaReservedBytes.get(); }
+    public long privateArenaBudgetBytes() { return policyCeiling.maxHeapBytes(); }
 
     private void requireCallerRuntimeAffinity(String operation) {
         ActorRuntime caller = CURRENT_ACTOR_RUNTIME.get();
@@ -163,10 +264,16 @@ public final class ActorRuntime implements AutoCloseable {
         void onMessage(M message, ActorContext<M> context) throws Exception;
     }
 
+    @FunctionalInterface
+    public interface Invocation<M, R> {
+        R run(M message, ActorContext<M> context) throws Exception;
+    }
+
     public interface ActorContext<M> {
         ActorRef<M> self();
         ActorRuntime runtime();
         IsolatePolicy policy();
+        ActorMemory memory();
     }
 
     public final class ActorRef<M> {
@@ -202,25 +309,51 @@ public final class ActorRuntime implements AutoCloseable {
      * be generated by Oreslang lowering, not supplied from untrusted guest code.
      */
     public <M> ActorRef<M> spawn(Supplier<? extends Behavior<M>> behaviorFactory) {
-        return spawn(policyCeiling, behaviorFactory);
+        return spawn(policyCeiling, MemoryPolicy.sharedHeap(), behaviorFactory);
     }
 
-    public <M> ActorRef<M> spawn(IsolatePolicy policy, Supplier<? extends Behavior<M>> behaviorFactory) {
+    public <M> ActorRef<M> spawn(
+            MemoryPolicy memoryPolicy,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawn(policyCeiling, memoryPolicy, behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawn(
+            IsolatePolicy policy,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawn(policy, MemoryPolicy.sharedHeap(), behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawn(
+            IsolatePolicy policy,
+            MemoryPolicy memoryPolicy,
+            Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawnInternal(policy, memoryPolicy, behaviorFactory, failure -> { });
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            IsolatePolicy policy,
+            MemoryPolicy memoryPolicy,
+            Supplier<? extends Behavior<M>> behaviorFactory,
+            Consumer<Throwable> onTerminated) {
         requireCallerRuntimeAffinity("spawn actors");
         java.util.Objects.requireNonNull(policy, "policy");
+        java.util.Objects.requireNonNull(memoryPolicy, "memoryPolicy");
         java.util.Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        java.util.Objects.requireNonNull(onTerminated, "onTerminated");
         requireWithinCeiling(policy);
+        requireMemoryPolicy(policy, memoryPolicy);
 
         synchronized (lifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             if (!reserveActorSlot()) {
-                throw new IllegalStateException(
-                        "actor runtime limit exceeded: " + maxActors);
+                throw new IllegalStateException("actor runtime limit exceeded: " + maxActors);
             }
 
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id);
-            ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
+            ActorCell<M> cell = new ActorCell<>(
+                    ref, policy, memoryPolicy, behaviorFactory, onTerminated);
             actors.put(id, cell);
             try {
                 cell.start();
@@ -231,6 +364,96 @@ public final class ActorRuntime implements AutoCloseable {
                 throw startupFailure;
             }
         }
+    }
+
+    private void requireMemoryPolicy(IsolatePolicy policy, MemoryPolicy memoryPolicy) {
+        if (memoryPolicy.mode() != MemoryMode.PRIVATE_ARENA) return;
+        if (memoryPolicy.arenaBytes() > policy.maxHeapBytes()) {
+            throw new SecurityException("actor private arena exceeds actor maxHeapBytes policy");
+        }
+        if (policy.capabilities().contains(IsolatePolicy.Capability.SHARED_MEMORY)) {
+            throw new SecurityException("PRIVATE_ARENA actors cannot have SHARED_MEMORY capability");
+        }
+        if (policy.capabilities().contains(IsolatePolicy.Capability.ACTOR_SHARE_READONLY)) {
+            throw new SecurityException("PRIVATE_ARENA actors cannot have ACTOR_SHARE_READONLY capability");
+        }
+    }
+
+    public <M, R> R invoke(
+            M message,
+            MemoryPolicy memoryPolicy,
+            Invocation<M, R> invocation) {
+        java.util.Objects.requireNonNull(memoryPolicy, "memoryPolicy");
+        java.util.Objects.requireNonNull(invocation, "invocation");
+
+        if (inActorExecution()
+                && CURRENT_ACTOR_MEMORY_MODE.get() == MemoryMode.SHARED_HEAP) {
+            throw new IllegalStateException(
+                    "synchronous actor invocation from a shared actor would block the shared actor pool; use an async/suspendable actor call");
+        }
+
+        IsolatePolicy invocationPolicy = policyForMemoryMode(policyCeiling, memoryPolicy.mode());
+        CompletableFuture<R> completion = new CompletableFuture<>();
+        ActorRef<M> ref = spawnInternal(
+                invocationPolicy,
+                memoryPolicy,
+                () -> (delivered, actorContext) -> {
+                    try {
+                        Object raw = invocation.run(delivered, actorContext);
+                        @SuppressWarnings("unchecked")
+                        R frozenResult = (R) freezeActorResult(raw, memoryPolicy.mode());
+                        completion.complete(frozenResult);
+                    } catch (Throwable failure) {
+                        completion.completeExceptionally(failure);
+                    } finally {
+                        stop(actorContext.self());
+                    }
+                },
+                failure -> {
+                    if (completion.isDone()) return;
+                    if (failure != null) completion.completeExceptionally(failure);
+                    else completion.completeExceptionally(
+                            new CancellationException(
+                                    "actor invocation terminated before producing a result"));
+                });
+
+        try {
+            send(ref, message);
+            return completion.join();
+        } catch (CompletionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new RuntimeException(cause);
+        } finally {
+            stop(ref);
+        }
+    }
+
+    private IsolatePolicy policyForMemoryMode(IsolatePolicy source, MemoryMode mode) {
+        if (mode == MemoryMode.SHARED_HEAP) return source;
+        java.util.Set<IsolatePolicy.Capability> caps =
+                java.util.EnumSet.copyOf(source.capabilities());
+        caps.remove(IsolatePolicy.Capability.SHARED_MEMORY);
+        caps.remove(IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+        return new IsolatePolicy(
+                caps,
+                source.maxHeapBytes(),
+                source.maxMailboxMessages(),
+                source.maxWallTime(),
+                source.adversarial());
+    }
+
+    public boolean stop(ActorRef<?> ref) {
+        requireCallerRuntimeAffinity("stop actors");
+        java.util.Objects.requireNonNull(ref, "ref");
+        if (!ref.belongsTo(this)) {
+            throw new IllegalArgumentException("ActorRef belongs to another ActorRuntime");
+        }
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return false;
+        cell.stop();
+        return true;
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
@@ -269,7 +492,16 @@ public final class ActorRuntime implements AutoCloseable {
         boolean enqueued = false;
         try {
             Object frozen = freezeForThisRuntime(message);
+            if (cell.memoryPolicy.mode() == MemoryMode.PRIVATE_ARENA
+                    && containsReadonlyShared(frozen)) {
+                throw new SecurityException(
+                        "PRIVATE_ARENA actors cannot receive Shared<T> JVM-heap aliases");
+            }
             if (containsSharedMutex(frozen)) {
+                if (cell.memoryPolicy.mode() == MemoryMode.PRIVATE_ARENA) {
+                    throw new SecurityException(
+                            "PRIVATE_ARENA actors cannot receive SharedMutex<T>");
+                }
                 IsolatePolicy sender = CURRENT_ACTOR_POLICY.get();
                 if (sender != null) sender.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex actor send");
                 else policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex host send");
@@ -281,6 +513,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "actor terminated before message admission for " + ref.id());
             }
             enqueued = true;
+            cell.messageAvailable();
         } finally {
             if (!enqueued) cell.releaseMailboxSlot();
         }
@@ -341,6 +574,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         budget.addNode();
 
+        if (value instanceof MemorySegment) {
+            throw new IllegalArgumentException(
+                    "MemorySegment is actor-local memory and cannot cross actor boundaries");
+        }
         if (value == null) {
             budget.addBytes(1);
             return null;
@@ -575,6 +812,35 @@ public final class ActorRuntime implements AutoCloseable {
             return false;
         }
         return false;
+    }
+
+    private static boolean containsReadonlyShared(Object value) {
+        if (value instanceof Shared<?>) return true;
+        if (value instanceof List<?> list) {
+            for (Object item : list) if (containsReadonlyShared(item)) return true;
+            return false;
+        }
+        if (value instanceof Set<?> set) {
+            for (Object item : set) if (containsReadonlyShared(item)) return true;
+            return false;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (containsReadonlyShared(entry.getKey())
+                        || containsReadonlyShared(entry.getValue())) return true;
+            }
+        }
+        return false;
+    }
+
+    private Object freezeActorResult(Object value, MemoryMode sourceMode) {
+        Object frozen = freezeForThisRuntime(value);
+        if (sourceMode == MemoryMode.PRIVATE_ARENA
+                && (containsReadonlyShared(frozen) || containsSharedMutex(frozen))) {
+            throw new SecurityException(
+                    "PRIVATE_ARENA actor results cannot expose shared JVM-heap capabilities");
+        }
+        return frozen;
     }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
