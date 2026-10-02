@@ -44,7 +44,7 @@ public final class ChannelRuntime {
             }
         }
 
-        public static <T> TrySendResult<T> sent() {
+        public static <T> TrySendResult<T> success() {
             return new TrySendResult<>(true, null);
         }
 
@@ -294,7 +294,7 @@ public final class ChannelRuntime {
             coordination.unlock();
         }
         runCompletions(completions);
-        return sent ? TrySendResult.sent() : TrySendResult.full(value);
+        return sent ? TrySendResult.success() : TrySendResult.full(value);
     }
 
     @SuppressWarnings("unchecked")
