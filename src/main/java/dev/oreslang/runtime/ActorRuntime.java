@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.io.IOException;
+import java.lang.foreign.Arena;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -483,10 +484,11 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Allocate actor-confined direct memory. The raw ByteBuffer is never
-         * exposed; all reads/writes verify the owning ActorId. This gives
-         * compiler-lowered private actor state a genuinely unshared backing
-         * region while actors remain multiplexed over carrier threads.
+         * Allocate actor-confined native memory from a closeable FFM arena.
+         * The ByteBuffer view never escapes this wrapper; every access verifies
+         * the owning ActorId. Arena.close() deterministically releases the
+         * native region at block/actor teardown instead of relying on a direct
+         * buffer cleaner or ordinary JVM GC timing.
          */
         public PrivateMemoryBlock allocatePrivateBytes(int bytes) {
             requireCurrentOwner();
@@ -575,6 +577,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final MemoryReservation reservation;
         private final int capacity;
+        private volatile Arena arena;
         private volatile ByteBuffer memory;
         private final AtomicBoolean blockClosed = new AtomicBoolean();
 
@@ -585,7 +588,16 @@ public final class ActorRuntime implements AutoCloseable {
             this.slice = Objects.requireNonNull(slice);
             this.reservation = Objects.requireNonNull(reservation);
             this.capacity = bytes;
-            this.memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            Arena allocatedArena = Arena.ofShared();
+            try {
+                this.memory = allocatedArena.allocate(bytes)
+                        .asByteBuffer()
+                        .order(ByteOrder.LITTLE_ENDIAN);
+                this.arena = allocatedArena;
+            } catch (RuntimeException | Error failure) {
+                allocatedArena.close();
+                throw failure;
+            }
         }
 
         public int capacity() { return capacity; }
@@ -658,11 +670,17 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void zeroAndDetachMemory() {
             ByteBuffer live = memory;
-            if (live == null) return;
-            ByteBuffer duplicate = live.duplicate();
-            duplicate.clear();
-            while (duplicate.hasRemaining()) duplicate.put((byte) 0);
+            Arena liveArena = arena;
             memory = null;
+            arena = null;
+            if (live != null) {
+                ByteBuffer duplicate = live.duplicate();
+                duplicate.clear();
+                while (duplicate.hasRemaining()) duplicate.put((byte) 0);
+            }
+            if (liveArena != null) {
+                liveArena.close();
+            }
         }
 
         private void invalidateFromSlice() {
