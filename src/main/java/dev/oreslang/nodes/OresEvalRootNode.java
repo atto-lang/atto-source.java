@@ -209,7 +209,9 @@ public final class OresEvalRootNode extends RootNode {
                     executeBlock(loop.body(), loopEnv);
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
+                return;
             }
+            throw new IllegalArgumentException("runtime does not handle statement kind " + stmt.getClass().getSimpleName());
         }
 
         private Object eval(Ast.Expr expr, Env env) {
@@ -705,6 +707,10 @@ public final class OresEvalRootNode extends RootNode {
         private TupleValue(List<Object> elements) { this.elements = List.copyOf(elements); }
         @Override public Object get(int index) { return elements.get(index); }
         @Override public int size() { return elements.size(); }
+        @Override public boolean equals(Object other) {
+            return other instanceof TupleValue tuple && elements.equals(tuple.elements);
+        }
+        @Override public int hashCode() { return elements.hashCode(); }
     }
 
     private static final class ReturnSignal extends RuntimeException {
