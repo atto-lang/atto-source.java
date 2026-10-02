@@ -1492,6 +1492,31 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonInitializationUsesTheContextWallTimeBudget() {
+        String key = "init-budget:" + UUID.randomUUID();
+
+        ProcessSingletonRegistry.Handle<Object> handle =
+                ProcessSingletonRegistry.getOrCreate(
+                        key,
+                        Duration.ofMillis(25),
+                        () -> {
+                            while (true) ProcessSingletonRegistry.checkExecutionBudget();
+                        });
+
+        RuntimeException failure = assertThrows(
+                RuntimeException.class,
+                () -> handle.call(
+                        List.of(),
+                        8,
+                        Duration.ofSeconds(1),
+                        (state, ignored) -> "unreachable")
+                        .toCompletableFuture()
+                        .join());
+
+        assertTrue(causeChainContains(failure, "wall-time budget"), String.valueOf(failure));
+    }
+
+    @Test
     void isolateLocalStaticsCannotMasqueradeAsOsProcessSingletons() {
         assertDoesNotThrow(() -> ProcessSingletonRegistry.requireBackendFor(false));
 
