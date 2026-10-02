@@ -42,6 +42,32 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void actorLocalMutexPersistsAcrossMessagesInOneSemanticDomain() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicReference<Integer> observed = new AtomicReference<>();
+
+            var ref = runtime.<Integer>spawn(() -> {
+                var mutex = OresMutex.local(new int[]{0});
+                return (message, context) -> mutex.withLock(value -> {
+                    value[0] += message;
+                    if (value[0] == 3) {
+                        observed.set(value[0]);
+                        done.countDown();
+                    }
+                    return null;
+                });
+            });
+
+            ref.send(1);
+            ref.send(2);
+
+            assertTrue(done.await(2, TimeUnit.SECONDS));
+            assertEquals(3, observed.get());
+        }
+    }
+
+    @Test
     void actorLocalMutexCannotBeUsedByAnotherActorEvenInSameProcess() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch created = new CountDownLatch(1);
