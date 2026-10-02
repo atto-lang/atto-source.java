@@ -39,6 +39,7 @@ public record IsolatePolicy(
         FFI,
         NATIVE,
         REFLECTION,
+        GC_CONTROL,
         CHILD_PROCESS,
         THREAD_CREATE,
         POLYGLOT
@@ -70,7 +71,8 @@ public record IsolatePolicy(
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
                 Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO,
-                        Capability.ACTOR_SHARE_READONLY, Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD),
+                        Capability.ACTOR_SHARE_READONLY, Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD,
+                        Capability.GC_CONTROL),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 
