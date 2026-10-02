@@ -367,7 +367,7 @@ val p = struct { x = 3, y = 4 };
 
 An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. That conversion requires the exact field set and assignable field types; arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
 
-Struct equality is value equality within the same named struct identity. Structs are move-only under the current ownership model until a dedicated `Copy` facility is introduced.
+Struct equality is value equality within the same named struct identity. Structs remain affine/move-only by default—copying is never implicit—but `copy(value)` derives a recursive copy for structs. Trait-composed state participates in the same derivation. Recursive struct/container type graphs are permitted; the runtime copier preserves graph topology with identity tracking rather than duplicating back-references.
 
 
 ## Inline values
@@ -1081,6 +1081,60 @@ Borrow rules:
 The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
 Structural parameters remain read-only views and therefore do not consume the supplied value.
+
+### Explicit ownership intrinsics
+
+The pointer-free ownership operations use ordinary call-shaped syntax:
+
+```ores
+borrow(value)
+copy(value)
+take(value)
+share(value)
+```
+
+They are **contextual compiler intrinsics**, not lexer keywords and not ordinary global functions. Normal name resolution wins first: a local binding, imported value, module/class name, or user-defined function named `copy`, `borrow`, `take`, or `share` shadows the intrinsic. This keeps the language namespace usable even as the ownership vocabulary grows.
+
+The operations are:
+
+- `borrow(x)` — immutable borrow of `x`. A persistent binding created from it keeps the owner borrowed until that binding leaves scope.
+- `copy(x)` — produce a new owned value while preserving `x`. `copy(borrow(x))` is valid and returns a new owner.
+- `take(x)` — explicitly transfer ownership. It rejects borrowed values; after taking a move-only owner, the old binding is unusable.
+- `share(x)` — produce an independent, deeply read-only snapshot. It is typed as an immutable view but has no borrow dependency on the source owner, so the source may be mutated afterward and the shared snapshot may safely escape the source's local lifetime.
+
+`copy` intentionally differs by aggregate kind:
+
+- **struct** — copy behavior is compiler-derived from every stored field, including trait-composed fields. Nested structs/lists/tuples/records recurse automatically.
+- **class** — never implicitly copyable. The developer must provide a concrete, synchronous, non-generic, public instance `copy() => Self` method whose receiver is immutable.
+- **trait** — has no independent runtime identity; once composed, its stored fields follow the host struct/class rule.
+- **interface** — is a contract, not concrete storage, so an interface-typed value does not by itself prove copyability.
+
+A class copy implementation is checked twice. Static ownership analysis prevents mutation through `self`, including nested projections such as `self.child.bump()` when `bump` requires a mutable receiver. At runtime, Oreslang also verifies that `copy()` did not mutate the source graph, returned the same concrete class, and retained no mutable object/list/set/map/array aliases from the source graph.
+
+```ores
+define class Buffer as
+  pub let int value = 0;
+
+  pub copy() => Buffer {
+    return new Buffer(self.value);
+  }
+end
+
+let Buffer original = new Buffer(7);
+let Buffer duplicate = copy(original);
+```
+
+Returning `self`, or constructing a new root object while reusing mutable nested storage, violates the Copy contract and is rejected. Nested storage can be made independent explicitly:
+
+```ores
+pub copy() => Bucket {
+  return new Bucket(copy(self.values));
+}
+```
+
+`share` uses the same guaranteed-copy boundary and then freezes the detached graph. The freeze is recursive and identity-aware, so shared snapshots cannot become a writable alias back into the source graph.
+
+The legacy `&T` / `&mut T` syntax remains supported for compatibility. `borrow(x)` is the preferred pointer-free immutable-borrow spelling while the broader Java-like default-borrow parameter model continues to evolve.
 
 ## Multi-threaded targets
 
