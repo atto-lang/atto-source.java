@@ -183,11 +183,14 @@ final class ReturnedDestructuringTest {
     @Test
     void returnedTupleAndRecordDestructureAtRuntime() throws Exception {
         String program = """
-                fnc fixed() => [int, bool, string] {
+                type FixedResult = [int, bool, string];
+                type NamedResult = {foo: int, bar: string};
+
+                fnc fixed() => FixedResult {
                   return [3, true, "yes"];
                 }
 
-                fnc result() => {foo: int, bar: string} {
+                fnc result() => NamedResult {
                   return obj{foo: 5, bar: "x"};
                 }
 
