@@ -298,11 +298,11 @@ public final class ActorRuntime implements AutoCloseable {
                 usedBytes.addAndGet(bytes);
                 throw new IllegalStateException("private actor memory accounting underflow for " + owner);
             }
-            long aggregate = privateMemoryBytes.addAndGet(-bytes);
-            if (aggregate < 0) {
-                privateMemoryBytes.addAndGet(bytes);
+            try {
+                releasePrivateRuntimeBytes(bytes, owner);
+            } catch (RuntimeException failure) {
                 usedBytes.addAndGet(bytes);
-                throw new IllegalStateException("private actor aggregate memory accounting underflow");
+                throw failure;
             }
         }
 
@@ -310,10 +310,7 @@ public final class ActorRuntime implements AutoCloseable {
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
             long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) {
-                long aggregate = privateMemoryBytes.addAndGet(-bytes);
-                if (aggregate < 0) privateMemoryBytes.set(0);
-            }
+            if (bytes != 0) releasePrivateRuntimeBytes(bytes, owner);
         }
     }
 
@@ -585,6 +582,15 @@ public final class ActorRuntime implements AutoCloseable {
         return spawn(kind, policy, context -> behaviorFactory.get());
     }
 
+    private static void requireStatelessPrivateFactory(Object factory) {
+        for (java.lang.reflect.Field field : factory.getClass().getDeclaredFields()) {
+            if (!java.lang.reflect.Modifier.isStatic(field.getModifiers())) {
+                throw new SecurityException(
+                        "adversarial private actor BehaviorFactory must be stateless; captured host state is not actor-private memory");
+            }
+        }
+    }
+
     private void requireTrustedSupplierPolicy(IsolatePolicy policy) {
         Objects.requireNonNull(policy);
         if (policy.adversarial()) {
@@ -608,15 +614,20 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
+        IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
+                ? policy.withoutCapabilities(IsolatePolicy.Capability.SHARED_MEMORY)
+                : policy;
         if (kind == ActorKind.SHARED) {
-            policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
+            effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
+        } else if (effectivePolicy.adversarial()) {
+            requireStatelessPrivateFactory(behaviorFactory);
         }
         reserveActorSlot();
 
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id, kind);
         try {
-            ActorCell<M> cell = new ActorCell<>(ref, kind, policy, behaviorFactory);
+            ActorCell<M> cell = new ActorCell<>(ref, kind, effectivePolicy, behaviorFactory);
             actors.put(id, cell);
             return ref;
         } catch (RuntimeException | Error failure) {
@@ -707,6 +718,19 @@ public final class ActorRuntime implements AutoCloseable {
                         + " sharedUsed=" + sharedBytes + " runtimeLimit=" + policyCeiling.maxHeapBytes());
             }
             privateMemoryBytes.addAndGet(bytes);
+        }
+    }
+
+    private void releasePrivateRuntimeBytes(long bytes, ActorId owner) {
+        if (bytes == 0) return;
+        synchronized (memoryBudgetLock) {
+            long current = privateMemoryBytes.get();
+            if (bytes > current) {
+                throw new IllegalStateException(
+                        "private actor aggregate memory accounting underflow for " + owner
+                                + ": release=" + bytes + " privateUsed=" + current);
+            }
+            privateMemoryBytes.set(current - bytes);
         }
     }
 
