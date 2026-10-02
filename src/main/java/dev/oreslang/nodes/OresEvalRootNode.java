@@ -121,7 +121,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "function " + fn.name()); }
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(fn.returnType(), signal.value, "function " + fn.name());
+            } finally {
+                env.clearOwned();
+            }
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -135,7 +139,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
+            } finally {
+                env.clearOwned();
+            }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -157,7 +165,14 @@ public final class OresEvalRootNode extends RootNode {
                     deferredFailure = true;
                     throw failure;
                 } finally {
-                    env.releaseMutexGuards(abnormalExit || deferredFailure);
+                    try {
+                        env.releaseMutexGuards(abnormalExit || deferredFailure);
+                    } finally {
+                        // Drop lexical evaluator roots immediately. Escaping
+                        // closures retain their own snapshot Slots; clearing
+                        // this scope does not invalidate legitimate captures.
+                        env.clearOwned();
+                    }
                 }
             }
         }
@@ -245,6 +260,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
@@ -426,7 +442,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "context_id" -> process.contextId();
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
+                    case "gc" -> (Invokable) process::gc;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof ActorFacade actor) {
+                return switch (name) {
+                    case "gc" -> (Invokable) actor::gc;
+                    default -> throw new IllegalArgumentException("unknown actor runtime member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -813,6 +836,7 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unknown binding " + name);
         }
         private Env snapshot() { Env cp=new Env(parent==null?null:parent.snapshot()); cp.slots.putAll(slots); return cp; }
+        private void clearOwned() { slots.clear(); }
         private void releaseMutexGuards(boolean failed) {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
@@ -981,6 +1005,10 @@ public final class OresEvalRootNode extends RootNode {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+        private Object gc(List<Object> args){requireZero(args,"process.gc");return context.actors().collectProcessGarbage().cleaned();}
+    }
+    private record ActorFacade(OresContext context) {
+        private Object gc(List<Object> args){requireZero(args,"actor.gc");return context.actors().collectCurrentActorGarbage().cleaned();}
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
