@@ -146,12 +146,13 @@ public final class Parser {
             }
             Ast.ActorKind actorKind = modifiers.shared ? Ast.ActorKind.SHARED : Ast.ActorKind.PRIVATE;
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
+            if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             if (modifiers.isStatic || modifiers.isAbstract) {
                 throw error(previous(), "actor declarations do not accept static or abstract modifiers");
             }
             return parseActorClass(actorKind);
         }
-        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration or actor fnc");
+        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration or actor callable");
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
@@ -171,9 +172,6 @@ public final class Parser {
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
-        if (kind == Ast.CallableKind.ROUTINE && actorKind != Ast.ActorKind.NONE) {
-            throw error(previous(), "actor entry points use fnc, not routine");
-        }
         if (modifiers.async && actorKind != Ast.ActorKind.NONE) {
             throw error(previous(), "'async' and 'actor' cannot be combined");
         }
