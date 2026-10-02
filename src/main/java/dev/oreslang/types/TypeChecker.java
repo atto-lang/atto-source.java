@@ -43,6 +43,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Map<String, Function> singletonActorHandlers = new HashMap<>();
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -1102,6 +1103,17 @@ public final class TypeChecker {
             requireAssignable(handler.result(), stateType, api + " handler return state");
         } else {
             requireAssignable(handler.result(), Primitive.VOID, api + " stateless handler return");
+        }
+
+        if (singleton
+                && arguments.getFirst() instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof String singletonName) {
+            Function previous = singletonActorHandlers.putIfAbsent(singletonName, handler);
+            if (previous != null
+                    && (!Types.isAssignable(previous, handler) || !Types.isAssignable(handler, previous))) {
+                throw new IllegalArgumentException(
+                        "actor.singleton '" + singletonName + "' was already declared with an incompatible handler type");
+            }
         }
 
         return new Named("ActorRef", List.of(messageType));
