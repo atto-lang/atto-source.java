@@ -177,6 +177,9 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException("program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
+        }
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
