@@ -104,12 +104,12 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
-            if (args.size() != fn.parameters().size()) {
+            if (args.size() != fn.arity()) {
                 if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
-                else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
+                else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.arity() + " arguments, got " + args.size());
             }
             Env env = new Env(null);
-            for (int i = 0; i < fn.parameters().size(); i++) {
+            for (int i = 0; i < fn.arity(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -120,10 +120,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
-            if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            if (args.size() != method.arity()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
+            for (int i = 0; i < method.arity(); i++) {
                 Ast.Param param = method.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -512,9 +512,9 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
-            if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            if (args.size() != fn.arity()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env env = new Env(null);
-            for (int i = 0; i < fn.parameters().size(); i++) {
+            for (int i = 0; i < fn.arity(); i++) {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
@@ -577,7 +577,7 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl method : klass.methods()) {
-                if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+                if (!method.isStatic() && method.matchesArity(name, arity)) {
                     seen.remove(klass);
                     return method;
                 }
@@ -599,7 +599,7 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl fn : klass.methods()) {
-                if (fn.isStatic() && fn.name().equals(name) && fn.parameters().size() == arity) {
+                if (fn.isStatic() && fn.matchesArity(name, arity)) {
                     seen.remove(klass);
                     return fn;
                 }
@@ -622,13 +622,13 @@ public final class OresEvalRootNode extends RootNode {
             if (!seen.add(klass)) return List.of();
             LinkedHashMap<Integer, Ast.MethodDecl> result = new LinkedHashMap<>();
             for (Ast.MethodDecl fn : klass.methods()) {
-                if (fn.isStatic() && fn.name().equals(name)) result.put(fn.parameters().size(), fn);
+                if (fn.isStatic() && fn.name().equals(name)) result.put(fn.arity(), fn);
             }
             for (Ast.TypeRef parentRef : klass.parents()) {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.parameters().size(), fn);
+                for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.arity(), fn);
             }
             seen.remove(klass);
             return List.copyOf(result.values());
