@@ -292,4 +292,78 @@ final class LanguageHardeningTest {
                 """)));
     }
 
+
+    @Test
+    void awaitTypingMatchesJvmAsyncAdaptersUnionsAndPassThroughValues() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  async fnc from_future(Future<int> value) => int {
+                    return await value;
+                  }
+
+                  async fnc from_stage(CompletionStage<int> value) => int {
+                    return await value;
+                  }
+
+                  async fnc from_completable(CompletableFuture<int> value) => int {
+                    return await value;
+                  }
+
+                  async fnc from_awaitable(Awaitable<int> value) => int {
+                    return await value;
+                  }
+
+                  async fnc from_union(Future<int> | int value) => int {
+                    return await value;
+                  }
+
+                  async fnc from_sync(int value) => int {
+                    return await value;
+                  }
+
+                  async fnc wait_thread(Thread thread) => void {
+                    await thread;
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void awaitTypingDoesNotCollapseInteropCarriersToUnknown() {
+        var program = Parser.parse("""
+                define module app
+                  async fnc wrong(CompletableFuture<int> value) => string {
+                    return await value;
+                  }
+                end
+                """);
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(program));
+    }
+
+    @Test
+    void sharedStateRejectsEveryPendingAsyncCarrierFamily() {
+        for (String carrier : java.util.List.of(
+                "Future<int>",
+                "CompletionStage<int>",
+                "CompletableFuture<int>",
+                "Awaitable<int>",
+                "Thread")) {
+            String source = """
+                    define module app
+                      fnc bad(%s value) => void {
+                        val shared = SharedMutex.new(value);
+                        return;
+                      }
+                    end
+                    """.formatted(carrier);
+
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () -> TypeChecker.check(Parser.parse(source)),
+                    carrier + " must remain non-shareable pending/runtime state");
+        }
+    }
+
 }
