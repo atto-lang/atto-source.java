@@ -177,7 +177,10 @@ public final class HotReloadManager implements AutoCloseable {
             throw new IllegalArgumentException("hot-reload code unit id cannot be blank");
         }
         try {
-            String normalized = Path.of(id).normalize().toString().replace('\\', '/');
+            String normalized = Path.of(id.replace('\\', '/'))
+                    .normalize()
+                    .toString()
+                    .replace('\\', '/');
             if (normalized.isBlank()) {
                 throw new IllegalArgumentException("hot-reload code unit id cannot normalize to an empty path");
             }
