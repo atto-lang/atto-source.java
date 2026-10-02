@@ -104,6 +104,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
+            if (Ast.hasGpuPlacement(fn.annotations())) throw gpuBackendUnavailable("function " + fn.name());
             if (args.size() != fn.parameters().size()) {
                 if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
                 else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
@@ -120,6 +121,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            if (Ast.hasGpuPlacement(method.annotations())) throw gpuBackendUnavailable("method " + method.name());
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -371,6 +373,24 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return Map.copyOf(result);
             }
+            if (expr instanceof Ast.GpuExpr gpu) {
+                if (gpu.mode() == Ast.GpuMode.SINGLE) {
+                    if (!(gpu.expression() instanceof Ast.LambdaExpr)) {
+                        throw new IllegalArgumentException("'gpu' expression placement requires a direct lambda");
+                    }
+                    return (Invokable) args -> { throw gpuBackendUnavailable("gpu lambda"); };
+                }
+                List<Ast.Expr> kernels = gpuParallelElements(gpu.expression());
+                ArrayList<Object> batch = new ArrayList<>(kernels.size());
+                for (int i = 0; i < kernels.size(); i++) {
+                    if (!(kernels.get(i) instanceof Ast.LambdaExpr)) {
+                        throw new IllegalArgumentException("'gpu parallel' batch contains a non-lambda");
+                    }
+                    final int kernelIndex = i;
+                    batch.add((Invokable) args -> { throw gpuBackendUnavailable("gpu parallel kernel[" + kernelIndex + "]"); });
+                }
+                return batch;
+            }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 Env captured = env.snapshot();
                 return (Invokable) args -> {
@@ -512,6 +532,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
+            if (Ast.hasGpuPlacement(fn.annotations())) throw gpuBackendUnavailable("static function " + klass.name() + "." + fn.name());
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -632,6 +653,23 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return List.copyOf(result.values());
+        }
+
+        private List<Ast.Expr> gpuParallelElements(Ast.Expr expression) {
+            if (expression instanceof Ast.ListExpr list) return list.elements();
+            if (expression instanceof Ast.TupleExpr tuple) return tuple.elements();
+            if (expression instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr name
+                    && name.name().equals("List")
+                    && member.member().equals("of")) {
+                return call.arguments();
+            }
+            throw new IllegalArgumentException("'gpu parallel' requires a list/tuple literal or List.of(...)");
+        }
+
+        private IllegalStateException gpuBackendUnavailable(String target) {
+            return new IllegalStateException(target + " is GPU-targeted, but no GPU lowering/backend is configured; Oreslang never falls back to CPU for 'gpu' code");
         }
 
         private List<?> iterableValues(Object value) {
