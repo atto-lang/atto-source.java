@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 
@@ -98,10 +99,27 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
-            if (args.size() != fn.parameters().size()) {
-                if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
-                else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
+            List<?> normalized = args;
+            if (normalized.size() != fn.parameters().size()) {
+                if (fn.parameters().isEmpty()
+                        && normalized.size() == 1
+                        && normalized.getFirst() instanceof Object[] array
+                        && array.length == 0) {
+                    normalized = List.of();
+                } else {
+                    throw new IllegalArgumentException(
+                            "function " + fn.name() + " expects " + fn.parameters().size()
+                                    + " arguments, got " + normalized.size());
+                }
             }
+            List<?> capturedArgs = List.copyOf(normalized);
+            if (fn.async()) {
+                return startAsync(() -> callFunctionSync(fn, capturedArgs));
+            }
+            return callFunctionSync(fn, capturedArgs);
+        }
+
+        private Object callFunctionSync(Ast.FunctionDecl fn, List<?> args) {
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -118,7 +136,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
-            if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            if (args.size() != method.parameters().size()) {
+                throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            }
+            List<?> capturedArgs = List.copyOf(args);
+            if (method.async()) {
+                return startAsync(() -> callMethodSync(receiver, method, capturedArgs));
+            }
+            return callMethodSync(receiver, method, capturedArgs);
+        }
+
+        private Object callMethodSync(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
@@ -133,6 +161,18 @@ public final class OresEvalRootNode extends RootNode {
             } finally {
                 env.release();
             }
+        }
+
+        private CompletionStage<Object> startAsync(java.util.concurrent.Callable<Object> task) {
+            CompletableFuture<Object> future = new CompletableFuture<>();
+            Thread.ofVirtual().name("ores-async").start(() -> {
+                try {
+                    future.complete(task.call());
+                } catch (Throwable failure) {
+                    future.completeExceptionally(failure);
+                }
+            });
+            return future;
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -353,8 +393,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) return awaitStage(stage);
-                return value;
+                if (!(value instanceof CompletionStage<?> stage)) {
+                    throw new IllegalArgumentException(
+                            "await requires an async/Future value, got "
+                                    + (value == null ? "null" : value.getClass().getName()));
+                }
+                return awaitStage(stage);
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
