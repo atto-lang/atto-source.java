@@ -2213,7 +2213,7 @@ public final class TypeChecker {
     private IllegalArgumentException inaccessibleMethod(Ast.ClassDecl owner, Ast.MethodDecl method) {
         if (method.composed()) {
             return new IllegalArgumentException(
-                    "trait method '" + method.compositionOwner() + "." + method.name()
+                    "trait-private method '" + method.compositionOwner() + "." + method.name()
                             + "' is private to that trait");
         }
         String label = method.isStatic() ? "static function" : "method";
