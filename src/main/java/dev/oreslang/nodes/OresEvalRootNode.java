@@ -1002,7 +1002,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                return new BoundMethod(object, name, singletonState);
+                OresObject boundReceiver = object.klass.isStruct()
+                        ? (OresObject) copyStructValue(object)
+                        : object;
+                return new BoundMethod(boundReceiver, name, singletonState);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
