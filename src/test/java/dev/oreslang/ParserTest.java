@@ -104,6 +104,10 @@ final class ParserTest {
                     try_send(events, msg);
                   }
 
+                  try_receive loop (int pending) {
+                    try_send(events, pending);
+                  }
+
                   select {
                     case receive(events) as int next => {
                       stdio.println(next);
@@ -130,11 +134,17 @@ final class ParserTest {
                 Ast.ChannelOpExpr.class,
                 ((Ast.ExprStmt) receiveLoop.body().getFirst()).expression());
 
-        Ast.SelectStmt select = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(2));
+        Ast.ReceiveLoopStmt tryReceiveLoop = assertInstanceOf(Ast.ReceiveLoopStmt.class, fn.body().get(2));
+        assertEquals(Ast.ReceiveLoopMode.NONBLOCKING, tryReceiveLoop.mode());
+        assertEquals("pending", tryReceiveLoop.bindingName());
+
+        Ast.SelectStmt select = assertInstanceOf(Ast.SelectStmt.class, fn.body().get(3));
         assertEquals(2, select.cases().size());
         assertEquals(Ast.ChannelOpKind.RECEIVE, select.cases().get(0).operation().kind());
         assertEquals(Ast.ChannelOpKind.SEND, select.cases().get(1).operation().kind());
         assertFalse(select.defaultBody().isEmpty());
+
+        assertDoesNotThrow(() -> TypeChecker.check(program));
     }
 
     @Test
