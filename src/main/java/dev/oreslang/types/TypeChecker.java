@@ -791,6 +791,9 @@ public final class TypeChecker {
     }
 
     private Type gpuBuiltinMemberType(String namespace, String member) {
+        if ((namespace.equals("GpuArray") || namespace.equals("GpuStream")) && inGpuCallable()) {
+            throw new IllegalArgumentException(namespace + "." + member + " is host orchestration and cannot be extracted inside a gpu callable");
+        }
         if (namespace.equals("GpuArray") && member.equals("from_cpu")) {
             return new Function(List.of(new ListType(Unknown.INSTANCE)), new GpuArrayType(Unknown.INSTANCE));
         }
@@ -804,6 +807,9 @@ public final class TypeChecker {
     }
 
     private Type gpuBuiltinMemberType(Type receiver, String member) {
+        if ((receiver instanceof GpuArrayType || receiver instanceof GpuStreamType) && inGpuCallable()) {
+            throw new IllegalArgumentException(member + " is a host orchestration member and cannot be extracted inside a gpu callable");
+        }
         if (receiver instanceof GpuArrayType array) {
             return switch (member) {
                 case "stream" -> new Function(List.of(), new GpuStreamType(array.element()));
