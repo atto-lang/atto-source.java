@@ -138,7 +138,7 @@ public final class Parser {
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
-        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
@@ -357,6 +357,17 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = false;
+
+            // Name-first structural spelling: y structural Foo
+            if (check(IDENT) && checkNext(STRUCTURAL)) {
+                String name = advance().lexeme();
+                consume(STRUCTURAL, "expected structural");
+                Ast.TypeRef type = parseTypeRef();
+                params.add(new Ast.Param(type, name, true));
+                continue;
+            }
+
+            // Existing type-first spelling: @Structural Foo y
             if (match(AT)) {
                 String annotation = consume(IDENT, "expected parameter annotation").lexeme();
                 if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
@@ -367,6 +378,33 @@ public final class Parser {
             params.add(new Ast.Param(type, name, structural));
         } while (match(COMMA));
         return params;
+    }
+
+    private List<Ast.Param> applyStructuralAnnotations(List<Ast.Param> params, List<Ast.Annotation> annotations) {
+        java.util.Set<String> allowed = new java.util.HashSet<>();
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("AllowStructural")) continue;
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                if (!argument.arguments().isEmpty() || argument.inferArguments() || argument.isStringLiteral()) {
+                    throw error(previous(), "@AllowStructural arguments must be parameter names");
+                }
+                allowed.add(argument.name());
+            }
+        }
+        if (allowed.isEmpty()) return params;
+        java.util.Set<String> found = new java.util.HashSet<>();
+        List<Ast.Param> result = new ArrayList<>(params.size());
+        for (Ast.Param param : params) {
+            boolean structural = param.structural() || allowed.contains(param.name());
+            if (allowed.contains(param.name())) found.add(param.name());
+            result.add(new Ast.Param(param.type(), param.name(), structural));
+        }
+        if (!found.equals(allowed)) {
+            java.util.Set<String> missing = new java.util.HashSet<>(allowed);
+            missing.removeAll(found);
+            throw error(previous(), "@AllowStructural names unknown parameter(s): " + missing);
+        }
+        return List.copyOf(result);
     }
 
     private Ast.TypeRef parseTypeRef() {
