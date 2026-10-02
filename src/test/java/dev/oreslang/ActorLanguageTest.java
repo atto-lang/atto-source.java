@@ -219,6 +219,42 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void actorMailboxRejectsUnconstrainedGenericMessageTypes() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc worker<T>(T message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  actor.spawn(worker);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("unconstrained generic")
+                || failure.getMessage().contains("concrete transport type"));
+    }
+
+    @Test
+    void actorMailboxRejectsInteropNullMarkerTypes() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc worker(Option<null> message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  actor.spawn(worker);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("null marker")
+                || failure.getMessage().contains("Option"));
+    }
+
+    @Test
     void statefulActorRequiresHandlerToReturnItsStateType() {
         Exception failure = assertThrows(Exception.class, () -> run("""
                 fnc bad_worker(String message, int state) => String {
