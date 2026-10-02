@@ -79,15 +79,33 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind actorKind() { return actorKind; }
     }
 
-    /** Deeply immutable value that shared actors may reference without copying. */
-    public static final class Shared<T> {
-        private final T value;
+    /**
+     * Deeply immutable runtime-owned shared value. The backing graph is frozen
+     * once, quota-accounted once, and retained until runtime teardown.
+     */
+    public final class Shared<T> {
+        private final AtomicBoolean sharedClosed = new AtomicBoolean();
+        private T value;
+        private long reservedBytes;
 
-        private Shared(T value) {
+        private Shared(T value, long reservedBytes) {
             this.value = value;
+            this.reservedBytes = reservedBytes;
         }
 
-        public T value() { return value; }
+        public T value() {
+            if (sharedClosed.get()) throw new IllegalStateException("Shared value belongs to a closed actor runtime");
+            return value;
+        }
+
+        private void closeFromRuntime() {
+            if (!sharedClosed.compareAndSet(false, true)) return;
+            long bytes = reservedBytes;
+            reservedBytes = 0L;
+            value = null;
+            releaseSharedRuntimeBytes(bytes);
+            sharedValues.remove(this);
+        }
     }
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
@@ -96,6 +114,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
     private final Object memoryBudgetLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
+    private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final ExecutorService privateDispatcher;
@@ -665,9 +684,19 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        policyCeiling.require(IsolatePolicy.Capability.ACTOR_SHARE_READONLY, "shareReadonly");
         Object frozen = freeze(value);
         rejectSharedMutableHandles(frozen, new IdentityHashMap<>(), 0);
-        return new Shared<>((T) frozen);
+        long bytes = estimateFrozenBytes(frozen);
+        reserveSharedRuntimeBytes(bytes, "shared readonly value");
+        Shared<T> shared = new Shared<>((T) frozen, bytes);
+        sharedValues.add(shared);
+        if (closed.get()) {
+            shared.closeFromRuntime();
+            throw new IllegalStateException("actor runtime is closed");
+        }
+        return shared;
     }
 
     private static void rejectSharedMutableHandles(
@@ -679,7 +708,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("SyncCell is mutable shared state and cannot be wrapped as Shared");
         }
-        if (value instanceof Shared<?>) return;
+        if (value instanceof Shared<?> shared) {
+            shared.value();
+            return;
+        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot be shared read-only");
         }
@@ -728,7 +760,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
-        if (value instanceof Shared<?> shared) return shared;
+        if (value instanceof Shared<?> shared) {
+            shared.value();
+            return shared;
+        }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
 
@@ -917,6 +952,8 @@ public final class ActorRuntime implements AutoCloseable {
         actors.clear();
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.closeFromRuntime();
         syncCells.clear();
+        for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
+        sharedValues.clear();
         privateDispatcher.shutdownNow();
         sharedDispatcher.shutdownNow();
     }
