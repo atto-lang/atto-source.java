@@ -541,7 +541,7 @@ When a method is extracted as a first-class value:
 val Fnc<int> callback = box.get;
 ```
 
-Oreslang creates a small bound-method value containing only the receiver plus method identity. The underlying method definition remains shared by every instance. Calling `callback()` always uses the original `box`; there is no JavaScript-style dynamic `this` rebinding.
+Oreslang creates a small bound-method value containing only the receiver plus method identity. The underlying method definition remains shared by every instance. For a non-Copy receiver, extraction **moves receiver ownership into the bound-method value**, so the outer `box` binding cannot subsequently be used. This prevents the callback and its creator from retaining two mutable aliases to the same receiver. Calling `callback()` always uses that owned receiver; there is no JavaScript-style dynamic `this` rebinding.
 
 
 ## Incremental compilation and code units
