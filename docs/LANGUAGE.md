@@ -150,6 +150,56 @@ fnc answer() {
 
 `@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
 
+
+## Callable-local type declarations
+
+`struct` and `interface` declarations may appear inside callable and method blocks. They live in a lexical **type namespace**, separate from value bindings. Direct declarations in a callable body are type-hoisted across that callable so its signature can name a type declared textually inside the body without publishing that name into module/file scope.
+
+```ores
+pub fnc getat() => T {
+  struct T {
+    foo: string
+  }
+
+  return obj{
+    foo: "hello"
+  };
+}
+
+pub fnc use_it() => void {
+  val result = getat();
+  stdio.println(result.foo);
+  return;
+}
+```
+
+The name `T` is not visible in `use_it`. The compiler gives the escaped local struct an internal nominal identity and carries its shape through the return type, so callers may infer the result and use its fields/methods without adding `T` to shared file/module scope. Two unrelated callables may each declare a different local `T` without collision.
+
+Nested block type declarations remain block-scoped. Local interfaces are still storage-free method contracts. Generic local structs are supported with concrete type arguments at aggregate construction boundaries; generic callable-local interfaces remain intentionally unsupported until their escaping/identity rules are specified.
+
+Both compact and long forms are accepted:
+
+```ores
+struct Point {
+  x: int
+  y: int
+}
+
+define struct Point as
+  x: int
+  y: int
+end
+
+interface Readable {
+  fnc read() => string;
+}
+
+define interface Readable as
+  fnc read() => string;
+end
+```
+
+
 ## Bindings
 
 Every local binding is declared as exactly one of:
@@ -171,7 +221,18 @@ Destructuring carries mutability per element:
 [const code, let body] = (200, "ok");
 ```
 
-## Classes, receivers, multiple inheritance, and interfaces
+## Interface, trait, struct, and class
+
+Oreslang keeps four distinct concepts instead of blending them:
+
+- `interface` — storage-free method contract only.
+- `trait` — non-instantiable compile-time composition of reusable instance state and behavior.
+- `struct` — concrete value-semantic aggregate with nominal named identity.
+- `class` — concrete reference/identity type with lifecycle/allocation semantics.
+
+`is` is the canonical interface-conformance spelling. `with` composes traits. Legacy `implements` / `impl` remain accepted during migration.
+
+## Classes and receivers
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
 
@@ -192,9 +253,14 @@ The explicit receiver form remains available:
 find(self Box)(int key) => self {
   return self;
 }
+
+bump(self &mut self)() => int {
+  self.count = self.count + 1;
+  return self.count;
+}
 ```
 
-The receiver variable name is always `self`.
+The receiver variable name is always `self`. Mutating instance/trait state requires an explicit mutable receiver such as `self &mut self`; ownership analysis treats ordinary implicit `self` as immutable.
 
 A class may list multiple parent classes, satisfy multiple interfaces with `is`, and compose reusable state/behavior with `with`:
 
@@ -218,6 +284,46 @@ end
 ```
 
 Inline object and array literals are values, not classes, and cannot be inherited from.
+
+
+## Structs
+
+Named structs are value types: they have fields and may have methods, but they do not have class identity and are not allocated with `new`. They cannot extend classes. Named structs remain nominal even when two structs have identical fields.
+
+```ores
+struct Point {
+  x: f64
+  y: f64
+
+  pub length_squared() => f64 {
+    return self.x * self.x + self.y * self.y;
+  }
+}
+
+val p = Point { x = 3.0, y = 4.0 };
+```
+
+The long spelling is equivalent:
+
+```ores
+define struct Point as
+  x: f64
+  y: f64
+end
+```
+
+Struct fields support the compact name-first form (`x: f64`) as well as the existing type-first forms. A bare struct field is immutable (`val`) unless `let` is written explicitly.
+
+Anonymous struct values are structural:
+
+```ores
+val p = struct { x = 3, y = 4 };
+```
+
+An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. That conversion requires the exact field set and assignable field types; arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
+
+Struct equality is value equality within the same named struct identity. Structs are move-only under the current ownership model until a dedicated `Copy` facility is introduced.
+
 
 ## Inline values
 
@@ -246,7 +352,7 @@ val pair = (1, "one");
 
 ## Interfaces and stateful traits
 
-Interfaces are storage-free structural contracts. They contain function signatures only: no instance fields, no backing storage, and no object identity. A class uses `is` to ask the compiler to prove conformance.
+Interfaces are storage-free method contracts. They contain function signatures only: no instance fields, no backing storage, and no object identity. A class uses `is` to ask the compiler to prove conformance.
 
 ```ores
 define interface Named as
@@ -273,7 +379,7 @@ end
 define trait Counter is CounterApi as
   private let int count = 0;
 
-  pub bump() => int {
+  pub bump(self &mut self)() => int {
     self.count = self.count + 1;
     return self.count;
   }
