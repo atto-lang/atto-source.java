@@ -1080,9 +1080,11 @@ public final class ActorRuntime implements AutoCloseable {
     private void notifyMonitors(ActorId target, String reason, ActorFailure failure) {
         Map<UUID, ActorId> monitors = monitorsByTarget.remove(target);
         if (monitors == null || monitors.isEmpty()) return;
-        for (int i = 0; i < monitors.size(); i++) releaseMonitorSlot();
-        for (Map.Entry<UUID, ActorId> entry : monitors.entrySet()) {
-            sendDown(entry.getValue(), new MonitorRef(entry.getKey(), target, runtimeId), reason, failure);
+        for (Map.Entry<UUID, ActorId> entry : List.copyOf(monitors.entrySet())) {
+            if (monitors.remove(entry.getKey(), entry.getValue())) {
+                releaseMonitorSlot();
+                sendDown(entry.getValue(), new MonitorRef(entry.getKey(), target, runtimeId), reason, failure);
+            }
         }
     }
 
