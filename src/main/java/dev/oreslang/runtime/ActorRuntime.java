@@ -13,6 +13,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.ForkJoinWorkerThread;
@@ -23,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CancellationException;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import jdk.management.VirtualThreadSchedulerMXBean;
 
@@ -207,6 +210,11 @@ public final class ActorRuntime implements AutoCloseable {
         void onMessage(M message, ActorContext<M> context) throws Exception;
     }
 
+    @FunctionalInterface
+    public interface Invocation<M, R> {
+        R run(M message, ActorContext<M> context) throws Exception;
+    }
+
     public interface ActorContext<M> {
         ActorRef<M> self();
         ActorRuntime runtime();
@@ -255,8 +263,18 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             MemoryPolicy memoryPolicy,
             Supplier<? extends Behavior<M>> behaviorFactory) {
+        return spawnInternal(policy, memoryPolicy, behaviorFactory, failure -> { });
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            IsolatePolicy policy,
+            MemoryPolicy memoryPolicy,
+            Supplier<? extends Behavior<M>> behaviorFactory,
+            Consumer<Throwable> onTerminated) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         java.util.Objects.requireNonNull(memoryPolicy, "memoryPolicy");
+        java.util.Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        java.util.Objects.requireNonNull(onTerminated, "onTerminated");
         requireWithinCeiling(policy);
         if (memoryPolicy.mode() == MemoryMode.PRIVATE_ARENA
                 && memoryPolicy.arenaBytes() > policy.maxHeapBytes()) {
@@ -264,10 +282,72 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorId id = ActorId.create();
         ActorRef<M> ref = new ActorRef<>(id);
-        ActorCell<M> cell = new ActorCell<>(ref, policy, memoryPolicy, behaviorFactory);
+        ActorCell<M> cell = new ActorCell<>(ref, policy, memoryPolicy, behaviorFactory, onTerminated);
         actors.put(id, cell);
         cell.start();
         return ref;
+    }
+
+    /**
+     * Runs exactly one message on a freshly-created actor and returns its result.
+     *
+     * This is the lowering target for the source-level actor/isoactor callable
+     * modifiers. The message and result both cross the same Sendable freeze
+     * boundary as ordinary actor traffic. The actor is fail-stop and is
+     * terminated after the invocation completes.
+     */
+    public <M, R> R invoke(
+            M message,
+            MemoryPolicy memoryPolicy,
+            Invocation<M, R> invocation) {
+        java.util.Objects.requireNonNull(memoryPolicy, "memoryPolicy");
+        java.util.Objects.requireNonNull(invocation, "invocation");
+
+        CompletableFuture<R> completion = new CompletableFuture<>();
+        ActorRef<M> ref = spawnInternal(
+                policyCeiling,
+                memoryPolicy,
+                () -> (delivered, actorContext) -> {
+                    try {
+                        @SuppressWarnings("unchecked")
+                        R frozenResult = (R) freeze(invocation.run(delivered, actorContext));
+                        completion.complete(frozenResult);
+                    } catch (Throwable failure) {
+                        completion.completeExceptionally(failure);
+                    } finally {
+                        stop(actorContext.self());
+                    }
+                },
+                failure -> {
+                    if (completion.isDone()) return;
+                    if (failure != null) completion.completeExceptionally(failure);
+                    else completion.completeExceptionally(
+                            new CancellationException("actor invocation terminated before producing a result"));
+                });
+
+        try {
+            send(ref, message);
+            return completion.join();
+        } catch (CompletionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new RuntimeException(cause);
+        } finally {
+            stop(ref);
+        }
+    }
+
+    /**
+     * Requests fail-stop termination of an actor. Returns false when the actor
+     * has already terminated or is unknown to this runtime.
+     */
+    public boolean stop(ActorRef<?> ref) {
+        java.util.Objects.requireNonNull(ref, "ref");
+        ActorCell<?> cell = actors.get(ref.id());
+        if (cell == null) return false;
+        cell.stop();
+        return true;
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
@@ -764,9 +844,11 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final MemoryPolicy memoryPolicy;
         private final Supplier<? extends Behavior<M>> behaviorFactory;
+        private final Consumer<Throwable> onTerminated;
         private final BlockingQueue<Object> mailbox;
         private final AtomicBoolean sharedTurnScheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
+        private final AtomicBoolean terminationNotified = new AtomicBoolean();
 
         private volatile Thread privateActorThread;
         private volatile Behavior<M> sharedBehavior;
@@ -776,11 +858,13 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorRef<M> ref,
                 IsolatePolicy policy,
                 MemoryPolicy memoryPolicy,
-                Supplier<? extends Behavior<M>> behaviorFactory) {
+                Supplier<? extends Behavior<M>> behaviorFactory,
+                Consumer<Throwable> onTerminated) {
             this.ref = ref;
             this.policy = policy;
             this.memoryPolicy = memoryPolicy;
             this.behaviorFactory = behaviorFactory;
+            this.onTerminated = onTerminated;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
         }
 
@@ -804,6 +888,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runPrivateActor() {
+            Throwable terminalFailure = null;
             try (ActorMemory memory = openActorMemory(memoryPolicy, policy)) {
                 Behavior<M> behavior = behaviorFactory.get();
                 ActorContext<M> context = newContext(memory);
@@ -816,12 +901,17 @@ public final class ActorRuntime implements AutoCloseable {
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 } catch (Throwable failure) {
+                    terminalFailure = failure;
                     stopped.set(true);
                     // v0 fail-stop supervision policy. A later supervisor layer
                     // will expose restart/escalation strategies.
                 }
+            } catch (Throwable failure) {
+                terminalFailure = failure;
+                stopped.set(true);
             } finally {
                 actors.remove(ref.id(), this);
+                notifyTerminated(terminalFailure);
             }
         }
 
@@ -852,6 +942,7 @@ public final class ActorRuntime implements AutoCloseable {
                     if (message == STOP) {
                         stopped.set(true);
                         actors.remove(ref.id(), this);
+                        notifyTerminated(null);
                         return;
                     }
                     behavior.onMessage((M) message, context);
@@ -861,6 +952,7 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable failure) {
                 stopped.set(true);
                 actors.remove(ref.id(), this);
+                notifyTerminated(failure);
                 // v0 fail-stop supervision policy.
             } finally {
                 sharedTurnScheduled.set(false);
@@ -879,11 +971,18 @@ public final class ActorRuntime implements AutoCloseable {
             };
         }
 
+        private void notifyTerminated(Throwable failure) {
+            if (terminationNotified.compareAndSet(false, true)) {
+                onTerminated.accept(failure);
+            }
+        }
+
         private void stop() {
             if (stopped.get()) return;
             if (!mailbox.offer(STOP)) {
                 stopped.set(true);
                 actors.remove(ref.id(), this);
+                notifyTerminated(null);
             }
 
             if (memoryPolicy.mode() == MemoryMode.PRIVATE_ARENA) {

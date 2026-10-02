@@ -30,8 +30,9 @@ module_member   = callable_decl
 
 visibility      = [ "pub" | "private" ] ;
 callable_modifier = "abstract" | "async" ;
+actor_callable_modifier = "async" | "actor" | "isoactor" ;
 
-callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
+callable_decl   = { annotation } visibility [ actor_callable_modifier ] callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
 
@@ -209,6 +210,9 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
+   - "actor" and "isoactor" are globally reserved keywords. They are mutually
+     exclusive callable modifiers and are valid only on top-level/module fnc or
+     routine declarations. They cannot currently be combined with "async".
    - "structural" is contextual in parameter position, not globally reserved.
    - self is an immutable receiver borrow and cannot be rebound.
    - Parameters are immutable by default. Type "mut" name grants mutation of an
