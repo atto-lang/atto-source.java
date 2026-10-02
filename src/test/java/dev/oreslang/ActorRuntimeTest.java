@@ -65,7 +65,7 @@ final class ActorRuntimeTest {
         try (ActorRuntime runtime = new ActorRuntime(ceiling)) {
             IsolatePolicy escalated = ceiling.withCapabilities(IsolatePolicy.Capability.PROCESS_INFO);
             assertThrows(SecurityException.class, () ->
-                    runtime.<String>spawn(escalated, () -> (message, context) -> { }));
+                    runtime.<String>spawnPrivate(escalated, factoryContext -> (message, context) -> { }));
         }
     }
 
@@ -556,6 +556,17 @@ final class ActorRuntimeTest {
                     () -> runtime.syncCell(sharedTooLarge));
             assertTrue(failure.getMessage().contains("aggregate runtime limit exceeded"));
             assertEquals(0L, runtime.sharedMemoryBytes());
+        }
+    }
+
+
+    @Test
+    void strictPolicyRejectsSharedActorMemoryAtRuntime() {
+        IsolatePolicy strict = IsolatePolicy.strictFaas();
+        try (ActorRuntime runtime = new ActorRuntime(strict)) {
+            assertThrows(SecurityException.class, () ->
+                    runtime.<String>spawnShared(strict, factoryContext -> (message, context) -> { }));
+            assertThrows(SecurityException.class, () -> runtime.syncCell(1));
         }
     }
 
