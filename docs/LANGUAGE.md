@@ -271,6 +271,8 @@ val pair = (1, "one");
 
 Interfaces are storage-free contracts. They may contain function signatures and data-member requirements, but never backing storage or initializers and never have object identity.
 
+Interface methods are **read-receiver contracts** in v0. A class or composed trait method declared with `mut self` cannot satisfy an ordinary interface method, because that would allow mutation through a shared/read view. Synchronization primitives such as a mutex may still implement read-receiver methods using compiler/runtime-recognized interior mutability; arbitrary class state may not use that as an escape hatch. An explicit mutable-interface receiver form can be added later when interface callables carry receiver ownership in their type.
+
 ```ores
 define interface Named as
   String name;
@@ -500,6 +502,8 @@ fnc consume(@Structural Brand value) => String {
 ```
 
 A value does not need to nominally implement `Brand` for that parameter, but its public/static shape must satisfy the interface. Without `@Structural`, the normal nominal implementation/inheritance rules apply.
+
+Structural parameters are read-only views. Until structural callable types carry ownership modes, a structural interface/class may expose only methods with read-only receivers and ordinary borrow parameters. Public `mut self`, `mut` parameters, or `take` parameters make that type ineligible for `@Structural` use; the compiler rejects the view rather than erasing the ownership contract.
 
 Interfaces may inherit from other interfaces and support literal-string marker fields:
 
