@@ -277,6 +277,30 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void unchangedReadonlySharedStateKeepsOnlyHandleCharge() throws Exception {
+        String output = run("""
+                fnc shared_state(String message, Array<String> state) => Array<String> {
+                  stdio.stdout.write(actor.status(actor.self).owned_state_bytes);
+                  stdio.stdout.write(":");
+                  return state;
+                }
+
+                pub routine main() => void {
+                  val values = arr["shared-state"];
+                  val shared = process.share_readonly(values);
+                  val worker_ref = actor.spawn(shared_state, shared);
+                  actor.send(worker_ref, "one");
+                  actor.send(worker_ref, "two");
+                  actor.stop(worker_ref);
+                  actor.join(worker_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("64:64:", output);
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
