@@ -814,7 +814,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freeze(message);
+        Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freezeForTransport(message);
         Runnable release;
         if (cell.kind == ActorKind.PRIVATE) {
             MemoryReservation reservation;
@@ -1151,7 +1151,51 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public static Object freeze(Object value) {
         validateMessageGraph(value);
+        rejectDataFreezeCapabilities(value, new IdentityHashMap<>(), 0);
         return freeze(value, new IdentityHashMap<>(), 0);
+    }
+
+    private static Object freezeForTransport(Object value) {
+        validateMessageGraph(value);
+        return freeze(value, new IdentityHashMap<>(), 0);
+    }
+
+    private static void rejectDataFreezeCapabilities(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value)) return;
+        if (value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof Shared<?>
+                || value instanceof SyncCell<?>
+                || value instanceof OresMutex.Lock<?>
+                || value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException(
+                    "freeze() accepts data values only; live actor/shared capabilities require explicit actor transport");
+        }
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot be frozen");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) rejectDataFreezeCapabilities(item, visiting, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) rejectDataFreezeCapabilities(item, visiting, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectDataFreezeCapabilities(entry.getKey(), visiting, depth + 1);
+                    rejectDataFreezeCapabilities(entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    rejectDataFreezeCapabilities(Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
     }
 
     private static Object freeze(
