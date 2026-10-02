@@ -340,6 +340,39 @@ public final class TypeChecker {
         return owner + origin.ownerType().arguments();
     }
 
+    private void validateStaticSignatureDoesNotCaptureClassGenerics(
+            Ast.ClassDecl klass,
+            Ast.MethodDecl method,
+            Set<String> classGenerics) {
+        for (Ast.Param param : method.parameters()) {
+            String captured = firstReferencedTypeName(param.type(), classGenerics);
+            if (captured != null) {
+                throw new IllegalArgumentException(
+                        "static function '" + klass.name() + "." + method.name()
+                                + "' cannot use enclosing class generic '" + captured
+                                + "' in its callable contract; declare a static-function generic instead");
+            }
+        }
+        String captured = firstReferencedTypeName(method.returnType(), classGenerics);
+        if (captured != null) {
+            throw new IllegalArgumentException(
+                    "static function '" + klass.name() + "." + method.name()
+                            + "' cannot use enclosing class generic '" + captured
+                            + "' in its callable contract; declare a static-function generic instead");
+        }
+    }
+
+    private String firstReferencedTypeName(Ast.TypeRef ref, Set<String> names) {
+        if (ref == null) return null;
+        if (names.contains(ref.name())) return ref.name();
+        if (ref.isBorrow()) return firstReferencedTypeName(ref.borrowedTarget(), names);
+        for (Ast.TypeRef argument : ref.arguments()) {
+            String found = firstReferencedTypeName(argument, names);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
     private void checkClass(String module, Ast.ClassDecl klass) {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
         Type self = nominalClassType(klass);
@@ -362,10 +395,22 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
-            Set<String> generics = new HashSet<>(classGenerics);
-            for (String generic : method.genericParameters()) {
-                if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
+            Set<String> methodGenerics = uniqueGenerics(
+                    method.genericParameters(),
+                    (method.isStatic() ? "static function " : "method ") + klass.name() + "." + method.name());
+            for (String generic : methodGenerics) {
+                if (classGenerics.contains(generic)) {
+                    throw new IllegalArgumentException(
+                            "duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
+                }
             }
+            if (method.isStatic()) {
+                validateStaticSignatureDoesNotCaptureClassGenerics(klass, method, classGenerics);
+            }
+
+            Set<String> generics = new HashSet<>();
+            if (!method.isStatic()) generics.addAll(classGenerics);
+            generics.addAll(methodGenerics);
 
             if (method.explicitReceiverType() != null) {
                 Ast.TypeRef receiverRef = method.explicitReceiverType();
