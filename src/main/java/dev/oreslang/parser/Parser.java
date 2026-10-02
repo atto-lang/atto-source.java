@@ -167,8 +167,15 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isBindingKind(peek().type())) {
+                if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
                 continue;
+            }
+            if (mods.isStatic) {
+                consume(FNC, "static class functions must be declared with 'static fnc'");
+                if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
+            } else if (check(FNC)) {
+                throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -257,6 +264,7 @@ public final class Parser {
 
         Ast.TypeRef receiverType = null;
         List<Ast.Param> params;
+        if (mods.isStatic && check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
         if (match(SELF)) {
             receiverType = parseTypeRef();
             consume(RPAREN, "expected ')' after explicit self receiver");
