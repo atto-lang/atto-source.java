@@ -11,8 +11,10 @@ The language is intentionally opinionated:
 - class methods omit `fnc` and have an implicit `self` receiver;
 - one return value only (tuples/arrays/records are ordinary single values);
 - `val`, `const`, and `let` are the only variable declarations;
-- actor heaps are isolated: mutable values are never shared between actors;
+- actor heaps are semantically isolated: mutable values are never shared between actors, even though the Java reference runtime still uses the JVM heap as its backing store;
+- ownership/move/drop semantics reclaim statically-known lifetimes early, with automatic backing GC for residual dynamic graphs and capability-gated `process.gc()` for explicit collection requests;
 - immutable/sendable values may be message-passed, and explicitly frozen regions may be shared read-only;
+- `actor.singleton(name, handler)` provides one named mutable actor without introducing shared mutable memory;
 - isolates are stricter security boundaries for FaaS/mobile workloads, with host access denied and Oreslang APIs capability-gated by default;
 - JIT, AOT/interpreter, and AOT-host + guest-JIT hybrid execution profiles;
 - file-granular incremental compilation with stable code-unit/package identities and reverse-dependency invalidation;
