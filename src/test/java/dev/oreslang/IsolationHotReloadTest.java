@@ -231,6 +231,26 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void stagedHotReloadGenerationsAreResourceBounded() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit(), 2)) {
+            var first = hot.load("one.ores", "pub routine main() => void { return; }");
+            hot.load("two.ores", "pub routine main() => void { return; }");
+            assertEquals(2, hot.retainedGenerations());
+
+            IllegalStateException full = assertThrows(
+                    IllegalStateException.class,
+                    () -> hot.load("three.ores", "pub routine main() => void { return; }"));
+            assertTrue(full.getMessage().contains("generation limit"));
+
+            first.close();
+            assertEquals(1, hot.retainedGenerations());
+            assertDoesNotThrow(() ->
+                    hot.load("three.ores", "pub routine main() => void { return; }"));
+        }
+    }
+
+    @Test
     void hotReloadRequiresExplicitCapability() {
         assertThrows(SecurityException.class,
                 () -> new HotReloadManager(IsolatePolicy.strictFaas(), ExecutionProfile.serverJit()));
