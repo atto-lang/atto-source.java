@@ -12,14 +12,17 @@
 8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
 9. `self` cannot be rebound.
 10. An actor has one mailbox and never executes two mailbox turns concurrently.
-11. Private and shared actors use separate dispatcher thread pools.
-12. Private actor transport rejects synchronized shared-memory cells.
+11. Private, shared, and untrusted actors use separate dispatcher thread pools.
+12. Private and untrusted actor transport rejects synchronized shared-memory cells.
 13. Shared actor state is still actor-owned; ordinary actor field mutation is serialized by the mailbox, not by implicit locks.
 14. Actor `self` and move-only actor-owned state cannot escape a mailbox turn as ordinary mutable aliases.
 15. Synchronized shared memory requires `SHARED_MEMORY`; strict FaaS does not grant it by default.
 16. Private slices and synchronized shared cells compete for one parent actor-memory ceiling.
 17. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
 18. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
+19. An untrusted actor has a hard lifetime ceiling of 300 seconds, a per-message execution-fuel budget, a bounded mailbox-return budget, and no ambient filesystem/network/FFI/process/thread authority.
+20. Large HTTP request/response bodies use owner-bound per-exchange stream capabilities rather than actor mailboxes or raw file-descriptor authority.
+21. Actor-owned native memory regions are zeroed and their FFM arenas are closed during actor teardown; logical reservations are released in the same teardown path.
 
 ## Deployment matrix
 
@@ -109,15 +112,36 @@ Compiler-generated/context-aware `BehaviorFactory` values are capture-free for b
 
 The host actor runtime follows the same scheduling shape as Akka's event-based dispatcher: many actors share an executor, each actor has its own mailbox, and a scheduled actor drains only a bounded number of messages before yielding back to the executor. The configured throughput bound prevents one hot mailbox from monopolizing a worker.
 
-Oreslang deliberately uses two executors:
+Oreslang deliberately uses three executors:
 
 - **private dispatcher** — private actors, isolation-copy message transport;
-- **shared dispatcher** — shared actors, immutable sharing plus explicit `SyncCell<T>` shared state.
+- **shared dispatcher** — shared actors, immutable sharing plus explicit `SyncCell<T>` shared state;
+- **untrusted dispatcher** — adversarial, memory-isolated actors with enforced fuel/deadline checks, separated so hostile work cannot consume the trusted/private carrier pool.
 
 A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
 
-The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors.
+Normal private/shared actor cancellation does not interrupt a pooled carrier merely to stop one actor; cancellation is observed at compiler-injected scheduler safepoints. An untrusted actor additionally has a dedicated-dispatcher watchdog: when its hard deadline expires the runtime marks that actor stopped and interrupts only its currently active untrusted carrier as a wake-up/control signal. The turn clears that interrupt before the pooled carrier is reused. Security does not depend on the guest voluntarily yielding: loop backedges and untrusted call/recursion boundaries consume runtime fuel and recheck the deadline.
 
+
+## Untrusted actor sandbox
+
+`UNTRUSTED` is a third actor kind, not merely a flag on a shared actor. It inherits the private actor's isolation-copy transport and actor-owned memory slice, but it is always adversarial and receives a strictly reduced capability set. It cannot create child actors or gain `SHARED_MEMORY`, generic `NETWORK`, filesystem access, environment access, FFI/native access, reflection, child-process creation, guest thread creation, hot-code loading, or polyglot access.
+
+The default sandbox limits are:
+
+- maximum lifetime: **300 seconds** (an absolute upper bound; a host may choose less);
+- execution fuel: **100,000 units per mailbox turn**;
+- outbound actor-mailbox payload: **1 MiB**;
+- HTTP request body read budget: **16 MiB**;
+- HTTP response body write budget: **16 MiB**;
+- isolated actor heap: **64 MiB**;
+- mailbox: **128 messages**.
+
+HTTP is granted as an **object capability to one accepted exchange**, not as ambient network access. A host may bind `HttpRequestTransport` / `HttpResponseTransport` to its HTTP parser, event loop, `SocketChannel`, or equivalent. The actor receives owner-bound `HttpRequestCapability` / `HttpResponseCapability` handles through its turn context. Request-body chunks are read from the host request stream and response-body chunks are written to the host response stream directly; they are not serialized through the actor mailbox. The handles are not Sendable, cannot be transferred to another actor, and expose no general socket/file-descriptor operations. This also keeps the model valid for HTTP/2 or HTTP/3, where a raw connection fd would be the wrong abstraction.
+
+An untrusted actor's language-managed native blocks are allocated from closeable cross-thread FFM arenas. Teardown zeroes each block, closes its arena deterministically, drains mailbox reservations, drops behavior roots, cancels/aborts attached HTTP streams, and releases the actor slice's accounting. JVM metadata/wrapper objects remain ordinary managed objects; Oreslang therefore promises deterministic release of actor-owned native regions and runtime quotas, not the impossible claim that every JVM bookkeeping object disappears synchronously.
+
+The watchdog provides a wall-clock kill boundary, while mandatory compiler/runtime checkpoints provide safe preemption of guest computation. Arbitrary native/FFI callbacks are forbidden precisely because a host call that ignores interruption and never returns could defeat language-level checkpoints; stronger deployment backends may additionally place an untrusted actor in a killable Graal/native/OS isolation unit without changing these source semantics.
 
 ## Shared actor memory
 
@@ -131,7 +155,7 @@ Actor failures are fail-stop in this layer. The actor ref retains the failure ca
 
 ## Private actor memory confinement
 
-A private actor is assigned an `ActorMemorySlice` when it is created. The slice is keyed by actor identity rather than by dispatcher thread because actor turns may migrate between worker threads.
+A private or untrusted actor is assigned an `ActorMemorySlice` when it is created. The slice is keyed by actor identity rather than by dispatcher thread because actor turns may migrate between worker threads.
 
 Private mailbox admission is:
 
@@ -146,4 +170,4 @@ Persistent generated actor state reserves from the same slice. Actor teardown cl
 
 The logical size metric intentionally does not claim to equal JVM object layout. It exists to enforce Oreslang memory-domain policy while actors remain multiplexed on one JVM. A hardened backend may replace the accounting implementation with arena/region allocation or a Graal/native isolate without changing source semantics.
 
-A private actor's memory owner is its **ActorId**, never its carrier thread. Successive mailbox turns may execute on different private-dispatcher workers. Consequently a future FFM/off-heap backend must not make `Arena.ofConfined()` carrier-thread identity part of Oreslang semantics. It should use a cross-thread-capable region whose access is guarded by the actor owner token, or map the private actor to a true Graal/native isolate when physical heap isolation is required.
+A memory-isolated actor's memory owner is its **ActorId**, never its carrier thread. Successive mailbox turns may execute on different private-dispatcher workers. Consequently a future FFM/off-heap backend must not make `Arena.ofConfined()` carrier-thread identity part of Oreslang semantics. It should use a cross-thread-capable region whose access is guarded by the actor owner token, or map the private actor to a true Graal/native isolate when physical heap isolation is required.
