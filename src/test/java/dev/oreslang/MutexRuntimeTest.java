@@ -6,6 +6,7 @@ import dev.oreslang.runtime.OresMutex;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -173,6 +174,71 @@ final class MutexRuntimeTest {
         assertInstanceOf(OresMutex.GuardFuture.class, sharedFuture);
         var sharedGuard = sharedFuture.join();
         sharedGuard.release();
+    }
+
+    @Test
+    void asyncTimedLockTimesOutAndReleasesItsDomainReservation() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> waitingRef = new AtomicReference<>();
+        Thread requester = Thread.ofPlatform().start(
+                () -> waitingRef.set(mutex.lockAsyncFor(Duration.ofMillis(25))));
+        requester.join();
+
+        var waiting = waitingRef.get();
+        var failure = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> waiting.get(2, TimeUnit.SECONDS));
+        assertInstanceOf(OresMutex.LockTimeoutException.class, failure.getCause());
+
+        guard.release();
+        var next = mutex.lock();
+        next.release();
+    }
+
+    @Test
+    void asyncTimedLockCanWinBeforeDeadline() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> waitingRef = new AtomicReference<>();
+        Thread requester = Thread.ofPlatform().start(
+                () -> waitingRef.set(mutex.lockAsyncFor(Duration.ofSeconds(2))));
+        requester.join();
+        var waiting = waitingRef.get();
+        assertFalse(waiting.isDone());
+
+        guard.release();
+
+        var acquired = waiting.get(2, TimeUnit.SECONDS);
+        acquired.value()[0] = 5;
+        acquired.release();
+        assertEquals(5, mutex.withLock(value -> value[0]).intValue());
+    }
+
+    @Test
+    void asyncTimedLockZeroAndNegativeTimeoutsAreWellDefined() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> zeroRef = new AtomicReference<>();
+        Thread requester = Thread.ofPlatform().start(
+                () -> zeroRef.set(mutex.lockAsyncFor(Duration.ZERO)));
+        requester.join();
+
+        var zero = zeroRef.get();
+        var failure = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> zero.get(2, TimeUnit.SECONDS));
+        assertInstanceOf(OresMutex.LockTimeoutException.class, failure.getCause());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> mutex.lockAsyncFor(Duration.ofMillis(-1)));
+
+        guard.release();
+        var next = mutex.lock();
+        next.release();
     }
 
     @Test
