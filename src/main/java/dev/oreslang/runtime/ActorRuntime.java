@@ -4,6 +4,7 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,8 +29,12 @@ import java.util.function.Supplier;
 public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private static final int MAX_FREEZE_DEPTH = 256;
+    private static final int MAX_FREEZE_NODES = 100_000;
+
     private final AtomicLong actorGcRequests = new AtomicLong();
     private final AtomicLong processGcRequests = new AtomicLong();
+    private final AtomicBoolean processGcInProgress = new AtomicBoolean();
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final IsolatePolicy policyCeiling;
     private final GarbageCollector garbageCollector;
@@ -53,7 +58,22 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
 
-    public record Shared<T>(T value) { }
+    public static final class Shared<T> {
+        private final T value;
+
+        private Shared(T value) {
+            this.value = value;
+        }
+
+        public T value() {
+            return value;
+        }
+
+        @Override
+        public String toString() {
+            return "Shared[" + value + "]";
+        }
+    }
 
     /**
      * Backend hook for explicit GC requests.
@@ -185,20 +205,29 @@ public final class ActorRuntime implements AutoCloseable {
      * violate the actor isolation/latency contract.
      */
     public void gcCurrentActor() {
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         ActorCell<?> cell = currentActor.get();
-        if (cell == null) {
-            throw new IllegalStateException("actor.gc() requires a current actor");
+        if (cell == null || actors.get(cell.ref.id()) != cell) {
+            throw new IllegalStateException("actor.gc() requires a live current actor");
         }
         actorGcRequests.incrementAndGet();
         cell.gcRequests.incrementAndGet();
         garbageCollector.collectActor(cell.ref.id());
     }
 
-    /** Request process-wide collection. This is intentionally the expensive path. */
+    /**
+     * Request process-wide collection. Concurrent requests are coalesced so a
+     * group of actors cannot fan out into simultaneous full-heap collections.
+     */
     public void gcProcess() {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         processGcRequests.incrementAndGet();
-        garbageCollector.collectProcess();
+        if (!processGcInProgress.compareAndSet(false, true)) return;
+        try {
+            if (!closed.get()) garbageCollector.collectProcess();
+        } finally {
+            processGcInProgress.set(false);
+        }
     }
 
     public GcStats gcStats() {
@@ -229,38 +258,98 @@ public final class ActorRuntime implements AutoCloseable {
     /**
      * Converts supported values into a deeply immutable/sendable graph.
      * Unknown host objects are rejected instead of being passed by reference.
+     *
+     * Freezing is bounded and cycle-aware because this is a trust boundary:
+     * malformed host graphs must fail admission rather than overflow the stack
+     * or allocate without bound before the mailbox capacity check runs.
      */
     public static Object freeze(Object value) {
+        return freeze(value, new FreezeState(), 0);
+    }
+
+    private static Object freeze(Object value, FreezeState state, int depth) {
+        if (depth > MAX_FREEZE_DEPTH) {
+            throw new IllegalArgumentException("sendable graph exceeds maximum freeze depth " + MAX_FREEZE_DEPTH);
+        }
+        if (++state.nodes > MAX_FREEZE_NODES) {
+            throw new IllegalArgumentException("sendable graph exceeds maximum freeze node count " + MAX_FREEZE_NODES);
+        }
+
         if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
                 || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId) {
             return value;
         }
-        if (value instanceof Shared<?> shared) return shared;
         if (value instanceof ActorRef<?> ref) return ref;
+
+        if (value instanceof Shared<?> shared) {
+            return new Shared<>(freeze(shared.value(), state, depth + 1));
+        }
+
         if (value instanceof List<?> list) {
-            List<Object> frozen = new ArrayList<>(list.size());
-            for (Object item : list) frozen.add(freeze(item));
-            return List.copyOf(frozen);
+            enterContainer(value, state);
+            try {
+                List<Object> frozen = new ArrayList<>(list.size());
+                for (Object item : list) frozen.add(freeze(item, state, depth + 1));
+                return List.copyOf(frozen);
+            } finally {
+                state.visiting.remove(value);
+            }
         }
         if (value instanceof Set<?> set) {
-            return set.stream().map(ActorRuntime::freeze).collect(java.util.stream.Collectors.toUnmodifiableSet());
+            enterContainer(value, state);
+            try {
+                java.util.HashSet<Object> frozen = new java.util.HashSet<>(Math.max(16, set.size() * 2));
+                for (Object item : set) frozen.add(freeze(item, state, depth + 1));
+                return Set.copyOf(frozen);
+            } finally {
+                state.visiting.remove(value);
+            }
         }
         if (value instanceof Map<?, ?> map) {
-            Map<Object, Object> frozen = new LinkedHashMap<>();
-            for (Map.Entry<?, ?> entry : map.entrySet()) frozen.put(freeze(entry.getKey()), freeze(entry.getValue()));
-            return Map.copyOf(frozen);
+            enterContainer(value, state);
+            try {
+                Map<Object, Object> frozen = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    frozen.put(freeze(entry.getKey(), state, depth + 1), freeze(entry.getValue(), state, depth + 1));
+                }
+                return Map.copyOf(frozen);
+            } finally {
+                state.visiting.remove(value);
+            }
         }
         if (value.getClass().isArray()) {
-            int length = Array.getLength(value);
-            List<Object> frozen = new ArrayList<>(length);
-            for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i)));
-            return List.copyOf(frozen);
+            enterContainer(value, state);
+            try {
+                int length = Array.getLength(value);
+                List<Object> frozen = new ArrayList<>(length);
+                for (int i = 0; i < length; i++) frozen.add(freeze(Array.get(value, i), state, depth + 1));
+                return List.copyOf(frozen);
+            } finally {
+                state.visiting.remove(value);
+            }
         }
-        if (value instanceof Sendable sendable) return sendable.freezeForSend();
+        if (value instanceof Sendable sendable) {
+            Object representation = sendable.freezeForSend();
+            if (representation == value) {
+                throw new IllegalArgumentException("Sendable.freezeForSend() must return a detached representation");
+            }
+            return freeze(representation, state, depth + 1);
+        }
         throw new IllegalArgumentException("value of type " + value.getClass().getName()
                 + " is not Sendable; mutable host objects cannot cross actor boundaries");
+    }
+
+    private static void enterContainer(Object value, FreezeState state) {
+        if (state.visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic mutable graphs are not Sendable");
+        }
+    }
+
+    private static final class FreezeState {
+        private final IdentityHashMap<Object, Boolean> visiting = new IdentityHashMap<>();
+        private int nodes;
     }
 
     /** Implemented by generated immutable Oreslang aggregate values. */
