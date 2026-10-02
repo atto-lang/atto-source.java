@@ -762,7 +762,7 @@ final class ActorRuntimeTest {
             IllegalStateException failure = assertThrows(
                     IllegalStateException.class,
                     () -> runtime.<String>spawnPrivate(() -> (message, context) -> { }));
-            assertTrue(failure.getMessage().contains("actor limit exceeded"));
+            assertTrue(failure.getMessage().contains("actor runtime limit exceeded"));
 
             first.stop();
             assertEquals(1, runtime.actorCount());
