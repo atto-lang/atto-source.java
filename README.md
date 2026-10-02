@@ -21,7 +21,7 @@ The language is intentionally opinionated:
 - class-level `static fnc` functions separated from receiver methods;
 - first-class function aliases/types and block-only `|args| -> { ... }` lambdas;
 - lexical closures with persistent captured environments;
-- affine ownership, move checking, `&T` / `&mut T` borrows, immutable-by-default parameters, and `Type mut name` owned-mutation syntax;
+- pointerless affine ownership: ordinary parameters read-borrow, `mut Type name` is an exclusive temporary borrow, `take Type name` transfers ownership, and `borrow/copy/take/share(...)` are compiler intrinsics;
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
 - class/module declarations use the mandatory `as` body marker; `as` and `is` are reserved keywords;
