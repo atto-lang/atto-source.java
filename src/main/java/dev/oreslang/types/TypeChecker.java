@@ -141,7 +141,7 @@ public final class TypeChecker {
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
-                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()), signature, "module " + module.name());
             } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
@@ -373,7 +373,7 @@ public final class TypeChecker {
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
-            if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+            if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -471,7 +471,7 @@ public final class TypeChecker {
                         requireAssignable(typeOfWithExpected(call.arguments().get(i), expected, env, generics, self),
                                 expected, "argument " + (i + 1));
                     }
-                    return resolve(fn.returnType(), fnGenerics, null);
+                    return asyncResult(resolve(fn.returnType(), fnGenerics, null), fn.async());
                 }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
@@ -485,7 +485,7 @@ public final class TypeChecker {
                             requireAssignable(typeOfWithExpected(call.arguments().get(i), expected, env, generics, self),
                                     expected, "argument " + (i + 1));
                         }
-                        return resolve(method.returnType(), methodGenerics, named);
+                        return asyncResult(resolve(method.returnType(), methodGenerics, named), method.async());
                     }
                 }
             }
@@ -528,7 +528,7 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -554,7 +554,7 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
-                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
+                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named, method.async());
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -588,8 +588,12 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
-            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) return named.arguments().getFirst();
-            return Unknown.INSTANCE;
+            if (awaitedType instanceof Named named
+                    && named.name().equals("Future")
+                    && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            throw new IllegalArgumentException("await requires an async/Future value, got " + awaitedType);
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
@@ -737,7 +741,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
-                    functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                    functionType(method.parameters(), method.returnType(), generics, self, method.async()), "class " + klass.name());
         }
         stack.remove(klass);
         Record result = new Record(members);
@@ -764,7 +768,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members, methodKey(method.name(), method.arity()),
-                        functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                        functionType(method.parameters(), method.returnType(), generics, self, method.async()), "class " + klass.name());
             }
         }
         stack.remove(klass);
@@ -915,7 +919,23 @@ public final class TypeChecker {
     }
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
-        return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
+        return functionType(params, returns, generics, self, false);
+    }
+
+    private Function functionType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            Set<String> generics,
+            Type self,
+            boolean async) {
+        Type result = resolve(returns, generics, self);
+        return new Function(
+                params.stream().map(p -> resolveParam(p, generics, self)).toList(),
+                asyncResult(result, async));
+    }
+
+    private Type asyncResult(Type result, boolean async) {
+        return async ? new Named("Future", List.of(result)) : result;
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
