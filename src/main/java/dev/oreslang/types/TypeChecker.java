@@ -314,16 +314,18 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.MatchStmt matched) {
             Type source = typeOf(matched.value(), env, generics, self);
-            boolean sawIrrefutableArm = false;
+            List<Ast.Pattern> priorPatterns = new ArrayList<>();
             for (Ast.MatchArm arm : matched.arms()) {
-                if (sawIrrefutableArm) {
-                    throw new IllegalArgumentException("unreachable match arm after an irrefutable pattern");
+                for (Ast.Pattern prior : priorPatterns) {
+                    if (patternSubsumes(prior, arm.pattern())) {
+                        throw new IllegalArgumentException("unreachable match arm; an earlier pattern already covers it");
+                    }
                 }
                 validateUniquePatternBindings(arm.pattern(), new HashSet<>());
                 Env armEnv = new Env(env);
                 checkPattern(arm.pattern(), source, armEnv, generics, self);
                 checkBlock(arm.body(), armEnv, generics, expectedReturn, self);
-                sawIrrefutableArm = isIrrefutablePattern(arm.pattern(), source);
+                priorPatterns.add(arm.pattern());
             }
             return;
         }
@@ -388,16 +390,44 @@ public final class TypeChecker {
         }
     }
 
-    private boolean isIrrefutablePattern(Ast.Pattern pattern, Type source) {
-        if (pattern instanceof Ast.WildcardPattern || pattern instanceof Ast.BindingPattern) return true;
-        if (pattern instanceof Ast.TuplePattern tuplePattern && source instanceof Tuple tuple) {
-            if (tuplePattern.elements().size() != tuple.elements().size()) return false;
-            for (int i = 0; i < tuple.elements().size(); i++) {
-                if (!isIrrefutablePattern(tuplePattern.elements().get(i), tuple.elements().get(i))) return false;
-            }
-            return true;
+    private boolean patternSubsumes(Ast.Pattern earlier, Ast.Pattern later) {
+        if (earlier instanceof Ast.WildcardPattern || earlier instanceof Ast.BindingPattern) return true;
+
+        if (earlier instanceof Ast.LiteralPattern left && later instanceof Ast.LiteralPattern right) {
+            return patternLiteralEquals(left.value(), right.value());
         }
+
+        if (earlier instanceof Ast.TuplePattern left && later instanceof Ast.TuplePattern right) {
+            return patternSequenceSubsumes(left.elements(), right.elements());
+        }
+
+        if (earlier instanceof Ast.ListPattern left && later instanceof Ast.ListPattern right) {
+            return patternSequenceSubsumes(left.elements(), right.elements());
+        }
+
         return false;
+    }
+
+    private boolean patternSequenceSubsumes(List<Ast.Pattern> earlier, List<Ast.Pattern> later) {
+        if (earlier.size() != later.size()) return false;
+        for (int i = 0; i < earlier.size(); i++) {
+            if (!patternSubsumes(earlier.get(i), later.get(i))) return false;
+        }
+        return true;
+    }
+
+    private boolean patternLiteralEquals(Object left, Object right) {
+        if (left instanceof Ast.Imaginary a && right instanceof Ast.Imaginary b) {
+            return Double.compare(a.coefficient(), b.coefficient()) == 0;
+        }
+        if (left instanceof Number a && right instanceof Number b) {
+            if (left instanceof Long && right instanceof Long) return a.longValue() == b.longValue();
+            double x = a.doubleValue();
+            double y = b.doubleValue();
+            if (!Double.isFinite(x) || !Double.isFinite(y)) return Double.compare(x, y) == 0;
+            return java.math.BigDecimal.valueOf(x).compareTo(java.math.BigDecimal.valueOf(y)) == 0;
+        }
+        return java.util.Objects.equals(left, right);
     }
 
     private void checkPattern(Ast.Pattern pattern, Type source, Env env, Set<String> generics, Type self) {
