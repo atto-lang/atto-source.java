@@ -146,6 +146,11 @@ public record IsolatePolicy(
                     .option("sandbox.MaxThreads", "1")
                     .option("sandbox.MaxOutputStreamSize", bytes(maxOutput))
                     .option("sandbox.MaxErrorStreamSize", "64KB");
+        } else if (engine != null) {
+            // Explicit tenant engines use Graal's ISOLATED policy. Contexts
+            // sharing an engine must use the same sandbox policy as the engine.
+            builder.sandbox(SandboxPolicy.ISOLATED)
+                    .option("sandbox.MaxCPUTime", duration(maxWallTime));
         }
 
         // With an implicit engine this policy owns the isolate decision.
@@ -165,7 +170,11 @@ public record IsolatePolicy(
      * tenant engine.
      */
     public Engine.Builder isolatedEngineBuilder() {
+        SandboxPolicy tenantPolicy = adversarial
+                ? SandboxPolicy.UNTRUSTED
+                : SandboxPolicy.ISOLATED;
         return Engine.newBuilder(OresLanguage.ID)
+                .sandbox(tenantPolicy)
                 .spawnIsolate(true)
                 .option("engine.MaxIsolateMemory", bytes(maxHeapBytes));
     }
