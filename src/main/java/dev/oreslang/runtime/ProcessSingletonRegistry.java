@@ -176,8 +176,12 @@ public final class ProcessSingletonRegistry {
             Throwable terminal = cell.terminalFailure;
             if (terminal != null) return CompletableFuture.failedFuture(terminal);
 
-            List<Object> frozen = new ArrayList<>(arguments.size());
-            for (Object argument : arguments) frozen.add(ActorRuntime.freeze(argument));
+            Object frozenGraph = ActorRuntime.freeze(arguments);
+            if (!(frozenGraph instanceof List<?> frozenList)) {
+                throw new IllegalStateException("singleton argument transport did not freeze to a list");
+            }
+            @SuppressWarnings("unchecked")
+            List<Object> frozen = (List<Object>) frozenList;
 
             String caller = CURRENT_CELL.get();
             WaitEdge waitEdge;
@@ -199,7 +203,7 @@ public final class ProcessSingletonRegistry {
 
             long deadline = deadlineAfter(effectiveWallTime);
             Request request = new Request(
-                    List.copyOf(frozen),
+                    frozen,
                     (state, args) -> operation.apply(cast(state), args),
                     reply,
                     deadline);
