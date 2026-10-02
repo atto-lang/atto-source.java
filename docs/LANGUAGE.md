@@ -45,9 +45,13 @@ define module app
 end
 ```
 
-Singleton state fields require explicit types because they form a process-lifetime hot-reload schema. Arguments and results must be sendable; borrows and closure/function values cannot cross this boundary. Calls from one singleton function to another function in the same singleton are direct and keep the same actor-owned state, avoiding self-mailbox deadlocks.
+Singleton state fields require explicit process-stable types because they form a process-lifetime hot-reload schema. Their initializers must be context-free: literals and pure expressions over already initialized stable singleton fields are allowed, while capability access, arbitrary function calls, `await`, object construction, mutation, and closures are not. Type aliases are currently excluded from process state so redefining an alias cannot silently reinterpret an existing layout.
 
-A hot-reloaded generation with the same singleton field schema reuses the existing actor state while executing the new function bodies. Incompatible singleton field-schema changes are rejected until an explicit migration mechanism is provided; the runtime never silently treats old process state as a new layout.
+The exported transport surface is intentionally strict. Public singleton functions may use sendable scalar values, `Option<T>`, and `Array/List<T>` of sendable values. Until explicit `Send` constraints are part of the type system, exported singleton functions cannot be generic or `async`, cannot accept `mut` or structural parameters, and cannot transport borrows, class instances, functions/closures, or unresolved actor-local values. Classes declared inside a singleton module are actor-private helpers and cannot be accessed through the external module/class namespace.
+
+Every external singleton call must be immediately awaited. Calls from one singleton function to another function in the same singleton are direct and keep the same actor-owned state, including helper method/static-function dispatch. Calls between different singleton actors use request/reply mailboxes. The runtime detects wait cycles before they can deadlock, applies caller mailbox/backpressure limits, and treats queueing time as part of the caller's wall-time budget.
+
+A hot-reloaded generation with the same singleton field schema reuses the existing actor state while executing the new function bodies. Incompatible singleton field-schema changes are rejected until an explicit migration mechanism is provided; the runtime never silently treats old process state as a new layout. Replacing singleton code against live state requires `HOT_CODE_LOAD`; managed generations are process-monotonic and stale code cannot roll active singleton behavior backward.
 
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
