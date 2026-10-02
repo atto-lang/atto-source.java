@@ -1,4 +1,4 @@
-# Oreslang language design (v0.5)
+# Oreslang language design (v0.6)
 
 Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
@@ -671,3 +671,181 @@ Lambda parameters may be inferred from a contextual function type (`|foo|`) or t
 There are no expression-body lambdas. Every lambda has braces. When the contextual result type is non-void, every control-flow path must contain an explicit `return <value>;`. Void lambdas may use `return;`.
 
 This means higher-order functions and functors do not introduce a second return convention: named functions, methods, static functions, and anonymous functions all use the same explicit `return` statement semantics.
+
+
+## Ownership, borrowing, and lexical closures
+
+Oreslang uses one ownership model for every execution target. Actor runtimes benefit
+from it because mutable values cannot be aliased across actors; a future
+multithreaded host benefits from the same rule because the compiler has already
+eliminated ordinary data races before scheduling begins.
+
+### Immutable parameters by default
+
+An ordinary by-value parameter is an immutable owned binding:
+
+```ores
+fnc bad(Bar b) => void {
+  b.foo = "foobar"; // compile-time error
+  return;
+}
+```
+
+The caller transfers a non-Copy value into the function, but the callee does not
+gain mutation authority unless the parameter binding is explicitly `mut`:
+
+```ores
+fnc change(Bar mut b) => void {
+  b.foo = "foobar";
+  return;
+}
+```
+
+`mut` is intentionally separate from `let`:
+
+- `Type mut name` makes one parameter binding mutable.
+- `let` makes a local binding or class field mutable.
+- `val` is runtime-immutable.
+- `const` is compile-time constant.
+
+Mutating a class member therefore needs both a mutable owner and a `let` field.
+
+### Borrow references
+
+Oreslang supports Rust-style shared and exclusive borrows:
+
+```ores
+fnc inspect(&Bar b) => void {
+  stdio.println(b.foo);
+  return;
+}
+
+fnc change(&mut Bar b) => void {
+  b.foo = "changed";
+  return;
+}
+
+pub routine main() => void {
+  let b = new Bar();
+  inspect(&b);
+  change(&mut b);
+  return;
+}
+```
+
+`&T` permits shared reads. Any number of shared borrows may coexist.
+`&mut T` is exclusive and requires a mutable place. While an exclusive borrow
+is live, the owner cannot be read, moved, mutated, or borrowed again. While one
+or more shared borrows are live, the owner may be read but cannot be moved,
+mutated, or exclusively borrowed.
+
+`*ref` explicitly dereferences a reference. Member access and method dispatch
+also auto-dereference borrow references.
+
+### Non-escaping lifetimes
+
+Oreslang deliberately chooses **non-escaping borrow lifetimes** instead of
+exposing Rust-style named lifetime parameters in source code.
+
+Borrow references may exist in lexical local scopes and as function parameters,
+but may not:
+
+- be returned from a callable;
+- be stored in module/global state;
+- be stored in class fields;
+- be captured by a closure;
+- cross an actor mailbox;
+- become long-lived shared mutable state.
+
+This removes an entire class of dangling-reference and lifetime-annotation
+problems. When data must outlive a lexical borrow, code returns/moves an owned
+value or uses the explicit immutable shared-data mechanism.
+
+The compiler tracks borrow leases and releases local/temporary borrows at their
+lexical lifetime boundary. Direct call borrows are temporary; a borrow assigned
+to a local remains live until that local scope ends.
+
+### Moves and Copy values
+
+Primitive scalar/string values are Copy-like. Owned aggregate/class/closure
+values move when consumed by value.
+
+Typical move sites are:
+
+- passing a non-Copy argument to an owned parameter;
+- returning an owned non-Copy value;
+- inserting an owned value into an aggregate;
+- capturing an owned or mutable binding in a closure.
+
+A use after move is a compile-time error. A moved mutable `let` binding may be
+reinitialized before it is used again.
+
+This ownership rule is target-independent: actor mode, JIT mode, Native Image
+AOT, hybrid guest-JIT, and future multithreaded schedulers all compile through
+the same checker.
+
+### Mutable method receivers
+
+Instance methods are immutable-receiver methods by default. A method that may
+mutate `self` is explicit:
+
+```ores
+define class Counter
+  let int value = 0;
+
+  mut increment() => void {
+    self.value = self.value + 1;
+    return;
+  }
+end
+```
+
+Calling a `mut` receiver method requires a mutable owner or `&mut` reference.
+The mutable-receiver bit is part of the exported ABI digest.
+
+### Lexical closure capture
+
+Closures are lexically scoped. Oreslang favors ownership-oriented functional
+capture semantics:
+
+- immutable Copy captures are copied;
+- owned non-Copy captures move into the closure;
+- mutable bindings move into the closure, so subsequent mutation is closure-local;
+- borrow references cannot be captured.
+
+For example:
+
+```ores
+fnc makeCounter() => (() -> int) {
+  let count = 0;
+
+  return || -> {
+    count = count + 1;
+    return count;
+  };
+}
+```
+
+The returned closure owns `count`; the outer function does not retain a second
+mutable alias. This is why the same closure object can later be transferred to a
+single actor or worker thread without creating shared mutable outer state.
+
+The current runtime preserves lexical environments for recursive and
+higher-order functions, while the ownership checker decides which outer
+bindings remain legal after closure creation.
+
+### Multithreaded target safety
+
+The actor runtime remains the primary concurrency model, but ownership checking
+does not assume a single OS thread. Valid programs obey the same aliasing
+invariants needed by a multithreaded scheduler:
+
+- one mutable owner/borrow at a time;
+- many immutable readers or one mutable writer;
+- moved values have one logical owner;
+- closures cannot smuggle borrowed stack state into another worker;
+- actor messages remain ownership-transfer / freeze boundaries.
+
+Oreslang therefore does not need a separate "unsafe multithreaded mode" for
+ordinary code. A secondary threaded runtime can schedule checked owned values
+across threads while preserving the same language semantics.
