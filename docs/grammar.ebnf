@@ -95,6 +95,8 @@ statement       = binding_decl
                 | defer_stmt
                 | recover_stmt
                 | panic_stmt
+                | throw_stmt
+                | raise_stmt
                 | stop_stmt
                 | break_stmt
                 | continue_stmt
@@ -105,6 +107,8 @@ return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
 recover_stmt    = "recover" expression stmt_terminator ;
 panic_stmt      = "panic" expression stmt_terminator ;
+throw_stmt      = "throw" expression stmt_terminator ;
+raise_stmt      = "raise" stmt_terminator ;
 stop_stmt       = "stop" stmt_terminator ;
 break_stmt      = "break" stmt_terminator ;
 continue_stmt   = "continue" stmt_terminator ;
@@ -208,7 +212,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 *)
 
 (* Reserved keywords:
-   - "of", "is", "as", "actor", "isolate", "recover", "panic", and "stop" are globally reserved tokens.
+   - "of", "is", "as", "actor", "isolate", "recover", "panic", "throw", "raise", and "stop" are globally reserved tokens.
    - They may appear only in grammar positions assigned to those keywords.
    - They are never IDENT tokens and therefore cannot name variables, parameters,
      callables, modules, classes, interfaces, fields, methods, type aliases,
@@ -241,20 +245,26 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - main/init lifecycle fnc/routine declarations may not be actor or actor-isolate callables.
    - "actor fnc" / "actor routine" declarations are one-shot actor factories.
      Their declared body return type must be void; calling one returns ActorTask.
-   - ActorTask exposes stop/join/alive/failed/kind but no mailbox send operation.
+   - ActorTask exposes stop/join/alive/failed/kind/failure_trace but no mailbox send operation.
    - main is the root/process entrypoint and cannot itself be declared actor.
    - actor behavior lambdas accept exactly one mailbox message parameter and return void.
    - actor defaults to SHARED runtime mode; "actor isolate" requests the stronger
      isolate backend contract and cannot capture mutable, borrowed, or move-only outer state.
    - actor failure is fail-stop for that actor; it does not unwind the spawning/main callable.
-   - "stop;" is legal only in an actor body. It immediately terminates that actor after
-     finally/defer cleanup, bypasses catch/recover, discards queued mailbox work, and does
-     not mark the actor failed. ActorRef.stop() remains the graceful/FIFO shutdown API.
+   - "stop;" requires proven actor context: an actor body or the true branch of
+     actor.in_actor()/actor.inActor(). Runtime admission re-checks the context.
+   - "stop;" immediately stops new admission to the current actor, recursively asks child
+     actors to stop gracefully/FIFO, runs current finally/defer cleanup, bypasses
+     catch/recover, waits for descendants to terminate, and does not mark the actor failed.
+     ActorRef.stop() remains the graceful/FIFO single-actor shutdown API.
+   - "throw value" is lexical/catchable and bypasses callable recover handlers.
+   - "panic value" bypasses lexical catch and unwinds through callable recover handlers.
+   - "raise;" is valid only inside catch/recover and re-propagates the exact current failure.
    - recover evaluates/registers an arity-1 handler on the current callable invocation.
    - defer handlers run before recovery. Recovery handlers run LIFO while a failure unwinds.
    - normal recover-handler completion consumes the failure and becomes the callable result.
-   - "panic value" creates/re-creates a panic; re-panicking from a recover handler continues unwind.
-   - scheduler/runtime cancellation is not recoverable and cannot be swallowed by recover/catch.
+   - re-panicking creates a new panic value; "raise;" preserves the current failure and logical trace.
+   - scheduler/runtime cancellation and actor-stop control are not recoverable and cannot be swallowed by recover/catch.
    - break exits the nearest enclosing loop; continue advances the nearest loop.
    - continue in a classic for-loop still evaluates the update expression.
    - break/continue cannot cross a function, routine, method, or lambda boundary.
