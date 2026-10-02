@@ -164,6 +164,37 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void genericInterfaceMethodsAreAlphaEquivalentButPreserveGenericArity() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define interface Mapper<T>
+                    fnc map<U>(T input, U fallback) => U;
+                  end
+
+                  define class Good<T> implements Mapper<T>
+                    pub map<V>(T input, V fallback) => V {
+                      return fallback;
+                    }
+                  end
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define interface Mapper<T>
+                    fnc map<U>(T input, U fallback) => U;
+                  end
+
+                  define class Bad<T> implements Mapper<T>
+                    pub map<A, B>(T input, A fallback) => A {
+                      return fallback;
+                    }
+                  end
+                end
+                """)));
+    }
+
+    @Test
     void genericNominalSubtypingPreservesConcreteArguments() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
