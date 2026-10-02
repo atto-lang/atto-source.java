@@ -271,6 +271,12 @@ public final class TraitComposer {
                 validateExprTypes(moduleName, e.receiver(), generics);
                 validateExprTypes(moduleName, e.index(), generics);
             } else if (expr instanceof Ast.NewExpr e) {
+                if (!generics.contains(e.type().name()) && isTraitReference(moduleName, e.type().name())) {
+                    throw new IllegalArgumentException(
+                            "trait '" + e.type().name()
+                                    + "' has no runtime/value type identity and cannot be instantiated; "
+                                    + "compose it into a class with 'with'");
+                }
                 rejectTraitType(moduleName, e.type(), generics, "new expression");
                 for (Ast.Expr argument : e.arguments()) validateExprTypes(moduleName, argument, generics);
             } else if (expr instanceof Ast.StructInitExpr e) {
@@ -313,8 +319,8 @@ public final class TraitComposer {
             if (type == null) return;
             if (!generics.contains(type.name()) && isTraitReference(moduleName, type.name())) {
                 throw new IllegalArgumentException(
-                        "trait '" + type.name() + "' has no runtime/value type identity and cannot be used as " + where
-                                + "; compose it with 'with' and expose behavior through an interface");
+                        "trait '" + type.name() + "' has no runtime/value type identity and cannot be used as a runtime type ("
+                                + where + "); compose it with 'with' and expose behavior through an interface");
             }
             for (Ast.TypeRef argument : type.arguments()) {
                 rejectTraitType(moduleName, argument, generics, where + " type argument");
@@ -358,8 +364,9 @@ public final class TraitComposer {
                 String previous = names.putIfAbsent(name, kind);
                 if (previous != null) {
                     throw new IllegalArgumentException(
-                            "callable-local type name '" + name + "' is declared as both "
-                                    + previous + " and " + kind + " in the same lexical block");
+                            "duplicate callable-local type '" + name + "' (callable-local type name '"
+                                    + name + "'): declared as both " + previous + " and " + kind
+                                    + " in the same lexical block");
                 }
 
                 if (local.declaration() instanceof Ast.TraitDecl trait) {
@@ -751,8 +758,9 @@ public final class TraitComposer {
                     if (!(declaration instanceof Ast.TraitDecl trait)) continue;
                     if (occupiedTypeNames.contains(trait.name())) {
                         throw new IllegalArgumentException(
-                                "trait '" + module.name() + "." + trait.name()
-                                        + "' collides with an existing class/interface/type alias in the same type namespace");
+                                "type name '" + module.name() + "." + trait.name()
+                                        + "' collides with an existing class/interface/type alias; "
+                                        + "class/struct/interface/trait/type names share one namespace");
                     }
 
                     String qualified = module.name() + "." + trait.name();
@@ -1206,7 +1214,7 @@ public final class TraitComposer {
                 validateTraitSelfAccess(binding.declaration().name(), raw.body(), lexicalFields, lexicalMethods);
                 Ast.MethodDecl method = withCompositionOwner(
                         substitute(raw, substitutions),
-                        binding.declaration().name());
+                        binding.identity());
                 String key = methodKey(method);
                 Ast.MethodDecl previous = ownMethods.putIfAbsent(key, method);
                 if (previous != null) {
@@ -1463,12 +1471,20 @@ public final class TraitComposer {
                         substitute(loop.iterable(), substitutions),
                         substituteStatements(loop.body(), substitutions));
             }
-            Ast.ForStmt loop = (Ast.ForStmt) statement;
-            return new Ast.ForStmt(
-                    substitute(loop.initializer(), substitutions),
-                    loop.condition() == null ? null : substitute(loop.condition(), substitutions),
-                    loop.update() == null ? null : substitute(loop.update(), substitutions),
-                    substituteStatements(loop.body(), substitutions));
+            if (statement instanceof Ast.ForStmt loop) {
+                return new Ast.ForStmt(
+                        substitute(loop.initializer(), substitutions),
+                        loop.condition() == null ? null : substitute(loop.condition(), substitutions),
+                        loop.update() == null ? null : substitute(loop.update(), substitutions),
+                        substituteStatements(loop.body(), substitutions));
+            }
+            if (statement instanceof Ast.TypeDeclStmt localType) {
+                return new Ast.TypeDeclStmt(
+                        substituteLocalDecl(localType.declaration(), substitutions));
+            }
+            throw new IllegalStateException(
+                    "unsupported statement node during trait substitution: "
+                            + statement.getClass().getName());
         }
 
         private Ast.Expr substitute(
@@ -1524,6 +1540,17 @@ public final class TraitComposer {
                                 .map(argument -> substitute(argument, substitutions))
                                 .toList());
             }
+            if (expression instanceof Ast.StructInitExpr initialized) {
+                return new Ast.StructInitExpr(
+                        initialized.type() == null
+                                ? null
+                                : substitute(initialized.type(), substitutions),
+                        initialized.fields().stream()
+                                .map(field -> new Ast.ObjectField(
+                                        field.name(),
+                                        substitute(field.value(), substitutions)))
+                                .toList());
+            }
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(
                         substitute(awaited.expression(), substitutions));
@@ -1548,22 +1575,145 @@ public final class TraitComposer {
                                         substitute(field.value(), substitutions)))
                                 .toList());
             }
-            Ast.LambdaExpr lambda = (Ast.LambdaExpr) expression;
-            List<Ast.Param> parameters = lambda.parameters().stream()
-                    .map(parameter -> new Ast.Param(
-                            substitute(parameter.type(), substitutions),
-                            parameter.name(),
-                            parameter.structural(),
-                            parameter.mutable()))
-                    .toList();
-            return new Ast.LambdaExpr(
-                    parameters,
-                    lambda.expressionBody() == null
-                            ? null
-                            : substitute(lambda.expressionBody(), substitutions),
-                    lambda.blockBody() == null
-                            ? null
-                            : substituteStatements(lambda.blockBody(), substitutions));
+            if (expression instanceof Ast.LambdaExpr lambda) {
+                List<Ast.Param> parameters = lambda.parameters().stream()
+                        .map(parameter -> new Ast.Param(
+                                substitute(parameter.type(), substitutions),
+                                parameter.name(),
+                                parameter.structural(),
+                                parameter.mutable()))
+                        .toList();
+                return new Ast.LambdaExpr(
+                        parameters,
+                        lambda.expressionBody() == null
+                                ? null
+                                : substitute(lambda.expressionBody(), substitutions),
+                        lambda.blockBody() == null
+                                ? null
+                                : substituteStatements(lambda.blockBody(), substitutions));
+            }
+            throw new IllegalStateException(
+                    "unsupported expression node during trait substitution: "
+                            + expression.getClass().getName());
+        }
+
+        private Ast.Decl substituteLocalDecl(
+                Ast.Decl declaration,
+                Map<String, Ast.TypeRef> substitutions) {
+            if (declaration instanceof Ast.TypeAliasDecl alias) {
+                Map<String, Ast.TypeRef> effective = withoutGenerics(
+                        substitutions, alias.genericParameters());
+                return new Ast.TypeAliasDecl(
+                        alias.name(),
+                        alias.genericParameters(),
+                        substitute(alias.target(), effective));
+            }
+
+            if (declaration instanceof Ast.InterfaceDecl iface) {
+                Map<String, Ast.TypeRef> effective = withoutGenerics(
+                        substitutions, iface.genericParameters());
+                List<Ast.InterfaceMember> members = iface.members().stream()
+                        .map(member -> {
+                            if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                                Map<String, Ast.TypeRef> methodEffective = withoutGenerics(
+                                        effective, fn.genericParameters());
+                                List<Ast.Param> parameters = fn.parameters().stream()
+                                        .map(parameter -> new Ast.Param(
+                                                substitute(parameter.type(), methodEffective),
+                                                parameter.name(),
+                                                parameter.structural(),
+                                                parameter.mutable()))
+                                        .toList();
+                                return (Ast.InterfaceMember) new Ast.InterfaceFunctionDecl(
+                                        fn.name(),
+                                        fn.genericParameters(),
+                                        parameters,
+                                        substitute(fn.returnType(), methodEffective));
+                            }
+                            Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
+                            return (Ast.InterfaceMember) new Ast.InterfaceFieldDecl(
+                                    field.name(),
+                                    substitute(field.type(), effective));
+                        })
+                        .toList();
+                return new Ast.InterfaceDecl(
+                        iface.name(),
+                        iface.visibility(),
+                        iface.genericParameters(),
+                        iface.parents().stream()
+                                .map(parent -> substitute(parent, effective))
+                                .toList(),
+                        members);
+            }
+
+            if (declaration instanceof Ast.TraitDecl trait) {
+                Map<String, Ast.TypeRef> effective = withoutGenerics(
+                        substitutions, trait.genericParameters());
+                return new Ast.TraitDecl(
+                        trait.name(),
+                        trait.genericParameters(),
+                        trait.interfaces().stream()
+                                .map(ref -> substitute(ref, effective))
+                                .toList(),
+                        trait.traits().stream()
+                                .map(ref -> substitute(ref, effective))
+                                .toList(),
+                        trait.fields().stream()
+                                .map(field -> substitute(field, effective))
+                                .toList(),
+                        trait.methods().stream()
+                                .map(method -> substitute(method, effective))
+                                .toList());
+            }
+
+            if (declaration instanceof Ast.ClassDecl klass && klass.isStruct()) {
+                Map<String, Ast.TypeRef> effective = withoutGenerics(
+                        substitutions, klass.genericParameters());
+                return new Ast.ClassDecl(
+                        klass.name(),
+                        klass.kind(),
+                        klass.isAbstract(),
+                        klass.genericParameters(),
+                        klass.parents().stream()
+                                .map(ref -> substitute(ref, effective))
+                                .toList(),
+                        klass.interfaces().stream()
+                                .map(ref -> substitute(ref, effective))
+                                .toList(),
+                        klass.traits().stream()
+                                .map(ref -> substitute(ref, effective))
+                                .toList(),
+                        klass.fields().stream()
+                                .map(field -> substitute(field, effective))
+                                .toList(),
+                        klass.methods().stream()
+                                .map(method -> substitute(method, effective))
+                                .toList());
+            }
+
+            throw new IllegalStateException(
+                    "unsupported callable-local declaration during trait substitution: "
+                            + declaration.getClass().getName());
+        }
+
+        private Map<String, Ast.TypeRef> withoutGenerics(
+                Map<String, Ast.TypeRef> substitutions,
+                List<String> genericParameters) {
+            Map<String, Ast.TypeRef> effective = new LinkedHashMap<>(substitutions);
+            for (String generic : genericParameters) effective.remove(generic);
+            return effective;
+        }
+
+        private Ast.FieldDecl substitute(
+                Ast.FieldDecl field,
+                Map<String, Ast.TypeRef> substitutions) {
+            return new Ast.FieldDecl(
+                    field.name(),
+                    field.visibility(),
+                    field.bindingKind(),
+                    substitute(field.type(), substitutions),
+                    substitute(field.initializer(), substitutions),
+                    field.compositionOwner());
         }
 
         private Ast.MethodDecl substitute(

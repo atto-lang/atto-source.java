@@ -67,6 +67,7 @@ public final class TypeChecker {
         checker.validateRoutineRecursion();
         checker.validate(composed);
         OwnershipChecker.check(composed);
+        EffectChecker.check(composed);
         return composed;
     }
 
@@ -1407,7 +1408,7 @@ public final class TypeChecker {
             if (receiver instanceof SingletonProxy proxy) {
                 Ast.ClassDecl klass = findClass(proxy.target().name());
                 if (klass == null) throw new IllegalArgumentException("unknown singleton proxy class '" + proxy.target().name() + "'");
-                if (findFieldType(klass, member.member(), proxy.target(), new LinkedHashSet<>()) != null) {
+                if (hasFieldNamed(klass, member.member(), new LinkedHashSet<>())) {
                     throw new IllegalArgumentException("singleton object fields are actor-private; invoke a public method on "
                             + proxy.moduleName() + "." + proxy.fieldName());
                 }
@@ -1438,7 +1439,12 @@ public final class TypeChecker {
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
-                    Type field = findFieldType(klass, member.member(), named, new LinkedHashSet<>());
+                    Type field = findFieldType(
+                            klass,
+                            member.member(),
+                            named,
+                            isDirectSelfReceiver(member.receiver()),
+                            new LinkedHashSet<>());
                     if (field != null) return field;
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
@@ -1796,7 +1802,12 @@ public final class TypeChecker {
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Type field = findFieldType(klass, member.member(), named, new LinkedHashSet<>());
+                Type field = findFieldType(
+                        klass,
+                        member.member(),
+                        named,
+                        isDirectSelfReceiver(member.receiver()),
+                        new LinkedHashSet<>());
                 if (field != null) return field;
             }
         }
@@ -1813,7 +1824,7 @@ public final class TypeChecker {
         if (iterable instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Ast.MethodDecl iterator = findMethod(klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                Ast.MethodDecl iterator = findProtocolMethod(klass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator != null) {
                     Type result = resolve(iterator.returnType(), Set.copyOf(iterator.genericParameters()), named);
                     if (result instanceof ListType list) return list.element();
@@ -2007,10 +2018,37 @@ public final class TypeChecker {
         return List.copyOf(fields.values());
     }
 
+    private boolean hasFieldNamed(
+            Ast.ClassDecl klass,
+            String name,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return false;
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.name().equals(name)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null && hasFieldNamed(parent, name, seen)) {
+                seen.remove(klass);
+                return true;
+            }
+        }
+        seen.remove(klass);
+        return false;
+    }
+
+    private static boolean isDirectSelfReceiver(Ast.Expr receiver) {
+        return receiver instanceof Ast.NameExpr name && name.name().equals("self");
+    }
+
     private Type findFieldType(
             Ast.ClassDecl klass,
             String name,
             Type receiverType,
+            boolean directSelfReceiver,
             Set<Ast.ClassDecl> seen) {
         if (!seen.add(klass)) return null;
         Type self = receiverType == null ? nominalClassType(klass) : receiverType;
@@ -2021,7 +2059,7 @@ public final class TypeChecker {
 
         for (Ast.FieldDecl field : klass.fields()) {
             if (field.name().equals(name)) {
-                if (activeTraitOwner != null) {
+                if (activeTraitOwner != null && directSelfReceiver) {
                     if (!field.composed() || !activeTraitOwner.equals(field.compositionOwner())) {
                         throw new IllegalArgumentException(
                                 "trait '" + activeTraitOwner + "' cannot access host or foreign trait state field '" + name + "'");
@@ -2046,7 +2084,7 @@ public final class TypeChecker {
 
             Type parentType = resolve(parentRef, Set.copyOf(klass.genericParameters()), self);
             if (!substitutions.isEmpty()) parentType = substituteGenerics(parentType, substitutions);
-            Type result = findFieldType(parent, name, parentType, seen);
+            Type result = findFieldType(parent, name, parentType, directSelfReceiver, seen);
             if (result != null) {
                 seen.remove(klass);
                 return result;
@@ -2062,6 +2100,37 @@ public final class TypeChecker {
         throw new IllegalArgumentException(
                 "trait-private method '" + method.compositionOwner() + "." + method.name()
                         + "' is not accessible from " + where);
+    }
+
+    /**
+     * Compiler-internal protocol lookup. Protocol hooks such as
+     * [Symbol.iterator]() are invoked by language lowering rather than by
+     * ordinary source member access, so their visibility is not an external
+     * capability boundary.
+     */
+    private Ast.MethodDecl findProtocolMethod(
+            Ast.ClassDecl klass,
+            String name,
+            int arity,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
+                seen.remove(klass);
+                return method;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.MethodDecl candidate = findProtocolMethod(parent, name, arity, seen);
+            if (candidate != null) {
+                seen.remove(klass);
+                return candidate;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
@@ -2148,14 +2217,6 @@ public final class TypeChecker {
         return List.copyOf(functions.values());
     }
 
-    private void requireTraitMethodAccessible(Ast.MethodDecl method, String where) {
-        if (!method.composed() || method.visibility() == Ast.Visibility.PUBLIC) return;
-        if (activeTraitOwner != null && activeTraitOwner.equals(method.compositionOwner())) return;
-        throw new IllegalArgumentException(
-                "trait-private method '" + method.compositionOwner() + "." + method.name()
-                        + "' is not accessible from " + where);
-    }
-
     private boolean methodAccessible(Ast.ClassDecl owner, Ast.MethodDecl method) {
         if (method.visibility() == Ast.Visibility.PUBLIC) return true;
         if (method.composed()) {
@@ -2167,7 +2228,7 @@ public final class TypeChecker {
     private IllegalArgumentException inaccessibleMethod(Ast.ClassDecl owner, Ast.MethodDecl method) {
         if (method.composed()) {
             return new IllegalArgumentException(
-                    "trait method '" + method.compositionOwner() + "." + method.name()
+                    "trait-private method '" + method.compositionOwner() + "." + method.name()
                             + "' is private to that trait");
         }
         String label = method.isStatic() ? "static function" : "method";

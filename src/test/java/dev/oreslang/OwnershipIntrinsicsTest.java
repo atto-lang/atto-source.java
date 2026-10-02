@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
@@ -80,7 +81,7 @@ final class OwnershipIntrinsicsTest {
 
     @Test
     void dishonestClassCopyCannotRetainMutableSourceStorage() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> run("""
+        PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
                 define class Buffer as
                   pub let int value = 0;
 
@@ -102,7 +103,7 @@ final class OwnershipIntrinsicsTest {
 
     @Test
     void classCopyCannotHideNestedMutableAliases() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> run("""
+        PolyglotException error = assertThrows(PolyglotException.class, () -> run("""
                 define class Bucket as
                   pub let Array<int> values = arr[1];
 
