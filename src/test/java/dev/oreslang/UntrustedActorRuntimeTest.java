@@ -222,6 +222,67 @@ final class UntrustedActorRuntimeTest {
     }
 
     @Test
+    void untrustedActorCannotInspectForeignFailureObject() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var victim = runtime.<Object>spawnPrivate(context -> (message, turn) -> {
+                throw new IllegalStateException("trusted-secret-failure");
+            });
+            victim.send("fail");
+            assertTrue(victim.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(victim.failure().isPresent());
+
+            var sandbox = runtime.<Object>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    new ActorRuntime.UntrustedActorLimits(
+                            Duration.ofSeconds(2), 100, 1024, 1024, 1024),
+                    null,
+                    null,
+                    ignored -> (message, turn) -> {
+                        @SuppressWarnings("unchecked")
+                        ActorRuntime.ActorRef<Object> target =
+                                (ActorRuntime.ActorRef<Object>) message;
+                        target.failure();
+                    });
+
+            sandbox.send(victim);
+            assertTrue(sandbox.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, sandbox.failure().orElseThrow());
+        }
+    }
+
+    @Test
+    void deadTargetFailureCauseIsRedactedFromUntrustedSender() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var victim = runtime.<Object>spawnPrivate(context -> (message, turn) -> {
+                throw new IllegalStateException("trusted-secret-failure");
+            });
+            victim.send("fail");
+            assertTrue(victim.awaitTermination(2, TimeUnit.SECONDS));
+
+            var sandbox = runtime.<Object>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    new ActorRuntime.UntrustedActorLimits(
+                            Duration.ofSeconds(2), 100, 1024, 1024, 1024),
+                    null,
+                    null,
+                    ignored -> (message, turn) -> {
+                        @SuppressWarnings("unchecked")
+                        ActorRuntime.ActorRef<Object> target =
+                                (ActorRuntime.ActorRef<Object>) message;
+                        target.send("hello");
+                    });
+
+            sandbox.send(victim);
+            assertTrue(sandbox.awaitTermination(2, TimeUnit.SECONDS));
+            ActorRuntime.ActorTerminatedException failure = assertInstanceOf(
+                    ActorRuntime.ActorTerminatedException.class,
+                    sandbox.failure().orElseThrow());
+            assertNull(failure.getCause(),
+                    "trusted actor failure cause must be redacted across an untrusted ActorRef");
+        }
+    }
+
+    @Test
     void untrustedActorCannotBlockWaitingForAnotherActor() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var victim = runtime.<Object>spawnPrivate(context -> (message, turn) -> { });
