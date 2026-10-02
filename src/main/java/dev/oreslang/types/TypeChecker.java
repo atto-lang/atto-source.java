@@ -426,18 +426,20 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
                         + "' cannot be generic until proxy Send constraints are explicit");
             }
-            for (Ast.Param param : method.parameters()) {
+            Function signature = methodFunctionType(method, klass, nominalClassType(klass));
+            for (int i = 0; i < method.parameters().size(); i++) {
+                Ast.Param param = method.parameters().get(i);
                 if (param.mutable() || param.structural()) {
                     throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
                             + "' cannot use mut or structural transported parameters");
                 }
-                Type parameter = resolveParam(param, Set.of(), nominalClassType(klass));
+                Type parameter = signature.parameters().get(i);
                 if (!isActorSendableType(parameter, false)) {
                     throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
                             + "' parameter '" + param.name() + "' is not statically Sendable");
                 }
             }
-            Type result = resolve(method.returnType(), Set.of(), nominalClassType(klass));
+            Type result = signature.result();
             if (!isActorSendableType(result, true)) {
                 throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
                         + "' result is not statically Sendable");
