@@ -351,14 +351,7 @@ final class PrivateActorIsolationTest {
     @Test
     void privateBehaviorCannotRetainNewJvmMutableStateAcrossTurns() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
-            var ref = runtime.<String>spawnPrivate(factoryContext -> new ActorRuntime.Behavior<>() {
-                private Object retained;
-
-                @Override
-                public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
-                    retained = new byte[]{1, 2, 3};
-                }
-            });
+            var ref = runtime.<String>spawnPrivate(factoryContext -> mutableJvmStateBehavior());
 
             ref.send("store");
             assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
@@ -367,6 +360,17 @@ final class PrivateActorIsolationTest {
             assertTrue(ref.failure().orElseThrow().getMessage().contains("context.privateMemory"));
             assertEquals(0L, runtime.privateMemoryBytes());
         }
+    }
+
+    private static ActorRuntime.Behavior<String> mutableJvmStateBehavior() {
+        return new ActorRuntime.Behavior<>() {
+            private Object retained;
+
+            @Override
+            public void onMessage(String message, ActorRuntime.ActorContext<String> context) {
+                retained = new byte[]{1, 2, 3};
+            }
+        };
     }
 
 
