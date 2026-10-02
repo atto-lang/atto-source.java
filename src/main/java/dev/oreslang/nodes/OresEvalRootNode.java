@@ -162,11 +162,12 @@ public final class OresEvalRootNode extends RootNode {
             Env state = new Env(null);
             try {
                 for (Ast.Decl decl : module.declarations()) {
-                    if (!(decl instanceof Ast.FieldDecl field)) continue;
-                    if (field.initializer() == null) {
-                        throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + field.name());
+                    if (decl instanceof Ast.FieldDecl field) {
+                        if (field.initializer() == null) state.reserve(field.name(), field.bindingKind());
+                        else state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
+                    } else if (decl instanceof Ast.ClassDecl klass) {
+                        initializeStaticFields(klass, state);
                     }
-                    state.define(field.name(), eval(field.initializer(), state), field.bindingKind());
                 }
                 Ast.InitDecl init = findInit(module);
                 if (init != null) executeInitializer(init, state);
@@ -250,12 +251,12 @@ public final class OresEvalRootNode extends RootNode {
                     singletonCodeDigest(module),
                     context.codeGeneration());
             for (Ast.Decl decl : module.declarations()) {
-                if (!(decl instanceof Ast.FieldDecl field)) continue;
-                if (field.initializer() == null) {
-                    throw new IllegalArgumentException("singleton field has no initializer: " + module.name() + "." + field.name());
+                if (decl instanceof Ast.FieldDecl field) {
+                    if (field.initializer() == null) state.fields.reserve(field.name(), field.bindingKind());
+                    else state.fields.define(field.name(), eval(field.initializer(), state.fields), field.bindingKind());
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    initializeStaticFields(klass, state.fields);
                 }
-                Object value = eval(field.initializer(), state.fields);
-                state.fields.define(field.name(), value, field.bindingKind());
             }
             Ast.InitDecl init = findInit(module);
             if (init != null) executeInitializer(init, state.fields);
@@ -275,6 +276,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (!(decl instanceof Ast.FieldDecl field)) continue;
                     schema.append(field.name())
                             .append(':').append(field.bindingKind())
+                            .append(':').append(field.isStatic())
                             .append(':').append(field.type());
                     Ast.ClassDecl stateClass = field.type() == null ? null : findClass(field.type().name());
                     if (stateClass != null) {
@@ -288,6 +290,17 @@ public final class OresEvalRootNode extends RootNode {
                         schema.append('}');
                     }
                     schema.append(';');
+                }
+                for (Ast.Decl decl : module.declarations()) {
+                    if (!(decl instanceof Ast.ClassDecl klass)) continue;
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        if (!field.isStatic()) continue;
+                        schema.append("static:")
+                                .append(klass.name()).append('.').append(field.name())
+                                .append(':').append(field.bindingKind())
+                                .append(':').append(field.type())
+                                .append(';');
+                    }
                 }
                 return schema.toString();
             });
@@ -508,7 +521,15 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    throw new IllegalArgumentException("member assignment requires a class instance");
+                    if (receiver instanceof ClassFacade klass) {
+                        Ast.FieldDecl field = findStaticField(klass.klass(), target.member());
+                        if (field == null) throw new IllegalArgumentException("unknown static field " + klass.klass().name() + "." + target.member());
+                        Env lexical = classLexicalModuleState(klass.klass(), klass.localState());
+                        if (lexical == null) throw new IllegalArgumentException("static field has no owning module state");
+                        lexical.assign(staticStorageKey(klass.klass(), field), value);
+                        return value;
+                    }
+                    throw new IllegalArgumentException("member assignment requires a class instance or mutable static field");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
@@ -586,17 +607,45 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
-                if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
                 LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+                for (Ast.FieldDecl field : classFields) fields.put(field.name(), Env.MISSING);
+                OresObject object = new OresObject(klass, fields);
+
+                Env fieldEnv = new Env(classLexicalModuleState(klass, env.singletonState), env.singletonState);
+                fieldEnv.define("self", object, Ast.BindingKind.VAL);
+                for (Ast.FieldDecl field : classFields) {
+                    if (field.initializer() != null) {
+                        object.fields.put(field.name(), eval(field.initializer(), fieldEnv));
+                    }
+                }
+
+                boolean hasExplicitConstructors = klass.methods().stream().anyMatch(this::isConstructor);
+                if (hasExplicitConstructors) {
+                    Ast.MethodDecl constructor = findConstructor(klass, args.size());
+                    if (constructor == null) {
+                        throw new IllegalArgumentException("no constructor for " + klass.name() + " with arity " + args.size());
+                    }
+                    callMethod(object, constructor, args, env.singletonState);
+                    for (Ast.FieldDecl field : classFields) {
+                        if (object.fields.get(field.name()) == Env.MISSING) {
+                            throw new IllegalArgumentException("constructor for " + klass.name()
+                                    + " did not initialize field '" + field.name() + "'");
+                        }
+                    }
+                    return object;
+                }
+
+                // Compatibility path: before explicit constructors existed,
+                // positional new(...) arguments initialized instance fields.
+                if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
                 for (int i = 0; i < classFields.size(); i++) {
                     Ast.FieldDecl field = classFields.get(i);
-                    Object value;
-                    if (i < args.size()) value = args.get(i);
-                    else if (field.initializer() != null) value = eval(field.initializer(), env);
-                    else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
-                    fields.put(field.name(), value);
+                    if (i < args.size()) object.fields.put(field.name(), args.get(i));
+                    else if (object.fields.get(field.name()) == Env.MISSING) {
+                        throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
+                    }
                 }
-                return new OresObject(klass, fields);
+                return object;
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -659,6 +708,16 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace, name);
             if (receiver instanceof ClassFacade klass) {
+                Ast.FieldDecl staticField = findStaticField(klass.klass(), name);
+                if (staticField != null) {
+                    Env lexical = classLexicalModuleState(klass.klass(), klass.localState());
+                    if (lexical == null) throw new IllegalArgumentException("static field has no owning module state");
+                    Object value = lexical.lookup(staticStorageKey(klass.klass(), staticField));
+                    if (value == Env.MISSING) {
+                        throw new IllegalStateException("static field is uninitialized: " + klass.klass().name() + "." + name);
+                    }
+                    return value;
+                }
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
@@ -672,7 +731,11 @@ public final class OresEvalRootNode extends RootNode {
                         + proxy.module().name() + "." + proxy.fieldName() + "." + name + "(...)");
             }
             if (receiver instanceof OresObject object) {
-                if (object.fields.containsKey(name)) return object.fields.get(name);
+                if (object.fields.containsKey(name)) {
+                    Object value = object.fields.get(name);
+                    if (value == Env.MISSING) throw new IllegalStateException("field is uninitialized: " + object.klass.name() + "." + name);
+                    return value;
+                }
                 return new BoundMethod(object, name, singletonState);
             }
             if (receiver instanceof Map<?, ?> map) {
@@ -826,6 +889,37 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
         }
 
+        private void initializeStaticFields(Ast.ClassDecl klass, Env state) {
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (!field.isStatic()) continue;
+                String key = staticStorageKey(klass, field);
+                if (field.initializer() == null) state.reserve(key, field.bindingKind());
+                else state.define(key, eval(field.initializer(), state), field.bindingKind());
+            }
+        }
+
+        private String staticStorageKey(Ast.ClassDecl klass, Ast.FieldDecl field) {
+            return "$static$" + klass.name() + "." + field.name();
+        }
+
+        private Ast.FieldDecl findStaticField(Ast.ClassDecl klass, String name) {
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.isStatic() && field.name().equals(name)) return field;
+            }
+            return null;
+        }
+
+        private boolean isConstructor(Ast.MethodDecl method) {
+            return !method.isStatic() && method.name().equals("constructor");
+        }
+
+        private Ast.MethodDecl findConstructor(Ast.ClassDecl klass, int arity) {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (isConstructor(method) && method.arity() == arity) return method;
+            }
+            return null;
+        }
+
         private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             LinkedHashMap<String, Ast.FieldDecl> result = new LinkedHashMap<>();
@@ -835,7 +929,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (parent == null) throw new IllegalArgumentException("unknown parent class " + parentRef.name());
                 for (Ast.FieldDecl field : effectiveFields(parent, seen)) result.putIfAbsent(field.name(), field);
             }
-            for (Ast.FieldDecl field : klass.fields()) result.put(field.name(), field);
+            for (Ast.FieldDecl field : klass.fields()) if (!field.isStatic()) result.put(field.name(), field);
             seen.remove(klass);
             return List.copyOf(result.values());
         }
@@ -843,7 +937,7 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl method : klass.methods()) {
-                if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
+                if (!method.isStatic() && !isConstructor(method) && method.name().equals(name) && method.parameters().size() == arity) {
                     seen.remove(klass);
                     return method;
                 }
