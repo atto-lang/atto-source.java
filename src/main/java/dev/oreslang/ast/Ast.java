@@ -182,7 +182,21 @@ public final class Ast {
             IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
-    public record DestructureBinding(BindingKind kind, String name) { }
+    public record DestructureBinding(BindingKind kind, String name) {
+        public DestructureBinding {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("destructure binding name cannot be blank");
+            }
+        }
+
+        public static DestructureBinding discard() {
+            return new DestructureBinding(BindingKind.VAL, "_");
+        }
+
+        public boolean isDiscard() {
+            return "_".equals(name);
+        }
+    }
 
     public record DestructureStmt(List<DestructureBinding> bindings, Expr initializer) implements Stmt {
         public DestructureStmt { bindings = List.copyOf(bindings); }

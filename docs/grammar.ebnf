@@ -84,7 +84,7 @@ binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator
 binding_kind    = "val" | "const" | "let" ;
 
 destructure_stmt= "[" destructure_item { "," destructure_item } "]" "=" expression stmt_terminator ;
-destructure_item= binding_kind IDENT ;
+destructure_item= binding_kind IDENT | "_" ;
 
 block           = "{" { statement } "}" ;
 statement       = binding_decl

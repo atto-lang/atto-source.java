@@ -117,6 +117,7 @@ public final class OwnershipChecker {
         if (stmt instanceof Ast.DestructureStmt destructure) {
             ValueInfo source = checkExpr(destructure.initializer(), scope, true);
             for (Ast.DestructureBinding binding : destructure.bindings()) {
+                if (binding.isDiscard()) continue;
                 scope.define(binding.name(), new VarState(
                         Ast.TypeRef.inferred(),
                         binding.kind() == Ast.BindingKind.LET,
@@ -508,7 +509,9 @@ public final class OwnershipChecker {
                 blockLocals.add(binding.name());
             } else if (stmt instanceof Ast.DestructureStmt destructure) {
                 scanExpr(destructure.initializer(), blockLocals, outer, recursiveBinding, captures, false);
-                for (Ast.DestructureBinding binding : destructure.bindings()) blockLocals.add(binding.name());
+                for (Ast.DestructureBinding binding : destructure.bindings()) {
+                    if (!binding.isDiscard()) blockLocals.add(binding.name());
+                }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);

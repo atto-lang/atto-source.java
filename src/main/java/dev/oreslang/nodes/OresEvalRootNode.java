@@ -149,7 +149,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (items.size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
                 for (int i = 0; i < items.size(); i++) {
                     Ast.DestructureBinding binding = destructure.bindings().get(i);
-                    env.define(binding.name(), items.get(i), binding.kind());
+                    if (!binding.isDiscard()) {
+                        env.define(binding.name(), items.get(i), binding.kind());
+                    }
                 }
                 return;
             }

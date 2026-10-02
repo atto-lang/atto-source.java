@@ -617,6 +617,12 @@ public final class Parser {
         consume(LBRACKET, "expected '['");
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
         do {
+            if (isDiscardToken(peek())) {
+                advance();
+                bindings.add(Ast.DestructureBinding.discard());
+                continue;
+            }
+
             Ast.BindingKind kind = parseBindingKind();
             String name = consume(IDENT, "expected binding name in destructure").lexeme();
             bindings.add(new Ast.DestructureBinding(kind, name));
@@ -629,7 +635,13 @@ public final class Parser {
     }
 
     private boolean looksLikeDestructure() {
-        return current + 1 < tokens.size() && isBindingKind(tokens.get(current + 1).type());
+        if (current + 1 >= tokens.size()) return false;
+        Token first = tokens.get(current + 1);
+        return isBindingKind(first.type()) || isDiscardToken(first);
+    }
+
+    private boolean isDiscardToken(Token token) {
+        return token.type() == IDENT && token.lexeme().equals("_");
     }
 
     private Ast.IfStmt parseIf() {
