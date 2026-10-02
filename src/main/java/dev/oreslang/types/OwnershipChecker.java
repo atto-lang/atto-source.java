@@ -313,10 +313,15 @@ public final class OwnershipChecker {
             return;
         }
 
+        Ast.TypeRef bindingType = binding.declaredType() == null ? value.type : binding.declaredType();
+        ValueKind bindingValueKind = binding.declaredType() == null
+                || binding.declaredType().name().equals("$infer$")
+                ? value.kind
+                : kindOfType(binding.declaredType());
         VarState state = new VarState(
-                binding.declaredType() == null ? value.type : binding.declaredType(),
+                bindingType,
                 binding.kind() == Ast.BindingKind.LET,
-                value.kind,
+                bindingValueKind,
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
         scope.define(binding.name(), state);
@@ -394,8 +399,15 @@ public final class OwnershipChecker {
             return new ValueInfo(created.type(), ValueKind.MOVE_ONLY, null);
         }
         if (expr instanceof Ast.StructInitExpr created) {
-            for (Ast.ObjectField field : created.fields()) checkExpr(field.value(), scope, true);
+            LinkedHashMap<String, ValueInfo> fieldValues = new LinkedHashMap<>();
+            for (Ast.ObjectField field : created.fields()) {
+                fieldValues.put(field.name(), checkExpr(field.value(), scope, true));
+            }
             Ast.TypeRef type = created.type() == null ? Ast.TypeRef.inferred() : created.type();
+            if (!created.anonymous() && type.inferArguments()) {
+                Ast.TypeRef inferred = inferOwnershipStructType(created, fieldValues);
+                if (inferred != null) type = inferred;
+            }
             return new ValueInfo(type, created.anonymous() ? ValueKind.MOVE_ONLY : kindOfType(type), null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) return checkExpr(awaited.expression(), scope, consuming);
@@ -910,6 +922,87 @@ public final class OwnershipChecker {
                 throw error("cannot move outer value '" + entry.getKey().debugName + "' from a repeating loop; borrow it or move it before entering the loop");
             }
         }
+    }
+
+    private Ast.TypeRef inferOwnershipStructType(
+            Ast.StructInitExpr created,
+            Map<String, ValueInfo> fieldValues) {
+        Ast.ClassDecl struct = findClass(created.type().name());
+        if (struct == null || !struct.isStruct() || struct.genericParameters().isEmpty()) return null;
+
+        LinkedHashMap<String, Ast.FieldDecl> fields = new LinkedHashMap<>();
+        for (Ast.FieldDecl field : struct.fields()) {
+            if (!field.composed()) fields.put(field.name(), field);
+        }
+
+        Set<String> generics = Set.copyOf(struct.genericParameters());
+        LinkedHashMap<String, Ast.TypeRef> inferred = new LinkedHashMap<>();
+        for (Map.Entry<String, ValueInfo> entry : fieldValues.entrySet()) {
+            Ast.FieldDecl field = fields.get(entry.getKey());
+            if (field == null) continue;
+            if (!inferOwnershipBindings(field.type(), entry.getValue().type, generics, inferred)) {
+                return null;
+            }
+        }
+
+        ArrayList<Ast.TypeRef> arguments = new ArrayList<>(struct.genericParameters().size());
+        for (String generic : struct.genericParameters()) {
+            Ast.TypeRef inferredType = inferred.get(generic);
+            if (inferredType == null || inferredType.name().equals("$infer$")) return null;
+            arguments.add(inferredType);
+        }
+        return new Ast.TypeRef(struct.name(), arguments, false);
+    }
+
+    private boolean inferOwnershipBindings(
+            Ast.TypeRef pattern,
+            Ast.TypeRef actual,
+            Set<String> generics,
+            Map<String, Ast.TypeRef> inferred) {
+        if (pattern == null || actual == null) return false;
+
+        Ast.TypeRef resolvedPattern = resolveOwnershipAlias(pattern, new LinkedHashSet<>());
+        Ast.TypeRef resolvedActual = resolveOwnershipAlias(actual, new LinkedHashSet<>());
+
+        if (!resolvedPattern.isBorrow()
+                && resolvedPattern.arguments().isEmpty()
+                && generics.contains(resolvedPattern.name())) {
+            Ast.TypeRef previous = inferred.putIfAbsent(resolvedPattern.name(), resolvedActual);
+            return previous == null || sameOwnershipType(previous, resolvedActual);
+        }
+
+        if (resolvedPattern.isBorrow() || resolvedActual.isBorrow()) {
+            if (!resolvedPattern.isBorrow() || !resolvedActual.isBorrow()
+                    || resolvedPattern.mutableBorrow() != resolvedActual.mutableBorrow()) {
+                return false;
+            }
+            return inferOwnershipBindings(
+                    resolvedPattern.borrowedTarget(),
+                    resolvedActual.borrowedTarget(),
+                    generics,
+                    inferred);
+        }
+
+        if (!resolvedPattern.name().equals(resolvedActual.name())
+                || resolvedPattern.arguments().size() != resolvedActual.arguments().size()) {
+            return false;
+        }
+        for (int i = 0; i < resolvedPattern.arguments().size(); i++) {
+            if (!inferOwnershipBindings(
+                    resolvedPattern.arguments().get(i),
+                    resolvedActual.arguments().get(i),
+                    generics,
+                    inferred)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean sameOwnershipType(Ast.TypeRef left, Ast.TypeRef right) {
+        return left.name().equals(right.name())
+                && left.arguments().equals(right.arguments())
+                && left.inferArguments() == right.inferArguments();
     }
 
     private ValueKind kindOfType(Ast.TypeRef type) {
