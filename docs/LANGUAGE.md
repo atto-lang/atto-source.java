@@ -75,6 +75,8 @@ Singleton state fields require explicit process-stable types because they form a
 
 The exported transport surface is intentionally strict. Public singleton functions may use sendable scalar values, `Option<T>`, and `Array/List<T>` of sendable values. Until explicit `Send` constraints are part of the type system, exported singleton functions cannot be generic or `async`, cannot accept `mut` or structural parameters, and cannot transport borrows, class instances, functions/closures, or unresolved actor-local values. Classes declared inside a singleton module are actor-private helpers and cannot be accessed through the external module/class namespace.
 
+Process-owned code also has a stricter effect boundary. Singleton functions and process-owned object methods may use their own singleton state, helper functions/classes declared in the same singleton module, and explicit calls to other singleton services. They may not depend on caller/context-local modules, ordinary helper functions, imports, `process`, `stdio`, or `print`. Exported process-object classes declared outside the singleton module are checked under the same rule. This avoids making process state or behavior depend on whichever actor/context invoked it. A future explicit `process-safe`/effect declaration can widen this surface deliberately.
+
 Every external singleton call must be immediately awaited. Calls from one singleton function to another function in the same singleton are direct and keep the same actor-owned state, including helper method/static-function dispatch. Calls between different singleton actors use request/reply mailboxes. The runtime detects wait cycles before they can deadlock, applies caller mailbox/backpressure limits, and treats queueing time as part of the caller's wall-time budget.
 
 A hot-reloaded generation with the same singleton field schema reuses the existing actor state while executing the new function bodies. Incompatible singleton field-schema changes are rejected until an explicit migration mechanism is provided; the runtime never silently treats old process state as a new layout. Replacing singleton code against live state requires `HOT_CODE_LOAD`; managed generations are process-monotonic and stale code cannot roll active singleton behavior backward.
@@ -92,9 +94,11 @@ init routine() => void {
 
 Its scope determines its lifetime:
 
-- **file/root scope:** once for each actor-local code-unit state;
-- **ordinary module:** once when that actor-local module state is first activated;
+- **file/root scope:** once per executing actor when reached from an actor; otherwise once for the owning Graal context;
+- **ordinary module:** once per executing actor when first activated by that actor; otherwise once for the owning Graal context;
 - **singleton module:** once when the OS-process singleton state cell is first created.
+
+Actor-local module state is stored on the actor cell itself and disappears when that actor dies. Non-actor/main execution uses context-lifetime storage, so repeatedly invoking the same checked source in one Graal context does not rerun ordinary init. Ordinary module state is keyed by the checked code digest; changed code gets fresh ordinary state rather than silently reinterpreting an old layout.
 
 Module/file field initializers run first, in declaration order, and the `init routine` runs afterward. A scope may declare at most one init routine. It has no parameters, must explicitly declare `=> void`, cannot be public/async, and classes cannot declare it. Process-global initialization is intentionally not available as a free-floating file hook: it belongs inside a `singleton module`, where ownership and serialization are explicit.
 
@@ -290,10 +294,14 @@ bump(self &mut self)() => int {
 
 The receiver variable name is always `self`. Mutating instance/trait state requires an explicit mutable receiver such as `self &mut self`; ownership analysis treats ordinary implicit `self` as immutable.
 
-A class may list multiple parent classes, satisfy multiple interfaces with `is`, and compose reusable state/behavior with `with`:
+A class may list multiple parent classes, satisfy interfaces with `is`, and compose reusable state/behavior with `with`:
 
 ```ores
-define class Combined extends Cacheable, Serializable is HasId, Named with Metrics, RetryState as
+define class Combined
+    extends Cacheable, Serializable
+    is HasId, Named
+    with Metrics, RetryState
+as
 end
 ```
 
@@ -397,7 +405,7 @@ define class User is Named as
 end
 ```
 
-Stateful reuse is a separate concept: `trait`. A trait may contain initialized fields, concrete methods, and abstract method requirements. It cannot be instantiated and contributes no separate runtime object identity. Composition is explicit with `with`:
+Stateful reuse is a distinct construct: `trait`. A trait may contain initialized fields, concrete methods, abstract method requirements, and interface obligations. It cannot be instantiated and contributes no separate runtime object identity. Traits are not nominal runtime types: they cannot be used as parameter, field, return, alias, or generic argument types. Use an interface for a contract and a class for a value type.
 
 ```ores
 define interface CounterApi as
@@ -419,9 +427,7 @@ end
 
 The compiler flattens trait storage and behavior into the host class before ownership/capability/runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes cannot reach it directly. A trait method may depend on another host method only when that dependency is declared as an abstract trait method requirement.
 
-Trait composition is intentionally strict. Two traits contributing the same field are an error. Two concrete trait methods with the same name and arity are an error unless the class declares a compatible method that explicitly resolves the conflict. There is no declaration-order or “last wins” rule.
-
-A trait can require behavior and then use that requirement:
+Traits must declare their dependencies. If a trait method needs host behavior, it declares an abstract method requirement instead of silently reaching into the host class:
 
 ```ores
 define trait Loads as
@@ -439,9 +445,17 @@ define class Store with Loads as
 end
 ```
 
-For v0, trait composition is module-local. This preserves lexical module lookup while the compiler uses flattening as the implementation strategy. Cross-module trait imports can be added later with an explicit lexical-environment contract.
+Trait composition is intentionally strict:
 
-Class interface satisfaction uses public methods, including inherited and composed public methods.
+- two traits contributing the same field are rejected;
+- two concrete trait methods with the same name and arity are rejected unless the class declares a compatible resolving method;
+- there is no declaration-order or “last wins” rule;
+- concrete classes must implement abstract trait requirements;
+- unused traits are still statically validated.
+
+For v0, trait composition is module-local. This preserves lexical module lookup while flattening is the implementation strategy. Cross-module traits can be added later with an explicit lexical-environment/import contract.
+
+Class interface satisfaction uses public members, including inherited and composed public members.
 
 ## Option and null
 
