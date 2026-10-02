@@ -11,6 +11,7 @@ import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
+import dev.oreslang.types.Types.Union;
 import dev.oreslang.types.Types.Type;
 import dev.oreslang.types.Types.Unknown;
 
@@ -285,7 +286,7 @@ public final class TypeChecker {
             if (binding.initializer() instanceof Ast.LambdaExpr lambda && declaredAhead instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
-            Type actual = typeOf(binding.initializer(), env, generics, self);
+            Type actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
@@ -296,27 +297,55 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.DestructureStmt destructure) {
-            Type source = typeOf(destructure.initializer(), env, generics, self);
-            if (source instanceof Tuple tuple) {
-                if (tuple.elements().size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
-                for (int i = 0; i < destructure.bindings().size(); i++) {
-                    Ast.DestructureBinding binding = destructure.bindings().get(i);
-                    if (!binding.isDiscard()) {
-                        env.define(binding.name(), tuple.elements().get(i), binding.kind());
+            Type source = deref(typeOf(destructure.initializer(), env, generics, self));
+            if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+                if (source instanceof Tuple tuple) {
+                    if (tuple.elements().size() != destructure.bindings().size()) {
+                        throw new IllegalArgumentException("destructure arity mismatch: tuple has " + tuple.elements().size()
+                                + " element(s), pattern has " + destructure.bindings().size());
                     }
+                    for (int i = 0; i < destructure.bindings().size(); i++) {
+                        defineDestructureBinding(env, destructure.bindings().get(i), tuple.elements().get(i));
+                    }
+                } else if (source instanceof ListType list) {
+                    for (Ast.DestructureBinding binding : destructure.bindings()) {
+                        defineDestructureBinding(env, binding, list.element());
+                    }
+                } else {
+                    throw new IllegalArgumentException("sequence destructuring requires a tuple or array/list value");
                 }
-            } else if (source instanceof ListType list) {
+            } else {
+                Record shape;
+                if (source instanceof Record record) {
+                    shape = record;
+                } else if (source instanceof Named named) {
+                    Ast.ClassDecl klass = findClass(named.name());
+                    if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
+                    shape = publicClassShape(klass, new LinkedHashSet<>());
+                } else if (source == Unknown.INSTANCE) {
+                    shape = null;
+                } else {
+                    throw new IllegalArgumentException("object destructuring requires a record/map-like value");
+                }
+
                 for (Ast.DestructureBinding binding : destructure.bindings()) {
-                    if (!binding.isDiscard()) env.define(binding.name(), list.element(), binding.kind());
+                    if (binding.isDiscard()) continue;
+                    Type member = shape == null ? Unknown.INSTANCE : shape.members().get(binding.name());
+                    if (member == null) {
+                        throw new IllegalArgumentException("object destructure requires member '" + binding.name() + "'");
+                    }
+                    env.define(binding.name(), member, binding.kind());
                 }
-            } else throw new IllegalArgumentException("destructuring requires a tuple or array/list value");
+            }
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
-            Type actual = ret.value() == null ? Primitive.VOID : typeOf(ret.value(), env, generics, self);
+            Type actual = ret.value() == null
+                    ? Primitive.VOID
+                    : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
@@ -603,6 +632,17 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
+    private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
+        if (expected instanceof Tuple && expr instanceof Ast.ListExpr list) {
+            return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+        }
+        return typeOf(expr, env, generics, self);
+    }
+
+    private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
+        if (!binding.isDiscard()) env.define(binding.name(), type, binding.kind());
+    }
+
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
         if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
@@ -678,7 +718,7 @@ public final class TypeChecker {
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
         if (isStringLike(a) && isStringLike(b)) return Primitive.STRING;
-        return Unknown.INSTANCE;
+        return Types.unionOf(a, b);
     }
 
     private Type numericJoin(Type left, Type right, String op) {
@@ -914,6 +954,19 @@ public final class TypeChecker {
             if (!allowNullMarker) throw new IllegalArgumentException("null is not a standalone type; it is only legal as Option<null>");
             return Primitive.NULL;
         }
+        if (ref.isUnion()) {
+            return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self, allowNullMarker)).toList());
+        }
+        if (ref.isTupleType()) {
+            return new Tuple(ref.arguments().stream().map(element -> resolve(element, generics, self, allowNullMarker)).toList());
+        }
+        if (ref.isRecordType()) {
+            Map<String, Type> members = new LinkedHashMap<>();
+            for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
+                members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
+            }
+            return new Record(members);
+        }
         if (generics.contains(ref.name())) return new Generic(ref.name());
 
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
@@ -985,6 +1038,12 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (actual instanceof Union source) {
+            return source.options().stream().allMatch(option -> assignable(option, expected));
+        }
+        if (expected instanceof Union target) {
+            return target.options().stream().anyMatch(option -> assignable(actual, option));
+        }
         if (Types.isAssignable(actual, expected)) return true;
 
         if (actual instanceof Named actualNamed && expected instanceof Record targetShape) {
