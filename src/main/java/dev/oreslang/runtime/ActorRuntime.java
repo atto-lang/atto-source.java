@@ -4,6 +4,7 @@ import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -366,7 +367,8 @@ public final class ActorRuntime implements AutoCloseable {
     public final class PrivateMemoryBlock implements AutoCloseable {
         private final ActorMemorySlice slice;
         private final MemoryReservation reservation;
-        private final ByteBuffer memory;
+        private final int capacity;
+        private volatile ByteBuffer memory;
         private final AtomicBoolean blockClosed = new AtomicBoolean();
 
         private PrivateMemoryBlock(
@@ -375,27 +377,50 @@ public final class ActorRuntime implements AutoCloseable {
                 int bytes) {
             this.slice = Objects.requireNonNull(slice);
             this.reservation = Objects.requireNonNull(reservation);
-            this.memory = ByteBuffer.allocateDirect(bytes);
+            this.capacity = bytes;
+            this.memory = ByteBuffer.allocateDirect(bytes).order(ByteOrder.LITTLE_ENDIAN);
         }
 
-        public int capacity() { return memory.capacity(); }
+        public int capacity() { return capacity; }
         public ActorId owner() { return slice.owner(); }
         public boolean closed() { return blockClosed.get(); }
 
         public byte readByte(int index) {
-            requireOwnerAndOpen();
-            return memory.get(index);
+            return openMemory().get(index);
         }
 
         public void writeByte(int index, byte value) {
-            requireOwnerAndOpen();
-            memory.put(index, value);
+            openMemory().put(index, value);
+        }
+
+        public int readInt(int index) {
+            return openMemory().getInt(index);
+        }
+
+        public void writeInt(int index, int value) {
+            openMemory().putInt(index, value);
+        }
+
+        public long readLong(int index) {
+            return openMemory().getLong(index);
+        }
+
+        public void writeLong(int index, long value) {
+            openMemory().putLong(index, value);
+        }
+
+        public double readDouble(int index) {
+            return openMemory().getDouble(index);
+        }
+
+        public void writeDouble(int index, double value) {
+            openMemory().putDouble(index, value);
         }
 
         public byte[] copyOut() {
-            requireOwnerAndOpen();
-            byte[] out = new byte[memory.capacity()];
-            ByteBuffer duplicate = memory.duplicate();
+            ByteBuffer live = openMemory();
+            byte[] out = new byte[capacity];
+            ByteBuffer duplicate = live.duplicate();
             duplicate.clear();
             duplicate.get(out);
             return out;
@@ -403,40 +428,46 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void copyIn(byte[] bytes) {
             Objects.requireNonNull(bytes);
-            requireOwnerAndOpen();
-            if (bytes.length != memory.capacity()) {
+            ByteBuffer live = openMemory();
+            if (bytes.length != capacity) {
                 throw new IllegalArgumentException(
-                        "private memory copy size mismatch: expected " + memory.capacity()
+                        "private memory copy size mismatch: expected " + capacity
                                 + " bytes but got " + bytes.length);
             }
-            ByteBuffer duplicate = memory.duplicate();
+            ByteBuffer duplicate = live.duplicate();
             duplicate.clear();
             duplicate.put(bytes);
         }
 
-        private void requireOwnerAndOpen() {
+        private ByteBuffer openMemory() {
             if (blockClosed.get() || slice.closed()) {
                 throw new IllegalStateException("private actor memory block is closed");
             }
             slice.requireCurrentOwner();
+            ByteBuffer live = memory;
+            if (live == null) throw new IllegalStateException("private actor memory block is closed");
+            return live;
         }
 
-        private void zeroMemory() {
-            ByteBuffer duplicate = memory.duplicate();
+        private void zeroAndDetachMemory() {
+            ByteBuffer live = memory;
+            if (live == null) return;
+            ByteBuffer duplicate = live.duplicate();
             duplicate.clear();
             while (duplicate.hasRemaining()) duplicate.put((byte) 0);
+            memory = null;
         }
 
         private void invalidateFromSlice() {
             if (!blockClosed.compareAndSet(false, true)) return;
-            zeroMemory();
+            zeroAndDetachMemory();
         }
 
         @Override
         public void close() {
             requireOwnerAndOpen();
             if (!blockClosed.compareAndSet(false, true)) return;
-            zeroMemory();
+            zeroAndDetachMemory();
             slice.unregister(this);
             reservation.close();
         }
