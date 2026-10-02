@@ -14,12 +14,12 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class GcController {
     private static final long MIN_HOST_GC_INTERVAL_NANOS = 250_000_000L;
+    private static final AtomicLong GLOBAL_LAST_HOST_GC_NANOS = new AtomicLong(Long.MIN_VALUE);
 
     private final ActorRuntime actors;
     private final AtomicLong requests = new AtomicLong();
     private final AtomicLong executedHostHints = new AtomicLong();
     private final AtomicLong coalescedRequests = new AtomicLong();
-    private final AtomicLong lastHostGcNanos = new AtomicLong(Long.MIN_VALUE);
 
     public GcController(ActorRuntime actors) {
         this.actors = java.util.Objects.requireNonNull(actors);
@@ -64,9 +64,9 @@ public final class GcController {
 
     private boolean reserveHostGcSlot(long now) {
         while (true) {
-            long previous = lastHostGcNanos.get();
+            long previous = GLOBAL_LAST_HOST_GC_NANOS.get();
             if (previous != Long.MIN_VALUE && now - previous < MIN_HOST_GC_INTERVAL_NANOS) return false;
-            if (lastHostGcNanos.compareAndSet(previous, now)) return true;
+            if (GLOBAL_LAST_HOST_GC_NANOS.compareAndSet(previous, now)) return true;
         }
     }
 
