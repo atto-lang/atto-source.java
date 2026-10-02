@@ -366,6 +366,7 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -441,6 +442,13 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr factoryCall
+                    && factoryCall.receiver() instanceof Ast.NameExpr factory
+                    && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
+                    && factoryCall.member().equals("new")) {
+                if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
+                return new Named(factory.name(), List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -496,6 +504,9 @@ public final class TypeChecker {
                 if (member.member().equals("stdout")) return new Named("stdio.stdout", List.of());
             }
             Type receiver = typeOf(member.receiver(), env, generics, self);
+            Type mutexMember = builtinMutexMember(receiver, member.member());
+            if (mutexMember != null) return mutexMember;
+            receiver = unwrapMutexGuard(receiver);
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
@@ -632,7 +643,7 @@ public final class TypeChecker {
     }
 
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
-        Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+        Type receiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
@@ -646,6 +657,41 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
+    }
+
+    private Type builtinMutexMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
+        Type element = named.arguments().getFirst();
+        if (named.name().equals("Mutex") || named.name().equals("SharedMutex")) {
+            Type guard = new Named("MutexGuard", List.of(element));
+            return switch (member) {
+                case "lock" -> new Function(List.of(), guard);
+                case "try_lock" -> new Function(List.of(), new Named("Option", List.of(guard)));
+                case "lock_async" -> new Function(List.of(), new Named("Future", List.of(guard)));
+                case "with_lock" -> new Function(List.of(new Function(List.of(element), Unknown.INSTANCE)), Unknown.INSTANCE);
+                case "is_poisoned" -> new Function(List.of(), Primitive.BOOL);
+                case "recover" -> named.name().equals("SharedMutex")
+                        ? new Function(List.of(new Function(List.of(element), Unknown.INSTANCE)), Unknown.INSTANCE)
+                        : null;
+                default -> null;
+            };
+        }
+        if (named.name().equals("MutexGuard")) {
+            return switch (member) {
+                case "value" -> element;
+                case "release" -> new Function(List.of(), Primitive.VOID);
+                case "is_released" -> new Function(List.of(), Primitive.BOOL);
+                default -> null;
+            };
+        }
+        return null;
+    }
+
+    private Type unwrapMutexGuard(Type type) {
+        if (type instanceof Named named && named.name().equals("MutexGuard") && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        return type;
     }
 
     private Type iterableElementType(Type iterable) {
@@ -947,6 +993,12 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Option<void> is invalid; use void for no return value");
                 yield new Named("Option", List.of(element));
+            }
+            case "Mutex", "SharedMutex", "MutexGuard", "Future" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) throw new IllegalArgumentException(ref.name() + "<void> is invalid");
+                yield new Named(ref.name(), List.of(element));
             }
             case "Fnc" -> {
                 List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
