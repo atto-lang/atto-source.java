@@ -2125,11 +2125,12 @@ public final class TypeChecker {
                     || copyMethod.visibility() != Ast.Visibility.PUBLIC
                     || copyMethod.isAbstract()
                     || copyMethod.async()
+                    || copyMethod.composed()
                     || !copyMethod.genericParameters().isEmpty()
                     || !immutableReceiver) {
                 throw new IllegalArgumentException("class '" + aggregate.name()
                         + "' is not copyable: define a concrete synchronous non-generic public instance "
-                        + "copy() => Self implementation with an immutable receiver");
+                        + "copy() => Self implementation declared directly on the class with an immutable receiver");
             }
             Type copyResult = methodFunctionTypeForReceiver(copyMethod, aggregate, named).result();
             if (!assignable(copyResult, named) || !assignable(named, copyResult)) {
