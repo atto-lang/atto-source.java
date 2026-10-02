@@ -47,6 +47,7 @@ public final class ProcessSingletonRegistry {
     private static final int MAX_PROCESS_SINGLETONS = 4_096;
     private static final int MAX_KEY_CHARS = 2_048;
     private static final Duration DEFAULT_WALL_TIME = Duration.ofMinutes(10);
+    private static final Duration DEFAULT_INITIALIZATION_WALL_TIME = Duration.ofSeconds(30);
     private static final ScheduledThreadPoolExecutor TIMEOUTS = timeoutExecutor();
 
     private static final Map<String, Cell> CELLS = new ConcurrentHashMap<>();
@@ -82,10 +83,21 @@ public final class ProcessSingletonRegistry {
     }
 
     public static <S> Handle<S> getOrCreate(String key, Supplier<? extends S> stateFactory) {
+        return getOrCreate(key, DEFAULT_INITIALIZATION_WALL_TIME, stateFactory);
+    }
+
+    public static <S> Handle<S> getOrCreate(
+            String key,
+            Duration initializationWallTime,
+            Supplier<? extends S> stateFactory) {
         String normalized = Objects.requireNonNull(key, "key").trim();
         if (normalized.isEmpty()) throw new IllegalArgumentException("singleton key cannot be blank");
         if (normalized.length() > MAX_KEY_CHARS) {
             throw new IllegalArgumentException("singleton key exceeds " + MAX_KEY_CHARS + " characters");
+        }
+        Objects.requireNonNull(initializationWallTime, "initializationWallTime");
+        if (initializationWallTime.isZero() || initializationWallTime.isNegative()) {
+            throw new IllegalArgumentException("initializationWallTime must be positive");
         }
         Objects.requireNonNull(stateFactory, "stateFactory");
 
@@ -96,7 +108,7 @@ public final class ProcessSingletonRegistry {
                 if (existing == null && CELLS.size() >= MAX_PROCESS_SINGLETONS) {
                     throw new IllegalStateException("process singleton limit exceeded: " + MAX_PROCESS_SINGLETONS);
                 }
-                cell = new Cell(normalized, stateFactory);
+                cell = new Cell(normalized, initializationWallTime, stateFactory);
                 CELLS.put(normalized, cell);
             } else {
                 cell = existing;
@@ -345,13 +357,15 @@ public final class ProcessSingletonRegistry {
         private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY);
         private final AtomicInteger queuedRequests = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
+        private final Duration initializationWallTime;
         private volatile Supplier<?> stateFactory;
         private volatile Throwable terminalFailure;
         private volatile boolean initialized;
 
-        private Cell(String key, Supplier<?> stateFactory) {
+        private Cell(String key, Duration initializationWallTime, Supplier<?> stateFactory) {
             this.key = key;
             this.diagnosticId = diagnosticId(key);
+            this.initializationWallTime = initializationWallTime;
             this.stateFactory = stateFactory;
         }
 
@@ -389,13 +403,22 @@ public final class ProcessSingletonRegistry {
             Object state;
             Supplier<?> factory = stateFactory;
             stateFactory = null; // do not retain the first isolate/evaluator after initialization
+            String previousCell = CURRENT_CELL.get();
+            Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
+            CURRENT_CELL.set(key);
+            CURRENT_DEADLINE_NANOS.set(deadlineAfter(initializationWallTime));
             try {
+                checkExecutionBudget();
                 state = Objects.requireNonNull(factory.get(),
                         "singleton state factory returned null for " + diagnosticId);
+                checkExecutionBudget();
                 initialized = true;
             } catch (Throwable failure) {
                 failTerminal(failure);
                 return;
+            } finally {
+                restoreThreadLocal(CURRENT_CELL, previousCell);
+                restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
             }
 
             while (true) {
