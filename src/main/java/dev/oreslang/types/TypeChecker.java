@@ -31,12 +31,14 @@ public final class TypeChecker {
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
+    private final Map<String, Ast.TraitDecl> traits = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.TraitDecl, String> traitOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
     private final java.util.ArrayDeque<Map<String, Ast.ClassDecl>> localClassScopes = new java.util.ArrayDeque<>();
     private final java.util.ArrayDeque<Map<String, Ast.InterfaceDecl>> localInterfaceScopes = new java.util.ArrayDeque<>();
@@ -47,6 +49,7 @@ public final class TypeChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private final Set<String> ambiguousInterfaces = new HashSet<>();
+    private final Set<String> ambiguousTraits = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
@@ -95,6 +98,9 @@ public final class TypeChecker {
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
+                } else if (decl instanceof Ast.TraitDecl trait) {
+                    putQualified(traits, ambiguousTraits, module.name(), trait.name(), trait, "trait");
+                    traitOwners.put(trait, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
@@ -117,6 +123,7 @@ public final class TypeChecker {
     private void validate(Ast.Program program) {
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        for (Ast.TraitDecl trait : traitOwners.keySet()) traitCapabilityShape(trait, new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
             checkModuleAdherence(module);
@@ -131,6 +138,7 @@ public final class TypeChecker {
                 else if (decl instanceof Ast.InitDecl init) checkInit(module, init);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
+                else if (decl instanceof Ast.TraitDecl trait) checkTrait(trait);
                 else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
                 else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
             }
@@ -184,6 +192,23 @@ public final class TypeChecker {
                     if (!all.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in interface " + iface.name() + "." + fn.name());
                 }
                 functionType(fn.parameters(), fn.returnType(), all, null);
+            }
+        }
+    }
+
+    private void checkTrait(Ast.TraitDecl trait) {
+        Record actual = traitCapabilityShape(trait, new LinkedHashSet<>());
+        Set<String> contracts = new HashSet<>();
+        for (Ast.TypeRef contractRef : trait.interfaces()) {
+            if (!contracts.add(contractRef.name())) {
+                throw new IllegalArgumentException("duplicate satisfied contract '" + contractRef.name()
+                        + "' on trait " + trait.name());
+            }
+            Record expected = contractShape(contractRef, Set.copyOf(trait.genericParameters()), null);
+            if (!assignable(actual, expected)) {
+                throw new IllegalArgumentException("trait '" + trait.name()
+                        + "' does not satisfy contract '" + contractRef.name()
+                        + "': expected " + expected + " but got " + actual);
             }
         }
     }
