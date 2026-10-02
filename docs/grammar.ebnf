@@ -13,6 +13,8 @@ import_names    = IDENT
                 | "*" "as" IDENT ;
 
 top_level_item  = annotated_module_decl
+                | actor_decl
+                | actor_callable_decl
                 | callable_decl
                 | class_decl
                 | interface_decl
@@ -22,7 +24,9 @@ top_level_item  = annotated_module_decl
 annotated_module_decl = { annotation } "define" "module" IDENT
                         { module_member } "end" ;
 
-module_member   = callable_decl
+module_member   = actor_decl
+                | actor_callable_decl
+                | callable_decl
                 | class_decl
                 | interface_decl
                 | type_decl
@@ -34,6 +38,23 @@ callable_modifier = "abstract" | "async" ;
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
+
+actor_callable_decl
+                = { annotation } visibility [ "async" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                  "(" [ param_list ] ")" return_spec block ;
+
+actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  actor_body ;
+actor_body      = "{" { actor_member } "}"
+                | { actor_member } "end" ;
+actor_member    = field_decl
+                | actor_method_decl
+                | static_function_decl ;
+actor_method_decl
+                = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
+                  method_head return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
