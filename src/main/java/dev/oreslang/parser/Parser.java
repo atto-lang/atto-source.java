@@ -8,6 +8,8 @@ import java.util.List;
 import static dev.oreslang.parser.Token.Type.*;
 
 public final class Parser {
+    public static final String ROOT_MODULE = "__root__";
+
     private final List<Token> tokens;
     private int current;
 
@@ -24,13 +26,41 @@ public final class Parser {
         while (match(IMPORT)) imports.add(parseImport());
 
         List<Ast.ModuleDecl> modules = new ArrayList<>();
+        List<Ast.Decl> rootDeclarations = new ArrayList<>();
+
         while (!check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
-            consume(DEFINE, "expected 'define'");
-            consume(MODULE, "expected 'module' after 'define'");
-            modules.add(parseModule(annotations));
+            Modifiers modifiers = parseModifiers();
+
+            if (match(DEFINE)) {
+                boolean afterDefineAbstract = match(ABSTRACT);
+                if (match(MODULE)) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.isStatic || modifiers.isAbstract) {
+                        throw error(previous(), "modules do not accept function/class modifiers");
+                    }
+                    modules.add(parseModule(annotations));
+                    continue;
+                }
+                if (match(CLASS)) {
+                    rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
+                    continue;
+                }
+                if (match(INTERFACE)) {
+                    rootDeclarations.add(parseInterface(modifiers.visibility));
+                    continue;
+                }
+                throw error(previous(), "expected module, class, or interface after 'define'");
+            }
+
+            Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
+            if (declaration == null) throw error(peek(), "expected module or top-level declaration");
+            rootDeclarations.add(declaration);
         }
-        if (modules.isEmpty()) throw error(peek(), "a source file must define at least one named module");
+
+        if (!rootDeclarations.isEmpty()) {
+            modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), rootDeclarations));
+        }
+        if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(imports, modules);
     }
 
@@ -83,28 +113,36 @@ public final class Parser {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
 
-        if (match(FNC)) return parseFunction(annotations, modifiers);
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
-            if (match(INTERFACE)) return parseInterface();
+            if (match(INTERFACE)) return parseInterface(modifiers.visibility);
             throw error(previous(), "expected class or interface after 'define'");
         }
-        if (match(TYPE)) return parseTypeAlias();
-        if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
 
-        throw error(peek(), "expected function, class, interface, type, or binding declaration");
+        Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
+        if (declaration != null) return declaration;
+        throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
     }
 
-    private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers) {
-        String name = consume(IDENT, "expected function name").lexeme();
+    private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
+        if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        if (match(INTERFACE)) return parseInterface(modifiers.visibility);
+        if (match(TYPE)) return parseTypeAlias();
+        if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
+        return null;
+    }
+
+    private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
+        String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, modifiers.visibility, modifiers.async, generics, params,
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, generics, params,
                 returnType, annotations, body);
     }
 
@@ -129,13 +167,18 @@ public final class Parser {
         return new Ast.ClassDecl(name, isAbstract, generics, parents, interfaces, fields, methods);
     }
 
-    private Ast.InterfaceDecl parseInterface() {
+    private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
         String name = consume(IDENT, "expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
+        List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
+        boolean braceStyle = match(LBRACE);
+        Token.Type terminator = braceStyle ? RBRACE : END;
+
         List<Ast.InterfaceMember> members = new ArrayList<>();
-        while (!check(END) && !check(EOF)) {
+        while (!check(terminator) && !check(EOF)) {
             parseAnnotations();
             parseModifiers();
+
             if (match(FNC)) {
                 String memberName = consume(IDENT, "expected interface function name").lexeme();
                 List<String> memberGenerics = parseGenericParameters();
@@ -143,18 +186,29 @@ public final class Parser {
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
                 Ast.TypeRef returns = match(FAT_ARROW) ? parseTypeRef() : Ast.TypeRef.simple("void");
-                consume(SEMICOLON, "interface function signature must end with ';'");
+                consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
-            } else {
-                if (isBindingKind(peek().type())) advance();
-                Ast.TypeRef type = parseTypeRef();
-                String fieldName = consume(IDENT, "expected interface field name").lexeme();
-                consume(SEMICOLON, "interface field signature must end with ';'");
-                members.add(new Ast.InterfaceFieldDecl(fieldName, type));
+                continue;
             }
+
+            if (check(IDENT) && checkNext(COLON)) {
+                String fieldName = advance().lexeme();
+                consume(COLON, "expected ':' after interface field name");
+                Ast.TypeRef type = parseTypeRef();
+                consumeMemberTerminator(terminator, "interface field signature should end with ';'");
+                members.add(new Ast.InterfaceFieldDecl(fieldName, type));
+                continue;
+            }
+
+            if (isBindingKind(peek().type())) advance();
+            Ast.TypeRef type = parseTypeRef();
+            String fieldName = consume(IDENT, "expected interface field name").lexeme();
+            consumeMemberTerminator(terminator, "interface field signature should end with ';'");
+            members.add(new Ast.InterfaceFieldDecl(fieldName, type));
         }
-        consume(END, "expected 'end' to close interface " + name);
-        return new Ast.InterfaceDecl(name, generics, members);
+
+        consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
+        return new Ast.InterfaceDecl(name, visibility, generics, parents, members);
     }
 
     private List<Ast.TypeRef> parseTypeRefList() {
@@ -168,7 +222,7 @@ public final class Parser {
         Ast.TypeRef type = parseTypeRef();
         String name = consume(IDENT, "expected field name").lexeme();
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
-        consume(SEMICOLON, "expected ';' after field");
+        consumeStatementTerminator("field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, initializer);
     }
 
@@ -176,20 +230,19 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) {
-            name = advance().lexeme();
-        } else {
+        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        else {
             type = parseTypeRef();
             name = consume(IDENT, "expected binding name").lexeme();
         }
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
-        consume(SEMICOLON, "expected ';' after binding");
+        consumeStatementTerminator("module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, initializer);
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
-        String name = consume(IDENT, "expected method name (methods omit 'fnc')").lexeme();
+        String name = parseMethodName();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after method name");
 
@@ -209,11 +262,23 @@ public final class Parser {
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
-            consume(SEMICOLON, "abstract method must end with ';'");
+            consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
                 receiverType, generics, params, returnType, annotations, body);
+    }
+
+    private String parseMethodName() {
+        if (match(LBRACKET)) {
+            String namespace = consume(IDENT, "expected symbol namespace").lexeme();
+            consume(DOT, "expected '.' in symbol method");
+            String symbol = consume(IDENT, "expected symbol name").lexeme();
+            consume(RBRACKET, "expected ']' after symbol method");
+            if (!namespace.equals("Symbol")) throw error(previous(), "symbol methods must use Symbol.<name>");
+            return namespace + "." + symbol;
+        }
+        return consume(IDENT, "expected method name (methods omit 'fnc')").lexeme();
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
@@ -221,7 +286,7 @@ public final class Parser {
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
         Ast.TypeRef target = parseTypeRef();
-        consume(SEMICOLON, "expected ';' after type alias");
+        consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, generics, target);
     }
 
@@ -291,14 +356,22 @@ public final class Parser {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
+            boolean structural = false;
+            if (match(AT)) {
+                String annotation = consume(IDENT, "expected parameter annotation").lexeme();
+                if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
+                structural = true;
+            }
             Ast.TypeRef type = parseTypeRef();
             String name = consume(IDENT, "expected parameter name").lexeme();
-            params.add(new Ast.Param(type, name));
+            params.add(new Ast.Param(type, name, structural));
         } while (match(COMMA));
         return params;
     }
 
     private Ast.TypeRef parseTypeRef() {
+        if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
+
         String name;
         if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
@@ -335,20 +408,33 @@ public final class Parser {
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
         if (match(RETURN)) {
-            Ast.Expr value = check(SEMICOLON) ? null : parseExpression();
-            consume(SEMICOLON, "expected ';' after return");
+            Ast.Expr value = isSafeStatementBoundary() ? null : parseExpression();
+            consumeStatementTerminator("return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
         if (match(DEFER)) {
             Ast.Expr expression = parseExpression();
-            consume(SEMICOLON, "expected ';' after defer");
+            consumeStatementTerminator("defer statement should end with ';'");
             return new Ast.DeferStmt(expression);
         }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
+        if (match(FOR)) return parseForOf();
+
         Ast.Expr expression = parseExpression();
-        consume(SEMICOLON, "expected ';' after expression");
+        consumeStatementTerminator("expression statement should end with ';'");
         return new Ast.ExprStmt(expression);
+    }
+
+    private Ast.ForOfStmt parseForOf() {
+        consume(LPAREN, "expected '(' after for");
+        Ast.BindingKind kind = isBindingKind(peek().type()) ? parseBindingKind() : Ast.BindingKind.VAL;
+        String name = consume(IDENT, "expected loop binding name").lexeme();
+        consume(OF, "expected 'of' in for-of loop");
+        Ast.Expr iterable = parseExpression();
+        consume(RPAREN, "expected ')' after for-of header");
+        List<Ast.Stmt> body = parseBlock();
+        return new Ast.ForOfStmt(kind, name, iterable, body);
     }
 
     private Ast.BindingStmt parseBindingStatement() {
@@ -362,7 +448,7 @@ public final class Parser {
         }
         consume(EQUAL, "binding requires initializer");
         Ast.Expr initializer = parseExpression();
-        consume(SEMICOLON, "expected ';' after binding");
+        consumeStatementTerminator("binding should end with ';'");
         return new Ast.BindingStmt(kind, type, name, initializer);
     }
 
@@ -377,7 +463,7 @@ public final class Parser {
         consume(RBRACKET, "expected ']'");
         consume(EQUAL, "expected '=' after destructure pattern");
         Ast.Expr initializer = parseExpression();
-        consume(SEMICOLON, "expected ';' after destructure");
+        consumeStatementTerminator("destructure should end with ';'");
         return new Ast.DestructureStmt(bindings, initializer);
     }
 
@@ -388,14 +474,14 @@ public final class Parser {
     private Ast.IfStmt parseIf() {
         List<Ast.IfBranch> branches = new ArrayList<>();
         Ast.Expr condition = parseCondition();
-        consume(SEMICOLON, "expected ';' before do");
+        match(SEMICOLON);
         consume(DO, "expected 'do'");
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
         while (match(ELSEIF)) {
             condition = parseCondition();
-            consume(SEMICOLON, "expected ';' before do");
+            match(SEMICOLON);
             consume(DO, "expected 'do'");
             body = parseUntil(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
@@ -440,12 +526,21 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
-        Ast.Expr expr = parseOr();
+        Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
-            if (!(expr instanceof Ast.NameExpr)) throw error(previous(), "assignment target must be a local name in v1");
+            if (!(expr instanceof Ast.NameExpr)) throw error(previous(), "assignment target must be a local name in v0");
             return new Ast.AssignExpr(expr, parseAssignment());
         }
         return expr;
+    }
+
+    private Ast.Expr parseConditional() {
+        Ast.Expr condition = parseOr();
+        if (!match(QUESTION)) return condition;
+        Ast.Expr whenTrue = parseAssignment();
+        consume(COLON, "expected ':' in ternary expression");
+        Ast.Expr whenFalse = parseConditional();
+        return new Ast.ConditionalExpr(condition, whenTrue, whenFalse);
     }
 
     private Ast.Expr parseOr() {
@@ -525,7 +620,7 @@ public final class Parser {
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
-        if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T> (Option<null> is type-only when explicitly needed)");
+        if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
@@ -608,6 +703,21 @@ public final class Parser {
         return args;
     }
 
+    private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
+        if (match(SEMICOLON) || check(structuralTerminator)) return;
+        throw error(peek(), message);
+    }
+
+    private void consumeStatementTerminator(String message) {
+        if (match(SEMICOLON) || isSafeStatementBoundary()) return;
+        throw error(peek(), message);
+    }
+
+    private boolean isSafeStatementBoundary() {
+        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+                || check(CATCH) || check(FINALLY) || check(EOF);
+    }
+
     private Ast.BindingKind parseBindingKind() {
         if (match(CONST)) return Ast.BindingKind.CONST;
         if (match(VAL)) return Ast.BindingKind.VAL;
@@ -634,6 +744,7 @@ public final class Parser {
     private Token advance() { if (!check(EOF)) current++; return previous(); }
     private Token peek() { return tokens.get(current); }
     private Token previous() { return tokens.get(current - 1); }
+
     private IllegalArgumentException error(Token token, String message) {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
