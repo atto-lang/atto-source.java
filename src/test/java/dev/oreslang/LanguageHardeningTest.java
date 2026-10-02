@@ -554,8 +554,9 @@ final class LanguageHardeningTest {
                 }
 
                 define class Parent<T> as
+                  pub val T value;
                   pub get() => T {
-                    return 7;
+                    return self.value;
                   }
                 end
 
@@ -570,8 +571,9 @@ final class LanguageHardeningTest {
         IllegalArgumentException wrong = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
                         define class Box<T> as
+                          pub val T value;
                           pub get() => T {
-                            return 7;
+                            return self.value;
                           }
                         end
 
@@ -673,8 +675,9 @@ final class LanguageHardeningTest {
                 end
 
                 define class Impl<T> is DerivedApi<T> as
+                  pub val T value;
                   pub get() => T {
-                    return 7;
+                    return self.value;
                   }
                 end
 
@@ -703,7 +706,8 @@ final class LanguageHardeningTest {
                         end
 
                         define class Impl<T> is ValueApi<T> as
-                          pub get() => T { return 7; }
+                          pub val T value;
+                          pub get() => T { return self.value; }
                         end
 
                         fnc bad(Impl<int> value) => ValueApi<String> {
@@ -711,5 +715,71 @@ final class LanguageHardeningTest {
                         }
                         """)));
         assertTrue(wrongInterface.getMessage().contains("return"));
+    }
+    @Test
+    void callableGenericsAreRigidInBodiesAndInferredAtCalls() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc identity<T>(T value) => T {
+                  return value;
+                }
+
+                define module helpers as
+                  pub fnc pair<T>(T left, T right) => T {
+                    return left;
+                  }
+                end
+
+                define class Echo as
+                  pub echo<T>(T value) => T {
+                    return value;
+                  }
+
+                  pub static fnc static_echo<T>(T value) => T {
+                    return value;
+                  }
+                end
+
+                fnc run() => int {
+                  val a = identity(7);
+                  val b = helpers.pair(8, 9);
+                  val e = new Echo();
+                  val c = e.echo(10);
+                  val d = Echo.static_echo(11);
+                  return a + b + c + d;
+                }
+                """)));
+
+        IllegalArgumentException fabricated = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad<T>(T value) => T {
+                          return 7;
+                        }
+                        """)));
+        assertTrue(fabricated.getMessage().contains("return"));
+
+        IllegalArgumentException conflicting = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc same<T>(T left, T right) => T {
+                          return left;
+                        }
+
+                        fnc bad() => int {
+                          return same(1, "wrong");
+                        }
+                        """)));
+        assertTrue(conflicting.getMessage().contains("incompatible types for generic 'T'"));
+
+        IllegalArgumentException genericValue = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc identity<T>(T value) => T {
+                          return value;
+                        }
+
+                        fnc bad() => void {
+                          val f = identity;
+                          return;
+                        }
+                        """)));
+        assertTrue(genericValue.getMessage().contains("polymorphic function values"));
     }
 }
