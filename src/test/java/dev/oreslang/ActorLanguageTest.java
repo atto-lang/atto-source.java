@@ -330,6 +330,58 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void complexOptionAndClassValuesPreserveRuntimeTypeAcrossMailboxes() throws Exception {
+        String output = run("""
+                define class Box
+                  val int value;
+
+                  pub get() => int {
+                    return self.value;
+                  }
+                end
+
+                fnc box_worker(Box box) => void {
+                  stdio.stdout.write(box.get());
+                  return;
+                }
+
+                fnc option_worker(Option<int> option) => void {
+                  stdio.stdout.write(option);
+                  return;
+                }
+
+                fnc complex_worker(complex value) => void {
+                  stdio.stdout.write(value);
+                  return;
+                }
+
+                pub routine main() => void {
+                  val box = new Box(7);
+                  val box_ref = actor.spawn(box_worker);
+                  actor.send(box_ref, box);
+                  actor.stop(box_ref);
+                  actor.join(box_ref);
+                  stdio.stdout.write(box.get());
+                  stdio.stdout.write(":");
+
+                  val option_ref = actor.spawn(option_worker);
+                  actor.send(option_ref, Some(5));
+                  actor.stop(option_ref);
+                  actor.join(option_ref);
+                  stdio.stdout.write(":");
+
+                  val complex_ref = actor.spawn(complex_worker);
+                  actor.send(complex_ref, 3 + 4i);
+                  actor.stop(complex_ref);
+                  actor.join(complex_ref);
+                  return;
+                }
+                """);
+
+        assertEquals("77:Some(5):3.0+4.0i", output);
+    }
+
+    @Test
     void processGcIsExplicitAndCallable() throws Exception {
         String previous = System.getProperty("oreslang.gc.host-hint");
         System.setProperty("oreslang.gc.host-hint", "false");
