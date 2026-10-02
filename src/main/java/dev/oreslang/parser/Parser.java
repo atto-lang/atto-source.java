@@ -160,6 +160,9 @@ public final class Parser {
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
+        if (modifiers.actorKind != Ast.ActorKind.NONE && modifiers.async) {
+            throw error(previous(), "'async' cannot yet be combined with actor/isoactor; the nonblocking actor-call contract is reserved for a future version");
+        }
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consume(IDENT, "expected callable name").lexeme();
