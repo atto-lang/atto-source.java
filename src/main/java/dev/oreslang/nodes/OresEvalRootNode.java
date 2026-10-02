@@ -39,7 +39,7 @@ public final class OresEvalRootNode extends RootNode {
 
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
-        CapabilityChecker.check(program, context.isolatePolicy());
+        CapabilityChecker.check(program, context.effectivePolicy());
         return new Evaluator(program, context).execute(arguments);
     }
 
