@@ -303,7 +303,7 @@ public final class GpuSafetyChecker {
             if (param.type().isTupleType()) {
                 throw new IllegalArgumentException("GPU lambda parameter '" + param.name() + "' cannot use a tuple device ABI");
             }
-            requireGpuType(param.type(), false, new HashSet<>(), "GPU lambda parameter " + param.name());
+            requireGpuType(module, param.type(), false, new HashSet<>(), "GPU lambda parameter " + param.name());
             scope.define(param.name());
         }
         validateGpuStatements(module, scope, lambda.blockBody(), true);
