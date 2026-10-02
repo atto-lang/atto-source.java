@@ -530,7 +530,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || cell.kind != ActorKind.PRIVATE || !cell.ref.id().equals(owner)) {
+            if (cell == null || !cell.kind.memoryIsolated() || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
                         "private actor memory slice may only be reserved by its owning actor");
             }
@@ -847,6 +847,18 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /** Present only for an UNTRUSTED actor explicitly bound to one HTTP response. */
+        Optional<HttpResponseCapability> httpResponse();
+
+        /** Mandatory compiler/runtime scheduling checkpoint. */
+        void checkpoint();
+
+        /** Remaining per-message execution fuel, or Long.MAX_VALUE for trusted actors. */
+        long fuelRemaining();
+
+        /** Remaining hard lifetime; trusted actors report their policy wall-time. */
+        Duration remainingLifetime();
     }
 
     public final class ActorRef<M> {
@@ -1035,6 +1047,37 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnInternal(ActorKind.SHARED, policy, behaviorFactory, true);
     }
 
+    /**
+     * Host/supervisor entry point for code that must be treated as malicious.
+     * Untrusted actors are always memory-isolated, adversarial, capture-free,
+     * lifetime-bounded, fuel-metered, and placed on a dedicated dispatcher.
+     */
+    public <M> ActorRef<M> spawnUntrusted(BehaviorFactory<M> behaviorFactory) {
+        return spawnUntrusted(
+                IsolatePolicy.untrustedActor(),
+                UntrustedActorLimits.defaults(),
+                null,
+                behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnUntrusted(
+            IsolatePolicy policy,
+            UntrustedActorLimits limits,
+            HttpResponseTransport responseTransport,
+            BehaviorFactory<M> behaviorFactory) {
+        requireSupervisorContext("spawn untrusted actors");
+        Objects.requireNonNull(policy);
+        Objects.requireNonNull(limits);
+        Objects.requireNonNull(behaviorFactory);
+        return spawnInternal(
+                ActorKind.UNTRUSTED,
+                policy,
+                behaviorFactory,
+                false,
+                limits,
+                responseTransport);
+    }
+
     /** Compatibility path for trusted host callers. */
     public <M> ActorRef<M> spawn(
             ActorKind kind,
@@ -1042,6 +1085,10 @@ public final class ActorRuntime implements AutoCloseable {
             Supplier<? extends Behavior<M>> behaviorFactory) {
         requireSupervisorContext("use trusted Supplier actor construction");
         Objects.requireNonNull(behaviorFactory);
+        if (kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "UNTRUSTED actors require spawnUntrusted with a capture-free BehaviorFactory");
+        }
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(kind, policy, context -> behaviorFactory.get(), true);
     }
@@ -1213,6 +1260,10 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
+        if (kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "UNTRUSTED actors require spawnUntrusted so hard limits cannot be omitted");
+        }
         return spawnInternal(kind, policy, behaviorFactory, false);
     }
 
@@ -1221,19 +1272,42 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            UntrustedActorLimits untrustedLimits,
+            HttpResponseTransport responseTransport) {
         requireCallerRuntimeAffinity("spawn actors");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
-        IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
+        if (kind == ActorKind.UNTRUSTED && untrustedLimits == null) {
+            throw new SecurityException("untrusted actor hard limits are required");
+        }
+        if (kind != ActorKind.UNTRUSTED && (untrustedLimits != null || responseTransport != null)) {
+            throw new IllegalArgumentException("untrusted limits/HTTP capability may only be attached to UNTRUSTED actors");
+        }
+
+        IsolatePolicy effectivePolicy = kind.memoryIsolated()
                 ? policy.withoutCapabilities(
                         IsolatePolicy.Capability.SHARED_MEMORY,
                         IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
                 : policy;
+        if (kind == ActorKind.UNTRUSTED) {
+            effectivePolicy = restrictUntrustedPolicy(effectivePolicy, untrustedLimits);
+        }
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
+        }
+        if (kind == ActorKind.UNTRUSTED && trustedFactory) {
+            throw new SecurityException("untrusted actor factories can never use the trusted/capturing path");
         }
         if (!trustedFactory) {
             requireStatelessActorFactory(behaviorFactory);
@@ -1247,14 +1321,53 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<M> ref = new ActorRef<>(id, kind);
             try {
                 ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
+                    ref,
+                    kind,
+                    effectivePolicy,
+                    behaviorFactory,
+                    trustedFactory,
+                    untrustedLimits,
+                    responseTransport);
                 actors.put(id, cell);
+                cell.armLifetimeLimit();
                 return ref;
             } catch (RuntimeException | Error failure) {
                 actorCount.decrementAndGet();
                 throw failure;
             }
         }
+    }
+
+    private IsolatePolicy restrictUntrustedPolicy(
+            IsolatePolicy policy,
+            UntrustedActorLimits limits) {
+        IsolatePolicy stripped = policy.withoutCapabilities(
+                IsolatePolicy.Capability.STDIN,
+                IsolatePolicy.Capability.STDOUT,
+                IsolatePolicy.Capability.PROCESS_INFO,
+                IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                IsolatePolicy.Capability.SHARED_MEMORY,
+                IsolatePolicy.Capability.NETWORK,
+                IsolatePolicy.Capability.FILESYSTEM_READ,
+                IsolatePolicy.Capability.FILESYSTEM_WRITE,
+                IsolatePolicy.Capability.ENVIRONMENT,
+                IsolatePolicy.Capability.HOT_CODE_LOAD,
+                IsolatePolicy.Capability.FFI,
+                IsolatePolicy.Capability.NATIVE,
+                IsolatePolicy.Capability.REFLECTION,
+                IsolatePolicy.Capability.CHILD_PROCESS,
+                IsolatePolicy.Capability.THREAD_CREATE,
+                IsolatePolicy.Capability.POLYGLOT);
+        Duration wall = stripped.maxWallTime().compareTo(limits.maxLifetime()) <= 0
+                ? stripped.maxWallTime()
+                : limits.maxLifetime();
+        int mailbox = Math.min(stripped.maxMailboxMessages(), 256);
+        return new IsolatePolicy(
+                stripped.capabilities(),
+                stripped.maxHeapBytes(),
+                mailbox,
+                wall,
+                true);
     }
 
     private void reserveActorSlot() {
@@ -1317,8 +1430,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void rejectPrivateActorSharedMemoryAccess(String operation) {
         ActorCell<?> current = currentActor.get();
-        if (current != null && current.kind == ActorKind.PRIVATE) {
-            throw new IllegalStateException("private actors cannot access synchronized shared memory via " + operation);
+        if (current != null && current.kind.memoryIsolated()) {
+            throw new IllegalStateException(
+                    "memory-isolated actors cannot access synchronized shared memory via " + operation);
         }
     }
 
