@@ -28,6 +28,7 @@ Imports are explicit about what kind of symbol is entering the compilation unit:
 import module foo from "../xyz";
 import module {foo, bar} from "../xyz";
 import class {x} from '../xyz';
+import struct {Point} from '../xyz';
 import fnc * as funcs from '../xyz';
 import * as x from './xyz';
 ```
