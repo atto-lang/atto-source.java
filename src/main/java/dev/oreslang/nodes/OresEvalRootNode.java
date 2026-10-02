@@ -831,7 +831,7 @@ public final class OresEvalRootNode extends RootNode {
                             || value instanceof java.math.BigDecimal;
                     case "complex64", "complex128", "complex" -> value instanceof Number || value instanceof Complex;
                     case "bool", "Bool" -> value instanceof Boolean;
-                    case "string", "String" -> value instanceof String;
+                    case "str", "string", "String" -> value instanceof String;
                     case "Array", "List" -> {
                         if (!(value instanceof List<?> list)) yield false;
                         if (type.arguments().size() != 1 || type.arguments().getFirst().inferArguments()) yield true;
