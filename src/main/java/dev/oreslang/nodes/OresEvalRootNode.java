@@ -94,6 +94,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException("actor fnc '" + fn.name()
+                        + "' cannot execute on the caller stack; it must be lowered through ActorRuntime");
+            }
             if (args.size() != fn.parameters().size()) {
                 if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
                 else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
@@ -231,7 +235,17 @@ public final class OresEvalRootNode extends RootNode {
                 if (assignment.target() instanceof Ast.MemberExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresObject object) {
-                        if (!object.fields.containsKey(target.member())) throw new IllegalArgumentException("unknown field " + target.member());
+                        if (!object.fields.containsKey(target.member())) {
+                            throw new IllegalArgumentException("unknown field " + target.member());
+                        }
+                        Ast.FieldDecl field = effectiveFields(object.klass, new LinkedHashSet<>()).stream()
+                                .filter(candidate -> candidate.name().equals(target.member()))
+                                .findFirst()
+                                .orElseThrow(() -> new IllegalArgumentException("unknown field " + target.member()));
+                        if (field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException("field '" + object.klass.name() + "."
+                                    + target.member() + "' is immutable");
+                        }
                         object.fields.put(target.member(), value);
                         return value;
                     }
@@ -301,6 +315,10 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NewExpr created) {
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                if (klass.actorKind() != Ast.ActorKind.NONE) {
+                    throw new IllegalStateException("actor '" + klass.name()
+                            + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
+                }
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
                 if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
