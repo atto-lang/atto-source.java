@@ -336,4 +336,42 @@ final class TraitCompositionTest {
 
         assertTrue(error.getMessage().contains("share one namespace"));
     }
+    @Test
+    void privateTraitMethodsRemainOwnedByTheirTraitAfterComposition() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  define trait SecretMath as
+                    private helper() => int {
+                      return 41;
+                    }
+
+                    pub answer() => int {
+                      return self.helper() + 1;
+                    }
+                  end
+
+                  define class Good with SecretMath as
+                  end
+                end
+                """)));
+
+        IllegalArgumentException leak = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define trait SecretMath as
+                            private helper() => int {
+                              return 41;
+                            }
+                          end
+
+                          define class Bad with SecretMath as
+                            pub leak() => int {
+                              return self.helper();
+                            }
+                          end
+                        end
+                        """)));
+
+        assertTrue(leak.getMessage().contains("private to that trait"));
+    }
 }
