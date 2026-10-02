@@ -147,7 +147,7 @@ public final class OwnershipChecker {
                     if (owner.origin == Origin.LOCAL) {
                         throw error("cannot return a borrow of local value '" + owner.debugName + "'; borrowed value would outlive its owner");
                     }
-                    if (owner.debugName.equals("self") && owner.kind == ValueKind.MUT_BORROW) {
+                    if (isActorConfinedBorrow(owner)) {
                         throw error("actor self cannot escape its mailbox turn as a returned borrow");
                     }
                 }
@@ -265,8 +265,8 @@ public final class OwnershipChecker {
             if (state == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null); // function/module/global
             state.debugName = name.name();
             requireUsable(state, name.name(), false);
-            if (consuming && name.name().equals("self") && state.kind == ValueKind.MUT_BORROW) {
-                throw error("actor self is a non-escapable mailbox capability; access its fields/methods or pass an explicit borrow");
+            if (consuming && isActorConfinedBorrow(state)) {
+                throw error("actor self is a non-escapable mailbox capability; access its fields/methods inside the actor turn");
             }
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
@@ -397,11 +397,17 @@ public final class OwnershipChecker {
                     }
                     VarState owner = borrowOwner(unary.operand(), scope);
                     validateBorrow(owner, mutable);
+                    if (isActorConfinedBorrow(owner)) {
+                        throw error("actor self borrow cannot cross an ordinary callable boundary");
+                    }
                     continue; // temporary borrow ends at call boundary
                 }
                 if (arg instanceof Ast.NameExpr name) {
                     VarState state = requireState(scope, name.name());
                     requireUsable(state, name.name(), false);
+                    if (isActorConfinedBorrow(state)) {
+                        throw error("actor self borrow cannot cross an ordinary callable boundary");
+                    }
                     if (mutable && state.kind != ValueKind.MUT_BORROW) {
                         throw error(callable + " argument " + (i + 1) + " requires &mut value");
                     }
@@ -742,14 +748,32 @@ public final class OwnershipChecker {
 
     private boolean isRootedAtActorSelf(Ast.Expr expr, Scope scope) {
         Ast.Expr current = expr;
-        while (current instanceof Ast.MemberExpr member) current = member.receiver();
-        while (current instanceof Ast.IndexExpr indexed) current = indexed.receiver();
-        if (!(current instanceof Ast.NameExpr name) || !name.name().equals("self")) return false;
-        VarState self = scope.lookup("self");
-        if (self == null || self.kind != ValueKind.MUT_BORROW) return false;
-        Ast.ClassDecl klass = classOfReceiver(new Ast.NameExpr("self"), scope);
-        return klass != null && klass.actorKind() != Ast.ActorKind.NONE;
+        while (true) {
+            if (current instanceof Ast.MemberExpr member) current = member.receiver();
+            else if (current instanceof Ast.IndexExpr indexed) current = indexed.receiver();
+            else break;
+        }
+        if (!(current instanceof Ast.NameExpr name)) return false;
+        VarState root = scope.lookup(name.name());
+        return root != null && isActorConfinedBorrow(root);
     }
+
+    private boolean isActorConfinedBorrow(VarState state) {
+        VarState current = state;
+        Set<VarState> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        while (current != null && seen.add(current)) {
+            if (current.debugName.equals("self")
+                    && current.kind == ValueKind.MUT_BORROW
+                    && current.origin == Origin.PARAM) {
+                Ast.TypeRef type = current.type.isBorrow() ? current.type.borrowedTarget() : current.type;
+                Ast.ClassDecl klass = findClass(type.name());
+                return klass != null && klass.actorKind() != Ast.ActorKind.NONE;
+            }
+            current = current.borrowSource;
+        }
+        return false;
+    }
+
 
     private Ast.TypeRef ownershipFieldType(Ast.FieldDecl field) {
         if (field.type() != null) return field.type();
