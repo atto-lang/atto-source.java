@@ -90,13 +90,18 @@ final class ActorRecoverTest {
                   panic "boom";
                 }
 
-                pub routine main() => void {
-                  try {
-                    inner();
-                  } catch (err) {
+                fnc outer() => void {
+                  recover |err| -> {
                     stdio.stdout.write(":");
                     stdio.stdout.write(err);
-                  }
+                    return;
+                  };
+
+                  inner();
+                }
+
+                pub routine main() => void {
+                  outer();
                 }
                 """);
 
@@ -104,7 +109,7 @@ final class ActorRecoverTest {
     }
 
     @Test
-    void recoverMayRepanicToCallerCatch() throws Exception {
+    void recoverMayRepanicToCallerRecover() throws Exception {
         String output = run("""
                 fnc inner() => void {
                   recover |err| -> {
@@ -115,12 +120,16 @@ final class ActorRecoverTest {
                   panic "boom";
                 }
 
-                pub routine main() => void {
-                  try {
-                    inner();
-                  } catch (err) {
+                fnc outer() => void {
+                  recover |err| -> {
                     stdio.stdout.write(err);
-                  }
+                    return;
+                  };
+                  inner();
+                }
+
+                pub routine main() => void {
+                  outer();
                 }
                 """);
 
@@ -128,15 +137,15 @@ final class ActorRecoverTest {
     }
 
     @Test
-    void recoverValueMayBeObservedAndThenRepanicked() throws Exception {
+    void throwBypassesRecoverAndIsCaughtLexically() throws Exception {
         String output = run("""
                 fnc inner() => void {
                   recover |err| -> {
-                    stdio.stdout.write(err);
-                    panic err;
+                    stdio.stdout.write("R");
+                    return;
                   };
 
-                  panic "boom";
+                  throw "boom";
                 }
 
                 pub routine main() => void {
@@ -148,7 +157,7 @@ final class ActorRecoverTest {
                 }
                 """);
 
-        assertEquals("boomboom", output);
+        assertEquals("boom", output);
     }
 
     @Test
@@ -257,7 +266,7 @@ final class ActorRecoverTest {
     }
 
     @Test
-    void sameCallableTryCatchHandlesBeforeCallableRecover() throws Exception {
+    void panicBypassesCatchAndRunsCallableRecover() throws Exception {
         String output = run("""
                 fnc inner() => void {
                   recover |err| -> {
@@ -277,7 +286,80 @@ final class ActorRecoverTest {
                 }
                 """);
 
-        assertEquals("C", output);
+        assertEquals("R", output);
+    }
+
+    @Test
+    void raisePreservesCaughtThrowAndStillBypassesRecover() throws Exception {
+        String output = run("""
+                fnc inner() => void {
+                  throw "boom";
+                }
+
+                fnc middle() => void {
+                  recover |err| -> {
+                    stdio.stdout.write("R");
+                    return;
+                  };
+
+                  try {
+                    inner();
+                  } catch (err) {
+                    stdio.stdout.write("C");
+                    raise;
+                  }
+                }
+
+                pub routine main() => void {
+                  try {
+                    middle();
+                  } catch (err) {
+                    stdio.stdout.write(err);
+                  }
+                }
+                """);
+
+        assertEquals("Cboom", output);
+    }
+
+    @Test
+    void raiseFromRecoverContinuesTheSamePanic() throws Exception {
+        String output = run("""
+                fnc inner() => void {
+                  recover |err| -> {
+                    stdio.stdout.write("I");
+                    raise;
+                  };
+                  panic "boom";
+                }
+
+                fnc outer() => void {
+                  recover |err| -> {
+                    stdio.stdout.write("O");
+                    stdio.stdout.write(err);
+                    return;
+                  };
+                  inner();
+                }
+
+                pub routine main() => void {
+                  outer();
+                }
+                """);
+
+        assertEquals("IOboom", output);
+    }
+
+    @Test
+    void raiseIsRejectedWithoutActiveHandler() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub routine main() => void {
+                          raise;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("'raise' is only valid inside a catch or recover handler"));
     }
 
     @Test
