@@ -1222,6 +1222,57 @@ final class ActorRuntimeTest {
     }
 
 
+
+    @Test
+    void sharedActorBehaviorFactoryMustBeCaptureFree() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            List<String> captured = new ArrayList<>();
+
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> runtime.<String>spawnShared(factoryContext -> {
+                        captured.add("captured");
+                        return (message, context) -> { };
+                    }));
+
+            assertTrue(failure.getMessage().contains("stateless")
+                    || failure.getMessage().contains("captured host state"));
+            assertTrue(captured.isEmpty(), "rejected factory must never execute");
+        }
+    }
+
+    @Test
+    void trustedSharedFactoryIsSupervisorOnlyAndNonAdversarial() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            List<String> captured = new ArrayList<>();
+            CountDownLatch delivered = new CountDownLatch(1);
+
+            var ref = runtime.<String>spawnSharedTrusted(factoryContext -> {
+                captured.add("factory");
+                return (message, context) -> {
+                    captured.add(message);
+                    delivered.countDown();
+                };
+            });
+
+            ref.send("message");
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of("factory", "message"), captured);
+        }
+
+        IsolatePolicy adversarialShared = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY);
+        try (ActorRuntime runtime = new ActorRuntime(adversarialShared)) {
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> runtime.<String>spawnSharedTrusted(
+                            adversarialShared,
+                            factoryContext -> (message, context) -> { }));
+            assertTrue(failure.getMessage().contains("adversarial"));
+        }
+    }
+
+
     @Test
     void actorGroupBroadcastFansOutToSnapshotWithoutDuplicateMembership() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {

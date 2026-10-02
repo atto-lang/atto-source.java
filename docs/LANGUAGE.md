@@ -324,6 +324,8 @@ shared actor Account {
 - an unqualified `actor` is **private**;
 - `shared actor` is a **shared-memory-capable** actor;
 - private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
+- compiler-generated/context-aware actor factories are capture-free for **both** actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
+- trusted host embedding has separately named supervisor-only construction escape hatches, and adversarial policies reject them;
 - both kinds still process their own mailbox serially;
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
 - no lock is required around ordinary actor-owned fields, including fields of a shared actor;
