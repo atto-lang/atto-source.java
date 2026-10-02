@@ -864,6 +864,72 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("same nominal struct specialization"));
     }
 
+    @Test
+    void traitComposedPrimitiveStatePreservesStructCopy() throws Exception {
+        String output = run("""
+                define trait Counting as
+                  private let int count = 1;
+
+                  pub bump(self &mut self)() => int {
+                    self.count = self.count + 1;
+                    return self.count;
+                  }
+
+                  pub read() => int {
+                    return self.count;
+                  }
+                end
+
+                struct Counter with Counting {
+                }
+
+                pub fnc main() => void {
+                  let Counter first = Counter {};
+                  let Counter second = first;
+                  second.bump();
+                  stdio.stdout.write(first.read());
+                  stdio.stdout.write(second.read());
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void traitComposedClassStateMakesStructMoveOnly() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        define trait HoldsBox as
+                          private let Box box = new Box();
+
+                          pub read() => int {
+                            return self.box.value;
+                          }
+                        end
+
+                        struct Holder with HoldsBox {
+                        }
+
+                        fnc consume(Holder value) => void {
+                          return;
+                        }
+
+                        fnc bad() => void {
+                          let Holder holder = Holder {};
+                          consume(holder);
+                          stdio.println(holder.read());
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("moved value 'holder'"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
