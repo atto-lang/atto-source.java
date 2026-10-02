@@ -7,6 +7,7 @@ public record Token(Type type, String lexeme, int line, int column) {
         FLOAT,
         IMAG,
         STRING,
+        TEMPLATE,
 
         DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
         TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
