@@ -74,6 +74,7 @@ public final class OwnershipChecker {
     }
 
     private void checkFunction(Ast.FunctionDecl fn) {
+        validateBorrowReturnSignature(fn.parameters(), fn.returnType(), "function " + fn.name());
         Scope scope = new Scope(null);
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
@@ -84,6 +85,8 @@ public final class OwnershipChecker {
 
     private void checkClass(Ast.ClassDecl klass) {
         for (Ast.MethodDecl method : klass.methods()) {
+            validateBorrowReturnSignature(method.parameters(), method.returnType(),
+                    "method " + klass.name() + "." + method.name());
             Scope scope = new Scope(null);
             if (!method.isStatic()) {
                 if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -263,6 +266,12 @@ public final class OwnershipChecker {
         }
 
         Ast.TypeRef storedType = binding.declaredType() == null ? value.type : binding.declaredType();
+        if (storedType != null && storedType.isBorrow()
+                && value.borrowSource != null
+                && !(binding.initializer() instanceof Ast.UnaryExpr unary
+                    && (unary.operator().equals("&") || unary.operator().equals("&mut")))) {
+            beginDerivedPersistentBorrow(value.borrowSource, storedType.mutableBorrow());
+        }
         if (binding.kind() == Ast.BindingKind.LET && containsMutexGuardType(storedType)) {
             throw error("guard-bearing values are linear and cannot use let; bind them once with val");
         }
@@ -454,7 +463,8 @@ public final class OwnershipChecker {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
                 checkArguments(call.arguments(), fn.parameters(), scope, "function " + fn.name());
-                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), null);
+                VarState borrowSource = borrowReturnSource(fn.parameters(), fn.returnType(), call.arguments(), scope);
+                return new ValueInfo(fn.returnType(), kindOfType(fn.returnType()), borrowSource);
             }
         }
 
@@ -531,7 +541,8 @@ public final class OwnershipChecker {
                     throw error("method '" + klass.name() + "." + method.name()
                             + "' cannot return move-only state through a mutex guard/critical-section borrow");
                 }
-                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
+                VarState borrowSource = borrowReturnSource(method.parameters(), method.returnType(), call.arguments(), scope);
+                return new ValueInfo(method.returnType(), kindOfType(method.returnType()), borrowSource);
             }
         }
 
@@ -543,6 +554,78 @@ public final class OwnershipChecker {
             }
         }
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private void validateBorrowReturnSignature(
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType,
+            String callable) {
+        if (returnType == null || !returnType.isBorrow()) return;
+        int compatible = 0;
+        for (Ast.Param parameter : parameters) {
+            if (!parameter.type().isBorrow()) continue;
+            if (returnType.mutableBorrow() && !parameter.type().mutableBorrow()) continue;
+            if (!parameter.type().borrowedTarget().equals(returnType.borrowedTarget())) continue;
+            compatible++;
+        }
+        if (compatible == 0) {
+            throw error(callable + " returns a borrow but has no compatible borrowed parameter to anchor its lifetime");
+        }
+        if (compatible > 1) {
+            throw error(callable + " has an ambiguous returned-borrow lifetime; until explicit lifetime parameters are added, "
+                    + "a borrowed return must be anchored to exactly one compatible borrowed parameter");
+        }
+    }
+
+    private VarState borrowReturnSource(
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType,
+            List<Ast.Expr> arguments,
+            Scope scope) {
+        if (returnType == null || !returnType.isBorrow() || arguments.size() != parameters.size()) return null;
+        int sourceIndex = -1;
+        for (int i = 0; i < parameters.size(); i++) {
+            Ast.TypeRef parameterType = parameters.get(i).type();
+            if (!parameterType.isBorrow()) continue;
+            if (returnType.mutableBorrow() && !parameterType.mutableBorrow()) continue;
+            if (!parameterType.borrowedTarget().equals(returnType.borrowedTarget())) continue;
+            if (sourceIndex != -1) return null;
+            sourceIndex = i;
+        }
+        if (sourceIndex < 0) return null;
+        Ast.Expr argument = arguments.get(sourceIndex);
+        if (argument instanceof Ast.UnaryExpr unary
+                && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+            return borrowOwner(unary.operand(), scope);
+        }
+        if (argument instanceof Ast.NameExpr name) {
+            VarState state = requireState(scope, name.name());
+            return state.borrowSource != null ? state.borrowSource : state;
+        }
+        return null;
+    }
+
+    private void beginDerivedPersistentBorrow(VarState source, boolean mutable) {
+        requireUsable(source, source.debugName, false);
+        if (source.kind == ValueKind.MUT_BORROW || source.kind == ValueKind.IMM_BORROW || source.type.isBorrow()) {
+            if (mutable && source.kind != ValueKind.MUT_BORROW
+                    && !(source.type.isBorrow() && source.type.mutableBorrow())) {
+                throw error("cannot derive a mutable returned borrow from immutable borrow '" + source.debugName + "'");
+            }
+            if (mutable) {
+                if (source.mutableBorrowed || source.immutableBorrows > 0) {
+                    throw error("cannot derive mutable returned borrow from '" + source.debugName + "' while it is borrowed");
+                }
+                source.mutableBorrowed = true;
+            } else {
+                if (source.mutableBorrowed) {
+                    throw error("cannot derive immutable returned borrow from '" + source.debugName + "' while it is mutably borrowed");
+                }
+                source.immutableBorrows++;
+            }
+            return;
+        }
+        beginPersistentBorrow(source, mutable);
     }
 
     private void checkArguments(List<Ast.Expr> arguments, List<Ast.Param> params, Scope scope, String callable) {
