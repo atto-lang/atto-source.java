@@ -860,9 +860,9 @@ When explicit thread/task spawning is added, cross-thread transfer will require 
 A named function can target its entire body:
 
 ```ores
-gpu fnc saxpy(f32 a, Array<f32> x, Array<f32> y) => Array<f32> {
-  // the whole body is a GPU kernel candidate
-  return y;
+gpu fnc saxpy_element(f32 a, f32 x, f32 y) => f32 {
+  // Current GPU ABI returns scalars (or void), not host Array values.
+  return a * x + y;
 }
 ```
 
@@ -890,6 +890,6 @@ The same batch form accepts a list or tuple literal. The outer `gpu parallel` ap
 
 `parallel` means independent GPU work that the backend may co-dispatch. It does **not** mean "bind lambda 0 to GPU core 0". GPU execution units are scheduled as lanes/warps/wavefronts/work-groups and do not have stable CPU-thread-like core affinity. If Oreslang later exposes physical multi-GPU placement, that should be a separate device-affinity surface (for example a future `gpu device(...)` policy), not a core-number API.
 
-The current reference compiler uses a deliberately conservative GPU ABI while device lowering is being built. GPU callables must use explicit, GPU-transferable scalar/array/tuple types; generics and structural parameters are rejected. Host borrows/references, strings, bigint/decimal, classes/objects, records, `Option`, nested host-list layouts, `await`, `defer`, `try/catch`, object allocation, host/global captures, dynamic closure calls, and calls to non-`gpu` functions are rejected. This keeps the CPU/GPU boundary explicit and prevents accidental host execution from being smuggled into a kernel.
+The current reference compiler uses a deliberately conservative GPU ABI while device lowering is being built. At this stage, GPU callable return types are scalar or void; device-resident collection results must cross an explicit future GPU buffer/copy API rather than masquerading as a host Array return. GPU callables must use explicit, GPU-transferable scalar/array/tuple types; generics and structural parameters are rejected. Host borrows/references, strings, bigint/decimal, classes/objects, records, `Option`, nested host-list layouts, `await`, `defer`, `try/catch`, object allocation, host/global captures, dynamic closure calls, and calls to non-`gpu` functions are rejected. This keeps the CPU/GPU boundary explicit and prevents accidental host execution from being smuggled into a kernel.
 
 The interpreter currently has no GPU code generator. Reaching a checked `gpu` callable therefore fails closed with a backend-unavailable error instead of executing the body on the CPU. A future backend should consume the checked AST/IR and preserve these placement guarantees.
