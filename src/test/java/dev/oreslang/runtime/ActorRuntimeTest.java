@@ -52,6 +52,29 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void failedSingletonConstructionDoesNotLeaveAStaleRegistryEntry() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorRuntime.ActorRef<Object> failed = runtime.spawnSingleton(
+                    "service.primary",
+                    () -> {
+                        throw new IllegalStateException("construction failed");
+                    });
+
+            assertTrue(runtime.join(failed, Duration.ofSeconds(2)));
+            assertTrue(runtime.lookupSingleton("service.primary").isEmpty());
+
+            ActorRuntime.ActorRef<Object> replacement = runtime.spawnSingleton(
+                    "service.primary",
+                    () -> (message, context) -> { });
+
+            assertNotEquals(failed.id(), replacement.id());
+            assertEquals(
+                    replacement.id(),
+                    runtime.<Object>lookupSingleton("service.primary").orElseThrow().id());
+        }
+    }
+
+    @Test
     void explicitReadonlySharingAvoidsMutableAliases() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
