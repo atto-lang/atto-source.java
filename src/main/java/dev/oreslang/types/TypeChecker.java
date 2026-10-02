@@ -829,7 +829,9 @@ public final class TypeChecker {
             return new Tuple(tuple.elements().stream().map(element -> resolveSharedGeneric(element, bindings)).toList());
         }
         if (type instanceof Union union) {
-            return new Union(union.options().stream().map(option -> resolveSharedGeneric(option, bindings)).toList());
+            return Types.unionOf(union.options().stream()
+                    .map(option -> resolveSharedGeneric(option, bindings))
+                    .toList());
         }
         if (type instanceof Record record) {
             Map<String, Type> members = new LinkedHashMap<>();
