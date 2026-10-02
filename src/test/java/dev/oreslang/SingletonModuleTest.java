@@ -697,7 +697,7 @@ final class SingletonModuleTest {
                           }
                         end
                         """)));
-        assertTrue(process.getMessage().contains("ambient caller capability"));
+        assertTrue(process.getMessage().contains("ambient capability"));
 
         IllegalArgumentException stdio = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
@@ -708,7 +708,7 @@ final class SingletonModuleTest {
                           }
                         end
                         """)));
-        assertTrue(stdio.getMessage().contains("ambient caller capability"));
+        assertTrue(stdio.getMessage().contains("ambient capability"));
     }
 
     @Test
@@ -726,7 +726,7 @@ final class SingletonModuleTest {
                         end
                         """)));
 
-        assertTrue(error.getMessage().contains("actor/context-local module"));
+        assertTrue(error.getMessage().contains("caller/context-local module"));
     }
 
     @Test
@@ -746,7 +746,7 @@ final class SingletonModuleTest {
                         end
                         """)));
 
-        assertTrue(error.getMessage().contains("actor/context-local function"));
+        assertTrue(error.getMessage().contains("ordinary helper function"));
     }
 
     @Test
