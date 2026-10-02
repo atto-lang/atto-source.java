@@ -1,6 +1,7 @@
-(* Oreslang v0.3 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
+(* Oreslang v0.4 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
-source          = { import_decl } { top_level_item } EOF ;
+source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
+namespace_decl  = "namespace" IDENT ";" ;
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -18,7 +19,7 @@ top_level_item  = annotated_module_decl
                 | type_decl
                 | binding_decl ;
 
-annotated_module_decl = { annotation } "define" "module" qualified_name
+annotated_module_decl = { annotation } "define" "module" IDENT
                         { module_member } "end" ;
 
 module_member   = callable_decl
@@ -28,9 +29,9 @@ module_member   = callable_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-modifier        = "static" | "abstract" | "async" ;
+callable_modifier = "abstract" | "async" ;
 
-callable_decl   = { annotation } visibility { modifier } callable_kind IDENT [ generic_params ]
+callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
 
@@ -39,14 +40,21 @@ class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   { class_member } "end" ;
 
-class_member    = field_decl | method_decl ;
+class_member    = field_decl
+                | method_decl
+                | static_function_decl ;
+
 field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
 
-method_decl     = { annotation } visibility { modifier } method_name [ generic_params ]
+method_decl     = { annotation } visibility { callable_modifier } method_name [ generic_params ]
                   method_head return_spec ( block | stmt_terminator ) ;
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
 explicit_receiver = "self" type_ref ;
+
+static_function_decl
+                = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
+                  "(" [ param_list ] ")" return_spec block ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -132,8 +140,12 @@ primary         = literal
                 | object_literal
                 | "(" expression ")" ;
 
-lambda          = "(" [ param_list ] ")" "->" expression
-                | "(" [ param_list ] ")" "->" block ;
+lambda          = pipe_lambda | typed_legacy_lambda ;
+pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
+lambda_param    = IDENT | type_ref IDENT ;
+typed_legacy_lambda
+                = "(" [ param_list ] ")" "->" block ;
+
 tuple_literal   = "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
@@ -143,29 +155,52 @@ object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
 
-type_ref        = qualified_name [ "<" [ type_args ] ">" ]
+type_ref        = named_type
+                | function_type
+                | grouped_type
                 | STRING_LITERAL
                 | "self"
                 | "void"
                 | "null" ;
+
+named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
+function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "->" type_ref
+                | "(" [ function_type_params ] ")" "->" type_ref ;
+grouped_type    = "(" type_ref ")" ;
+function_type_params
+                = function_type_param { "," function_type_param } ;
+function_type_param
+                = type_ref [ IDENT ] ;
 
 type_args       = type_ref { "," type_ref } ;
 qualified_name  = IDENT { "." IDENT } ;
 
 (* Semicolons are recommended. stmt_terminator/member_terminator may be omitted
    only at an unambiguous structural boundary such as immediately before
-   "}", "fi", or "end". Imports keep an explicit semicolon in v0.3. *)
+   "}", "fi", or "end". Imports and namespace declarations keep explicit
+   semicolons in v0.4. *)
 
 stmt_terminator   = ";" | SAFE_STRUCTURAL_BOUNDARY ;
 member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 
 (* Semantic restrictions:
+   - Each source file is a separately versioned compilation/code unit and is the
+     default package identity when no explicit namespace is declared.
+   - Source namespaces are flat: namespace a.b; is illegal.
+   - Modules are flat: module names are single identifiers and modules may not
+     contain modules.
    - fnc declarations may recurse; routines may not participate in a call cycle.
-   - recursive lambdas require an explicit Fnc<..., Result> binding in v0.3.
    - fnc and routine declarations do not overload.
-   - methods may overload only when arity differs.
+   - instance methods may overload only when arity differs.
+   - class-level functions use "static fnc"; they have no self receiver and are
+     dispatched through the class namespace, never through an instance.
+   - "=>" belongs to named callable return declarations.
+   - "->" belongs to function types and lambdas.
+   - Lambdas always have braces. Non-void lambdas must use explicit return and
+     return on every path when a contextual function result type is known.
    - named class/interface types are nominal by default.
-   - @Structural, name structural Type, or @AllowStructural(name) opt a parameter into public-shape compatibility.
+   - @Structural, name structural Type, or @AllowStructural(name) opt a
+     parameter into public-shape compatibility.
    - every loop iteration contains an injected scheduler safepoint.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
    - standalone null values are illegal.
@@ -173,5 +208,4 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" is contextual in parameter position, not globally reserved.
    - self is an immutable receiver binding and cannot be rebound.
-
 *)
