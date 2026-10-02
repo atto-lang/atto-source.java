@@ -123,6 +123,40 @@ final class IncrementalFunctorStaticTest {
     }
 
     @Test
+    void structuralResultTypeAbiIsCanonicalAcrossEquivalentOrdering() {
+        IncrementalCompiler compiler = new IncrementalCompiler();
+
+        Map<String, String> first = Map.of(
+                "api.ores", """
+                        pub type Scalar = bool | int | string;
+                        pub fnc values() => [int, bool, string] {
+                          return [1, true, "x"];
+                        }
+                        pub fnc recordResult() => {foo: int, bar: string} {
+                          return obj{foo: 1, bar: "x"};
+                        }
+                        """);
+
+        var initial = compiler.compile(first);
+        String initialAbi = initial.units().get("api.ores").abiDigest();
+
+        Map<String, String> reordered = Map.of(
+                "api.ores", """
+                        pub type Scalar = string | bool | int;
+                        pub fnc values() => [int, bool, string] {
+                          return [1, true, "x"];
+                        }
+                        pub fnc recordResult() => {bar: string, foo: int} {
+                          return obj{foo: 1, bar: "x"};
+                        }
+                        """);
+
+        var second = compiler.compile(reordered);
+        assertEquals(initialAbi, second.units().get("api.ores").abiDigest(),
+                "equivalent union/record ordering must not perturb the public ABI");
+    }
+
+    @Test
     void compiledUnitsCanStageDirectlyAsIndependentHotReloadGenerations() {
         IncrementalCompiler compiler = new IncrementalCompiler();
         var build = compiler.compile(Map.of(
