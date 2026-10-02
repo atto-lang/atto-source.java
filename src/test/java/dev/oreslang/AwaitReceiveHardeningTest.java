@@ -211,4 +211,55 @@ final class AwaitReceiveHardeningTest {
             ref.stop();
         }
     }
+
+    @Test
+    void nonblockingAwaitAdapterDoesNotParkActorCarrier() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            FutureTask<Integer> task = new FutureTask<>(() -> 42);
+            CountDownLatch adapted = new CountDownLatch(1);
+            AtomicReference<java.util.concurrent.CompletionStage<?>> stage = new AtomicReference<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                stage.set(AwaitSupport.toCompletionStage(task));
+                adapted.countDown();
+            });
+
+            ref.send("adapt");
+            assertTrue(adapted.await(2, TimeUnit.SECONDS),
+                    "actor carrier must return without waiting for the host Future");
+            assertNotNull(stage.get());
+            assertFalse(stage.get().toCompletableFuture().isDone());
+
+            Thread.startVirtualThread(task);
+            assertEquals(42, stage.get().toCompletableFuture().get(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void nonblockingAwaitAdapterUnwrapsExactlyOneLayer() {
+        CompletableFuture<Integer> inner = CompletableFuture.completedFuture(42);
+        CompletableFuture<CompletableFuture<Integer>> outer =
+                CompletableFuture.completedFuture(inner);
+
+        Object result = AwaitSupport.toCompletionStage(outer).toCompletableFuture().join();
+        assertSame(inner, result);
+    }
+
+    @Test
+    void nonblockingAwaitAdapterReturnsReadOnlyCompletionView() throws Exception {
+        FutureTask<Integer> task = new FutureTask<>(() -> 42);
+        var stage = AwaitSupport.toCompletionStage(task);
+
+        CompletableFuture<?> forgedView = stage.toCompletableFuture();
+        assertTrue(((CompletableFuture<Object>) forgedView).complete(99));
+        assertEquals(99, forgedView.join(),
+                "a caller may mutate its detached CompletableFuture copy");
+
+        assertFalse(stage.toCompletableFuture().isDone(),
+                "mutating a detached view must not forge runtime completion");
+
+        Thread.startVirtualThread(task);
+        assertEquals(42, stage.toCompletableFuture().get(2, TimeUnit.SECONDS));
+    }
+
 }
