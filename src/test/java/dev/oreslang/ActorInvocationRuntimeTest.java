@@ -3,6 +3,13 @@ package dev.oreslang;
 import dev.oreslang.runtime.ActorRuntime;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import dev.oreslang.runtime.IsolatePolicy;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ActorInvocationRuntimeTest {
@@ -42,6 +49,37 @@ final class ActorInvocationRuntimeTest {
                             }));
 
             assertEquals("boom", failure.getMessage());
+        }
+    }
+
+    @Test
+    void oneShotInvocationSurfacesPrivateArenaStartupFailureInsteadOfHanging() throws Exception {
+        long mib = 1024L * 1024L;
+        IsolatePolicy policy = new IsolatePolicy(
+                Set.of(),
+                16 * mib,
+                32,
+                Duration.ofSeconds(5));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            CountDownLatch reserved = new CountDownLatch(1);
+            runtime.<String>spawn(
+                    policy,
+                    ActorRuntime.MemoryPolicy.privateArena(16 * mib),
+                    () -> {
+                        reserved.countDown();
+                        return (message, context) -> { };
+                    });
+
+            assertTrue(reserved.await(2, TimeUnit.SECONDS));
+            OutOfMemoryError failure = assertThrows(
+                    OutOfMemoryError.class,
+                    () -> runtime.invoke(
+                            "cannot-start",
+                            ActorRuntime.MemoryPolicy.privateArena(mib),
+                            (message, context) -> message));
+
+            assertTrue(failure.getMessage().contains("tenant private arena budget exhausted"));
         }
     }
 
