@@ -207,13 +207,13 @@ find(self Box)(int key) => self {
 The receiver variable name is always `self`. The default receiver is immutable. A method that mutates `let` instance or trait state must opt into a mutable receiver:
 
 ```ores
-increment(self &mut self)() => int {
+increment(mut self)() => int {
   self.count = self.count + 1;
   return self.count;
 }
 ```
 
-A mutable-receiver method can only be called through a mutable owner (`let` / mutable parameter) or an explicit mutable borrow. Calling it through an immutable `val` owner is rejected by the ownership checker. Extracting a mutable-receiver method as a bound method value is rejected in v0, because that would require a persistent `&mut` lifetime tied to the captured receiver; call the method directly instead.
+A mutable-receiver method can only be called through a mutable owner (`let`) or an existing `mut` parameter. Calling it through an immutable `val` owner or ordinary read-borrow parameter is rejected by the ownership checker. Extracting a mutable-receiver method as a bound method value is rejected in v0 because that would require a persistent exclusive lifetime tied to the captured receiver; call the method directly instead.
 
 A class may list multiple parent classes, satisfy interfaces with `is`, and compose reusable state/behavior with `with`:
 
@@ -291,7 +291,7 @@ end
 define trait Counter is CounterApi as
   private let int count = 0;
 
-  pub bump(self &mut self)() => int {
+  pub bump(mut self)() => int {
     self.count = self.count + 1;
     return self.count;
   }
@@ -855,37 +855,76 @@ Capture rules are ownership-aware:
 
 This makes returned closures safe without retaining raw stack references.
 
-## Parameter immutability and `mut`
+## Parameter ownership: borrow, `mut`, and `take`
 
-Parameters are immutable by default.
+Oreslang deliberately does **not** expose pointer/reference syntax such as `&T`, `&mut T`, or unary `&value`. JVM references remain an implementation detail. The compiler tracks ownership, aliasing, and lifetimes semantically.
+
+An ordinary parameter is a read-only temporary borrow:
 
 ```ores
-fnc bad(Bar b) => void {
-  b.foo = "foobar"; // compile-time error
+fnc inspect(Bar value) => void {
+  stdio.println(value.foo);
+  return;
+}
+
+fnc example() => void {
+  let Bar b = new Bar();
+  inspect(b);
+  stdio.println(b.foo); // b was borrowed, not moved
   return;
 }
 ```
 
-An owned parameter may explicitly opt into mutation by putting `mut` between the type and parameter name:
+A `mut` parameter is an exclusive temporary mutable borrow:
 
 ```ores
-fnc change(Bar mut b) => Bar {
-  b.foo = "foobar";
-  return b;
+fnc change(mut Bar value) => void {
+  value.foo = "changed";
+  return;
+}
+
+fnc example() => void {
+  let Bar b = new Bar();
+  change(b);
+  stdio.println(b.foo); // exclusive borrow ended at call boundary
+  return;
 }
 ```
 
-`Bar mut b` still receives `Bar` **by value**. For a non-`Copy` value, the caller transfers ownership to `change`; returning the value transfers ownership back.
+A contextual `take` parameter transfers ownership:
 
-Local mutation continues to use `let`. `val` and `const` remain immutable.
+```ores
+fnc save(take Bar value) => void {
+  return;
+}
 
-Class fields follow the same bias: a field declared with `val` or `const` cannot be assigned after construction. Mutable object state must use a `let` field and mutable access to the owning value.
+fnc example() => void {
+  let Bar b = new Bar();
+  save(b);
+  // b.foo; // compile-time error: b was moved
+  return;
+}
+```
+
+`take` is contextual in parameter position rather than a globally reserved identifier. The compiler ABI nevertheless records whether each parameter is `borrow`, `mut`, or `take`, so changing ownership policy is an API/ABI change.
+
+Parameter bindings themselves are immutable. `mut Bar value` grants exclusive mutation *through* `value`; it does not permit rebinding the parameter. If a function takes ownership and wants a mutable local owner, move it into a `let` binding:
+
+```ores
+fnc normalize(take Bar value) => Bar {
+  let Bar owned = value;
+  owned.foo = "normalized";
+  return owned;
+}
+```
+
+Local mutation continues to use `let`. `val` and `const` remain immutable. Class fields declared `val`/`const` cannot be assigned after construction; mutable object state must use a `let` field and mutable owner access.
 
 ## Ownership, moves, and borrows
 
-Oreslang uses Rust-style affine ownership for mutable/heap-backed values.
+Oreslang uses affine ownership and borrow checking while keeping source syntax Java-like.
 
-The initial `Copy` family is:
+The initial implicit `Copy` family is:
 
 - integer types;
 - floating/decimal/complex scalar types;
@@ -894,60 +933,42 @@ The initial `Copy` family is:
 
 Class instances, arrays/lists, object records, and closures are move-only by default.
 
-A by-value binding, argument, or return consumes a non-`Copy` value:
+The compiler intrinsics are function-like syntax, not pointer operators:
+
+- `borrow(x)` stores an immutable view tied to `x`'s lexical lifetime;
+- `take(x)` explicitly moves an owned value;
+- `copy(x)` creates another owned value only when the type is proven `Copy`;
+- `share(x)` is reserved for explicit shared-capability types and cannot turn ordinary mutable state into shared state.
+
+For now, classes are **not** implicitly copyable. `copy(classValue)` is rejected until the class-copy contract proves how to create independent owned storage. This prevents a shallow JVM reference copy from pretending to satisfy language-level copy semantics.
+
+Stored immutable views use `borrow(x)`:
 
 ```ores
-fnc consume(Bar value) => void {
-  return;
-}
-
 fnc example() => void {
   let Bar b = new Bar();
-  consume(b);
-  // b.foo; // compile-time error: use of moved value
+  val first = borrow(b);
+  val second = borrow(b);
+  stdio.println(first.foo);
+  stdio.println(second.foo);
   return;
 }
 ```
 
-Shared immutable borrowing uses `&T`:
+Borrow rules are compiler guarantees:
 
-```ores
-fnc inspect(&Bar value) => void {
-  stdio.println(value.foo);
-  return;
-}
-```
-
-Exclusive mutable borrowing uses `&mut T`:
-
-```ores
-fnc change(&mut Bar value) => void {
-  value.foo = "changed";
-  return;
-}
-
-fnc example() => void {
-  let Bar b = new Bar();
-  change(&mut b);
-  stdio.println(b.foo); // owner is usable again after the call
-  return;
-}
-```
-
-Borrow rules:
-
-- any number of immutable borrows may coexist;
-- a mutable borrow is exclusive;
-- mutation/move of the owner is forbidden while any borrow is active;
+- any number of read borrows may coexist;
+- a `mut` borrow is exclusive;
+- mutation or movement of the owner is forbidden while any stored borrow is active;
 - reading the owner is forbidden while an exclusive mutable borrow is active;
-- mutable borrowing requires a mutable owner;
+- `mut` borrowing requires a mutable owner;
 - a borrow of a local value may not escape the owner's lifetime;
-- temporary call borrows end at the call boundary;
-- borrows stored in local bindings remain active until that binding's lexical scope ends.
+- temporary parameter borrows end at the call boundary;
+- multiple arguments in one call are checked as overlapping for the entire call, so `f(mut x, mut x)` and `f(mut x, x)` are rejected;
+- stored `borrow(x)` bindings remain active until their lexical scope ends;
+- structural parameters are read-only views and never consume the supplied value.
 
-The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
-
-Structural parameters remain read-only views and therefore do not consume the supplied value.
+The checker is deliberately conservative around uncertain branch/loop lifetimes. Future non-lexical-lifetime analysis may accept more programs, but it must not weaken these invariants.
 
 ## Multi-threaded targets
 
@@ -955,7 +976,7 @@ Actors/isolate message passing remains the primary concurrency model, but the ow
 
 The same compiled program can target a secondary multi-threaded runtime because:
 
-- mutable state has one owner unless temporarily accessed through an exclusive `&mut` borrow;
+- mutable state has one owner unless temporarily accessed through an exclusive `mut` parameter/receiver;
 - shared aliases are immutable;
 - move-only values cannot remain accessible from both sides of an ownership transfer;
 - closures cannot smuggle an outstanding stack borrow into a longer-lived task;
