@@ -108,3 +108,12 @@ The GPU artifact declares device requirements explicitly. In particular, `cl_khr
 The current Truffle evaluator does not emulate or CPU-fallback GPU execution. If a GPU-targeted named function, static function, lambda, or batch reaches the evaluator without a configured physical GPU launcher, execution fails closed. A future launcher should consume the already-generated `GpuProgram` artifact, compile/cache the OpenCL source for the selected device, bind buffers/scalars according to the manifest, and launch according to `SINGLE_WORK_ITEM`, `DATA_PARALLEL_1D`, or batch-dispatch metadata.
 
 Oreslang does not expose stable "GPU core N" affinity because that is not a portable hardware abstraction. Backends remain responsible for lanes/warps/wavefronts/work-groups, occupancy, queueing, and physical device selection. Multi-GPU affinity can be added separately once the runtime has a real device scheduler.
+
+## Quantum placement boundary
+
+`quantum` is a distinct execution target alongside the default CPU target and `gpu`. The front end records the placement as callable metadata; it is not a JIT hint.
+
+The current evaluator has no quantum backend. Invoking a quantum-targeted named function or static function therefore fails closed before entering the body and never falls back to CPU or GPU execution.
+
+A future QPU backend should lower checked quantum code into a circuit/job representation, submit it through an explicit provider/device boundary, and return measured classical results. Device selection, shot count, circuit capability checks, simulator policy, and error-mitigation policy belong in that backend rather than changing the execution target implicitly.
+
