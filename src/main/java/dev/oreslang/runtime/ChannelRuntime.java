@@ -3,9 +3,11 @@ package dev.oreslang.runtime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -27,10 +29,42 @@ import java.util.concurrent.locks.ReentrantLock;
  * sendability rules before a value reaches this runtime.</p>
  */
 public final class ChannelRuntime {
+    public record Limits(
+            int maxChannelCapacity,
+            int maxSelectCases,
+            int maxWaitersPerChannel) {
+        public Limits {
+            if (maxChannelCapacity < 0) throw new IllegalArgumentException("maxChannelCapacity must be >= 0");
+            if (maxSelectCases <= 0) throw new IllegalArgumentException("maxSelectCases must be > 0");
+            if (maxWaitersPerChannel <= 0) throw new IllegalArgumentException("maxWaitersPerChannel must be > 0");
+        }
+
+        public static Limits defaults() {
+            return new Limits(65_536, 1_024, 65_536);
+        }
+    }
+
     private final ReentrantLock coordination = new ReentrantLock(true);
+    private final Limits limits;
+
+    public ChannelRuntime() {
+        this(Limits.defaults());
+    }
+
+    public ChannelRuntime(Limits limits) {
+        this.limits = Objects.requireNonNull(limits, "limits");
+    }
+
+    public Limits limits() {
+        return limits;
+    }
 
     public <T> Channel<T> channel(int capacity) {
         if (capacity < 0) throw new IllegalArgumentException("channel capacity must be >= 0");
+        if (capacity > limits.maxChannelCapacity()) {
+            throw new IllegalArgumentException(
+                    "channel capacity " + capacity + " exceeds runtime maximum " + limits.maxChannelCapacity());
+        }
         return new Channel<>(this, capacity);
     }
 
@@ -128,6 +162,10 @@ public final class ChannelRuntime {
             if (hasDefault) return CompletableFuture.completedFuture(SelectResult.defaultResult());
             throw new IllegalArgumentException("blocking select requires at least one case");
         }
+        if (cases.size() > limits.maxSelectCases()) {
+            throw new IllegalArgumentException(
+                    "select case count " + cases.size() + " exceeds runtime maximum " + limits.maxSelectCases());
+        }
 
         ArrayList<SelectNode> nodes = new ArrayList<>(cases.size());
         SelectTicket ticket = new SelectTicket();
@@ -166,6 +204,7 @@ public final class ChannelRuntime {
                     ticket.state = TicketState.WON;
                     completions.add(() -> future.completeDirect(SelectResult.defaultResult()));
                 } else {
+                    requireSelectWaiterCapacity(nodes);
                     for (SelectNode node : nodes) registerSelectNode(ticket, node);
                 }
             }
@@ -265,6 +304,7 @@ public final class ChannelRuntime {
         coordination.lock();
         try {
             if (!tryCommitSendNode(node, completions)) {
+                requireWaiterCapacity(channel, 1);
                 channel.senders.addLast(node);
                 node.registered = true;
             }
@@ -554,6 +594,26 @@ public final class ChannelRuntime {
             completions.add(() -> future.completeDirect(SelectResult.send(caseIndex)));
         }
         return true;
+    }
+
+    private void requireSelectWaiterCapacity(List<SelectNode> nodes) {
+        Map<Channel<?>, Integer> additions = new IdentityHashMap<>();
+        for (SelectNode node : nodes) additions.merge(node.channel, 1, Integer::sum);
+        for (Map.Entry<Channel<?>, Integer> entry : additions.entrySet()) {
+            requireWaiterCapacity(entry.getKey(), entry.getValue());
+        }
+    }
+
+    private void requireWaiterCapacity(Channel<?> channel, int additional) {
+        pruneSenders(channel);
+        pruneReceivers(channel);
+        long pending = (long) channel.senders.size() + channel.receivers.size();
+        if (pending + additional > limits.maxWaitersPerChannel()) {
+            throw new IllegalStateException(
+                    "channel pending waiter limit exceeded: pending=" + pending
+                            + " requested=" + additional
+                            + " limit=" + limits.maxWaitersPerChannel());
+        }
     }
 
     private void registerSelectNode(SelectTicket ticket, SelectNode node) {
