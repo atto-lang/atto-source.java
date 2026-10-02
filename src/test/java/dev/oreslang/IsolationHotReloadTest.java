@@ -482,7 +482,7 @@ final class IsolationHotReloadTest {
     void hotReloadCanonicalizesEquivalentCodeUnitPaths() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
-            var first = hot.load("dir/../same-unit.ores", """
+            var first = hot.load("dir\\..\\same-unit.ores", """
                     pub routine main() => void { return; }
                     """);
             var second = hot.load("same-unit.ores", """
@@ -495,7 +495,7 @@ final class IsolationHotReloadTest {
             assertEquals("same-unit.ores", first.codeUnitId());
             assertEquals(first.codeUnitId(), second.codeUnitId());
             assertEquals(second.id(), hot.active("same-unit.ores").id());
-            assertEquals(second.id(), hot.active("dir/../same-unit.ores").id());
+            assertEquals(second.id(), hot.active("dir\\..\\same-unit.ores").id());
             assertEquals(1, hot.activeGenerations().size());
         }
     }
