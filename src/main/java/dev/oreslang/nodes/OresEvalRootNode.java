@@ -1378,11 +1378,12 @@ public final class OresEvalRootNode extends RootNode {
                         || copyMethod.visibility() != Ast.Visibility.PUBLIC
                         || copyMethod.isAbstract()
                         || copyMethod.async()
+                        || copyMethod.composed()
                         || !copyMethod.genericParameters().isEmpty()
                         || !immutableReceiver) {
                     throw new IllegalArgumentException("class '" + object.klass.name()
                             + "' is not copyable: copy() must be concrete, synchronous, non-generic, "
-                            + "public, instance-bound, and use an immutable receiver");
+                            + "public, instance-bound, declared directly on the class, and use an immutable receiver");
                 }
 
                 validateVerifiableCopyGraph(object, new IdentityHashMap<>());
