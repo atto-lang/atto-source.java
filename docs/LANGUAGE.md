@@ -256,11 +256,38 @@ let retries = 0;
 retries = retries + 1;
 ```
 
-Destructuring carries mutability per element:
+Destructuring keeps **binding kind** and **owned-value mutability** separate. The binding kinds remain `const`, `val`, and `let`; `mut` is an ownership modifier, not a fourth binding kind.
 
 ```ores
-[const code, let body] = (200, "ok");
+[const v, const c] = getFoo();
+{const x, const bar} = getBar();
+
+[val mut values, const label] = getBag();
+values[0] = 9;        // allowed: values is an owned mutable list
+// values = arr[1];   // rejected: val is still non-rebindable
+
+[let first, val second] = getPair();
+first = replacement;  // let remains rebindable
+
+[mut left, const right] = getCounters();
+// bare "mut left" is shorthand for "val mut left"
+
+mut [a, b] = getCounters();
+// whole-pattern mut means val+mut for both bindings
 ```
+
+A destructure mode propagates through later unqualified names until another explicit binding kind changes it, matching the existing binding-kind shorthand. `let` implies a mutable owner as well as a rebindable local. `val mut` is useful when the local itself must stay single-assignment while the owned struct/object/list may be mutated, mutably borrowed, or used as a `self &mut self` receiver.
+
+`const` and `mut` are mutually exclusive **for the same binding**. Forms such as `const mut x`, `const [mut x]`, and `const mut [x]` are compile-time errors rather than allowing an inner modifier to silently override the outer contract. Different bindings in one pattern may of course choose different modes.
+
+Square patterns destructure tuples/arrays/lists by position and require exact runtime arity. Curly patterns destructure records, objects/classes, and structs by field/member name:
+
+```ores
+[const status, _, val mut body] = responseParts();
+{const id, val mut payload} = response();
+```
+
+A bare `_` discards one sequence slot and never creates a binding. Object patterns do not accept a bare `_` because they are key-based. A destructured `const` is an immutable runtime binding; the returned aggregate itself does not have to be a compile-time constant.
 
 ## Interface, trait, struct, and class
 
