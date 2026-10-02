@@ -332,6 +332,66 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("use of moved value 'box'"));
     }
 
+    @Test
+    void callableLocalStructMutableReceiverUsesLexicalOwnershipMetadata() {
+        IllegalArgumentException immutableOwner = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          struct Local {
+                            pub let value: int;
+
+                            pub bump(self &mut self)() => void {
+                              self.value = self.value + 1;
+                              return;
+                            }
+                          }
+
+                          val Local item = Local { value = 0 };
+                          item.bump();
+                          return;
+                        }
+                        """)));
+        assertTrue(immutableOwner.getMessage().contains("cannot mutate method 'bump' receiver")
+                || immutableOwner.getMessage().contains("immutable parameter/binding 'item'"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok() => void {
+                  struct Local {
+                    pub let value: int;
+
+                    pub bump(self &mut self)() => void {
+                      self.value = self.value + 1;
+                      return;
+                    }
+                  }
+
+                  let Local item = Local { value = 0 };
+                  item.bump();
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void callableLocalStructFieldMutabilityIsResolvedLexically() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad() => void {
+                          struct Local {
+                            pub val value: int;
+                          }
+
+                          let Local item = Local { value = 0 };
+                          item.value = 1;
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("field 'Local.value' is immutable"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
