@@ -14,7 +14,6 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <graalvm.version>25.3.4.1</graalvm.version>
     <junit.version>5.11.4</junit.version>
-    <native.maven.plugin.version>1.1.10</native.maven.plugin.version>
   </properties>
 
   <dependencies>
@@ -33,6 +32,12 @@
       <groupId>org.graalvm.polyglot</groupId>
       <artifactId>polyglot</artifactId>
       <version>${graalvm.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.graalvm.truffle</groupId>
+      <artifactId>truffle-enterprise</artifactId>
+      <version>${graalvm.version}</version>
+      <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.junit.jupiter</groupId>
