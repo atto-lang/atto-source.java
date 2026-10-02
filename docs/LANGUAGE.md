@@ -354,7 +354,7 @@ actor.send(counter_ref, "tick");
 
 `actor.monitor(target)` creates a one-way Erlang-style monitor from the current actor to `target`. Runtime/control-plane code may use `actor.monitor(target, watcher)` explicitly. When the target exits, the watcher receives one immutable message with at least:
 
-- `type = "DOWN"`
+- `type = "DOWN"` on the transport map, plus `event = "DOWN"` as the typed Oreslang-friendly alias
 - `monitor_id`
 - `actor_id`
 - `reason = "normal" | "failed" | "noproc"`
