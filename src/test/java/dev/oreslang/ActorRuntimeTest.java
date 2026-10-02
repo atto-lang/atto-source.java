@@ -4,11 +4,13 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -1076,6 +1078,146 @@ final class ActorRuntimeTest {
             assertTrue(checked.await(2, TimeUnit.SECONDS));
             assertInstanceOf(IllegalStateException.class, observed.get());
             assertTrue(observed.get().getMessage().contains("private actors cannot access"));
+        }
+    }
+
+
+
+    @Test
+    void fullMailboxRejectsBeforeTraversingAnotherMessage() throws Exception {
+        IsolatePolicy oneQueuedMessage = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                IsolatePolicy.developer().maxHeapBytes(),
+                1,
+                IsolatePolicy.developer().maxWallTime(),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(oneQueuedMessage)) {
+            CountDownLatch processing = new CountDownLatch(1);
+            CountDownLatch release = new CountDownLatch(1);
+
+            var ref = runtime.<Object>spawn(oneQueuedMessage, () -> (message, context) -> {
+                if ("first".equals(message)) {
+                    processing.countDown();
+                    release.await();
+                }
+            });
+
+            ref.send("first");
+            assertTrue(processing.await(2, TimeUnit.SECONDS));
+            ref.send("queued");
+
+            AtomicBoolean traversed = new AtomicBoolean();
+            List<Object> shouldNotTraverse = new AbstractList<>() {
+                @Override
+                public Object get(int index) {
+                    traversed.set(true);
+                    throw new AssertionError("message graph must not be traversed after mailbox admission fails");
+                }
+
+                @Override
+                public int size() {
+                    return 1;
+                }
+            };
+
+            IllegalStateException error = assertThrows(
+                    IllegalStateException.class,
+                    () -> ref.send(shouldNotTraverse));
+            assertTrue(error.getMessage().contains("mailbox limit exceeded"));
+            assertFalse(traversed.get());
+
+            release.countDown();
+        }
+    }
+
+    @Test
+    void concurrentSendersReserveMailboxBeforeTransportTraversal() throws Exception {
+        IsolatePolicy oneQueuedMessage = new IsolatePolicy(
+                IsolatePolicy.developer().capabilities(),
+                IsolatePolicy.developer().maxHeapBytes(),
+                1,
+                IsolatePolicy.developer().maxWallTime(),
+                false);
+
+        try (ActorRuntime runtime = new ActorRuntime(oneQueuedMessage)) {
+            CountDownLatch processing = new CountDownLatch(1);
+            CountDownLatch releaseActor = new CountDownLatch(1);
+            CountDownLatch firstTraversalEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirstTraversal = new CountDownLatch(1);
+            AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+            AtomicBoolean secondTraversalRan = new AtomicBoolean();
+
+            var ref = runtime.<Object>spawn(oneQueuedMessage, () -> (message, context) -> {
+                if ("processing".equals(message)) {
+                    processing.countDown();
+                    releaseActor.await();
+                }
+            });
+
+            ref.send("processing");
+            assertTrue(processing.await(2, TimeUnit.SECONDS));
+
+            List<Object> first = new AbstractList<>() {
+                private final AtomicBoolean blocked = new AtomicBoolean();
+
+                @Override
+                public Object get(int index) {
+                    if (index != 0) throw new IndexOutOfBoundsException(index);
+                    if (blocked.compareAndSet(false, true)) {
+                        firstTraversalEntered.countDown();
+                        try {
+                            if (!releaseFirstTraversal.await(2, TimeUnit.SECONDS)) {
+                                throw new IllegalStateException("timed out waiting to finish first traversal");
+                            }
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new java.util.concurrent.CancellationException();
+                        }
+                    }
+                    return "first-queued";
+                }
+
+                @Override
+                public int size() {
+                    return 1;
+                }
+            };
+
+            Thread sender = Thread.ofPlatform().start(() -> {
+                try {
+                    ref.send(first);
+                } catch (Throwable failure) {
+                    firstFailure.set(failure);
+                }
+            });
+
+            assertTrue(firstTraversalEntered.await(2, TimeUnit.SECONDS));
+
+            List<Object> second = new AbstractList<>() {
+                @Override
+                public Object get(int index) {
+                    secondTraversalRan.set(true);
+                    return "second-queued";
+                }
+
+                @Override
+                public int size() {
+                    return 1;
+                }
+            };
+
+            IllegalStateException rejected = assertThrows(
+                    IllegalStateException.class,
+                    () -> ref.send(second));
+            assertTrue(rejected.getMessage().contains("mailbox limit exceeded"));
+            assertFalse(secondTraversalRan.get());
+
+            releaseFirstTraversal.countDown();
+            sender.join();
+            assertNull(firstFailure.get());
+
+            releaseActor.countDown();
         }
     }
 
