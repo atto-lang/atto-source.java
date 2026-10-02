@@ -363,6 +363,63 @@ final class LanguageHardeningTest {
     }
 
     @Test
+    void nominalInterfaceReceiversResolveGenericMethodContracts() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface ValueApi<T> as
+                  fnc value() => T;
+                  fnc replace(T value) => T;
+                end
+
+                fnc read(ValueApi<int> api) => int {
+                  return api.value();
+                }
+
+                fnc replace(ValueApi<int> api) => int {
+                  return api.replace(7);
+                }
+                """)));
+
+        IllegalArgumentException wrongReturn = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc value() => T;
+                        end
+
+                        fnc bad(ValueApi<int> api) => String {
+                          return api.value();
+                        }
+                        """)));
+        assertTrue(wrongReturn.getMessage().contains("return"));
+
+        IllegalArgumentException wrongArgument = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc replace(T value) => T;
+                        end
+
+                        fnc bad(ValueApi<int> api) => int {
+                          return api.replace("wrong");
+                        }
+                        """)));
+        assertTrue(wrongArgument.getMessage().contains("interface argument"));
+
+        IllegalArgumentException unknown = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface ValueApi<T> as
+                          fnc value() => T;
+                        end
+
+                        fnc bad(ValueApi<int> api) => int {
+                          return api.missing();
+                        }
+                        """)));
+        assertTrue(unknown.getMessage().contains("no interface method"));
+    }
+
+    @Test
     void privateAggregateMembersAreLexicalNotReceiverBased() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Secret as
