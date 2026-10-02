@@ -273,7 +273,9 @@ final class GpuExecutionTest {
         assertEquals(1, compilation.gpuProgram().batches().size());
         GpuKernelCompiler.GpuBatch batch = compilation.gpuProgram().batches().getFirst();
         assertEquals(3, batch.workItems());
+        assertEquals(GpuKernelCompiler.BatchExecutionPolicy.CONCURRENT_KERNELS, batch.preferredPolicy());
         assertTrue(batch.hasDispatcher());
+        assertTrue(compilation.gpuProgram().manifest().contains("CONCURRENT_KERNELS"));
         assertTrue(compilation.gpuProgram().source().contains("__kernel void " + batch.dispatcherSymbol()));
         assertTrue(compilation.gpuProgram().source().contains("switch (__ores_task)"));
         assertTrue(compilation.gpuProgram().source().contains("__ores_error[__ores_task] = 0"));
