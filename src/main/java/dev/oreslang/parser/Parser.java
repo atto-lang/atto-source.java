@@ -138,7 +138,8 @@ public final class Parser {
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
-        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN), annotations);
+        java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
+        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
@@ -353,6 +354,10 @@ public final class Parser {
     }
 
     private List<Ast.Param> parseParametersUntil(Token.Type terminator) {
+        return parseParametersUntil(terminator, java.util.Set.of());
+    }
+
+    private List<Ast.Param> parseParametersUntil(Token.Type terminator, java.util.Set<String> annotationStructuralNames) {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
@@ -362,6 +367,14 @@ public final class Parser {
             if (check(IDENT) && checkNext(STRUCTURAL)) {
                 String name = advance().lexeme();
                 consume(STRUCTURAL, "expected structural");
+                Ast.TypeRef type = parseTypeRef();
+                params.add(new Ast.Param(type, name, true));
+                continue;
+            }
+
+            // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
+            if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
+                String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
                 params.add(new Ast.Param(type, name, true));
                 continue;
@@ -380,7 +393,7 @@ public final class Parser {
         return params;
     }
 
-    private List<Ast.Param> applyStructuralAnnotations(List<Ast.Param> params, List<Ast.Annotation> annotations) {
+    private java.util.Set<String> structuralAnnotationNames(List<Ast.Annotation> annotations) {
         java.util.Set<String> allowed = new java.util.HashSet<>();
         for (Ast.Annotation annotation : annotations) {
             if (!annotation.name().equals("AllowStructural")) continue;
@@ -391,6 +404,11 @@ public final class Parser {
                 allowed.add(argument.name());
             }
         }
+        return java.util.Set.copyOf(allowed);
+    }
+
+    private List<Ast.Param> applyStructuralAnnotations(List<Ast.Param> params, List<Ast.Annotation> annotations) {
+        java.util.Set<String> allowed = new java.util.HashSet<>(structuralAnnotationNames(annotations));
         if (allowed.isEmpty()) return params;
         java.util.Set<String> found = new java.util.HashSet<>();
         List<Ast.Param> result = new ArrayList<>(params.size());
