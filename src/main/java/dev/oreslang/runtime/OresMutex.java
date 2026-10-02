@@ -14,8 +14,9 @@ import java.util.function.Function;
  * Oreslang synchronization primitives.
  *
  * <p>{@link Local} is an actor/private-domain mutex. It deliberately does not
- * use a JVM lock: the creating execution thread owns it and recursive
- * acquisition is rejected. {@link Shared} is an explicit same-process
+ * use a JVM lock: the creating semantic execution domain owns it and recursive
+ * acquisition is rejected. Shared actors may migrate JVM worker threads without
+ * changing that domain. {@link Shared} is an explicit same-process
  * shared-memory capability backed by a JVM lock with poisoning and
  * acquire/release ordering.</p>
  */
@@ -81,23 +82,24 @@ public final class OresMutex {
 
     /**
      * Actor/private-domain mutex. There is no host lock and therefore no
-     * blocking path. Cross-thread use is a domain error rather than silently
-     * turning actor-local state into shared memory.
+     * blocking path. Ownership follows the actor execution domain, not the
+     * transient JVM worker Thread. Outside actor execution, Thread identity is
+     * used as the local domain.
      */
     public static final class Local<T> implements Lock<T> {
         private final T value;
-        private final Thread ownerThread;
+        private final Object ownerDomain;
         private boolean held;
 
         private Local(T value) {
             this.value = value;
-            this.ownerThread = Thread.currentThread();
+            this.ownerDomain = ActorRuntime.currentExecutionDomain();
         }
 
-        private void requireOwnerThread() {
-            if (Thread.currentThread() != ownerThread) {
+        private void requireOwnerDomain() {
+            if (ActorRuntime.currentExecutionDomain() != ownerDomain) {
                 throw new WrongMutexDomainException(
-                        "Mutex<T> is actor/private-domain state and cannot be accessed from another JVM thread; use SharedMutex<T>");
+                        "Mutex<T> is actor/private-domain state and cannot be accessed from another actor/execution domain; use SharedMutex<T>");
             }
         }
 
