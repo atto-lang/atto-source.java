@@ -134,32 +134,25 @@ public final class ActorRuntime implements AutoCloseable {
             return reserve(estimateFrozenBytes(isolatedMessage), "private actor mailbox");
         }
 
-        private MemoryReservation reserve(long bytes, String purpose) {
+        private synchronized MemoryReservation reserve(long bytes, String purpose) {
             if (bytes < 0) throw new IllegalArgumentException("memory reservation cannot be negative");
             if (sliceClosed.get()) throw new IllegalStateException("private actor memory slice is closed");
             if (bytes == 0) return new MemoryReservation(this, 0);
 
-            while (true) {
-                long current = usedBytes.get();
-                long next;
-                try {
-                    next = Math.addExact(current, bytes);
-                } catch (ArithmeticException overflow) {
-                    throw new IllegalStateException(purpose + " accounting overflow");
-                }
-                if (next > limitBytes) {
-                    throw new IllegalStateException(purpose + " limit exceeded for " + owner
-                            + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
-                }
-                if (usedBytes.compareAndSet(current, next)) break;
+            long current = usedBytes.get();
+            long next;
+            try {
+                next = Math.addExact(current, bytes);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalStateException(purpose + " accounting overflow");
+            }
+            if (next > limitBytes) {
+                throw new IllegalStateException(purpose + " limit exceeded for " + owner
+                        + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
             }
 
-            try {
-                reservePrivateRuntimeBytes(bytes, owner, purpose);
-            } catch (RuntimeException failure) {
-                usedBytes.addAndGet(-bytes);
-                throw failure;
-            }
+            reservePrivateRuntimeBytes(bytes, owner, purpose);
+            usedBytes.set(next);
             return new MemoryReservation(this, bytes);
         }
 
@@ -171,7 +164,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private void release(long bytes) {
+        private synchronized void release(long bytes) {
             if (bytes == 0 || sliceClosed.get()) return;
             long remaining = usedBytes.addAndGet(-bytes);
             if (remaining < 0) {
@@ -187,7 +180,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
             long bytes = usedBytes.getAndSet(0);
             if (bytes != 0) {
