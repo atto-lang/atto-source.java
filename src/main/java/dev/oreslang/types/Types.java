@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, SingletonProxy, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Struct, Borrow, ClassNamespace, SingletonProxy, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -15,6 +15,15 @@ public final class Types {
 
     public record Named(String name, List<Type> arguments) implements Type {
         public Named { arguments = List.copyOf(arguments); }
+    }
+
+    /**
+     * Nominal value-semantic struct type. `identity` is compiler-internal and
+     * distinguishes same-shaped named structs; `fields` carries the public
+     * value shape so callers can use a callable-local struct without naming it.
+     */
+    public record Struct(String identity, String name, Map<String, Type> fields) implements Type {
+        public Struct { fields = Map.copyOf(fields); }
     }
 
     /** Rust-style compile-time borrow; erased by the interpreter runtime. */
@@ -61,6 +70,10 @@ public final class Types {
         if (from instanceof Borrow source && to instanceof Borrow target) {
             if (target.mutable() && !source.mutable()) return false;
             return isAssignable(source.target(), target.target()) && isAssignable(target.target(), source.target());
+        }
+
+        if (from instanceof Struct source && to instanceof Struct target) {
+            return source.identity().equals(target.identity());
         }
 
         if (from instanceof Named source && to instanceof Named target && source.name().equals(target.name())) {
