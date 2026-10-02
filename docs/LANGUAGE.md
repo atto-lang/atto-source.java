@@ -278,7 +278,9 @@ shared actor Account {
 - private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
 - both kinds still process their own mailbox serially;
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
-- no lock is required around ordinary actor-owned fields, including fields of a shared actor.
+- no lock is required around ordinary actor-owned fields, including fields of a shared actor;
+- actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
+- synchronized shared memory requires the host-granted `ACTOR_SHARED_MEMORY` capability.
 
 Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
@@ -296,7 +298,9 @@ Shared actors may additionally receive:
 1. deeply immutable `Shared<T>` values; and
 2. explicit synchronized shared cells.
 
-The runtime primitive for the second case is `SyncCell<T>`. A cell stores only frozen state and serializes replacement updates under a lock. This is the intended lowering target for a future `sync` language construct; `sync` is **not** an implicit lock around actor methods.
+The runtime primitive for the second case is `SyncCell<T>`. A cell stores only frozen state and serializes replacement updates under a lock. Shared-cell state is quota-accounted against the same parent actor-memory ceiling as private actor slices. Private actor turns cannot create, inspect, mutate, or close a `SyncCell<T>`. This is the intended lowering target for a future `sync` language construct; `sync` is **not** an implicit lock around actor methods.
+
+Actor message graphs are cyclicity-checked and depth-bounded before admission so maliciously nested containers cannot turn actor transport into an unbounded recursion/stack-exhaustion path.
 
 This preserves the central invariant:
 
@@ -497,7 +501,7 @@ Security is layered. Oreslang uses a deny-by-default language capability policy 
 
 An isolate policy can independently allow or deny:
 
-`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `ACTOR_SHARED_MEMORY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
 
 The trusted compiler API can reject forbidden API usage before execution:
 
