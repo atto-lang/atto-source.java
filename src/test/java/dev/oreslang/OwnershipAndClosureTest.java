@@ -253,6 +253,49 @@ final class OwnershipAndClosureTest {
                 """)));
     }
 
+
+    @Test
+    void moveInBothIfBranchesIsAllowedButValueIsMovedAfterJoin() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Bar
+                  pub let String foo = "start";
+                end
+
+                fnc consume(Bar b) => void { return; }
+
+                fnc ok(bool flag) => void {
+                  let Bar b = new Bar();
+                  if flag; do
+                    consume(b);
+                  else
+                    consume(b);
+                  fi
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc consume(Bar b) => void { return; }
+
+                        fnc bad(bool flag) => void {
+                          let Bar b = new Bar();
+                          if flag; do
+                            consume(b);
+                          else
+                            consume(b);
+                          fi
+                          stdio.println(b.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("use of moved value 'b'"));
+    }
+
     @Test
     void immutableFieldStaysImmutableEvenThroughMutOwner() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
