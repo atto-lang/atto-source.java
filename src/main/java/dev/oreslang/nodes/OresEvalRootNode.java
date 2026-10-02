@@ -56,8 +56,10 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new LinkedHashMap<>();
+        private static final int MAX_GUEST_CALL_DEPTH = 1024;
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final ThreadLocal<Integer> guestCallDepth = ThreadLocal.withInitial(() -> 0);
 
         private Evaluator(Ast.Program program, OresContext context) {
             this.program = program;
@@ -129,6 +131,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionSync(Ast.FunctionDecl fn, List<?> args) {
+            enterGuestCall("function " + fn.name());
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -141,6 +144,7 @@ public final class OresEvalRootNode extends RootNode {
                 return signal.value;
             } finally {
                 env.release();
+                exitGuestCall();
             }
         }
 
@@ -156,6 +160,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethodSync(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            enterGuestCall("method " + method.name());
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
@@ -169,7 +174,25 @@ public final class OresEvalRootNode extends RootNode {
                 return signal.value;
             } finally {
                 env.release();
+                exitGuestCall();
             }
+        }
+
+        private void enterGuestCall(String label) {
+            context.schedulerSafepoint();
+            int depth = guestCallDepth.get();
+            if (depth >= MAX_GUEST_CALL_DEPTH) {
+                throw new OresRuntimeException(
+                        "Oreslang guest call-depth limit exceeded (" + MAX_GUEST_CALL_DEPTH + ") at " + label
+                                + "; use iteration/tail-call lowering instead of relying on the JVM stack");
+            }
+            guestCallDepth.set(depth + 1);
+        }
+
+        private void exitGuestCall() {
+            int depth = guestCallDepth.get() - 1;
+            if (depth <= 0) guestCallDepth.remove();
+            else guestCallDepth.set(depth);
         }
 
         private CompletionStage<Object> startAsync(java.util.concurrent.Callable<Object> task) {
@@ -709,6 +732,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (arguments.size() != lambda.parameters().size()) {
                     throw new IllegalArgumentException("lambda arity mismatch");
                 }
+                enterGuestCall("lambda");
                 Env local = new Env(captured, nonLexical);
                 for (int i = 0; i < lambda.parameters().size(); i++) {
                     Ast.Param param = lambda.parameters().get(i);
@@ -722,6 +746,7 @@ public final class OresEvalRootNode extends RootNode {
                     return signal.value;
                 } finally {
                     local.release();
+                    exitGuestCall();
                 }
             }
 
