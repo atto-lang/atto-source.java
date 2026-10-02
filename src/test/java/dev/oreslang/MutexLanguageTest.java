@@ -58,6 +58,22 @@ final class MutexLanguageTest {
                 end
                 """)));
 
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model
+                  define class Box<T>
+                    pub val T | int value;
+                  end
+                end
+
+                define module app
+                  fnc collapsed(Box<int> box) => void {
+                    val shared = SharedMutex.new(box);
+                    stdio.println(shared.is_poisoned());
+                    return;
+                  }
+                end
+                """)));
+
         var unsafe = Parser.parse("""
                 define module model
                   define class Box<T>
