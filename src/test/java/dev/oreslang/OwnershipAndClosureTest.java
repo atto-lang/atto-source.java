@@ -345,4 +345,22 @@ final class OwnershipAndClosureTest {
         }
         return output.toString(StandardCharsets.UTF_8);
     }
+
+    @Test
+    void borrowAliasOfLocalCannotEscapeFunction() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad() => &Bar {
+                          let Bar b = new Bar();
+                          val &Bar alias = &b;
+                          return alias;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("inferred lifetime"));
+    }
+
 }
