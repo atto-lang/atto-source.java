@@ -296,6 +296,8 @@ try {
 
 `await` has one language meaning: unwrap one asynchronous completion and produce its value. Oreslang source does not need a different keyword for each JVM carrier. The runtime adapter recognizes Oreslang `Awaitable<T>`, `CompletionStage<T>` / `CompletableFuture<T>`, ordinary `Future<T>` values (including virtual-thread executor results), and thread/virtual-thread completion. Plain non-async values are already complete and pass through unchanged. Host completion wrappers are peeled so user code observes the underlying failure, and interrupted blocking waits restore the interrupt flag.
 
+The static type system mirrors that rule: `Future<T>`, `CompletionStage<T>`, `CompletableFuture<T>`, and `Awaitable<T>` await to `T`; `Thread` awaits to `void`; already-synchronous values retain their type. Unions are mapped member-by-member and re-normalized. Pending async carriers remain move-only/non-shareable runtime state.
+
 `Future<T>` remains the canonical source-level async type; the wider adapter is an interop boundary so Java libraries do not leak their exact completion class into Oreslang.
 
 Inside an actor, `await` never means “park this dispatcher thread.” An already-complete value may unwrap immediately, but a pending await must be continuation-lowered so the mailbox turn suspends and releases its carrier. The reference interpreter fails closed if a pending host await reaches an actor carrier before that lowering has happened.
@@ -366,6 +368,8 @@ The primitive send operation is one-way: `ref.send(message)`. There is no ambien
 
 Reactive and pull-style consumption share one serialized mailbox. The runtime provides `tryReceive()` for immediate non-blocking pulls and `receiveAsync()` to claim exactly one future mailbox item without blocking a carrier. Only one async pull may be outstanding. Repeated `tryReceive()` calls are charged against the same per-turn throughput budget as reactive delivery, so polling cannot monopolize a dispatcher worker.
 
+The receive completion itself is runtime-owned: guest/host callers may observe and compose it, but cannot forge `complete(...)`, exceptional completion, cancellation, timeout completion, or obtruded values. This prevents a cancellation/completion race from fabricating or silently dropping a mailbox item.
+
 The planned source-level blocking-looking `mailbox.receive()` is defined as compiler suspension over the async receive primitive, never as `BlockingQueue.take()`. The runtime-level non-blocking primitive is `receiveAsync()`; once actor continuation lowering is wired into the compiler, `await mailbox.receiveAsync()` is the explicit async source spelling. Until then, a pending `await` inside an actor deliberately fails closed rather than parking a dispatcher carrier. The mailbox facade is an actor-scoped source API rather than a new globally reserved keyword.
 
 Arbitrary Erlang-style selective receive that repeatedly scans old unmatched messages is intentionally not the default. Prefer typed message unions plus ordinary pattern matching after dequeue, separate actors/mailboxes for independent traffic classes, or actor groups.
@@ -373,6 +377,8 @@ Arbitrary Erlang-style selective receive that repeatedly scans old unmatched mes
 ### Actor groups and fan-out
 
 `ActorGroup<T>` is an explicit runtime-local fan-out capability. Actors may belong to multiple groups. A group has an opaque `ActorGroupId` and a human-readable category, but categories are metadata rather than globally interned names or hidden registry keys.
+
+Group close and membership mutation are lifecycle-linearized. An already-terminated actor cannot be newly admitted; an actor that terminates after admission is reported/pruned by fan-out. Two groups may use the same category without aliasing because identity is the opaque group id, not the category string.
 
 Broadcast snapshots membership once and sends through the ordinary bounded send path for each member. Membership changes affect the next broadcast. A slow, full, or terminated target does not prevent unrelated members from receiving: `FanoutReceipt` reports delivered, terminated, and rejected counts plus per-actor failures, and terminated members encountered during fan-out are pruned.
 
