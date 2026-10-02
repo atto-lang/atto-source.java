@@ -164,6 +164,63 @@ final class GenericsAndOperatorsHardeningTest {
     }
 
     @Test
+    void qualifiedGenericCallsInferButUnspecializedGenericValuesAreRejected() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module util
+                  pub fnc identity<T>(T value) => T {
+                    return value;
+                  }
+                end
+
+                define module app
+                  fnc use() => void {
+                    val value = util.identity<>(7);
+                    stdio.println(value);
+                    stdio.println(value);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  fnc identity<T>(T value) => T { return value; }
+
+                  fnc bad() => void {
+                    val f = identity;
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module util
+                  pub fnc identity<T>(T value) => T { return value; }
+                end
+
+                define module app
+                  fnc bad() => void {
+                    val f = util.identity;
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define class Box
+                    pub map<T>(T value) => T { return value; }
+                  end
+
+                  fnc bad(Box box) => void {
+                    val f = box.map;
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void genericInterfaceMethodsAreAlphaEquivalentButPreserveGenericArity() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
