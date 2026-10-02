@@ -536,6 +536,13 @@ public final class TypeChecker {
                 return result;
             }
             if (receiver instanceof Named named) {
+                if (named.name().equals("ActorRef") && member.member().equals("id")) {
+                    return Primitive.STRING;
+                }
+                if (named.name().equals("MonitorRef")
+                        && (member.member().equals("id") || member.member().equals("target_id"))) {
+                    return Primitive.STRING;
+                }
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
                     Type field = findFieldType(klass, member.member(), new LinkedHashSet<>());
