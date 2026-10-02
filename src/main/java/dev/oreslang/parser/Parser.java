@@ -882,6 +882,10 @@ public final class Parser {
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
+        if (check(ACTOR) && checkNext(DOT)) {
+            advance();
+            return new Ast.NameExpr("actor");
+        }
         if (match(ACTOR)) {
             Ast.ActorMode mode = match(ISOLATE) ? Ast.ActorMode.ISOLATE : Ast.ActorMode.SHARED;
             Ast.LambdaExpr behavior;
