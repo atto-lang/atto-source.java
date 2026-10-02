@@ -282,6 +282,85 @@ final class MutexLanguageTest {
     }
 
     @Test
+    void guardBearingResultsMustBeBoundAndCannotBeOverwritten() {
+        var discarded = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    mutex.lock();
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException discardedError = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(discarded));
+        assertTrue(discardedError.getMessage().contains("cannot be discarded"));
+
+        var mutableBinding = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    let guard = mutex.lock();
+                    guard.release();
+                    return;
+                  }
+                end
+                """);
+        IllegalArgumentException mutableError = assertThrows(
+                IllegalArgumentException.class, () -> TypeChecker.check(mutableBinding));
+        assertTrue(mutableError.getMessage().contains("cannot use let"));
+    }
+
+    @Test
+    void guardBearingValuesCannotCrossArbitraryCallsOrNestedMutexes() {
+        var callProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+                define module app
+                  fnc consume(any value) => void { return; }
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    consume(guard);
+                    return;
+                  }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(callProgram));
+
+        var nestedProgram = Parser.parse("""
+                define module model
+                  define class Counter
+                    pub let int value = 0;
+                  end
+                end
+                define module app
+                  fnc bad() => void {
+                    val mutex = Mutex.new(new Counter());
+                    val guard = mutex.lock();
+                    val nested = Mutex.new(guard);
+                    stdio.println(nested.is_poisoned());
+                    return;
+                  }
+                end
+                """);
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(nestedProgram));
+    }
+
+    @Test
     void guardCannotBeStoredInAggregate() {
         var program = Parser.parse("""
                 define module model
