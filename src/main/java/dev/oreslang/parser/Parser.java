@@ -785,6 +785,7 @@ public final class Parser {
             return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
+        if (match(TEMPLATE)) return parseTemplateLiteral(previous());
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
@@ -824,6 +825,642 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    private Ast.TemplateExpr parseTemplateLiteral(Token token) {
+        String raw = token.lexeme();
+        List<Ast.TemplatePart> parts = new ArrayList<>();
+        int cursor = 0;
+        int textStart = 0;
+
+        while (cursor < raw.length()) {
+            char c = raw.charAt(cursor);
+            if (c == '\\') {
+                cursor = Math.min(raw.length(), cursor + 2);
+                continue;
+            }
+            if (c == '
+        consume(LBRACE, "expected '{' after obj");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                String name;
+                if (match(IDENT, STRING)) name = previous().lexeme();
+                else throw error(peek(), "expected object field name");
+                consume(COLON, "expected ':' after object field name");
+                fields.add(new Ast.ObjectField(name, parseExpression()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after obj literal");
+        return new Ast.ObjectExpr(fields);
+    }
+
+    private Ast.LambdaExpr parseLambda() {
+        consume(LPAREN, "expected '('");
+        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after lambda parameters");
+        consume(ARROW, "expected '->' after lambda parameters");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private Ast.LambdaExpr parsePipeLambda() {
+        consume(PIPE, "expected '|'");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(PIPE)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    params.add(new Ast.Param(type, name, false, mutable));
+                }
+            } while (match(COMMA));
+        }
+        consume(PIPE, "expected closing '|' after lambda parameters");
+        consume(ARROW, "lambdas use the slim arrow '->'");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private boolean looksLikeLambda() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
+    }
+
+    private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do args.add(parseExpression()); while (match(COMMA));
+        return args;
+    }
+
+    private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
+        if (match(SEMICOLON) || check(structuralTerminator)) return;
+        throw error(peek(), message);
+    }
+
+    private void consumeStatementTerminator(String message) {
+        if (match(SEMICOLON) || isSafeStatementBoundary()) return;
+        throw error(peek(), message);
+    }
+
+    private boolean isSafeStatementBoundary() {
+        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+                || check(CATCH) || check(FINALLY) || check(EOF);
+    }
+
+    private Ast.BindingKind parseBindingKind() {
+        if (match(CONST)) return Ast.BindingKind.CONST;
+        if (match(VAL)) return Ast.BindingKind.VAL;
+        if (match(LET)) return Ast.BindingKind.LET;
+        throw error(peek(), "expected const, val, or let");
+    }
+
+    private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean match(Token.Type... types) {
+        for (Token.Type type : types) {
+            if (check(type)) { advance(); return true; }
+        }
+        return false;
+    }
+
+    private Token consume(Token.Type type, String message) {
+        if (check(type)) return advance();
+        throw error(peek(), message);
+    }
+
+    private boolean check(Token.Type type) { return peek().type() == type; }
+    private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+    private boolean checkNextLexeme(String lexeme) {
+        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals(lexeme);
+    }
+    private Token advance() { if (!check(EOF)) current++; return previous(); }
+    private Token peek() { return tokens.get(current); }
+    private Token previous() { return tokens.get(current - 1); }
+
+    private IllegalArgumentException error(Token token, String message) {
+        return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
+    }
+
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
+}
+ && cursor + 1 < raw.length() && raw.charAt(cursor + 1) == '{') {
+                if (textStart < cursor) {
+                    parts.add(new Ast.TemplateText(decodeTemplateText(raw.substring(textStart, cursor))));
+                }
+                int end = findTemplateInterpolationEnd(raw, cursor + 2, token);
+                String expressionSource = raw.substring(cursor + 2, end);
+                parts.add(new Ast.TemplateInterpolation(parseTemplateInterpolation(expressionSource, token)));
+                cursor = end + 1;
+                textStart = cursor;
+                continue;
+            }
+            cursor++;
+        }
+
+        if (textStart < raw.length() || parts.isEmpty()) {
+            parts.add(new Ast.TemplateText(decodeTemplateText(raw.substring(textStart))));
+        }
+        return new Ast.TemplateExpr(parts);
+    }
+
+    private Ast.Expr parseTemplateInterpolation(String source, Token templateToken) {
+        if (source.isBlank()) throw error(templateToken, "template interpolation cannot be empty");
+        try {
+            Parser embedded = new Parser(new Lexer(source).scan());
+            Ast.Expr expression = embedded.parseExpression();
+            if (!embedded.check(EOF)) {
+                throw embedded.error(embedded.peek(), "unexpected token after template interpolation expression");
+            }
+            return expression;
+        } catch (IllegalArgumentException failure) {
+            throw error(templateToken, "invalid template interpolation: " + failure.getMessage());
+        }
+    }
+
+    private int findTemplateInterpolationEnd(String raw, int start, Token templateToken) {
+        int depth = 1;
+        int cursor = start;
+        while (cursor < raw.length()) {
+            char c = raw.charAt(cursor);
+            if (c == '\\') {
+                cursor = Math.min(raw.length(), cursor + 2);
+                continue;
+            }
+            if (c == '\'' || c == '"') {
+                cursor = skipQuoted(raw, cursor, c, templateToken);
+                continue;
+            }
+            if (c == '`') {
+                cursor = skipNestedTemplate(raw, cursor, templateToken);
+                continue;
+            }
+            if (c == '/' && cursor + 1 < raw.length() && raw.charAt(cursor + 1) == '/') {
+                cursor += 2;
+                while (cursor < raw.length() && raw.charAt(cursor) != '\n') cursor++;
+                continue;
+            }
+            if (c == '/' && cursor + 1 < raw.length() && raw.charAt(cursor + 1) == '*') {
+                cursor = skipTemplateBlockComment(raw, cursor + 2, templateToken);
+                continue;
+            }
+            if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) return cursor;
+            cursor++;
+        }
+        throw error(templateToken, "unterminated template interpolation");
+    }
+
+    private int skipQuoted(String raw, int start, char quote, Token templateToken) {
+        int cursor = start + 1;
+        while (cursor < raw.length()) {
+            char c = raw.charAt(cursor++);
+            if (c == quote) return cursor;
+            if (c == '\\') cursor = Math.min(raw.length(), cursor + 1);
+            else if (c == '\n' || c == '\r') {
+                throw error(templateToken, "newline in quoted string inside template interpolation");
+            }
+        }
+        throw error(templateToken, "unterminated quoted string inside template interpolation");
+    }
+
+    private int skipNestedTemplate(String raw, int start, Token templateToken) {
+        int cursor = start + 1;
+        while (cursor < raw.length()) {
+            char c = raw.charAt(cursor);
+            if (c == '\\') {
+                cursor = Math.min(raw.length(), cursor + 2);
+                continue;
+            }
+            if (c == '`') return cursor + 1;
+            if (c == '
+        consume(LBRACE, "expected '{' after obj");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                String name;
+                if (match(IDENT, STRING)) name = previous().lexeme();
+                else throw error(peek(), "expected object field name");
+                consume(COLON, "expected ':' after object field name");
+                fields.add(new Ast.ObjectField(name, parseExpression()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after obj literal");
+        return new Ast.ObjectExpr(fields);
+    }
+
+    private Ast.LambdaExpr parseLambda() {
+        consume(LPAREN, "expected '('");
+        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after lambda parameters");
+        consume(ARROW, "expected '->' after lambda parameters");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private Ast.LambdaExpr parsePipeLambda() {
+        consume(PIPE, "expected '|'");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(PIPE)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    params.add(new Ast.Param(type, name, false, mutable));
+                }
+            } while (match(COMMA));
+        }
+        consume(PIPE, "expected closing '|' after lambda parameters");
+        consume(ARROW, "lambdas use the slim arrow '->'");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private boolean looksLikeLambda() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
+    }
+
+    private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do args.add(parseExpression()); while (match(COMMA));
+        return args;
+    }
+
+    private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
+        if (match(SEMICOLON) || check(structuralTerminator)) return;
+        throw error(peek(), message);
+    }
+
+    private void consumeStatementTerminator(String message) {
+        if (match(SEMICOLON) || isSafeStatementBoundary()) return;
+        throw error(peek(), message);
+    }
+
+    private boolean isSafeStatementBoundary() {
+        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+                || check(CATCH) || check(FINALLY) || check(EOF);
+    }
+
+    private Ast.BindingKind parseBindingKind() {
+        if (match(CONST)) return Ast.BindingKind.CONST;
+        if (match(VAL)) return Ast.BindingKind.VAL;
+        if (match(LET)) return Ast.BindingKind.LET;
+        throw error(peek(), "expected const, val, or let");
+    }
+
+    private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean match(Token.Type... types) {
+        for (Token.Type type : types) {
+            if (check(type)) { advance(); return true; }
+        }
+        return false;
+    }
+
+    private Token consume(Token.Type type, String message) {
+        if (check(type)) return advance();
+        throw error(peek(), message);
+    }
+
+    private boolean check(Token.Type type) { return peek().type() == type; }
+    private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+    private boolean checkNextLexeme(String lexeme) {
+        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals(lexeme);
+    }
+    private Token advance() { if (!check(EOF)) current++; return previous(); }
+    private Token peek() { return tokens.get(current); }
+    private Token previous() { return tokens.get(current - 1); }
+
+    private IllegalArgumentException error(Token token, String message) {
+        return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
+    }
+
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
+}
+ && cursor + 1 < raw.length() && raw.charAt(cursor + 1) == '{') {
+                int end = findTemplateInterpolationEnd(raw, cursor + 2, templateToken);
+                cursor = end + 1;
+                continue;
+            }
+            cursor++;
+        }
+        throw error(templateToken, "unterminated nested template string");
+    }
+
+    private int skipTemplateBlockComment(String raw, int start, Token templateToken) {
+        int depth = 1;
+        int cursor = start;
+        while (cursor < raw.length()) {
+            if (cursor + 1 < raw.length() && raw.charAt(cursor) == '/' && raw.charAt(cursor + 1) == '*') {
+                depth++;
+                cursor += 2;
+                continue;
+            }
+            if (cursor + 1 < raw.length() && raw.charAt(cursor) == '*' && raw.charAt(cursor + 1) == '/') {
+                depth--;
+                cursor += 2;
+                if (depth == 0) return cursor;
+                continue;
+            }
+            cursor++;
+        }
+        throw error(templateToken, "unterminated block comment inside template interpolation");
+    }
+
+    private String decodeTemplateText(String raw) {
+        StringBuilder result = new StringBuilder(raw.length());
+        for (int cursor = 0; cursor < raw.length(); cursor++) {
+            char c = raw.charAt(cursor);
+            if (c != '\\') {
+                result.append(c);
+                continue;
+            }
+            if (++cursor >= raw.length()) throw new IllegalArgumentException("unterminated template escape");
+            char escaped = raw.charAt(cursor);
+            switch (escaped) {
+                case 'n' -> result.append('\n');
+                case 'r' -> result.append('\r');
+                case 't' -> result.append('\t');
+                case 'b' -> result.append('\b');
+                case 'f' -> result.append('\f');
+                case '`' -> result.append('`');
+                case '
+        consume(LBRACE, "expected '{' after obj");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                String name;
+                if (match(IDENT, STRING)) name = previous().lexeme();
+                else throw error(peek(), "expected object field name");
+                consume(COLON, "expected ':' after object field name");
+                fields.add(new Ast.ObjectField(name, parseExpression()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after obj literal");
+        return new Ast.ObjectExpr(fields);
+    }
+
+    private Ast.LambdaExpr parseLambda() {
+        consume(LPAREN, "expected '('");
+        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after lambda parameters");
+        consume(ARROW, "expected '->' after lambda parameters");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private Ast.LambdaExpr parsePipeLambda() {
+        consume(PIPE, "expected '|'");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(PIPE)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    params.add(new Ast.Param(type, name, false, mutable));
+                }
+            } while (match(COMMA));
+        }
+        consume(PIPE, "expected closing '|' after lambda parameters");
+        consume(ARROW, "lambdas use the slim arrow '->'");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private boolean looksLikeLambda() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
+    }
+
+    private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do args.add(parseExpression()); while (match(COMMA));
+        return args;
+    }
+
+    private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
+        if (match(SEMICOLON) || check(structuralTerminator)) return;
+        throw error(peek(), message);
+    }
+
+    private void consumeStatementTerminator(String message) {
+        if (match(SEMICOLON) || isSafeStatementBoundary()) return;
+        throw error(peek(), message);
+    }
+
+    private boolean isSafeStatementBoundary() {
+        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+                || check(CATCH) || check(FINALLY) || check(EOF);
+    }
+
+    private Ast.BindingKind parseBindingKind() {
+        if (match(CONST)) return Ast.BindingKind.CONST;
+        if (match(VAL)) return Ast.BindingKind.VAL;
+        if (match(LET)) return Ast.BindingKind.LET;
+        throw error(peek(), "expected const, val, or let");
+    }
+
+    private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean match(Token.Type... types) {
+        for (Token.Type type : types) {
+            if (check(type)) { advance(); return true; }
+        }
+        return false;
+    }
+
+    private Token consume(Token.Type type, String message) {
+        if (check(type)) return advance();
+        throw error(peek(), message);
+    }
+
+    private boolean check(Token.Type type) { return peek().type() == type; }
+    private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+    private boolean checkNextLexeme(String lexeme) {
+        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals(lexeme);
+    }
+    private Token advance() { if (!check(EOF)) current++; return previous(); }
+    private Token peek() { return tokens.get(current); }
+    private Token previous() { return tokens.get(current - 1); }
+
+    private IllegalArgumentException error(Token token, String message) {
+        return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
+    }
+
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
+}
+ -> result.append('
+        consume(LBRACE, "expected '{' after obj");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                String name;
+                if (match(IDENT, STRING)) name = previous().lexeme();
+                else throw error(peek(), "expected object field name");
+                consume(COLON, "expected ':' after object field name");
+                fields.add(new Ast.ObjectField(name, parseExpression()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after obj literal");
+        return new Ast.ObjectExpr(fields);
+    }
+
+    private Ast.LambdaExpr parseLambda() {
+        consume(LPAREN, "expected '('");
+        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after lambda parameters");
+        consume(ARROW, "expected '->' after lambda parameters");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private Ast.LambdaExpr parsePipeLambda() {
+        consume(PIPE, "expected '|'");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(PIPE)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    params.add(new Ast.Param(type, name, false, mutable));
+                }
+            } while (match(COMMA));
+        }
+        consume(PIPE, "expected closing '|' after lambda parameters");
+        consume(ARROW, "lambdas use the slim arrow '->'");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private boolean looksLikeLambda() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
+    }
+
+    private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
+        if (check(terminator)) return List.of();
+        List<Ast.Expr> args = new ArrayList<>();
+        do args.add(parseExpression()); while (match(COMMA));
+        return args;
+    }
+
+    private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
+        if (match(SEMICOLON) || check(structuralTerminator)) return;
+        throw error(peek(), message);
+    }
+
+    private void consumeStatementTerminator(String message) {
+        if (match(SEMICOLON) || isSafeStatementBoundary()) return;
+        throw error(peek(), message);
+    }
+
+    private boolean isSafeStatementBoundary() {
+        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
+                || check(CATCH) || check(FINALLY) || check(EOF);
+    }
+
+    private Ast.BindingKind parseBindingKind() {
+        if (match(CONST)) return Ast.BindingKind.CONST;
+        if (match(VAL)) return Ast.BindingKind.VAL;
+        if (match(LET)) return Ast.BindingKind.LET;
+        throw error(peek(), "expected const, val, or let");
+    }
+
+    private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean match(Token.Type... types) {
+        for (Token.Type type : types) {
+            if (check(type)) { advance(); return true; }
+        }
+        return false;
+    }
+
+    private Token consume(Token.Type type, String message) {
+        if (check(type)) return advance();
+        throw error(peek(), message);
+    }
+
+    private boolean check(Token.Type type) { return peek().type() == type; }
+    private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+    private boolean checkNextLexeme(String lexeme) {
+        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals(lexeme);
+    }
+    private Token advance() { if (!check(EOF)) current++; return previous(); }
+    private Token peek() { return tokens.get(current); }
+    private Token previous() { return tokens.get(current - 1); }
+
+    private IllegalArgumentException error(Token token, String message) {
+        return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
+    }
+
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
+}
+);
+                case '\\' -> result.append('\\');
+                case '\n' -> { }
+                case '\r' -> {
+                    if (cursor + 1 < raw.length() && raw.charAt(cursor + 1) == '\n') cursor++;
+                }
+                default -> result.append(escaped);
+            }
+        }
+        return result.toString();
     }
 
     private Ast.ObjectExpr parseObjectLiteral() {
