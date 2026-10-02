@@ -145,12 +145,21 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.DestructureStmt destructure) {
                 Object value = eval(destructure.initializer(), env);
-                List<?> items = asSequence(value);
-                if (items.size() != destructure.bindings().size()) throw new IllegalArgumentException("destructure arity mismatch");
-                for (int i = 0; i < items.size(); i++) {
-                    Ast.DestructureBinding binding = destructure.bindings().get(i);
-                    if (!binding.isDiscard()) {
-                        env.define(binding.name(), items.get(i), binding.kind());
+                if (destructure.kind() == Ast.DestructureKind.SEQUENCE) {
+                    List<?> items = asSequence(value);
+                    if (items.size() != destructure.bindings().size()) {
+                        throw new IllegalArgumentException("destructure arity mismatch: value has " + items.size()
+                                + " element(s), pattern has " + destructure.bindings().size());
+                    }
+                    for (int i = 0; i < items.size(); i++) {
+                        Ast.DestructureBinding binding = destructure.bindings().get(i);
+                        if (!binding.isDiscard()) env.define(binding.name(), items.get(i), binding.kind());
+                    }
+                } else {
+                    for (Ast.DestructureBinding binding : destructure.bindings()) {
+                        if (!binding.isDiscard()) {
+                            env.define(binding.name(), destructureMember(value, binding.name()), binding.kind());
+                        }
                     }
                 }
                 return;
@@ -595,7 +604,18 @@ public final class OresEvalRootNode extends RootNode {
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
         private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not destructurable"); }
+        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+        private Object destructureMember(Object value, String name) {
+            if (value instanceof Map<?, ?> map) {
+                if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
+                return map.get(name);
+            }
+            if (value instanceof OresObject object) {
+                if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
+                return object.fields.get(name);
+            }
+            throw new IllegalArgumentException("value is not object-destructurable");
+        }
         private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
     }
 
