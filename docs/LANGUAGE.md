@@ -324,6 +324,29 @@ that actor without unwinding the spawning function, killing sibling actors, or t
 main process. `join()` waits for termination but deliberately does not rethrow actor failure;
 supervisors can inspect `failed` and choose an explicit restart/escalation policy.
 
+### `stop`
+
+`stop;` is a first-class actor control statement:
+
+```ores
+val worker = actor |Message msg| -> {
+  if should_finish(msg); do
+    stop;
+  fi
+  handle(msg);
+};
+```
+
+It is legal only in an actor body. It terminates the current actor after normal
+`finally` and callable-level `defer` cleanup, does not invoke `catch` or `recover`,
+does not set the actor's failure state, and abandons queued mailbox work. This is
+deliberately stronger than `self.stop()` / `ActorRef.stop()`, which remain the
+graceful FIFO shutdown API for already-accepted messages.
+
+Ordinary lambdas do not inherit the authority to use `stop;` merely because they
+were created inside an actor; actor behavior lambdas do. Recovery/defer handlers
+registered on an actor frame execute in that same actor frame and may use `stop;`.
+
 A shared actor may take ownership of mutable/non-Copy captures. The outer binding becomes moved,
 so ordinary code cannot keep a writable alias. An `actor isolate` is stricter: the current
 checker permits only immutable Copy captures. Mutable, borrowed, or move-only outer values must
@@ -563,7 +586,7 @@ let Fnc<int, int> fact = |int n| -> {
 
 ## Reserved keywords
 
-`of`, `is`, `as`, `actor`, `isolate`, `recover`, and `panic` are
+`of`, `is`, `as`, `actor`, `isolate`, `recover`, `panic`, and `stop` are
 **globally reserved** Oreslang keywords. The lexer never emits them as ordinary
 identifiers, so they cannot be used as variable, parameter, function, routine,
 module, class, interface, field, method, type-alias, generic, namespace,
