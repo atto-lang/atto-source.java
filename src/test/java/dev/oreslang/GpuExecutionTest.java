@@ -325,6 +325,31 @@ final class GpuExecutionTest {
     }
 
     @Test
+    void generatedStaticFunctionSymbolsCannotCollideAcrossClassMethodBoundaries() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module math
+                  define class A_B
+                    gpu static fnc c(i32 x) => i32 {
+                      return x;
+                    }
+                  end
+
+                  define class A
+                    gpu static fnc B_c(i32 x) => i32 {
+                      return x;
+                    }
+                  end
+                end
+                """);
+
+        var kernels = compilation.gpuProgram().kernels();
+        assertEquals(2, kernels.size());
+        assertEquals(2, kernels.stream().map(GpuKernelCompiler.GpuKernel::helperSymbol).distinct().count());
+        assertEquals(2, kernels.stream().map(GpuKernelCompiler.GpuKernel::kernelSymbol).distinct().count());
+        assertTrue(kernels.stream().allMatch(k -> k.helperSymbol().matches("ores_dev_math_A_B_c_a1_[0-9a-f]{12}")));
+    }
+
+    @Test
     void gpuAbiRejectsArrayReturnsAndRecursiveDeviceCallGraphs() {
         IllegalArgumentException arrayReturn = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.compile("""
