@@ -15,19 +15,17 @@ define module math
   }
 end
 
-define module model
-  define class Base
-    pub seven() => int { return 7; }
-  end
+define class Base
+  pub seven() => int { return 7; }
+end
 
-  define class Box<T> extends Base
-    val T value;
+define class Box<T> extends Base
+  val T value;
 
-    @Ret<self>
-    identity() {
-      return self;
-    }
-  end
+  @Ret<self>
+  identity() {
+    return self;
+  }
 end
 
 define module app
