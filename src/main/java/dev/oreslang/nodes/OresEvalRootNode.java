@@ -8,6 +8,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.AwaitSupport;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -18,7 +19,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CompletionStage;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
@@ -185,6 +185,11 @@ public final class OresEvalRootNode extends RootNode {
                 } finally { executeBlock(tried.finallyBody(), env); }
                 return;
             }
+            if (stmt instanceof Ast.ReceiveLoopStmt || stmt instanceof Ast.SelectStmt) {
+                throw new IllegalStateException(
+                        "actor receive/select syntax requires continuation + channel lowering; "
+                                + "the reference interpreter refuses synchronous/no-op fallback");
+            }
             if (stmt instanceof Ast.ForOfStmt loop) {
                 Object iterable = eval(loop.iterable(), env);
                 for (Object item : iterableValues(iterable)) {
@@ -341,10 +346,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return new OresObject(klass, fields);
             }
+            if (expr instanceof Ast.ChannelExpr || expr instanceof Ast.ChannelOpExpr) {
+                throw new IllegalStateException(
+                        "channel send/receive syntax requires scheduler-aware lowering; "
+                                + "the reference interpreter refuses ordinary-call fallback");
+            }
             if (expr instanceof Ast.AwaitExpr awaited) {
-                Object value = eval(awaited.expression(), env);
-                if (value instanceof CompletionStage<?> stage) return stage.toCompletableFuture().join();
-                throw new IllegalArgumentException("await requires a Future/CompletionStage value; non-futures are never passed through");
+                return AwaitSupport.await(eval(awaited.expression(), env));
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());

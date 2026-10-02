@@ -268,9 +268,9 @@ pub fnc start() => void {
 }
 ```
 
-The return type written after `=>` is always the **fulfilled result type**. Therefore `async fnc fetch_count() => int` is called as `Future<int>`; source code does not write `=> Future<int>` on an async callable. `Future<T>` is an Oreslang type. A JVM backend may use `CompletionStage` / `CompletableFuture` internally, but Java future classes are not part of the language ABI.
+The return type written after `=>` is always the **fulfilled result type**. Therefore `async fnc fetch_count() => int` is called as `Future<int>`; source code does not write `=> Future<int>` on an async callable. `Future<T>` is an Oreslang type. A JVM backend may use `CompletionStage` / `CompletableFuture` internally, but Java future classes are not part of the language ABI. The JVM await adapter also accepts `java.util.concurrent.Future`/`FutureTask`, a raw `Thread` as completion-only (`void`), and internal runtime awaitables. A virtual thread that computes a value is therefore awaited through its task/future handle; Oreslang never exposes a special `VirtualThread<T>` source type.
 
-`await expression` is legal only inside an async callable or an actor mailbox turn, and the expression must have type `Future<T>`. Awaiting a non-future is a compile-time error. Ordinary lambdas do not inherit async permission from an enclosing async function; a future explicit async-lambda form may add that capability separately.
+`await expression` is legal only inside an async callable or an actor mailbox turn, and the source expression must have an awaitable type such as `Future<T>`. Awaiting a non-awaitable is a compile-time error. Backend adapters may represent that source future with `CompletionStage`, `CompletableFuture`, `FutureTask`, another `java.util.concurrent.Future`, a value-producing virtual-thread task handle, or an internal runtime awaitable. `await` unwraps exactly one layer: awaiting `Future<Future<T>>` yields `Future<T>`. Ordinary lambdas do not inherit async permission from an enclosing async function; a future explicit async-lambda form may add that capability separately.
 
 A pending `Future<T>` is an ownership-bearing task capability. Await consumes that future in the current ownership model and produces `T`. Ordinary immutable or mutable borrows may not remain live across a suspension point. Actor-owned `self` is the deliberate exception: it is tied to actor identity and the mailbox continuation, never to the carrier thread.
 
@@ -315,6 +315,11 @@ shared actor Account {
 - the handle itself is not awaitable; awaiting actor completion is explicit as `await handle.result()`;
 - private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
 - both kinds still process their own mailbox serially;
+- actor communication is compiler-visible syntax rather than library calls: `receive`, `try_receive`, `send`, `try_send`, `select`, `channel`, `case`, `default`, and `loop` are reserved;
+- `receive loop (msg) { ... }` is the suspending mailbox service loop; `try_receive loop (msg) { ... }` drains only immediately available messages;
+- actor/channel suspension points hoist live locals into the actor continuation frame instead of requiring Erlang-style recursive `loop(NewState)` state threading;
+- actor fairness uses a separate operation quantum in addition to mailbox-message throughput; compiler checkpoints and receive/select backedges consume that budget and lowering must hand the continuation back to the dispatcher when it is exhausted;
+- receive never scans past unmatched older messages; typed/indexed protocol channels are the future mechanism for selective routing rather than Erlang-style linear mailbox scanning;
 - actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
 - no lock is required around ordinary actor-owned fields, including fields of a shared actor;
 - actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;

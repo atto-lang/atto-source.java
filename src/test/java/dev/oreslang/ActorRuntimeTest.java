@@ -481,10 +481,11 @@ final class ActorRuntimeTest {
     void actorMessageGraphDepthIsBounded() {
         Object nested = "leaf";
         for (int i = 0; i < 300; i++) nested = List.of(nested);
+        Object deeplyNested = nested;
 
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
-                () -> ActorRuntime.freeze(nested));
+                () -> ActorRuntime.freeze(deeplyNested));
         assertTrue(failure.getMessage().contains("maximum nesting depth"));
     }
 
@@ -770,5 +771,32 @@ final class ActorRuntimeTest {
         }
     }
 
+
+
+    @Test
+    void actorOperationBudgetIsSeparateFromMailboxThroughput() throws Exception {
+        ActorRuntime.DispatcherConfig config =
+                new ActorRuntime.DispatcherConfig(1, 1, 64, 16, 3);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch checked = new CountDownLatch(1);
+            java.util.List<Boolean> exhausted = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+            var ref = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                exhausted.add(context.runtime().chargeActorOperations(1));
+                exhausted.add(context.runtime().chargeActorOperations(1));
+                exhausted.add(context.runtime().chargeActorOperations(1));
+                exhausted.add(context.runtime().chargeActorOperations(1));
+                checked.countDown();
+            });
+
+            ref.send("tick");
+            assertTrue(checked.await(2, TimeUnit.SECONDS));
+            assertEquals(java.util.List.of(false, false, true, true), exhausted,
+                    "once the operation quantum is exhausted it stays exhausted until dispatcher re-entry");
+            assertEquals(64, runtime.dispatcherConfig().throughput());
+            assertEquals(3, runtime.dispatcherConfig().operationBudget());
+        }
+    }
 
 }

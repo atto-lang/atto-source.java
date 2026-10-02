@@ -40,7 +40,7 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
-                = { annotation } visibility [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                = { annotation } visibility [ "shared" ] "actor" ( "fnc" | "routine" ) IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
@@ -117,7 +117,22 @@ statement       = binding_decl
                 | try_stmt
                 | defer_stmt
                 | for_stmt
+                | receive_loop_stmt
+                | try_receive_loop_stmt
+                | select_stmt
                 | expression stmt_terminator ;
+
+receive_loop_stmt
+                = "receive" "loop" "(" [ type_ref ] IDENT ")" block ;
+try_receive_loop_stmt
+                = "try_receive" "loop" "(" [ type_ref ] IDENT ")" block ;
+
+select_stmt     = "select" "{" { select_case } [ select_default ] "}" ;
+select_case     = "case" select_operation [ "as" [ type_ref ] IDENT ] "=>" block ;
+select_default  = "default" "=>" block ;
+select_operation
+                = "receive" "(" [ expression ] ")"
+                | "send" "(" expression "," expression ")" ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
 defer_stmt      = "defer" expression stmt_terminator ;
@@ -154,6 +169,8 @@ index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
 primary         = literal
+                | channel_expr
+                | channel_operation
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
@@ -175,6 +192,13 @@ array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
+
+channel_expr    = "channel" "<" type_ref ">" "(" expression ")" ;
+channel_operation
+                = "receive" "(" [ expression ] ")"
+                | "try_receive" "(" [ expression ] ")"
+                | "send" "(" expression "," expression ")"
+                | "try_send" "(" expression "," expression ")" ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
@@ -226,6 +250,21 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      the explicit Future<T> when completion is needed.
    - await is legal only in an async callable or actor mailbox turn and requires
      a Future<T>. Ordinary borrows may not remain live across that suspension.
+   - channel/send/try_send/receive/try_receive/select/case/default/loop are
+     reserved concurrency words and remain explicit AST operations through
+     scheduling/ownership lowering; they are not normalized into ordinary calls.
+   - receive loop is a suspending actor-mailbox loop. try_receive loop drains
+     immediately available mailbox messages and does not wait when empty.
+   - Until actor Protocol<M> is carried through source declarations, receive-loop
+     bindings require an explicit message type even though the grammar permits
+     omission for the future inferred form.
+   - blocking send/receive/select suspension hoists live actor locals into a
+     continuation frame; actor state is not encoded as recursive loop arguments.
+   - every actor statement/backedge and concurrency operation consumes a separate
+     actor operation budget in addition to the mailbox-message throughput limit.
+   - select without default suspends until exactly one send/receive can commit.
+     select with default is non-blocking. Simultaneously-ready cases use
+     per-actor rotating fairness, not fixed lexical priority.
    - instance methods may overload only when arity differs.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.

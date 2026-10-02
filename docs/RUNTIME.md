@@ -58,6 +58,8 @@ Source-level `async` means task/continuation execution with an Oreslang `Future<
 
 The JVM backend may represent a ready/pending Oreslang future with `CompletionStage` / `CompletableFuture` internally, and may use virtual threads around blocking host APIs. It must not define async guest semantics as “run this guest AST on a new virtual thread.” Suspension must preserve the Oreslang ownership domain, release the carrier, and resume through a scheduler continuation. Ordinary borrows cannot cross that suspension boundary; actor-owned `self` may because its owner token is the actor identity rather than the carrier thread.
 
+`AwaitSupport` is the JVM convergence point. It unwraps `CompletionStage`, `java.util.concurrent.Future`/`FutureTask`, raw thread completion, and runtime-defined awaitables. A raw `Thread` has no result value, so it awaits only completion; a virtual-thread computation uses a `FutureTask<T>` or another future handle to produce `T`. Pending host waits are rejected on an actor dispatcher carrier: actor code must suspend its Oreslang continuation rather than parking a bounded worker. `AwaitSupport.toCompletionStage(...)` provides that non-blocking adapter for lowering; blocking-only host primitives are waited on from virtual threads and the returned stage is a read-only/minimal view so callers cannot forge runtime completion.
+
 The current reference evaluator does not yet contain the async continuation lowering. It therefore fails closed if an `async` body reaches interpreter execution instead of silently running it synchronously. This is deliberate: synchronous fallback would make the static `Future<T>` contract false, while dispatching guest ASTs to virtual threads would violate the current Truffle thread-access policy.
 
 Actor entrypoints are a separate concurrency primitive. Invoking `actor fnc ... => T` is specified to produce `ActorHandle<T>`; the handle contains actor identity/lifecycle capability and exposes an explicit completion `Future<T>` through `result()`. `async actor fnc` and async actor methods are invalid.
@@ -84,7 +86,15 @@ Oreslang deliberately uses two executors:
 
 A per-actor atomic scheduling gate ensures only one drain task for that actor is active. The executor may run different turns on different threads; thread identity is never actor identity.
 
-The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors.
+The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors. Mailbox throughput and source-operation quantum are separate limits; once an actor exhausts its operation quantum, exhaustion remains sticky until the lowered continuation returns to the dispatcher and is re-entered.
+
+### Mailbox receive lane
+
+`ActorContext.receive()` is the runtime primitive for a logical blocking receive. It registers exactly one pending waiter owned by that actor. The next FIFO envelope completes the waiter on the actor dispatcher instead of invoking the ordinary behavior callback. The returned `CompletionStage<M>` is a lowering boundary: generated Oreslang code suspends/resumes a continuation; it must not call a host blocking wait on the dispatcher thread. Its completion is runtime-owned: host code may cancel a pending receive, but cannot fabricate a received value, exception, or timeout completion.
+
+`ActorContext.tryReceive()` is the non-blocking form. It polls exactly the current mailbox head and returns `ReceiveResult<M>`; the explicit result bit distinguishes an empty mailbox from a transported null value. Both APIs are actor-turn scoped and a pending `receive()` excludes a competing `tryReceive()`.
+
+There is intentionally no predicate-based selective receive that scans through older messages. Selectivity belongs in typed protocol routing/indexed submailboxes so receive cost does not become proportional to the number of unrelated queued messages. Mailbox capacity remains bounded by policy, so an overloaded receiver cannot accumulate an unbounded queue.
 
 
 ## Shared actor memory
