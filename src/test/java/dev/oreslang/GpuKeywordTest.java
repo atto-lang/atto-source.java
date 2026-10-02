@@ -204,6 +204,24 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void gpuCoreNamesCannotBeShadowedByDeclarations() {
+        IllegalArgumentException classFailure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class GpuArray
+                        end
+                        """)));
+        assertTrue(classFailure.getMessage().contains("reserved by the Oreslang GPU core prelude"));
+
+        IllegalArgumentException callableFailure = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc GpuStream() => int {
+                          return 1;
+                        }
+                        """)));
+        assertTrue(callableFailure.getMessage().contains("reserved by the Oreslang GPU core prelude"));
+    }
+
+    @Test
     void gpuCallableCannotCallCpuCallable() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
