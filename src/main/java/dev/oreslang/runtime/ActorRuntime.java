@@ -44,9 +44,11 @@ import java.util.function.UnaryOperator;
  * multiplexed over dispatcher threads, but one actor processes its mailbox
  * serially. Carrier-thread identity is never actor identity.
  *
- * PRIVATE and SHARED actors are deliberately bulkheaded onto different
- * dispatchers. Private actors also receive a confined logical memory slice;
- * shared actors may coordinate through explicitly synchronized shared cells.
+ * SHARED, PRIVATE and UNTRUSTED actors are deliberately bulkheaded onto three
+ * dispatchers. PRIVATE and UNTRUSTED actors receive confined logical memory
+ * slices; SHARED actors may coordinate through explicitly synchronized shared
+ * cells. UNTRUSTED actors additionally require a host isolation boundary that
+ * can contain potentially uncooperative guest code.
  */
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
@@ -65,6 +67,17 @@ public final class ActorRuntime implements AutoCloseable {
     @FunctionalInterface
     public interface TurnExecutor {
         void execute(Runnable turn);
+
+        /**
+         * True only when this executor enters a host/runtime boundary that can
+         * actually contain hostile guest code (for example a Graal UNTRUSTED
+         * sandbox/native isolate with a hard CPU limit). A plain JVM carrier
+         * thread is not a sufficient boundary for potentially uncooperative
+         * actors because Java cannot safely preempt arbitrary guest code.
+         */
+        default boolean supportsUntrustedIsolation() {
+            return false;
+        }
 
         static TurnExecutor direct() {
             return Runnable::run;
@@ -99,18 +112,42 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? Thread.currentThread() : current.executionDomain();
     }
 
-    public enum ActorKind { PRIVATE, SHARED }
+    public enum ActorKind {
+        SHARED,
+        PRIVATE,
+        UNTRUSTED;
+
+        public boolean isolated() {
+            return this != SHARED;
+        }
+
+        public boolean untrusted() {
+            return this == UNTRUSTED;
+        }
+    }
 
     public record DispatcherConfig(
             int privateParallelism,
             int sharedParallelism,
+            int untrustedParallelism,
             int throughput,
             int maxActors) {
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
             if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
+            if (untrustedParallelism <= 0) throw new IllegalArgumentException("untrustedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
+        }
+
+        /** Backward-compatible constructor; derives a smaller hostile-code pool. */
+        public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput, int maxActors) {
+            this(
+                    privateParallelism,
+                    sharedParallelism,
+                    Math.max(1, Math.min(privateParallelism, sharedParallelism) / 2),
+                    throughput,
+                    maxActors);
         }
 
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
@@ -119,13 +156,40 @@ public final class ActorRuntime implements AutoCloseable {
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, 64, 16_384);
+            int cooperative = Math.max(1, cpus / 2);
+            int hostile = Math.max(1, cpus / 4);
+            return new DispatcherConfig(cooperative, cooperative, hostile, 64, 16_384);
         }
     }
 
-    public record ActorId(UUID value) {
-        public ActorId { Objects.requireNonNull(value); }
-        public static ActorId create() { return new ActorId(UUID.randomUUID()); }
+    /**
+     * Public actor identity. The opaque string form is stable for logging,
+     * tracing, serialization and diagnostics; UUID entropy is deliberately not
+     * derived from a process-local sequence.
+     */
+    public record ActorId(String value) {
+        private static final String PREFIX = "actor_id_";
+
+        public ActorId {
+            Objects.requireNonNull(value);
+            if (!value.startsWith(PREFIX)) {
+                throw new IllegalArgumentException("actor id must start with " + PREFIX);
+            }
+            UUID.fromString(value.substring(PREFIX.length()));
+        }
+
+        public static ActorId create() {
+            return new ActorId(PREFIX + UUID.randomUUID());
+        }
+
+        public UUID uuid() {
+            return UUID.fromString(value.substring(PREFIX.length()));
+        }
+
+        @Override
+        public String toString() {
+            return value;
+        }
     }
 
     public record ActorGroupId(UUID value) {
@@ -209,11 +273,14 @@ public final class ActorRuntime implements AutoCloseable {
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    private final Set<ActorGroup<?>> actorGroups = ConcurrentHashMap.newKeySet();
+    private final AtomicLong nextActorSequence = new AtomicLong();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
-    private final ExecutorService privateDispatcher;
-    private final ExecutorService sharedDispatcher;
+    private final ThreadPoolExecutor privateDispatcher;
+    private final ThreadPoolExecutor sharedDispatcher;
+    private final ThreadPoolExecutor untrustedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
@@ -255,12 +322,34 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherConfig.sharedParallelism(),
                 dispatcherConfig.maxActors(),
                 "ores-shared-actor-dispatcher-");
+        this.untrustedDispatcher = newDispatcher(
+                dispatcherConfig.untrustedParallelism(),
+                dispatcherConfig.maxActors(),
+                "ores-untrusted-actor-dispatcher-");
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
     public int actorCount() { return actorCount.get(); }
+
+    public record DispatcherSnapshot(
+            ActorKind kind,
+            int parallelism,
+            int activeWorkers,
+            int queuedActors,
+            long completedBatches) { }
+
+    public DispatcherSnapshot dispatcherSnapshot(ActorKind kind) {
+        Objects.requireNonNull(kind);
+        ThreadPoolExecutor dispatcher = dispatcherFor(kind);
+        return new DispatcherSnapshot(
+                kind,
+                dispatcher.getCorePoolSize(),
+                dispatcher.getActiveCount(),
+                dispatcher.getQueue().size(),
+                dispatcher.getCompletedTaskCount());
+    }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
@@ -349,7 +438,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void requireCurrentOwner() {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || cell.kind != ActorKind.PRIVATE || !cell.ref.id().equals(owner)) {
+            if (cell == null || !cell.kind.isolated() || !cell.ref.id().equals(owner)) {
                 throw new IllegalStateException(
                         "private actor memory slice may only be reserved by its owning actor");
             }
@@ -751,7 +840,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         private List<ActorRef<M>> snapshotMembersLocked() {
             ArrayList<ActorRef<M>> snapshot = new ArrayList<>(members.values());
-            snapshot.sort(java.util.Comparator.comparing(ref -> ref.id().value().toString()));
+            snapshot.sort(java.util.Comparator.comparing(ref -> ref.id().value()));
             return List.copyOf(snapshot);
         }
 
@@ -769,6 +858,7 @@ public final class ActorRuntime implements AutoCloseable {
             int terminated = 0;
             int rejected = 0;
             LinkedHashMap<ActorId, String> failures = new LinkedHashMap<>();
+            int fanoutSinceYield = 0;
 
             for (ActorRef<M> ref : snapshot) {
                 try {
@@ -784,8 +874,22 @@ public final class ActorRuntime implements AutoCloseable {
                             ? failure.getClass().getSimpleName()
                             : failure.getMessage());
                 }
+
+                // A very large group must not turn one caller into an
+                // uninterrupted fan-out loop. This is cooperative for trusted
+                // actors; hostile actors are admitted only behind a hard
+                // isolation boundary.
+                if (++fanoutSinceYield >= dispatcherConfig.throughput()) {
+                    fanoutSinceYield = 0;
+                    if (inActorExecution()) schedulerSafepoint();
+                    else Thread.yield();
+                }
             }
             return new FanoutReceipt(snapshot.size(), delivered, terminated, rejected, failures);
+        }
+
+        private void removeTerminated(ActorId actorId) {
+            members.remove(actorId);
         }
 
         private void requireOpen() {
@@ -806,6 +910,7 @@ public final class ActorRuntime implements AutoCloseable {
             synchronized (groupLifecycleLock) {
                 if (!groupClosed.compareAndSet(false, true)) return;
                 members.clear();
+                actorGroups.remove(this);
             }
         }
     }
@@ -813,15 +918,18 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final long localSequence;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
 
-        private ActorRef(ActorId id, ActorKind kind) {
+        private ActorRef(ActorId id, ActorKind kind, long localSequence) {
             this.id = id;
             this.kind = kind;
+            this.localSequence = localSequence;
         }
 
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
+        public long localSequence() { return localSequence; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
@@ -860,7 +968,9 @@ public final class ActorRuntime implements AutoCloseable {
     public <M> ActorGroup<M> group(String category) {
         requireCallerRuntimeAffinity("create actor groups");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        return new ActorGroup<>(category);
+        ActorGroup<M> group = new ActorGroup<>(category);
+        actorGroups.add(group);
+        return group;
     }
 
     private static void requireSupervisorContext(String operation) {
@@ -959,6 +1069,23 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(behaviorFactory);
         requireTrustedSupplierPolicy(policy);
         return spawnInternal(ActorKind.PRIVATE, policy, behaviorFactory, true);
+    }
+
+    /**
+     * Host/runtime hostile-code actor. It uses private/isolation-copy memory
+     * semantics but is scheduled on a third bulkhead and is accepted only when
+     * the TurnExecutor proves that hostile guest execution is contained by a
+     * hard sandbox/isolate boundary.
+     */
+    public <M> ActorRef<M> spawnUntrusted(BehaviorFactory<M> behaviorFactory) {
+        return spawnUntrusted(defaultSpawnPolicy().asAdversarial(), behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnUntrusted(
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(policy);
+        return spawn(ActorKind.UNTRUSTED, policy.asAdversarial(), behaviorFactory);
     }
 
     public <M> ActorRef<M> spawnShared(Supplier<? extends Behavior<M>> behaviorFactory) {
@@ -1200,11 +1327,21 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
         requireWithinCeiling(policy);
-        IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
+        IsolatePolicy effectivePolicy = kind.isolated()
                 ? policy.withoutCapabilities(
                         IsolatePolicy.Capability.SHARED_MEMORY,
                         IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
                 : policy;
+        if (kind == ActorKind.UNTRUSTED) {
+            effectivePolicy = effectivePolicy.asAdversarial();
+            if (trustedFactory) {
+                throw new SecurityException("untrusted actors cannot use trusted/captured host factories");
+            }
+            if (!turnExecutor.supportsUntrustedIsolation()) {
+                throw new SecurityException(
+                        "untrusted actor spawn requires a TurnExecutor backed by a hard sandbox/isolate boundary");
+            }
+        }
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
@@ -1218,7 +1355,8 @@ public final class ActorRuntime implements AutoCloseable {
             reserveActorSlot();
 
             ActorId id = ActorId.create();
-            ActorRef<M> ref = new ActorRef<>(id, kind);
+            long localSequence = nextActorSequence.incrementAndGet();
+            ActorRef<M> ref = new ActorRef<>(id, kind, localSequence);
             try {
                 ActorCell<M> cell = new ActorCell<>(
                     ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
@@ -1244,6 +1382,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void unregisterActor(ActorCell<?> cell) {
         if (actors.remove(cell.ref.id(), cell)) {
+            for (ActorGroup<?> group : actorGroups) {
+                group.removeTerminated(cell.ref.id());
+            }
             int remaining = actorCount.decrementAndGet();
             if (remaining < 0) {
                 actorCount.incrementAndGet();
@@ -1291,7 +1432,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void rejectPrivateActorSharedMemoryAccess(String operation) {
         ActorCell<?> current = currentActor.get();
-        if (current != null && current.kind == ActorKind.PRIVATE) {
+        if (current != null && current.kind.isolated()) {
             throw new IllegalStateException("private actors cannot access synchronized shared memory via " + operation);
         }
     }
@@ -1479,9 +1620,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
-        Object prepared = cell.kind == ActorKind.PRIVATE ? isolateCopy(message) : freezeForTransport(message);
+        Object prepared = cell.kind.isolated() ? isolateCopy(message) : freezeForTransport(message);
         Runnable release;
-        if (cell.kind == ActorKind.PRIVATE) {
+        if (cell.kind.isolated()) {
             MemoryReservation reservation;
             try {
                 reservation = cell.memorySlice.reserveMailbox(prepared);
@@ -1591,7 +1732,7 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new SecurityException("private actors cannot receive SharedMutex<T>");
             }
             ActorKind senderKind = currentActorKind();
-            if (senderKind == ActorKind.PRIVATE) {
+            if (senderKind != null && senderKind.isolated()) {
                 throw new SecurityException("private actors cannot send SharedMutex<T>");
             }
             IsolatePolicy senderPolicy = currentActorPolicy();
@@ -2441,6 +2582,7 @@ public final class ActorRuntime implements AutoCloseable {
             // reporting success until they actually leave the runtime.
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
+            untrustedDispatcher.shutdownNow();
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
@@ -2482,11 +2624,15 @@ public final class ActorRuntime implements AutoCloseable {
         actorCount.set(0);
     }
 
-    private ExecutorService dispatcherFor(ActorKind kind) {
-        return kind == ActorKind.PRIVATE ? privateDispatcher : sharedDispatcher;
+    private ThreadPoolExecutor dispatcherFor(ActorKind kind) {
+        return switch (kind) {
+            case PRIVATE -> privateDispatcher;
+            case SHARED -> sharedDispatcher;
+            case UNTRUSTED -> untrustedDispatcher;
+        };
     }
 
-    private static ExecutorService newDispatcher(
+    private static ThreadPoolExecutor newDispatcher(
             int parallelism,
             int readyQueueCapacity,
             String threadPrefix) {
@@ -2495,7 +2641,7 @@ public final class ActorRuntime implements AutoCloseable {
                 parallelism,
                 0L,
                 TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity),
+                new ArrayBlockingQueue<>(readyQueueCapacity, true),
                 namedFactory(threadPrefix),
                 new ThreadPoolExecutor.AbortPolicy());
         // Core workers are created lazily on first scheduled actor turn.
@@ -2543,7 +2689,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
-            this.memorySlice = kind == ActorKind.PRIVATE
+            this.memorySlice = kind.isolated()
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
         }
