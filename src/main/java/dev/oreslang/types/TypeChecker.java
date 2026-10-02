@@ -196,7 +196,12 @@ public final class TypeChecker {
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
-            resolveClassParent(parent, klass);
+            Ast.ClassDecl resolvedParent = resolveClassParent(parent, klass);
+            if (klass.actorKind() != resolvedParent.actorKind()) {
+                throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
+                        + klass.name() + " is " + klass.actorKind() + " but parent "
+                        + resolvedParent.name() + " is " + resolvedParent.actorKind());
+            }
         }
 
         Set<String> localMethodSignatures = new HashSet<>();
