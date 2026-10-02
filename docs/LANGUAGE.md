@@ -1,4 +1,4 @@
-# Oreslang language design (v0.6)
+# Oreslang language design (v0.7)
 
 Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
@@ -252,6 +252,28 @@ try {
 
 `async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
 
+## GPU execution domain
+
+`gpu` is a first-class callable modifier for named `fnc` and `routine` declarations:
+
+```ores
+gpu fnc dot(float a, float b) => float {
+  return a * b;
+}
+
+pub gpu routine kernel(float x) => float {
+  return dot(x, x);
+}
+```
+
+It is an execution/effect boundary, not an optimizer hint. A call to a `gpu` callable is dispatched to the process GPU backend. If no backend is installed, execution fails with a GPU-unavailable error; Oreslang never silently executes that body on the CPU.
+
+The static GPU verifier is deliberately conservative. GPU callables may compose statically resolved GPU callables and local/pure computation. They currently reject CPU-callable edges, host/actor APIs such as `stdio`, `process`, filesystem/network/environment/FFI/polyglot/thread facilities, `await`, closures, class allocation, `defer`, `try/catch/finally`, and object-member mutation. Indexed/local mutation remains available for future GPU buffers and tensor lowering.
+
+CPU code may call a GPU callable; that call is the explicit CPU-to-GPU dispatch boundary. GPU code may not call an ordinary CPU callable. The `gpu` effect is included in exported ABI fingerprints so changing a public callable between CPU and GPU execution invalidates dependent compilation units.
+
+Class instance methods and `static fnc` members are not GPU entrypoints in v0.7; `gpu` is currently restricted to top-level/module `fnc` and `routine` declarations.
+
 ## Actors
 
 Actors own their mutable heaps. Cross-actor communication occurs through mailboxes, and message values are frozen/copied/serialized at the runtime boundary. Arbitrary mutable host objects are rejected as messages. Deeply immutable values may use read-only sharing.
@@ -271,9 +293,9 @@ Actors may run inside an isolate. Actor semantics never weaken isolate policy.
 1. UTF-8 source -> lexer.
 2. lexer -> parser / AST.
 3. imports and declarations are collected without executing user code.
-4. generic, structural, module-interface, inheritance, mutability, and return-flow checks run.
+4. generic, structural, module-interface, inheritance, mutability, return-flow, and GPU execution-domain checks run.
 5. actor/isolate sendability constraints are enforced at relevant runtime boundaries.
-6. checked source is lowered/executed as Truffle guest code.
+6. GPU callables lower to the GPU backend dispatch boundary; ordinary checked source executes as Truffle guest code.
 
 The parser and static checker execute no user code.
 
