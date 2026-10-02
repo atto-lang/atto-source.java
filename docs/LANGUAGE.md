@@ -940,6 +940,12 @@ The compiler intrinsics are function-like syntax, not pointer operators:
 - `copy(x)` creates another owned value only when the type is proven `Copy`;
 - `share(x)` is reserved for explicit shared-capability types and cannot turn ordinary mutable state into shared state.
 
+These four names are unshadowable in the value/callable namespace. They are not lexer keywords—so the parser can issue precise diagnostics and future syntax can evolve—but user bindings, parameters, imports, and top-level/module callables cannot redefine their meaning.
+
+Borrowed values cannot currently be returned as owned values. A return of `self`, an ordinary non-`Copy` parameter, a `mut` parameter, or `borrow(x)` is rejected unless ownership is actually transferred. The planned provenance form is `T from owner`; until that contract exists, borrowed returns fail closed rather than manufacturing a second owner.
+
+First-class `Fnc` values currently encode parameter types but not ownership modes. Therefore a callable or lambda containing a `mut` or `take` parameter—and a method with a `mut self` receiver—is direct-call-only in v0. Extraction is rejected until `Fnc` carries those modes explicitly.
+
 For now, classes are **not** implicitly copyable. `copy(classValue)` is rejected until the class-copy contract proves how to create independent owned storage. This prevents a shallow JVM reference copy from pretending to satisfy language-level copy semantics.
 
 Stored immutable views use `borrow(x)`:
