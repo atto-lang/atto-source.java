@@ -919,4 +919,43 @@ final class LanguageHardeningTest {
                         """)));
         assertTrue(classConst.getMessage().contains("cannot be assigned"));
     }
+    @Test
+    void aggregateFieldAssignmentRequiresLetBindingKind() {
+        IllegalArgumentException valField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        struct Point {
+                          val int x;
+                        }
+
+                        fnc bad(Point p) => void {
+                          p.x = 2;
+                          return;
+                        }
+                        """)));
+        assertTrue(valField.getMessage().contains("cannot be assigned"));
+
+        IllegalArgumentException constField = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Counter as
+                          const int limit = 10;
+
+                          pub set() => void {
+                            self.limit = 20;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(constField.getMessage().contains("cannot be assigned"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                struct MutablePoint {
+                  let int x;
+                }
+
+                fnc ok(MutablePoint p) => void {
+                  p.x = 2;
+                  return;
+                }
+                """)));
+    }
 }
