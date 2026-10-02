@@ -6,7 +6,9 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 A source file may contain multiple named modules. A normal module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
 
-A process-wide singleton module is declared with `define singleton module`. It has exactly one runtime instance per canonical module identity per OS process, implemented as a hidden actor with its own mutable state and mailbox. Every caller receives only a proxy/handle to that actor; importing or referencing the module never copies its mutable state. Canonical identity includes the defining source code-unit identity, namespace, and module name. This prevents unrelated source files or tenants from colliding even when they choose the same namespace/module spelling, while generations of the same code unit keep the same process singleton.
+A process-wide singleton module is declared with `define singleton module NAME as`. Its language-level contract is exactly one runtime state cell per canonical module identity per OS process, owned by a hidden serial actor/service. Every caller receives only a proxy/handle; importing or referencing the module never copies its mutable state. Canonical identity includes the defining source code-unit identity, namespace, and module name. Process-singleton access requires the `PROCESS_SINGLETON` capability.
+
+The local JVM backend can satisfy this contract when callers share the host runtime heap. A spawned Graal isolate has a separate heap, so an isolated deployment must route singleton requests to a trusted host/process coordinator. Oreslang fails closed rather than silently degrading `singleton` to one instance per isolate.
 
 ```ores
 define module math as
@@ -24,7 +26,7 @@ define module app as
 end
 ```
 
-Singleton state is actor-private, so singleton fields cannot be public. Public functions are the boundary and are asynchronous request/reply calls:
+Singleton state is actor-private. Public functions are asynchronous request/reply boundaries. In addition, a singleton module may export an immutable `val`/`const` class instance as a typed process-object proxy; the raw class instance never leaves the owner actor:
 
 ```ores
 define singleton module counter as
@@ -45,13 +47,58 @@ define module app as
 end
 ```
 
-Singleton state fields require explicit process-stable types because they form a process-lifetime hot-reload schema. Their initializers must be context-free: literals and pure expressions over already initialized stable singleton fields are allowed, while capability access, arbitrary function calls, `await`, object construction, mutation, and closures are not. Type aliases are currently excluded from process state so redefining an alias cannot silently reinterpret an existing layout.
+```ores
+define class Foo as
+  val int value = 42;
+
+  pub read() => int {
+    return self.value;
+  }
+end
+
+define singleton module X as
+  pub val Foo f = new Foo();
+end
+
+define module app as
+  pub routine main() => void {
+    val int value = await X.f.read();
+    stdio.println(value);
+    return;
+  }
+end
+```
+
+Outside `X`, `X.f` is not an ordinary local `Foo`: it is a capability proxy. Its public method calls execute in the singleton owner actor and must be immediately awaited. Object fields, raw references, method extraction, and rebinding the proxy into an ordinary local are rejected. Other public singleton fields remain illegal.
+
+Singleton state fields require explicit process-stable types because they form a process-lifetime hot-reload schema. Ordinary state initializers must be context-free: literals and pure expressions over already initialized stable singleton fields are allowed, while capability access, arbitrary function calls, `await`, mutation, and closures are not. The narrow exception is an exported immutable class-instance proxy initialized directly with a context-free `new Class(...)`. Type aliases are currently excluded from process state so redefining an alias cannot silently reinterpret an existing layout.
 
 The exported transport surface is intentionally strict. Public singleton functions may use sendable scalar values, `Option<T>`, and `Array/List<T>` of sendable values. Until explicit `Send` constraints are part of the type system, exported singleton functions cannot be generic or `async`, cannot accept `mut` or structural parameters, and cannot transport borrows, class instances, functions/closures, or unresolved actor-local values. Classes declared inside a singleton module are actor-private helpers and cannot be accessed through the external module/class namespace.
 
 Every external singleton call must be immediately awaited. Calls from one singleton function to another function in the same singleton are direct and keep the same actor-owned state, including helper method/static-function dispatch. Calls between different singleton actors use request/reply mailboxes. The runtime detects wait cycles before they can deadlock, applies caller mailbox/backpressure limits, and treats queueing time as part of the caller's wall-time budget.
 
 A hot-reloaded generation with the same singleton field schema reuses the existing actor state while executing the new function bodies. Incompatible singleton field-schema changes are rejected until an explicit migration mechanism is provided; the runtime never silently treats old process state as a new layout. Replacing singleton code against live state requires `HOT_CODE_LOAD`; managed generations are process-monotonic and stale code cannot roll active singleton behavior backward.
+
+## Initialization lifecycle
+
+Oreslang has one explicit lifecycle declaration:
+
+```ores
+init routine() => void {
+  // initialization work
+  return;
+}
+```
+
+Its scope determines its lifetime:
+
+- **file/root scope:** once for each actor-local code-unit state;
+- **ordinary module:** once when that actor-local module state is first activated;
+- **singleton module:** once when the OS-process singleton state cell is first created.
+
+Module/file field initializers run first, in declaration order, and the `init routine` runs afterward. A scope may declare at most one init routine. It has no parameters, must explicitly declare `=> void`, cannot be public/async, and classes cannot declare it. Process-global initialization is intentionally not available as a free-floating file hook: it belongs inside a `singleton module`, where ownership and serialization are explicit.
+
+Hot reload does not rerun an already-created singleton module's process init. Compatible process state is retained; incompatible schema changes require an explicit migration.
 
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
