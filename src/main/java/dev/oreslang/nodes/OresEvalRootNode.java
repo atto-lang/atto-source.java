@@ -157,6 +157,16 @@ public final class OresEvalRootNode extends RootNode {
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
                     executeBlock(tried.catchBody(), catchEnv);
                 } finally { executeBlock(tried.finallyBody(), env); }
+                return;
+            }
+            if (stmt instanceof Ast.ForOfStmt loop) {
+                Object iterable = eval(loop.iterable(), env);
+                for (Object item : iterableValues(iterable)) {
+                    context.schedulerSafepoint();
+                    Env iteration = new Env(env);
+                    iteration.define(loop.bindingName(), item, loop.bindingKind());
+                    executeBlock(loop.body(), iteration);
+                }
             }
         }
 
@@ -190,6 +200,11 @@ public final class OresEvalRootNode extends RootNode {
                 Object value = eval(assignment.value(), env);
                 env.assign(target.name(), value);
                 return value;
+            }
+            if (expr instanceof Ast.ConditionalExpr conditional) {
+                return truth(eval(conditional.condition(), env))
+                        ? eval(conditional.whenTrue(), env)
+                        : eval(conditional.whenFalse(), env);
             }
             if (expr instanceof Ast.UnaryExpr unary) {
                 Object value = eval(unary.operand(), env);
@@ -269,7 +284,15 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
+                    case "stdout" -> new StdoutFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
+                };
+            }
+            if (receiver instanceof StdoutFacade stdout) {
+                return switch (name) {
+                    case "write" -> (Invokable) stdout::write;
+                    case "println" -> (Invokable) stdout::println;
+                    default -> throw new IllegalArgumentException("unknown stdout member " + name);
                 };
             }
             if (receiver instanceof ProcessFacade process) {
@@ -283,9 +306,11 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                Ast.MethodDecl method = findMethod(object.klass, name, new LinkedHashSet<>());
-                if (method != null) return (Invokable) args -> callMethod(object, method, args);
-                throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
+                return (Invokable) args -> {
+                    Ast.MethodDecl method = findMethod(object.klass, name, args.size(), new LinkedHashSet<>());
+                    if (method == null) throw new IllegalArgumentException("no method " + object.klass.name() + "." + name + " with arity " + args.size());
+                    return callMethod(object, method, args);
+                };
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -321,14 +346,19 @@ public final class OresEvalRootNode extends RootNode {
             return List.copyOf(result.values());
         }
 
-        private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+        private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
-            for (Ast.MethodDecl method : klass.methods()) if (method.name().equals(name)) { seen.remove(klass); return method; }
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals(name) && method.parameters().size() == arity) {
+                    seen.remove(klass);
+                    return method;
+                }
+            }
             for (Ast.TypeRef parentRef : klass.parents()) {
                 if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
                 Ast.ClassDecl parent = findClass(parentRef.name());
                 if (parent == null) continue;
-                Ast.MethodDecl candidate = findMethod(parent, name, seen);
+                Ast.MethodDecl candidate = findMethod(parent, name, arity, seen);
                 if (candidate != null) {
                     seen.remove(klass);
                     return candidate;
@@ -336,6 +366,18 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return null;
+        }
+
+        private List<?> iterableValues(Object value) {
+            if (value instanceof List<?> list) return list;
+            if (value instanceof Object[] array) return List.of(array);
+            if (value instanceof OresObject object) {
+                Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
+                Object produced = callMethod(object, iterator, List.of());
+                return iterableValues(produced);
+            }
+            throw new IllegalArgumentException("value is not iterable");
         }
 
         private Object binary(String op, Object left, Object right) {
@@ -448,6 +490,10 @@ public final class OresEvalRootNode extends RootNode {
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args){requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
+    }
+    private record StdoutFacade(OresContext context) {
+        private Object write(List<Object> args){requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
+        private Object println(List<Object> args){requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
     }
     private record ProcessFacade(OresContext context) {
         private String contextId(){return context.contextId().toString();}
