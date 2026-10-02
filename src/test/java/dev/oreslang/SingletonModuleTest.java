@@ -785,6 +785,101 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void singletonModuleAndProxyHandlesCannotBeAliased() {
+        IllegalArgumentException moduleAlias = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module alias_service as
+                          pub fnc read() => int { return 1; }
+                        end
+
+                        define module app as
+                          pub routine main() => void {
+                            val service = alias_service;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(moduleAlias.getMessage().contains("handles cannot be extracted"));
+
+        IllegalArgumentException unqualifiedFunctionAlias = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define singleton module alias_function_service as
+                          pub fnc globally_unique_alias_read() => int { return 1; }
+                        end
+
+                        define module app as
+                          pub routine main() => void {
+                            val f = globally_unique_alias_read;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(unqualifiedFunctionAlias.getMessage().contains("function values cannot be extracted"));
+
+        IllegalArgumentException proxyAlias = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class AliasBox as
+                          let int value = 1;
+                          pub read() => int { return self.value; }
+                        end
+
+                        define singleton module alias_proxy_service as
+                          pub val AliasBox box = new AliasBox();
+                        end
+
+                        define module app as
+                          pub routine main() => void {
+                            val proxy = alias_proxy_service.box;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(proxyAlias.getMessage().contains("proxy handles cannot be extracted"));
+    }
+
+    @Test
+    void singletonProxyHotReloadUsesModuleQualifiedClassIdentity() throws Exception {
+        String program = """
+                define module proxy_types_a as
+                  define class SameNameBox as
+                    let int value = 0;
+                    pub bump() => int {
+                      self.value = self.value + 1;
+                      return self.value;
+                    }
+                  end
+                end
+
+                define module proxy_types_b as
+                  define class SameNameBox as
+                    let int value = 100;
+                    pub bump() => int {
+                      self.value = self.value + 10;
+                      return self.value;
+                    }
+                  end
+                end
+
+                define singleton module qualified_proxy_service as
+                  pub val proxy_types_a.SameNameBox box = new proxy_types_a.SameNameBox();
+                end
+
+                define module app as
+                  pub routine main() => void {
+                    stdio.println(await qualified_proxy_service.box.bump());
+                    return;
+                  }
+                end
+                """;
+
+        String first = eval(program, "qualified-proxy-identity.ores");
+        String second = eval(program, "qualified-proxy-identity.ores");
+
+        assertTrue(first.contains("1"), first);
+        assertTrue(second.contains("2"), second);
+    }
+
+    @Test
     void singletonModulesCannotAdvertiseOrdinarySynchronousInterfaces() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
