@@ -911,7 +911,11 @@ public final class TypeChecker {
 
     private static String simpleTypeName(String name) {
         int dot = name.lastIndexOf('.');
-        int dollar = name.lastIndexOf('
+        int dollar = name.lastIndexOf(36);
+        return name.substring(Math.max(dot, dollar) + 1);
+    }
+
+    private Type builtinMutexMember(Type receiver, String member) {
         if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
         Type element = named.arguments().getFirst();
         if (named.name().equals("Mutex") || named.name().equals("SharedMutex")) {
