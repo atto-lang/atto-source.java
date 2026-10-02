@@ -583,6 +583,23 @@ public final class ActorRuntime implements AutoCloseable {
         if (result != SendResult.SENT) throw sendFailure(ref, result);
     }
 
+    /**
+     * Typed zero-copy/read-only transport for an ActorRef<T>. Shared<T> is a
+     * send-time handle; the receiving actor still observes T, not Shared<T>.
+     */
+    public <M> void sendShared(ActorRef<M> ref, Shared<? extends M> message) {
+        SendResult result = trySendShared(ref, message);
+        if (result != SendResult.SENT) throw sendFailure(ref, result);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public <M> SendResult trySendShared(ActorRef<M> ref, Shared<? extends M> message) {
+        java.util.Objects.requireNonNull(message, "message");
+        // The private transport path deliberately accepts the Shared wrapper;
+        // protocol validation observes its underlying T before admission.
+        return trySend((ActorRef) ref, (Object) message);
+    }
+
     @SuppressWarnings("unchecked")
     public <M> SendResult trySend(ActorRef<M> ref, M message) {
         java.util.Objects.requireNonNull(ref, "ref");
