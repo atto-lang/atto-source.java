@@ -91,6 +91,49 @@ final class AsyncAndNumericHardeningTest {
     }
 
     @Test
+    void asyncResultCannotBeSilentlyDiscarded() {
+        String program = """
+                define module app
+                  pub async fnc work() => int {
+                    return 1;
+                  }
+
+                  pub fnc main() => void {
+                    work();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("cannot be discarded"));
+    }
+
+    @Test
+    void deferCannotImplicitlyDetachAsyncWork() {
+        String program = """
+                define module app
+                  pub async fnc cleanup() => int {
+                    return 1;
+                  }
+
+                  pub fnc main() => void {
+                    defer cleanup();
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(program)));
+        assertTrue(failure.getMessage().contains("defer"));
+        assertTrue(failure.getMessage().contains("async"));
+    }
+
+    @Test
     void asyncCallableCannotCaptureCallScopedBorrow() {
         String program = """
                 define module app
