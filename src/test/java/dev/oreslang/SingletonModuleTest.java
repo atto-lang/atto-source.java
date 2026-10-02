@@ -982,6 +982,41 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void queuedSingletonTimeoutRemovesRequestWithoutExecutingItLater() throws Exception {
+        String key = "queued-timeout:" + UUID.randomUUID();
+        ProcessSingletonRegistry.Handle<AtomicInteger> handle =
+                ProcessSingletonRegistry.getOrCreate(key, AtomicInteger::new);
+
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+
+        CompletableFuture<Object> active = handle.call(
+                List.of(), 8, Duration.ofSeconds(2),
+                (state, ignored) -> {
+                    entered.countDown();
+                    release.await(1, TimeUnit.SECONDS);
+                    return state.incrementAndGet();
+                }).toCompletableFuture();
+
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+
+        CompletableFuture<Object> queued = handle.call(
+                List.of(), 8, Duration.ofMillis(40),
+                (state, ignored) -> state.incrementAndGet()).toCompletableFuture();
+
+        RuntimeException timeout = assertThrows(RuntimeException.class, queued::join);
+        assertTrue(causeChainContains(timeout, "expired in mailbox"), String.valueOf(timeout));
+
+        release.countDown();
+        assertEquals(1L, ((Number) active.join()).longValue());
+
+        Object value = handle.call(
+                List.of(), 8, Duration.ofSeconds(1),
+                (state, ignored) -> state.get()).toCompletableFuture().join();
+        assertEquals(1L, ((Number) value).longValue());
+    }
+
+    @Test
     void registryEnforcesCallerBackpressureAndRecoversAfterTimeout() throws Exception {
         String key = "backpressure:" + UUID.randomUUID();
         ProcessSingletonRegistry.Handle<AtomicInteger> handle =
