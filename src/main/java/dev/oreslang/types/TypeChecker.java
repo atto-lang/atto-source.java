@@ -1978,6 +1978,45 @@ public final class TypeChecker {
             return interfaceShape(lexicalInterface, Set.of(), new LinkedHashSet<>());
         }
 
+        Ast.InterfaceDecl globalInterface = findInterface(ref.name());
+        Ast.TraitDecl globalTrait = findTrait(ref.name());
+        if (globalInterface != null && globalTrait != null) {
+            throw new IllegalArgumentException("ambiguous capability type '" + ref.name()
+                    + "' names both an interface and a trait; qualify it");
+        }
+        if (globalTrait != null) {
+            List<Type> arguments;
+            if (ref.inferArguments()) {
+                arguments = globalTrait.genericParameters().stream()
+                        .map(ignored -> (Type) Unknown.INSTANCE).toList();
+            } else {
+                if (ref.arguments().size() != globalTrait.genericParameters().size()) {
+                    throw new IllegalArgumentException("trait '" + globalTrait.name() + "' expects "
+                            + globalTrait.genericParameters().size() + " type argument(s), got "
+                            + ref.arguments().size() + "; use <> for inference");
+                }
+                arguments = ref.arguments().stream()
+                        .map(arg -> resolve(arg, generics, self)).toList();
+            }
+            return new Named(ref.name(), arguments);
+        }
+        if (globalInterface != null) {
+            List<Type> arguments;
+            if (ref.inferArguments()) {
+                arguments = globalInterface.genericParameters().stream()
+                        .map(ignored -> (Type) Unknown.INSTANCE).toList();
+            } else {
+                if (ref.arguments().size() != globalInterface.genericParameters().size()) {
+                    throw new IllegalArgumentException("interface '" + globalInterface.name() + "' expects "
+                            + globalInterface.genericParameters().size() + " type argument(s), got "
+                            + ref.arguments().size() + "; use <> for inference");
+                }
+                arguments = ref.arguments().stream()
+                        .map(arg -> resolve(arg, generics, self)).toList();
+            }
+            return new Named(ref.name(), arguments);
+        }
+
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
         if (alias != null) {
             if (alias.genericParameters().size() != ref.arguments().size()) {
@@ -2192,6 +2231,13 @@ public final class TypeChecker {
             if (local != null) return local;
         }
         return null;
+    }
+
+    private Ast.TraitDecl findTrait(String name) {
+        if (ambiguousTraits.contains(name)) {
+            throw new IllegalArgumentException("ambiguous trait name '" + name + "'; qualify it with its module");
+        }
+        return traits.get(name);
     }
 
     private Ast.InterfaceDecl findInterface(String name) {
