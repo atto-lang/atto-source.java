@@ -24,6 +24,7 @@ public final class OresContext implements AutoCloseable {
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
+    private final long codeGeneration;
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -32,6 +33,7 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
+        this.codeGeneration = codeGenerationFromApplicationArguments(env.getApplicationArguments());
         this.actors = new ActorRuntime(isolatePolicy);
     }
 
@@ -47,6 +49,7 @@ public final class OresContext implements AutoCloseable {
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+    public long codeGeneration() { return codeGeneration; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         isolatePolicy.require(capability, api);
@@ -64,6 +67,16 @@ public final class OresContext implements AutoCloseable {
     }
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
+
+    private static long codeGenerationFromApplicationArguments(String[] args) {
+        for (String arg : args) {
+            if (!arg.startsWith("--ores-code-generation=")) continue;
+            long generation = Long.parseLong(arg.substring("--ores-code-generation=".length()));
+            if (generation < 0) throw new IllegalArgumentException("ores code generation cannot be negative");
+            return generation;
+        }
+        return 0L;
+    }
 
     public Map<String, Object> processDescriptor() {
         return Map.of(
