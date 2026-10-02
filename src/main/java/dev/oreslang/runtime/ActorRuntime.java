@@ -42,7 +42,86 @@ import java.util.function.UnaryOperator;
  * shared actors may coordinate through explicitly synchronized shared cells.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final long MIB = 1024L * 1024L;
+
     public enum ActorKind { PRIVATE, SHARED }
+
+    public enum MemoryGrowthReason {
+        INITIAL_ALLOCATION,
+        ACTOR_REQUEST,
+        REQUIRED_FOR_ALLOCATION,
+        PROACTIVE_HIGH_WATERMARK
+    }
+
+    public record MemoryConfig(
+            long initialPrivateBytes,
+            long minGrowthBytes,
+            int proactiveGrowthPercent) {
+        public MemoryConfig {
+            if (initialPrivateBytes <= 0) throw new IllegalArgumentException("initialPrivateBytes must be > 0");
+            if (minGrowthBytes <= 0) throw new IllegalArgumentException("minGrowthBytes must be > 0");
+            if (proactiveGrowthPercent < 1 || proactiveGrowthPercent > 99) {
+                throw new IllegalArgumentException("proactiveGrowthPercent must be between 1 and 99");
+            }
+        }
+
+        public static MemoryConfig defaults() {
+            return new MemoryConfig(MIB, MIB, 80);
+        }
+    }
+
+    public record MemoryGrowthRequest(
+            ActorId owner,
+            MemoryGrowthReason reason,
+            long requestedAdditionalBytes,
+            long usedBytes,
+            long committedBytes,
+            long hardLimitBytes,
+            long proposedCommittedBytes,
+            long runtimeCommittedBytes,
+            long runtimeLimitBytes) { }
+
+    public record MemoryGrowthResult(
+            boolean approved,
+            MemoryGrowthReason reason,
+            long requestedAdditionalBytes,
+            long grantedBytes,
+            long previousCommittedBytes,
+            long committedBytes,
+            long hardLimitBytes,
+            String denialReason) {
+        private static MemoryGrowthResult approved(
+                MemoryGrowthReason reason,
+                long requestedAdditionalBytes,
+                long grantedBytes,
+                long previousCommittedBytes,
+                long committedBytes,
+                long hardLimitBytes) {
+            return new MemoryGrowthResult(
+                    true, reason, requestedAdditionalBytes, grantedBytes,
+                    previousCommittedBytes, committedBytes, hardLimitBytes, null);
+        }
+
+        private static MemoryGrowthResult denied(
+                MemoryGrowthReason reason,
+                long requestedAdditionalBytes,
+                long committedBytes,
+                long hardLimitBytes,
+                String denialReason) {
+            return new MemoryGrowthResult(
+                    false, reason, requestedAdditionalBytes, 0L,
+                    committedBytes, committedBytes, hardLimitBytes, denialReason);
+        }
+    }
+
+    @FunctionalInterface
+    public interface MemoryGovernor {
+        boolean allow(MemoryGrowthRequest request);
+
+        static MemoryGovernor allowWithinPolicy() {
+            return request -> true;
+        }
+    }
 
     public record DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
         public DispatcherConfig {
@@ -76,23 +155,46 @@ public final class ActorRuntime implements AutoCloseable {
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
+    private final AtomicLong privateMemoryCommittedBytes = new AtomicLong();
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
+    private final MemoryConfig memoryConfig;
+    private final MemoryGovernor memoryGovernor;
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
 
     public ActorRuntime() {
-        this(IsolatePolicy.developer(), DispatcherConfig.defaults());
+        this(IsolatePolicy.developer(), DispatcherConfig.defaults(),
+                MemoryConfig.defaults(), MemoryGovernor.allowWithinPolicy());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling) {
-        this(policyCeiling, DispatcherConfig.defaults());
+        this(policyCeiling, DispatcherConfig.defaults(),
+                MemoryConfig.defaults(), MemoryGovernor.allowWithinPolicy());
     }
 
     public ActorRuntime(IsolatePolicy policyCeiling, DispatcherConfig dispatcherConfig) {
+        this(policyCeiling, dispatcherConfig,
+                MemoryConfig.defaults(), MemoryGovernor.allowWithinPolicy());
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            MemoryConfig memoryConfig) {
+        this(policyCeiling, dispatcherConfig, memoryConfig, MemoryGovernor.allowWithinPolicy());
+    }
+
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            MemoryConfig memoryConfig,
+            MemoryGovernor memoryGovernor) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
+        this.memoryConfig = Objects.requireNonNull(memoryConfig);
+        this.memoryGovernor = Objects.requireNonNull(memoryGovernor);
         this.privateDispatcher = Executors.newFixedThreadPool(
                 dispatcherConfig.privateParallelism(), namedFactory("ores-private-actor-dispatcher-"));
         this.sharedDispatcher = Executors.newFixedThreadPool(
@@ -101,7 +203,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
+    public MemoryConfig memoryConfig() { return memoryConfig; }
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
+    public long privateMemoryCommittedBytes() { return privateMemoryCommittedBytes.get(); }
 
     /**
      * Logical actor-confined memory slice for one private actor.
@@ -115,18 +219,43 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId owner;
         private final long limitBytes;
         private final AtomicLong usedBytes = new AtomicLong();
+        private final AtomicLong committedBytes = new AtomicLong();
         private final AtomicBoolean sliceClosed = new AtomicBoolean();
 
         private ActorMemorySlice(ActorId owner, long limitBytes) {
             this.owner = Objects.requireNonNull(owner);
             this.limitBytes = limitBytes;
+            long initial = Math.min(memoryConfig.initialPrivateBytes(), limitBytes);
+            MemoryGrowthResult result = growTo(initial, MemoryGrowthReason.INITIAL_ALLOCATION);
+            if (!result.approved()) {
+                throw new IllegalStateException("initial private actor memory allocation denied for " + owner
+                        + ": " + result.denialReason());
+            }
         }
 
         public ActorId owner() { return owner; }
         public long limitBytes() { return limitBytes; }
         public long usedBytes() { return usedBytes.get(); }
+        public long committedBytes() { return committedBytes.get(); }
+        public long availableCommittedBytes() {
+            return Math.max(0L, committedBytes.get() - usedBytes.get());
+        }
         public long remainingBytes() { return Math.max(0L, limitBytes - usedBytes.get()); }
         public boolean closed() { return sliceClosed.get(); }
+
+        public synchronized MemoryGrowthResult requestAdditionalMemory(long bytes) {
+            requireCurrentOwner();
+            if (bytes <= 0) throw new IllegalArgumentException("requested memory growth must be > 0");
+            long minimum;
+            try {
+                minimum = Math.addExact(committedBytes.get(), bytes);
+            } catch (ArithmeticException overflow) {
+                return MemoryGrowthResult.denied(
+                        MemoryGrowthReason.ACTOR_REQUEST, bytes, committedBytes.get(),
+                        limitBytes, "requested capacity overflow");
+            }
+            return growTo(minimum, MemoryGrowthReason.ACTOR_REQUEST);
+        }
 
         /**
          * Reserve persistent private-actor heap. Compiler/interpreter lowering
@@ -159,9 +288,103 @@ public final class ActorRuntime implements AutoCloseable {
                         + ": requested=" + bytes + " used=" + current + " limit=" + limitBytes);
             }
 
-            reservePrivateRuntimeBytes(bytes, owner, purpose);
+            if (next > committedBytes.get()) {
+                MemoryGrowthResult growth = growTo(next, MemoryGrowthReason.REQUIRED_FOR_ALLOCATION);
+                if (!growth.approved()) {
+                    throw new IllegalStateException(purpose + " growth denied for " + owner
+                            + ": requested=" + bytes + " used=" + current
+                            + " committed=" + committedBytes.get()
+                            + " reason=" + growth.denialReason());
+                }
+            }
+
+            privateMemoryBytes.addAndGet(bytes);
             usedBytes.set(next);
+            maybeGrowProactively(next);
             return new MemoryReservation(this, bytes);
+        }
+
+        private void maybeGrowProactively(long currentUsedBytes) {
+            long committed = committedBytes.get();
+            if (committed >= limitBytes || committed == 0) return;
+            double percentUsed = ((double) currentUsedBytes * 100.0d) / (double) committed;
+            if (percentUsed < memoryConfig.proactiveGrowthPercent()) return;
+            long minimum = committed == Long.MAX_VALUE ? committed : committed + 1L;
+            growTo(minimum, MemoryGrowthReason.PROACTIVE_HIGH_WATERMARK);
+        }
+
+        private synchronized MemoryGrowthResult growTo(
+                long minimumCommittedBytes,
+                MemoryGrowthReason reason) {
+            if (sliceClosed.get()) {
+                return MemoryGrowthResult.denied(
+                        reason, 0L, committedBytes.get(), limitBytes, "memory slice is closed");
+            }
+
+            long current = committedBytes.get();
+            if (minimumCommittedBytes <= current) {
+                return MemoryGrowthResult.approved(
+                        reason, 0L, 0L, current, current, limitBytes);
+            }
+
+            long requestedAdditional;
+            try {
+                requestedAdditional = Math.subtractExact(minimumCommittedBytes, current);
+            } catch (ArithmeticException overflow) {
+                return MemoryGrowthResult.denied(
+                        reason, Long.MAX_VALUE, current, limitBytes, "requested capacity overflow");
+            }
+
+            if (minimumCommittedBytes > limitBytes) {
+                return MemoryGrowthResult.denied(
+                        reason, requestedAdditional, current, limitBytes,
+                        "actor hard memory limit reached");
+            }
+
+            long target = growthTarget(current, minimumCommittedBytes);
+            long grant = target - current;
+            MemoryGrowthRequest request = new MemoryGrowthRequest(
+                    owner, reason, requestedAdditional, usedBytes.get(), current, limitBytes,
+                    target, privateMemoryCommittedBytes.get(), policyCeiling.maxHeapBytes());
+
+            if (!memoryGovernor.allow(request)) {
+                return MemoryGrowthResult.denied(
+                        reason, requestedAdditional, current, limitBytes,
+                        "VM memory governor denied growth");
+            }
+
+            if (!reservePrivateRuntimeCapacity(grant)) {
+                return MemoryGrowthResult.denied(
+                        reason, requestedAdditional, current, limitBytes,
+                        "aggregate runtime limit exceeded: private-actor committed memory budget exhausted");
+            }
+
+            committedBytes.set(target);
+            return MemoryGrowthResult.approved(
+                    reason, requestedAdditional, grant, current, target, limitBytes);
+        }
+
+        private long growthTarget(long current, long minimumRequired) {
+            long step = Math.max(memoryConfig.minGrowthBytes(), current);
+            long candidate;
+            try {
+                candidate = Math.addExact(current, step);
+            } catch (ArithmeticException overflow) {
+                candidate = limitBytes;
+            }
+            candidate = Math.max(candidate, minimumRequired);
+
+            long quantum = memoryConfig.minGrowthBytes();
+            long remainder = candidate % quantum;
+            if (remainder != 0) {
+                long padding = quantum - remainder;
+                try {
+                    candidate = Math.addExact(candidate, padding);
+                } catch (ArithmeticException overflow) {
+                    candidate = limitBytes;
+                }
+            }
+            return Math.min(candidate, limitBytes);
         }
 
         private void requireCurrentOwner() {
@@ -190,11 +413,13 @@ public final class ActorRuntime implements AutoCloseable {
         @Override
         public synchronized void close() {
             if (!sliceClosed.compareAndSet(false, true)) return;
-            long bytes = usedBytes.getAndSet(0);
-            if (bytes != 0) {
-                long aggregate = privateMemoryBytes.addAndGet(-bytes);
+            long used = usedBytes.getAndSet(0);
+            if (used != 0) {
+                long aggregate = privateMemoryBytes.addAndGet(-used);
                 if (aggregate < 0) privateMemoryBytes.set(0);
             }
+            long committed = committedBytes.getAndSet(0);
+            releasePrivateRuntimeCapacity(committed);
         }
     }
 
@@ -424,21 +649,28 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private void reservePrivateRuntimeBytes(long bytes, ActorId owner, String purpose) {
+    private boolean reservePrivateRuntimeCapacity(long bytes) {
+        if (bytes < 0) throw new IllegalArgumentException("private actor capacity growth cannot be negative");
+        if (bytes == 0) return true;
         while (true) {
-            long current = privateMemoryBytes.get();
+            long current = privateMemoryCommittedBytes.get();
             long next;
             try {
                 next = Math.addExact(current, bytes);
             } catch (ArithmeticException overflow) {
-                throw new IllegalStateException(purpose + " aggregate accounting overflow");
+                return false;
             }
-            if (next > policyCeiling.maxHeapBytes()) {
-                throw new IllegalStateException(purpose + " aggregate runtime limit exceeded for " + owner
-                        + ": requested=" + bytes + " used=" + current
-                        + " runtimeLimit=" + policyCeiling.maxHeapBytes());
-            }
-            if (privateMemoryBytes.compareAndSet(current, next)) return;
+            if (next > policyCeiling.maxHeapBytes()) return false;
+            if (privateMemoryCommittedBytes.compareAndSet(current, next)) return true;
+        }
+    }
+
+    private void releasePrivateRuntimeCapacity(long bytes) {
+        if (bytes == 0) return;
+        long remaining = privateMemoryCommittedBytes.addAndGet(-bytes);
+        if (remaining < 0) {
+            privateMemoryCommittedBytes.addAndGet(bytes);
+            throw new IllegalStateException("private actor committed memory accounting underflow");
         }
     }
 
