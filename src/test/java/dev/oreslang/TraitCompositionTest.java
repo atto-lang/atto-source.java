@@ -714,7 +714,7 @@ final class TraitCompositionTest {
                             pub value() => int { return 1; }
                           }
 
-                          let Local value;
+                          let Local value = 1;
                           return;
                         }
                         """)));
