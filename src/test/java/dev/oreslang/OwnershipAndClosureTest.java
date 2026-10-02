@@ -1247,6 +1247,85 @@ final class OwnershipAndClosureTest {
         assertTrue(error.getMessage().contains("cannot be supplied outside"));
     }
 
+    @Test
+    void copyStructMethodValueCapturesValueSnapshot() throws Exception {
+        String output = run("""
+                struct Counter {
+                  pub let int count = 1;
+
+                  pub read() => int {
+                    return self.count;
+                  }
+                }
+
+                pub fnc main() => void {
+                  let Counter counter = Counter {};
+                  val (() -> int) read = counter.read;
+                  counter.count = 2;
+                  stdio.stdout.write(read());
+                  stdio.stdout.write(counter.read());
+                  return;
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
+    void moveOnlyStructMethodValueConsumesOwnedReceiver() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        struct Holder {
+                          pub let Box box = new Box();
+
+                          pub read() => int {
+                            return self.box.value;
+                          }
+                        }
+
+                        fnc bad() => void {
+                          let Holder holder = Holder {};
+                          val (() -> int) read = holder.read;
+                          stdio.println(holder.read());
+                          stdio.println(read());
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("moved value 'holder'"));
+    }
+
+    @Test
+    void borrowedMoveOnlyStructCannotEscapeThroughMethodValue() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        struct Holder {
+                          pub let Box box = new Box();
+
+                          pub read() => int {
+                            return self.box.value;
+                          }
+                        }
+
+                        fnc bad(&Holder holder) => void {
+                          val (() -> int) read = holder.read;
+                          stdio.println(read());
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("persistent method value"));
+        assertTrue(error.getMessage().contains("borrowed non-Copy struct"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership.ores")
