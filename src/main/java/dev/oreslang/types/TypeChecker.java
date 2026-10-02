@@ -669,16 +669,14 @@ public final class TypeChecker {
                     }
                     Ast.ClassDecl klass = findClass(named.name());
                     if (klass != null) {
-                        Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
-                        if (method == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
-                        Set<String> methodGenerics = new HashSet<>(klass.genericParameters());
-                        methodGenerics.addAll(method.genericParameters());
+                        ResolvedMethod resolved = findResolvedMethod(named, member.member(), call.arguments().size());
+                        if (resolved == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
                         for (int i = 0; i < call.arguments().size(); i++) {
-                            Type expected = resolveParam(method.parameters().get(i), methodGenerics, named);
+                            Type expected = resolvedMethodParameter(resolved, resolved.method().parameters().get(i));
                             validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
                             requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected, "argument " + (i + 1));
                         }
-                        return resolve(method.returnType(), methodGenerics, named);
+                        return resolvedMethodReturn(resolved);
                     }
                 }
             }
@@ -734,8 +732,9 @@ public final class TypeChecker {
                     if (field != null) return field;
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
-                        Ast.MethodDecl method = methods.getFirst();
-                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
+                        ResolvedMethod resolved = findResolvedMethod(named, member.member(), methods.getFirst().arity());
+                        if (resolved == null) throw new IllegalArgumentException("unknown method '" + member.member() + "' on " + named.name());
+                        return resolvedMethodFunction(resolved);
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -1033,9 +1032,9 @@ public final class TypeChecker {
         if (iterable instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                Ast.MethodDecl iterator = findMethod(klass, "Symbol.iterator", 0, new LinkedHashSet<>());
+                ResolvedMethod iterator = findResolvedMethod(named, "Symbol.iterator", 0);
                 if (iterator != null) {
-                    Type result = resolve(iterator.returnType(), Set.copyOf(iterator.genericParameters()), named);
+                    Type result = resolvedMethodReturn(iterator);
                     if (result instanceof ListType list) return list.element();
                     if (result instanceof Tuple tuple) return iterableElementType(tuple);
                     throw new IllegalArgumentException("[Symbol.iterator]() must return Array<T>, List<T>, or a tuple in v0");
@@ -1182,6 +1181,62 @@ public final class TypeChecker {
         }
         seen.remove(klass);
         return null;
+    }
+
+    private ResolvedMethod findResolvedMethod(Named receiverType, String name, int arity) {
+        Ast.ClassDecl klass = findClass(receiverType.name());
+        if (klass == null) return null;
+        Named rootView = canonicalClassView(klass, receiverType);
+        return findResolvedMethod(klass, rootView, rootView, name, arity, new LinkedHashSet<>());
+    }
+
+    private ResolvedMethod findResolvedMethod(
+            Ast.ClassDecl klass,
+            Named klassType,
+            Named rootReceiverType,
+            String name,
+            int arity,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        try {
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.matchesArity(name, arity)) {
+                    return new ResolvedMethod(method, klass, canonicalClassView(klass, klassType), rootReceiverType);
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Named parentType = resolveParentView(klass, klassType, parentRef, parent);
+                ResolvedMethod candidate = findResolvedMethod(
+                        parent, parentType, rootReceiverType, name, arity, seen);
+                if (candidate != null) return candidate;
+            }
+            return null;
+        } finally {
+            seen.remove(klass);
+        }
+    }
+
+    private Type resolvedMethodParameter(ResolvedMethod resolved, Ast.Param param) {
+        Set<String> generics = new HashSet<>(resolved.owner().genericParameters());
+        generics.addAll(resolved.method().genericParameters());
+        Type raw = resolveParam(param, generics, resolved.receiverType());
+        return resolveSharedGeneric(raw, classGenericBindings(resolved.owner(), resolved.ownerType()));
+    }
+
+    private Type resolvedMethodReturn(ResolvedMethod resolved) {
+        Set<String> generics = new HashSet<>(resolved.owner().genericParameters());
+        generics.addAll(resolved.method().genericParameters());
+        Type raw = resolve(resolved.method().returnType(), generics, resolved.receiverType());
+        return resolveSharedGeneric(raw, classGenericBindings(resolved.owner(), resolved.ownerType()));
+    }
+
+    private Function resolvedMethodFunction(ResolvedMethod resolved) {
+        List<Type> parameters = resolved.method().parameters().stream()
+                .map(param -> resolvedMethodParameter(resolved, param))
+                .toList();
+        return new Function(parameters, resolvedMethodReturn(resolved));
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
