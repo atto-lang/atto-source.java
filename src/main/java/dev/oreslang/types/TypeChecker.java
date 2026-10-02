@@ -1588,6 +1588,158 @@ public final class TypeChecker {
         return new Record(members);
     }
 
+    private Record traitCapabilityShape(Ast.TraitDecl trait, Set<Ast.TraitDecl> stack) {
+        if (!stack.add(trait)) {
+            throw new IllegalArgumentException("trait capability cycle involving '" + trait.name() + "'");
+        }
+
+        Map<String, Type> members = new LinkedHashMap<>();
+        Set<String> generics = Set.copyOf(trait.genericParameters());
+
+        for (Ast.TypeRef nestedRef : trait.traits()) {
+            Record nested = instantiateTraitShape(nestedRef, generics, null, stack);
+            for (Map.Entry<String, Type> inherited : nested.members().entrySet()) {
+                mergeMember(members, inherited.getKey(), inherited.getValue(),
+                        "trait capability composition of " + trait.name());
+            }
+        }
+
+        for (Ast.FieldDecl field : trait.fields()) {
+            if (field.visibility() != Ast.Visibility.PUBLIC) continue;
+            mergeMember(members, field.name(), resolve(field.type(), generics, null),
+                    "trait " + trait.name());
+        }
+
+        for (Ast.MethodDecl method : trait.methods()) {
+            if (method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) continue;
+            Set<String> all = new HashSet<>(generics);
+            all.addAll(method.genericParameters());
+            mergeMember(members, methodKey(method.name(), method.arity()),
+                    functionType(method.parameters(), method.returnType(), all, null),
+                    "trait " + trait.name());
+        }
+
+        stack.remove(trait);
+        return new Record(members);
+    }
+
+    private Record instantiateTraitShape(
+            Ast.TypeRef ref,
+            Set<String> surroundingGenerics,
+            Type self,
+            Set<Ast.TraitDecl> stack) {
+        Ast.TraitDecl trait = findTrait(ref.name());
+        if (trait == null) {
+            throw new IllegalArgumentException("unknown trait '" + ref.name() + "'");
+        }
+
+        Record raw = traitCapabilityShape(trait, stack);
+        List<Type> args;
+        if (ref.inferArguments()) {
+            args = trait.genericParameters().stream().map(ignored -> (Type) Unknown.INSTANCE).toList();
+        } else {
+            if (ref.arguments().size() != trait.genericParameters().size()) {
+                throw new IllegalArgumentException("trait '" + trait.name() + "' expects "
+                        + trait.genericParameters().size() + " type argument(s), got "
+                        + ref.arguments().size() + "; use <> for inference");
+            }
+            args = ref.arguments().stream().map(arg -> resolve(arg, surroundingGenerics, self)).toList();
+        }
+        return instantiateContractShape(raw, trait.genericParameters(), args, "trait " + trait.name());
+    }
+
+    private Record instantiateInterfaceShape(
+            Ast.TypeRef ref,
+            Set<String> surroundingGenerics,
+            Type self) {
+        Ast.InterfaceDecl iface = findInterface(ref.name());
+        if (iface == null) {
+            throw new IllegalArgumentException("unknown interface '" + ref.name() + "'");
+        }
+
+        Record raw = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+        List<Type> args;
+        if (ref.inferArguments()) {
+            args = iface.genericParameters().stream().map(ignored -> (Type) Unknown.INSTANCE).toList();
+        } else {
+            if (ref.arguments().size() != iface.genericParameters().size()) {
+                throw new IllegalArgumentException("interface '" + iface.name() + "' expects "
+                        + iface.genericParameters().size() + " type argument(s), got "
+                        + ref.arguments().size() + "; use <> for inference");
+            }
+            args = ref.arguments().stream().map(arg -> resolve(arg, surroundingGenerics, self)).toList();
+        }
+        return instantiateContractShape(raw, iface.genericParameters(), args, "interface " + iface.name());
+    }
+
+    private Record instantiateContractShape(
+            Record raw,
+            List<String> parameters,
+            List<Type> arguments,
+            String owner) {
+        if (parameters.size() != arguments.size()) {
+            throw new IllegalArgumentException("internal generic arity mismatch for " + owner);
+        }
+        LinkedHashMap<String, Type> substitutions = new LinkedHashMap<>();
+        for (int i = 0; i < parameters.size(); i++) {
+            substitutions.put(parameters.get(i), arguments.get(i));
+        }
+        return (Record) substituteGenerics(raw, substitutions);
+    }
+
+    private Record contractShape(Ast.TypeRef ref, Set<String> generics, Type self) {
+        Ast.InterfaceDecl iface = findInterface(ref.name());
+        Ast.TraitDecl trait = findTrait(ref.name());
+        if (iface != null && trait != null) {
+            throw new IllegalArgumentException("ambiguous capability contract '" + ref.name()
+                    + "' names both an interface and a trait");
+        }
+        if (iface != null) return instantiateInterfaceShape(ref, generics, self);
+        if (trait != null) return instantiateTraitShape(ref, generics, self, new LinkedHashSet<>());
+        throw new IllegalArgumentException("unknown interface/trait contract '" + ref.name() + "'");
+    }
+
+    private Record contractShape(Named named) {
+        Ast.InterfaceDecl iface = findInterface(named.name());
+        Ast.TraitDecl trait = findTrait(named.name());
+        if (iface != null && trait != null) {
+            throw new IllegalArgumentException("ambiguous capability contract '" + named.name()
+                    + "' names both an interface and a trait");
+        }
+        if (iface != null) {
+            Record raw = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+            return instantiateContractShape(raw, iface.genericParameters(), named.arguments(), "interface " + iface.name());
+        }
+        if (trait != null) {
+            Record raw = traitCapabilityShape(trait, new LinkedHashSet<>());
+            return instantiateContractShape(raw, trait.genericParameters(), named.arguments(), "trait " + trait.name());
+        }
+        return null;
+    }
+
+    private Function contractMethod(Named named, String name, int arity) {
+        Record shape = contractShape(named);
+        if (shape == null) return null;
+        Type member = shape.members().get(methodKey(name, arity));
+        return member instanceof Function fn ? fn : null;
+    }
+
+    private List<Function> recordMethodsByName(Record shape, String name) {
+        String prefix = name + "$arity";
+        List<Function> methods = new ArrayList<>();
+        for (Map.Entry<String, Type> entry : shape.members().entrySet()) {
+            if (entry.getKey().startsWith(prefix) && entry.getValue() instanceof Function fn) {
+                methods.add(fn);
+            }
+        }
+        return List.copyOf(methods);
+    }
+
+    private List<Function> contractMethodsByName(Named named, String name) {
+        Record shape = contractShape(named);
+        return shape == null ? List.of() : recordMethodsByName(shape, name);
+    }
+
     private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
         LinkedHashMap<String, Ast.FieldDecl> fields = new LinkedHashMap<>();
