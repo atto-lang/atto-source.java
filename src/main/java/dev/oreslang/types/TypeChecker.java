@@ -296,6 +296,7 @@ public final class TypeChecker {
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
+            if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleShape(moduleNamespace);
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
@@ -343,6 +344,10 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
+                if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
+                return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
+            }
             Type callee = typeOf(call.callee(), env, generics, self);
             if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
             if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
