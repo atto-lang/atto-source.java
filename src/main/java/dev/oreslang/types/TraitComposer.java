@@ -295,9 +295,20 @@ public final class TraitComposer {
                                 applicationKey + "::" + raw.name()));
             }
 
+            Set<String> lexicalFields = new LinkedHashSet<>();
+            for (Ast.FieldDecl field : binding.declaration().fields()) lexicalFields.add(field.name());
+            Set<String> lexicalMethods = new LinkedHashSet<>();
+            for (Ast.MethodDecl method : binding.declaration().methods()) lexicalMethods.add(method.name());
+            for (String inheritedKey : inheritedMethods.keySet()) {
+                lexicalMethods.add(inheritedKey.substring(0, inheritedKey.lastIndexOf('/')));
+            }
+
             LinkedHashMap<String, Ast.MethodDecl> ownMethods = new LinkedHashMap<>();
             for (Ast.MethodDecl raw : binding.declaration().methods()) {
-                Ast.MethodDecl method = substitute(raw, substitutions);
+                validateTraitSelfAccess(binding.declaration().name(), raw.body(), lexicalFields, lexicalMethods);
+                Ast.MethodDecl method = withCompositionOwner(
+                        substitute(raw, substitutions),
+                        binding.declaration().name());
                 String key = methodKey(method);
                 Ast.MethodDecl previous = ownMethods.putIfAbsent(key, method);
                 if (previous != null) {
@@ -519,7 +530,131 @@ public final class TraitComposer {
                     parameters,
                     substitute(method.returnType(), effective),
                     annotations,
-                    method.body());
+                    method.body(),
+                    method.compositionOwner());
+        }
+
+        private Ast.MethodDecl withCompositionOwner(Ast.MethodDecl method, String owner) {
+            return new Ast.MethodDecl(
+                    method.name(),
+                    method.visibility(),
+                    method.isStatic(),
+                    method.isAbstract(),
+                    method.async(),
+                    method.explicitReceiverType(),
+                    method.genericParameters(),
+                    method.parameters(),
+                    method.returnType(),
+                    method.annotations(),
+                    method.body(),
+                    owner);
+        }
+
+        private void validateTraitSelfAccess(
+                String traitName,
+                List<Ast.Stmt> statements,
+                Set<String> fields,
+                Set<String> methods) {
+            for (Ast.Stmt statement : statements) {
+                if (statement instanceof Ast.BindingStmt binding) {
+                    validateTraitSelfAccess(traitName, binding.initializer(), fields, methods);
+                } else if (statement instanceof Ast.DestructureStmt destructure) {
+                    validateTraitSelfAccess(traitName, destructure.initializer(), fields, methods);
+                } else if (statement instanceof Ast.ReturnStmt returned && returned.value() != null) {
+                    validateTraitSelfAccess(traitName, returned.value(), fields, methods);
+                } else if (statement instanceof Ast.ExprStmt expression) {
+                    validateTraitSelfAccess(traitName, expression.expression(), fields, methods);
+                } else if (statement instanceof Ast.DeferStmt deferred) {
+                    validateTraitSelfAccess(traitName, deferred.expression(), fields, methods);
+                } else if (statement instanceof Ast.IfStmt conditional) {
+                    for (Ast.IfBranch branch : conditional.branches()) {
+                        validateTraitSelfAccess(traitName, branch.condition(), fields, methods);
+                        validateTraitSelfAccess(traitName, branch.body(), fields, methods);
+                    }
+                    validateTraitSelfAccess(traitName, conditional.elseBody(), fields, methods);
+                } else if (statement instanceof Ast.TryStmt attempted) {
+                    validateTraitSelfAccess(traitName, attempted.body(), fields, methods);
+                    validateTraitSelfAccess(traitName, attempted.catchBody(), fields, methods);
+                    validateTraitSelfAccess(traitName, attempted.finallyBody(), fields, methods);
+                } else if (statement instanceof Ast.ForOfStmt loop) {
+                    validateTraitSelfAccess(traitName, loop.iterable(), fields, methods);
+                    validateTraitSelfAccess(traitName, loop.body(), fields, methods);
+                } else if (statement instanceof Ast.ForStmt loop) {
+                    if (loop.initializer() != null) {
+                        validateTraitSelfAccess(traitName, List.of(loop.initializer()), fields, methods);
+                    }
+                    if (loop.condition() != null) {
+                        validateTraitSelfAccess(traitName, loop.condition(), fields, methods);
+                    }
+                    if (loop.update() != null) {
+                        validateTraitSelfAccess(traitName, loop.update(), fields, methods);
+                    }
+                    validateTraitSelfAccess(traitName, loop.body(), fields, methods);
+                }
+            }
+        }
+
+        private void validateTraitSelfAccess(
+                String traitName,
+                Ast.Expr expression,
+                Set<String> fields,
+                Set<String> methods) {
+            if (expression instanceof Ast.MemberExpr member) {
+                if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("self")) {
+                    if (!fields.contains(member.member()) && !methods.contains(member.member())) {
+                        throw new IllegalArgumentException(
+                                "trait '" + traitName + "' accesses undeclared self member '"
+                                        + member.member()
+                                        + "'; declare trait state or an abstract method requirement first");
+                    }
+                }
+                validateTraitSelfAccess(traitName, member.receiver(), fields, methods);
+            } else if (expression instanceof Ast.CallExpr call) {
+                validateTraitSelfAccess(traitName, call.callee(), fields, methods);
+                for (Ast.Expr argument : call.arguments()) {
+                    validateTraitSelfAccess(traitName, argument, fields, methods);
+                }
+            } else if (expression instanceof Ast.BinaryExpr binary) {
+                validateTraitSelfAccess(traitName, binary.left(), fields, methods);
+                validateTraitSelfAccess(traitName, binary.right(), fields, methods);
+            } else if (expression instanceof Ast.UnaryExpr unary) {
+                validateTraitSelfAccess(traitName, unary.operand(), fields, methods);
+            } else if (expression instanceof Ast.AssignExpr assignment) {
+                validateTraitSelfAccess(traitName, assignment.target(), fields, methods);
+                validateTraitSelfAccess(traitName, assignment.value(), fields, methods);
+            } else if (expression instanceof Ast.ConditionalExpr conditional) {
+                validateTraitSelfAccess(traitName, conditional.condition(), fields, methods);
+                validateTraitSelfAccess(traitName, conditional.whenTrue(), fields, methods);
+                validateTraitSelfAccess(traitName, conditional.whenFalse(), fields, methods);
+            } else if (expression instanceof Ast.IndexExpr indexed) {
+                validateTraitSelfAccess(traitName, indexed.receiver(), fields, methods);
+                validateTraitSelfAccess(traitName, indexed.index(), fields, methods);
+            } else if (expression instanceof Ast.NewExpr created) {
+                for (Ast.Expr argument : created.arguments()) {
+                    validateTraitSelfAccess(traitName, argument, fields, methods);
+                }
+            } else if (expression instanceof Ast.AwaitExpr awaited) {
+                validateTraitSelfAccess(traitName, awaited.expression(), fields, methods);
+            } else if (expression instanceof Ast.ListExpr list) {
+                for (Ast.Expr item : list.elements()) {
+                    validateTraitSelfAccess(traitName, item, fields, methods);
+                }
+            } else if (expression instanceof Ast.TupleExpr tuple) {
+                for (Ast.Expr item : tuple.elements()) {
+                    validateTraitSelfAccess(traitName, item, fields, methods);
+                }
+            } else if (expression instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField field : object.fields()) {
+                    validateTraitSelfAccess(traitName, field.value(), fields, methods);
+                }
+            } else if (expression instanceof Ast.LambdaExpr lambda) {
+                if (lambda.expressionBody() != null) {
+                    validateTraitSelfAccess(traitName, lambda.expressionBody(), fields, methods);
+                }
+                if (lambda.blockBody() != null) {
+                    validateTraitSelfAccess(traitName, lambda.blockBody(), fields, methods);
+                }
+            }
         }
 
         private List<MethodEntry> dedupeOrigins(List<MethodEntry> entries) {
