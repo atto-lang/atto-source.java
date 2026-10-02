@@ -1274,7 +1274,7 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
-            if (call.callee() instanceof Ast.NameExpr name) {
+            if (call.callee() instanceof Ast.NameExpr name && env.lookup(name.name()) == null) {
                 Ast.FunctionDecl target = findFunction(name.name());
                 if (target != null && !target.genericParameters().isEmpty()) {
                     List<Type> actualTypes = call.arguments().stream()
@@ -1290,7 +1290,9 @@ public final class TypeChecker {
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
+                if (member.receiver() instanceof Ast.NameExpr namespace
+                        && env.lookup(namespace.name()) == null
+                        && modules.containsKey(namespace.name())) {
                     Ast.ModuleDecl module = modules.get(namespace.name());
                     Ast.FunctionDecl target = module.declarations().stream()
                             .filter(Ast.FunctionDecl.class::isInstance)
