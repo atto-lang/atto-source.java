@@ -198,6 +198,14 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      not on the lexical block, and runs LIFO when that invocation exits.
 *)
 
+(* Reserved keywords:
+   - "of", "is", and "as" are globally reserved tokens.
+   - They may appear only in grammar positions assigned to those keywords.
+   - They are never IDENT tokens and therefore cannot name variables, parameters,
+     callables, modules, classes, interfaces, fields, methods, type aliases,
+     generic parameters, namespaces, import aliases, or members.
+*)
+
 (* Semantic restrictions:
    - Each source file is a separately versioned compilation/code unit and is the
      default package identity when no explicit namespace is declared.
