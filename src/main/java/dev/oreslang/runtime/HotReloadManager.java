@@ -85,7 +85,7 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
-    public synchronized Generation loadAndStart(String name, String sourceText) {
+    public Generation loadAndStart(String name, String sourceText) {
         Generation generation = load(name, sourceText);
         generation.start();
         return generation;
@@ -202,7 +202,6 @@ public final class HotReloadManager implements AutoCloseable {
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
-        public Context context() { return context; }
         public Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
         public boolean started() { return started.get(); }
