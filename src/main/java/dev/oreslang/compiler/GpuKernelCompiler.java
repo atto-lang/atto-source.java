@@ -410,6 +410,49 @@ public final class GpuKernelCompiler {
         return new GpuProgram(BACKEND, source, digest(source), metadata, batches, requiredExtensions);
     }
 
+    private List<GpuBatch> emitBatchDispatchers(StringBuilder out) {
+        LinkedHashMap<String, List<Target>> groups = new LinkedHashMap<>();
+        for (Target target : lambdaTargets) {
+            if (target.mode == Ast.GpuMode.PARALLEL && target.batchId != null) {
+                groups.computeIfAbsent(target.batchId, ignored -> new ArrayList<>()).add(target);
+            }
+        }
+
+        ArrayList<GpuBatch> batches = new ArrayList<>();
+        for (Map.Entry<String, List<Target>> entry : groups.entrySet()) {
+            List<Target> targets = entry.getValue();
+            boolean dispatcherEligible = true;
+            for (Target target : targets) {
+                if (!target.parameters.isEmpty() || !isVoid(inferLambdaResult(target))) {
+                    dispatcherEligible = false;
+                    break;
+                }
+            }
+
+            String dispatcher = null;
+            if (dispatcherEligible) {
+                dispatcher = "ores_batch_" + sanitize(entry.getKey());
+                out.append("__kernel void ").append(dispatcher).append("() {\n");
+                out.append("  ulong __ores_task = (ulong)get_global_id(0);\n");
+                out.append("  switch (__ores_task) {\n");
+                for (int i = 0; i < targets.size(); i++) {
+                    out.append("    case ").append(i).append("UL: ")
+                            .append(targets.get(i).helperSymbol).append("(); break;\n");
+                }
+                out.append("    default: break;\n");
+                out.append("  }\n");
+                out.append("}\n\n");
+            }
+
+            batches.add(new GpuBatch(
+                    entry.getKey(),
+                    dispatcher,
+                    targets.size(),
+                    targets.stream().map(target -> target.kernelSymbol).toList()));
+        }
+        return List.copyOf(batches);
+    }
+
     private void emitHelper(StringBuilder out, Target target, Ast.TypeRef resultType) {
         out.append("static inline ").append(cScalar(resultType)).append(' ')
                 .append(target.helperSymbol).append('(')
