@@ -217,8 +217,28 @@ public final class TypeChecker {
         }
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null, fn.nonLexical());
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) {
+            Type parameterType = resolveParam(param, generics, null);
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                validateActorCallableBoundaryType(
+                        parameterType,
+                        fn.actorKind(),
+                        false,
+                        "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
+            }
+            env.define(
+                    param.name(),
+                    parameterType,
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        }
         Type returns = resolve(fn.returnType(), generics, null);
+        if (fn.actorKind() != Ast.ActorKind.NONE) {
+            validateActorCallableBoundaryType(
+                    returns,
+                    fn.actorKind(),
+                    true,
+                    "return type of actor callable '" + module + "." + fn.name() + "'");
+        }
         Ast.ActorKind previousActorKind = currentActorKind;
         currentActorKind = fn.actorKind();
         try {
