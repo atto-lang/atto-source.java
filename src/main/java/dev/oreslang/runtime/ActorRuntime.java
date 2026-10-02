@@ -481,6 +481,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong writtenBytes = new AtomicLong();
         private final AtomicLong headerBytes = new AtomicLong();
         private final AtomicInteger headerCount = new AtomicInteger();
+        private final AtomicBoolean statusSet = new AtomicBoolean();
+        private final AtomicBoolean responseStarted = new AtomicBoolean();
         private final AtomicBoolean completed = new AtomicBoolean();
 
         private HttpResponseCapability(
@@ -498,6 +500,7 @@ public final class ActorRuntime implements AutoCloseable {
         public long headerBytes() { return headerBytes.get(); }
         public int headerCount() { return headerCount.get(); }
         public boolean completed() { return completed.get(); }
+        public boolean responseStarted() { return responseStarted.get(); }
 
         private ActorCell<?> requireOwner(String operation) {
             ActorCell<?> cell = currentActor.get();
@@ -514,16 +517,32 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void status(int statusCode) throws IOException {
             requireOwner("status");
+            if (responseStarted.get()) {
+                throw new IllegalStateException("HTTP status cannot change after response streaming starts");
+            }
             if (statusCode < 100 || statusCode > 599) {
                 throw new IllegalArgumentException("invalid HTTP status code " + statusCode);
+            }
+            if (!statusSet.compareAndSet(false, true)) {
+                throw new IllegalStateException("HTTP response status may be set only once");
             }
             transport.status(statusCode);
         }
 
         public void header(String name, String value) throws IOException {
             requireOwner("header");
+            if (responseStarted.get()) {
+                throw new IllegalStateException("HTTP headers cannot change after response streaming starts");
+            }
             Objects.requireNonNull(name, "header name");
             Objects.requireNonNull(value, "header value");
+            if (name.length() > 256) {
+                throw new HttpResponseLimitExceededException("HTTP response header name exceeds 256 characters");
+            }
+            if (value.length() > MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES) {
+                throw new HttpResponseLimitExceededException(
+                        "HTTP response header value exceeds metadata ceiling");
+            }
             if (!name.matches("[!#$%&'*+.^_|~0-9A-Za-z-]+")) {
                 throw new IllegalArgumentException("invalid HTTP header name");
             }
@@ -566,6 +585,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "untrusted actor HTTP response limit exceeded: requested="
                                 + requested + " remaining=" + remaining + " max=" + maxBytes);
             }
+            responseStarted.set(true);
             int before = source.remaining();
             int written = transport.write(source);
             if (written < 0 || written > before || source.remaining() != before - written) {
@@ -578,11 +598,13 @@ public final class ActorRuntime implements AutoCloseable {
 
         public void flush() throws IOException {
             requireOwner("flush");
+            responseStarted.set(true);
             transport.flush();
         }
 
         public void complete() throws IOException {
             requireOwner("complete");
+            responseStarted.set(true);
             if (completed.compareAndSet(false, true)) {
                 transport.complete();
             }
