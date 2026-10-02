@@ -41,7 +41,7 @@ public final class Parser {
 
             if (match(DEFINE)) {
                 if (modifiers.shared || modifiers.untrusted) {
-                    throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+                    throw error(previous(), "actor modifiers 'shared'/'untrusted' must modify an actor declaration");
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
@@ -161,7 +161,7 @@ public final class Parser {
             }
             return parseActorClass(actorKind);
         }
-        if (modifiers.shared || modifiers.untrusted) throw error(previous(), "'shared' must modify an actor declaration or actor fnc");
+        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration or actor fnc");
         if (modifiers.untrusted) throw error(previous(), "'untrusted' must modify an actor declaration or actor fnc");
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
@@ -242,6 +242,7 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
+            if (mods.untrusted) throw error(previous(), "'untrusted' is only valid on an actor declaration, not its members");
             if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
 
             if (isBindingKind(peek().type())) {
