@@ -510,7 +510,7 @@ public final class GpuKernelCompiler {
             out.append("  ").append(cScalar(inductionType)).append(' ').append(variableName(initializer.name()))
                     .append(" = (").append(cScalar(inductionType)).append(")get_global_id(0);\n");
             String bound = renderExpr(target.module, parallelLoop.bound, env);
-            launchExtent = bound;
+            launchExtent = parallelLoop.launchExtentExpression;
             out.append("  if (!(").append(variableName(initializer.name())).append(' ')
                     .append(parallelLoop.operator).append(' ').append(bound).append(")) return;\n");
             emitStatements(out, target.module, parallelLoop.loop.body(), env, "  ");
@@ -566,6 +566,9 @@ public final class GpuKernelCompiler {
                 || !left.name().equals(init.name())) return null;
         if (!isCanonicalIncrement(loop.update(), init.name())) return null;
 
+        String launchExtentExpression = launchExtentExpression(target, condition.right());
+        if (launchExtentExpression == null) return null;
+
         LinkedHashSet<String> mutableBuffers = new LinkedHashSet<>();
         for (Ast.Param param : target.parameters) {
             Ast.TypeRef type = resolveAlias(param.type(), target.module);
@@ -574,7 +577,24 @@ public final class GpuKernelCompiler {
         if (!parallelBoundSafe(condition.right(), mutableBuffers)) return null;
         if (!parallelBodySafe(target.module, loop.body(), init.name(), mutableBuffers)) return null;
 
-        return new ParallelLoop(loop, condition.operator(), condition.right());
+        return new ParallelLoop(loop, condition.operator(), condition.right(), launchExtentExpression);
+    }
+
+    private String launchExtentExpression(Target target, Ast.Expr bound) {
+        if (bound instanceof Ast.NameExpr name) {
+            for (Ast.Param param : target.parameters) {
+                if (!param.name().equals(name.name())) continue;
+                Ast.TypeRef type = resolveAlias(param.type(), target.module);
+                return isIntegerScalar(type) && !isBuffer(type) ? name.name() : null;
+            }
+            return null;
+        }
+        if (bound instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Long n
+                && n >= 0L) {
+            return Long.toString(n);
+        }
+        return null;
     }
 
     private boolean parallelBoundSafe(Ast.Expr expr, Set<String> mutableBuffers) {
@@ -1250,7 +1270,11 @@ public final class GpuKernelCompiler {
             Ast.TypeRef elementType) { }
 
     private record KernelEmission(GpuKernel metadata) { }
-    private record ParallelLoop(Ast.ForStmt loop, String operator, Ast.Expr bound) { }
+    private record ParallelLoop(
+            Ast.ForStmt loop,
+            String operator,
+            Ast.Expr bound,
+            String launchExtentExpression) { }
 
     private static final class LoweringEnv {
         private final LoweringEnv parent;
