@@ -465,7 +465,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         @Override
         public void close() {
-            requireOwnerAndOpen();
+            openMemory(); // owner + liveness check before invalidation
             if (!blockClosed.compareAndSet(false, true)) return;
             zeroAndDetachMemory();
             slice.unregister(this);
