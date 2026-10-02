@@ -1,0 +1,56 @@
+[help]
+url = "https://github.com/ores-truffle-oreslang/oreslang-source.java/blob/main/docs/COMPILER_OPTIONS.md"
+columns = ["options", "env", "type", "description"]
+
+[env]
+# Compiler invocations must not silently import project .env files. Ambient
+# compiler policy comes from the real process environment or explicit flags.
+load = false
+
+[parse]
+allow_unknown = false
+positionals_env = "ORES_POSITIONALS"
+unknown_options_env = "ORES_UNKNOWN_OPTIONS"
+errors_env = "ORES_FLAG_ERRORS"
+
+[flags.strict]
+env = "ORES_COMPILER_STRICT"
+aliases = ["strict", "strict-compiler"]
+type = "bool"
+help = "Enable the Oreslang strict compiler umbrella."
+
+[flags.implicit_any]
+env = "ORES_IMPLICIT_ANY"
+aliases = ["implicit-any"]
+type = "bool"
+help = "Allow compiler-created any. Use --no-implicit-any to reject it."
+
+[flags.implicit_unknown]
+env = "ORES_IMPLICIT_UNKNOWN"
+aliases = ["implicit-unknown"]
+type = "bool"
+help = "Allow compiler-created unknown. Use --no-implicit-unknown to reject it."
+
+[flags.strict_isolate]
+env = "ORES_STRICT_ISOLATE"
+aliases = ["strict-isolate"]
+type = "bool"
+help = "Use the strict FaaS isolate capability policy."
+
+[flags.mode]
+env = "ORES_EXECUTION_MODE"
+aliases = ["mode"]
+type = "string"
+help = "Execution mode: aot, jit, or hybrid."
+
+[flags.platform]
+env = "ORES_PLATFORM"
+aliases = ["platform"]
+type = "string"
+help = "Execution platform: server, windows, macos, linux, android, or ios."
+
+[flags.allow]
+env = "ORES_ADDITIONAL_CAPABILITIES"
+aliases = ["allow"]
+type = "string"
+help = "Comma-separated additional isolate capabilities."
