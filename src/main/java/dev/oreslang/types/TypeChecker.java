@@ -105,6 +105,7 @@ public final class TypeChecker {
     }
 
     private void validate(Ast.Program program) {
+        validateLoopControl(program);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
@@ -117,6 +118,104 @@ public final class TypeChecker {
                 else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
                 else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
             }
+        }
+    }
+
+    private void validateLoopControl(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    validateLoopControlBlock(fn.body(), 0);
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        validateLoopControlBlock(method.body(), 0);
+                    }
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        if (field.initializer() != null) validateLoopControlExpr(field.initializer());
+                    }
+                } else if (decl instanceof Ast.FieldDecl field && field.initializer() != null) {
+                    validateLoopControlExpr(field.initializer());
+                }
+            }
+        }
+    }
+
+    private void validateLoopControlBlock(List<Ast.Stmt> body, int loopDepth) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BreakStmt) {
+                if (loopDepth == 0) throw new IllegalArgumentException("'break' is only valid inside a loop");
+                continue;
+            }
+            if (stmt instanceof Ast.ContinueStmt) {
+                if (loopDepth == 0) throw new IllegalArgumentException("'continue' is only valid inside a loop");
+                continue;
+            }
+            if (stmt instanceof Ast.BindingStmt binding) {
+                validateLoopControlExpr(binding.initializer());
+            } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                validateLoopControlExpr(destructure.initializer());
+            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
+                validateLoopControlExpr(ret.value());
+            } else if (stmt instanceof Ast.ExprStmt expression) {
+                validateLoopControlExpr(expression.expression());
+            } else if (stmt instanceof Ast.DeferStmt defer) {
+                validateLoopControlExpr(defer.expression());
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    validateLoopControlExpr(branch.condition());
+                    validateLoopControlBlock(branch.body(), loopDepth);
+                }
+                validateLoopControlBlock(conditional.elseBody(), loopDepth);
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                validateLoopControlBlock(attempted.body(), loopDepth);
+                validateLoopControlBlock(attempted.catchBody(), loopDepth);
+                validateLoopControlBlock(attempted.finallyBody(), loopDepth);
+            } else if (stmt instanceof Ast.ForOfStmt loop) {
+                validateLoopControlExpr(loop.iterable());
+                validateLoopControlBlock(loop.body(), loopDepth + 1);
+            } else if (stmt instanceof Ast.ForStmt loop) {
+                if (loop.initializer() != null) validateLoopControlBlock(List.of(loop.initializer()), loopDepth);
+                if (loop.condition() != null) validateLoopControlExpr(loop.condition());
+                if (loop.update() != null) validateLoopControlExpr(loop.update());
+                validateLoopControlBlock(loop.body(), loopDepth + 1);
+            }
+        }
+    }
+
+    private void validateLoopControlExpr(Ast.Expr expr) {
+        if (expr instanceof Ast.BinaryExpr e) {
+            validateLoopControlExpr(e.left());
+            validateLoopControlExpr(e.right());
+        } else if (expr instanceof Ast.UnaryExpr e) {
+            validateLoopControlExpr(e.operand());
+        } else if (expr instanceof Ast.AssignExpr e) {
+            validateLoopControlExpr(e.target());
+            validateLoopControlExpr(e.value());
+        } else if (expr instanceof Ast.ConditionalExpr e) {
+            validateLoopControlExpr(e.condition());
+            validateLoopControlExpr(e.whenTrue());
+            validateLoopControlExpr(e.whenFalse());
+        } else if (expr instanceof Ast.CallExpr e) {
+            validateLoopControlExpr(e.callee());
+            for (Ast.Expr argument : e.arguments()) validateLoopControlExpr(argument);
+        } else if (expr instanceof Ast.MemberExpr e) {
+            validateLoopControlExpr(e.receiver());
+        } else if (expr instanceof Ast.IndexExpr e) {
+            validateLoopControlExpr(e.receiver());
+            validateLoopControlExpr(e.index());
+        } else if (expr instanceof Ast.NewExpr e) {
+            for (Ast.Expr argument : e.arguments()) validateLoopControlExpr(argument);
+        } else if (expr instanceof Ast.AwaitExpr e) {
+            validateLoopControlExpr(e.expression());
+        } else if (expr instanceof Ast.ListExpr e) {
+            for (Ast.Expr item : e.elements()) validateLoopControlExpr(item);
+        } else if (expr instanceof Ast.TupleExpr e) {
+            for (Ast.Expr item : e.elements()) validateLoopControlExpr(item);
+        } else if (expr instanceof Ast.ObjectExpr e) {
+            for (Ast.ObjectField field : e.fields()) validateLoopControlExpr(field.value());
+        } else if (expr instanceof Ast.LambdaExpr e) {
+            // A lambda is a new callable boundary: it cannot break/continue an outer loop.
+            validateLoopControlBlock(e.blockBody(), 0);
         }
     }
 
@@ -317,6 +416,7 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.BreakStmt || stmt instanceof Ast.ContinueStmt) return;
         if (stmt instanceof Ast.DeferStmt defer) {
             checkDefer(defer, env, generics, self);
             return;
