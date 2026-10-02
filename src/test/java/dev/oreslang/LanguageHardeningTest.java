@@ -16,6 +16,7 @@ final class LanguageHardeningTest {
                 import module foo from "../xyz";
                 import module {bar, baz} from '../xyz';
                 import class {x} from '../xyz';
+                import struct {Point} from '../xyz';
                 import fnc * as funcs from '../xyz';
                 import * as everything from './xyz';
 
@@ -24,12 +25,14 @@ final class LanguageHardeningTest {
                 end
                 """);
 
-        assertEquals(5, program.imports().size());
+        assertEquals(6, program.imports().size());
         assertEquals(Ast.ImportKind.MODULE, program.imports().getFirst().kind());
         assertEquals("foo", program.imports().getFirst().names().getFirst());
-        assertEquals("funcs", program.imports().get(3).namespace());
-        assertEquals(Ast.ImportKind.ALL, program.imports().get(4).kind());
-        assertEquals("everything", program.imports().get(4).namespace());
+        assertEquals(Ast.ImportKind.STRUCT, program.imports().get(3).kind());
+        assertEquals("Point", program.imports().get(3).names().getFirst());
+        assertEquals("funcs", program.imports().get(4).namespace());
+        assertEquals(Ast.ImportKind.ALL, program.imports().get(5).kind());
+        assertEquals("everything", program.imports().get(5).namespace());
     }
 
     @Test
