@@ -443,6 +443,15 @@ public final class TypeChecker {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
             }
+            if (call.callee() instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr builtin) {
+                if (builtin.name().equals("actor")) {
+                    return actorBuiltinCall(member.member(), call.arguments(), env, generics, self);
+                }
+                if (builtin.name().equals("process")) {
+                    return processBuiltinCall(member.member(), call.arguments(), env, generics, self);
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
                 if (receiver instanceof ClassNamespace classNamespace) {
@@ -497,8 +506,15 @@ public final class TypeChecker {
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
-            if (member.receiver() instanceof Ast.NameExpr name
-                    && (name.name().equals("process") || name.name().equals("actor"))) return Unknown.INSTANCE;
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
+                if (member.member().equals("self")) {
+                    return new Named("ActorRef", List.of(Unknown.INSTANCE));
+                }
+                return Unknown.INSTANCE;
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) {
+                return Unknown.INSTANCE;
+            }
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -951,6 +967,16 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Option<void> is invalid; use void for no return value");
                 yield new Named("Option", List.of(element));
             }
+            case "ActorRef", "Shared" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
+                }
+                yield new Named(ref.name(), List.of(resolve(ref.arguments().getFirst(), generics, self)));
+            }
+            case "MonitorRef" -> {
+                if (!ref.arguments().isEmpty()) throw new IllegalArgumentException("MonitorRef does not take type arguments");
+                yield new Named("MonitorRef", List.of());
+            }
             case "Fnc" -> {
                 List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
                 if (args.isEmpty()) throw new IllegalArgumentException("Fnc requires at least a result type");
@@ -967,6 +993,195 @@ public final class TypeChecker {
                 ref.name(),
                 ref.arguments().stream().map(arg -> substituteAliasType(arg, substitutions)).toList(),
                 ref.inferArguments());
+    }
+
+    private Type actorBuiltinCall(
+            String member,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        return switch (member) {
+            case "spawn" -> actorSpawnType(arguments, false, env, generics, self);
+            case "singleton" -> actorSpawnType(arguments, true, env, generics, self);
+            case "send" -> {
+                requireBuiltinArity("actor.send", arguments, 2);
+                Type messageType = actorMessageType(typeOf(arguments.getFirst(), env, generics, self), "actor.send target");
+                Type actual = unwrapShared(typeOfWithExpected(
+                        arguments.get(1),
+                        messageType,
+                        env,
+                        generics,
+                        self));
+                requireAssignable(actual, messageType, "actor.send message");
+                yield Primitive.VOID;
+            }
+            case "stop", "join" -> {
+                requireBuiltinArity("actor." + member, arguments, 1);
+                actorMessageType(typeOf(arguments.getFirst(), env, generics, self), "actor." + member + " target");
+                yield Primitive.BOOL;
+            }
+            case "status" -> {
+                requireBuiltinArity("actor.status", arguments, 1);
+                actorMessageType(typeOf(arguments.getFirst(), env, generics, self), "actor.status target");
+                yield actorStatusType();
+            }
+            case "monitor" -> {
+                if (arguments.size() != 1 && arguments.size() != 2) {
+                    throw new IllegalArgumentException("actor.monitor expects target or target, watcher");
+                }
+                actorMessageType(typeOf(arguments.getFirst(), env, generics, self), "actor.monitor target");
+                if (arguments.size() == 2) {
+                    Type watcherMessage = actorMessageType(
+                            typeOf(arguments.get(1), env, generics, self),
+                            "actor.monitor watcher");
+                    requireAssignable(downMessageType(), watcherMessage, "actor.monitor DOWN message");
+                }
+                yield new Named("MonitorRef", List.of());
+            }
+            case "demonitor" -> {
+                if (arguments.size() != 1 && arguments.size() != 2) {
+                    throw new IllegalArgumentException("actor.demonitor expects monitor or monitor, watcher");
+                }
+                Type monitor = typeOf(arguments.getFirst(), env, generics, self);
+                requireAssignable(monitor, new Named("MonitorRef", List.of()), "actor.demonitor monitor");
+                if (arguments.size() == 2) {
+                    actorMessageType(typeOf(arguments.get(1), env, generics, self), "actor.demonitor watcher");
+                }
+                yield Primitive.BOOL;
+            }
+            default -> throw new IllegalArgumentException("unknown actor API '" + member + "'");
+        };
+    }
+
+    private Type actorSpawnType(
+            List<Ast.Expr> arguments,
+            boolean singleton,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        int handlerIndex = singleton ? 1 : 0;
+        int stateIndex = singleton ? 2 : 1;
+        int minimum = singleton ? 2 : 1;
+        int maximum = singleton ? 3 : 2;
+        String api = singleton ? "actor.singleton" : "actor.spawn";
+
+        if (arguments.size() < minimum || arguments.size() > maximum) {
+            throw new IllegalArgumentException(
+                    api + " expects " + (singleton ? "name, handler[, initial_state]" : "handler[, initial_state]"));
+        }
+        if (singleton) {
+            requireAssignable(
+                    typeOf(arguments.getFirst(), env, generics, self),
+                    Primitive.STRING,
+                    "actor.singleton name");
+        }
+
+        Type handlerType = typeOf(arguments.get(handlerIndex), env, generics, self);
+        if (!(handlerType instanceof Function handler)) {
+            throw new IllegalArgumentException(api + " handler must be a function");
+        }
+
+        boolean stateful = arguments.size() == maximum;
+        int expectedArity = stateful ? 2 : 1;
+        if (handler.parameters().size() != expectedArity) {
+            throw new IllegalArgumentException(
+                    api + " handler must accept exactly " + expectedArity + " argument(s)");
+        }
+
+        Type messageType = handler.parameters().getFirst();
+        if (stateful) {
+            Type stateType = handler.parameters().get(1);
+            Type initialType = unwrapShared(typeOfWithExpected(
+                    arguments.get(stateIndex),
+                    stateType,
+                    env,
+                    generics,
+                    self));
+            requireAssignable(initialType, stateType, api + " initial state");
+            requireAssignable(handler.result(), stateType, api + " handler return state");
+        } else {
+            requireAssignable(handler.result(), Primitive.VOID, api + " stateless handler return");
+        }
+
+        return new Named("ActorRef", List.of(messageType));
+    }
+
+    private Type processBuiltinCall(
+            String member,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        return switch (member) {
+            case "gc" -> {
+                requireBuiltinArity("process.gc", arguments, 0);
+                yield new Record(Map.of(
+                        "scope", Primitive.STRING,
+                        "semantic_policy", Primitive.STRING,
+                        "backing_collector", Primitive.STRING,
+                        "host_gc_hint_enabled", Primitive.BOOL,
+                        "host_gc_hint_executed", Primitive.BOOL,
+                        "used_bytes_before", Primitive.INT,
+                        "used_bytes_after", Primitive.INT,
+                        "elapsed_nanos", Primitive.INT));
+            }
+            case "share_readonly" -> {
+                requireBuiltinArity("process.share_readonly", arguments, 1);
+                Type value = typeOf(arguments.getFirst(), env, generics, self);
+                yield new Named("Shared", List.of(value));
+            }
+            default -> throw new IllegalArgumentException("unknown process API '" + member + "'");
+        };
+    }
+
+    private Type actorMessageType(Type type, String where) {
+        Type actual = deref(type);
+        if (actual == Unknown.INSTANCE) return Unknown.INSTANCE;
+        if (actual instanceof Named named
+                && named.name().equals("ActorRef")
+                && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        throw new IllegalArgumentException(where + " must be ActorRef<T>");
+    }
+
+    private Type unwrapShared(Type type) {
+        Type actual = deref(type);
+        if (actual instanceof Named named
+                && named.name().equals("Shared")
+                && named.arguments().size() == 1) {
+            return named.arguments().getFirst();
+        }
+        return actual;
+    }
+
+    private Record downMessageType() {
+        return new Record(Map.of(
+                "event", Primitive.STRING,
+                "reason", Primitive.STRING,
+                "monitor_id", Primitive.STRING,
+                "actor_id", Primitive.STRING));
+    }
+
+    private Record actorStatusType() {
+        return new Record(Map.of(
+                "id", Primitive.STRING,
+                "state", Primitive.STRING,
+                "mailbox_messages", Primitive.INT,
+                "mailbox_bytes", Primitive.INT,
+                "active_message_bytes", Primitive.INT,
+                "owned_state_bytes", Primitive.INT,
+                "estimated_actor_heap_bytes", Primitive.INT,
+                "heap_backend", Primitive.STRING,
+                "physical_heap_isolation", Primitive.BOOL,
+                "manual_gc_requests", Primitive.INT));
+    }
+
+    private void requireBuiltinArity(String api, List<Ast.Expr> arguments, int arity) {
+        if (arguments.size() != arity) {
+            throw new IllegalArgumentException(api + " expects exactly " + arity + " argument(s)");
+        }
     }
 
     private Type nominalClassType(Ast.ClassDecl klass) {
