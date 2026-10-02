@@ -360,10 +360,6 @@ public final class TypeChecker {
 
                 Set<String> generics = Set.copyOf(fn.genericParameters());
                 for (Ast.Param param : fn.parameters()) {
-                    if (param.mutable()) {
-                        throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
-                                + "' cannot accept mut parameters because transported values are frozen snapshots");
-                    }
                     if (param.structural()) {
                         throw new IllegalArgumentException("singleton callable '" + module.name() + "." + fn.name()
                                 + "' cannot use structural parameters until structural Send is explicit");
@@ -434,9 +430,9 @@ public final class TypeChecker {
                         + "' cannot be generic until proxy Send constraints are explicit");
             }
             for (Ast.Param param : method.parameters()) {
-                if (param.mutable() || param.structural()) {
+                if (param.structural()) {
                     throw new IllegalArgumentException("singleton proxy method '" + klass.name() + "." + method.name()
-                            + "' cannot use mut or structural transported parameters");
+                            + "' cannot use structural transported parameters");
                 }
                 Type parameter = resolveParam(param, Set.of(), nominalClassType(klass));
                 if (!isActorSendableType(parameter, false)) {
