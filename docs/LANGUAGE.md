@@ -27,12 +27,36 @@ Imports are explicit about what kind of symbol is entering the compilation unit:
 ```ores
 import module foo from "../xyz";
 import module {foo, bar} from "../xyz";
-import class {x} from '../xyz';
-import fnc * as funcs from '../xyz';
-import * as x from './xyz';
+import class Widget from "../xyz";
+import class {Widget, ErrorInfo} from "../xyz";
+import fnc add from "../xyz";
+import fnc {add, subtract} from "../xyz";
+import fnc * as funcs from "../xyz";
+import * as package from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+Wildcard imports always require a namespace alias. Oreslang deliberately does **not** support an unqualified `import * from ...`: an unbounded wildcard may not inject names directly into file scope. Imported bindings also may not collide with local declarations or core/builtin names.
+
+For source-unit imports, the host build/bundling layer resolves paths. The incremental compiler validates resolved relative imports and verifies that each named module/class/function exists in the target unit, that functions are public, and that an unqualified selection is not ambiguous. Import syntax itself never grants filesystem access to a guest isolate.
+
+Java host interop uses an explicit `java:` path so host classes cannot be confused with source packages:
+
+```ores
+import class Math from "java:java.lang.Math";
+import fnc {abs, max} from "java:java.lang.Math";
+import fnc * as mathFns from "java:java.lang.Math";
+import * as JMath from "java:java.lang.Math";
+```
+
+A Java class import selects exactly one class and its Ores name must match the Java simple class name. Java classes cannot be imported as Ores modules. Named `fnc` imports invoke static host methods; wildcard forms remain namespaced.
+
+Java import authority comes only from the embedder. The source must be admitted with the `FFI` capability **and** the fully qualified class must be present in the embedding Context's host-class allowlist. The default restricted Context has an empty allowlist, `HostAccess.NONE`, and host class loading disabled. The language resolves an admitted Java class through Truffle `Env.lookupHostSymbol`; guest code never uses `Class.forName` as a lookup bypass. The launcher equivalent is:
+
+```text
+ores --allow=FFI --allow-host-class=java.lang.Math app.ores
+```
+
+Adversarial/strict FaaS isolates reject Java host imports even if `FFI` is requested.
 
 ## Module interfaces / OCaml-style module signatures
 

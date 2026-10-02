@@ -6,7 +6,7 @@
 2. The supervisor/launcher supplies an `IsolatePolicy`.
 3. Compiler admission rejects language APIs not in that policy.
 4. Runtime API facades repeat the authorization check.
-5. Graal host access, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
+5. Graal host access, host class lookup/loading, native access, environment access, guest-created threads, host IO, and unrestricted polyglot access are disabled by default in restricted contexts.
 6. Actors cannot exceed their configured mailbox capacity.
 7. Hot reload never requires loading executable native libraries.
 8. Every hot-loaded generation is a fresh guest context and may be mapped to a stronger Graal/native isolate by the production host.
@@ -27,6 +27,16 @@ iOS is treated as AOT-only by the execution-profile validator. Android may use A
 Native Image is fundamentally closed-world for Java classes. Oreslang therefore does not make hot reload depend on dynamically linking new Java/native code. The runtime/interpreter is part of the shipped artifact; newly downloaded Oreslang source (and later a stable serialized Ores IR) is treated as untrusted data, validated, then executed in a new generation.
 
 That makes the mechanism consistent across Windows, macOS, Linux, Android, and AOT-only targets. Platform-specific native dynamic linking can remain an optional trusted-host optimization, never a semantic dependency.
+
+## Java host interop boundary
+
+Java imports are a two-key boundary: the Oreslang policy must grant `FFI`, and the embedding Context must independently allowlist the exact fully qualified Java class. The restricted builder configures `allowHostClassLookup` from that set and always disables host class loading, so guest code cannot extend the class path.
+
+When a host class is allowlisted, the embedder constructs a narrow `HostAccess` policy from that class's explicitly enumerated public declared constructors, methods, and fields. Access inheritance is disabled. This intentionally avoids `HostAccess.ALL` and prevents ambient inherited reflection helpers such as `Object.getClass()` from becoming available merely because one safe class was admitted.
+
+The host-side policy builder may load an explicitly configured class in order to enumerate its members. Guest-language resolution never does that: Oreslang calls `TruffleLanguage.Env.lookupHostSymbol`, which re-applies the Context host-class filter. A class missing from the allowlist therefore fails at the Truffle boundary even if source text names it.
+
+Adversarial FaaS isolates fail closed and do not enable Java host imports. A future production FFI profile can introduce a reviewed class/member manifest rather than widening this default.
 
 ## Capability ownership
 

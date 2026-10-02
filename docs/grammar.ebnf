@@ -178,6 +178,15 @@ function_type_param
 type_args       = type_ref { "," type_ref } ;
 qualified_name  = IDENT { "." IDENT } ;
 
+(* Import-path semantics:
+   - wildcard imports always require "as" and never inject an unbounded symbol set
+     directly into file scope;
+   - a STRING_LITERAL beginning with "java:" names one fully-qualified Java host
+     class; "module" is invalid for such a path, and a "class" selection must use
+     that Java class's simple name;
+   - Java imports require host FFI capability plus an embedder class allowlist;
+     source syntax never grants host authority. *)
+
 (* Semicolons are recommended. stmt_terminator/member_terminator may be omitted
    only at an unambiguous structural boundary such as immediately before
    "}", "fi", or "end". Imports and namespace declarations keep explicit

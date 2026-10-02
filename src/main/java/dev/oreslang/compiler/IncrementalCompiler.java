@@ -48,7 +48,10 @@ public final class IncrementalCompiler {
             Ast.Program program = Parser.parse(entry.getValue());
             parsed.put(entry.getKey(), program);
             abiHashes.put(entry.getKey(), abiDigest(program));
-            dependencies.put(entry.getKey(), resolveDependencies(entry.getKey(), program, normalized.keySet()));
+        }
+        for (Map.Entry<String, Ast.Program> entry : parsed.entrySet()) {
+            dependencies.put(entry.getKey(), resolveDependencies(entry.getKey(), entry.getValue(), normalized.keySet()));
+            validateResolvedImports(entry.getKey(), entry.getValue(), parsed, normalized.keySet());
         }
 
         LinkedHashSet<String> dirty = new LinkedHashSet<>();
@@ -223,25 +226,94 @@ public final class IncrementalCompiler {
 
     private static Set<String> resolveDependencies(String unitId, Ast.Program program, Set<String> available) {
         LinkedHashSet<String> result = new LinkedHashSet<>();
-        Path parent = Path.of(unitId).getParent();
         for (Ast.ImportDecl imported : program.imports()) {
-            if (ImportRules.isJavaPath(imported.path())) continue;
-            String raw = imported.path().replace('\\', '/');
-            Path candidatePath = raw.startsWith(".")
-                    ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
-                    : Path.of(raw).normalize();
-            String candidate = normalizeUnitId(candidatePath.toString());
-            if (!available.contains(candidate) && !candidate.endsWith(".ores") && available.contains(candidate + ".ores")) {
-                candidate += ".ores";
-            }
-            if (available.contains(candidate)) {
-                result.add(candidate);
-            } else if (raw.startsWith(".")) {
-                throw new IllegalArgumentException("relative import '" + imported.path() + "' from '" + unitId
-                        + "' does not resolve to a supplied Oreslang source unit");
-            }
+            String target = resolveSourceImportTarget(unitId, imported.path(), available);
+            if (target != null) result.add(target);
         }
         return Set.copyOf(result);
+    }
+
+    private static String resolveSourceImportTarget(String unitId, String importPath, Set<String> available) {
+        if (ImportRules.isJavaPath(importPath)) return null;
+        String raw = importPath.replace('\\', '/');
+        Path parent = Path.of(unitId).getParent();
+        Path candidatePath = raw.startsWith(".")
+                ? (parent == null ? Path.of(raw) : parent.resolve(raw)).normalize()
+                : Path.of(raw).normalize();
+        String candidate = normalizeUnitId(candidatePath.toString());
+        if (!available.contains(candidate) && !candidate.endsWith(".ores") && available.contains(candidate + ".ores")) {
+            candidate += ".ores";
+        }
+        if (available.contains(candidate)) return candidate;
+        if (raw.startsWith(".")) {
+            throw new IllegalArgumentException("relative import '" + importPath + "' from '" + unitId
+                    + "' does not resolve to a supplied Oreslang source unit");
+        }
+        return null;
+    }
+
+    private static void validateResolvedImports(
+            String unitId,
+            Ast.Program program,
+            Map<String, Ast.Program> parsed,
+            Set<String> available) {
+        for (Ast.ImportDecl imported : program.imports()) {
+            ImportRules.validate(imported);
+            String targetId = resolveSourceImportTarget(unitId, imported.path(), available);
+            if (targetId == null) continue;
+            Ast.Program target = parsed.get(targetId);
+            if (target == null) throw new IllegalStateException("resolved import unit was not parsed: " + targetId);
+            if (imported.wildcard()) continue;
+
+            for (String name : imported.names()) {
+                int matches = switch (imported.kind()) {
+                    case MODULE -> countModules(target, name);
+                    case CLASS -> countClasses(target, name);
+                    case FUNCTION -> countPublicFunctions(target, name);
+                    case ALL -> throw new IllegalArgumentException("non-wildcard import-all is invalid");
+                };
+                if (matches == 0) {
+                    throw new IllegalArgumentException("import " + imported.kind().name().toLowerCase()
+                            + " '" + name + "' from '" + imported.path() + "' in '" + unitId
+                            + "' does not match an exported " + imported.kind().name().toLowerCase());
+                }
+                if (matches > 1) {
+                    throw new IllegalArgumentException("import " + imported.kind().name().toLowerCase()
+                            + " '" + name + "' from '" + imported.path() + "' in '" + unitId
+                            + "' is ambiguous in the target source unit");
+                }
+            }
+        }
+    }
+
+    private static int countModules(Ast.Program target, String name) {
+        int count = 0;
+        for (Ast.ModuleDecl module : target.modules()) {
+            if (!module.name().equals(Parser.ROOT_MODULE) && module.name().equals(name)) count++;
+        }
+        return count;
+    }
+
+    private static int countClasses(Ast.Program target, String name) {
+        int count = 0;
+        for (Ast.ModuleDecl module : target.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.ClassDecl klass && klass.name().equals(name)) count++;
+            }
+        }
+        return count;
+    }
+
+    private static int countPublicFunctions(Ast.Program target, String name) {
+        int count = 0;
+        for (Ast.ModuleDecl module : target.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.name().equals(name)) count++;
+            }
+        }
+        return count;
     }
 
     private static Map<String, Set<String>> reverseDependencies(Map<String, Set<String>> dependencies) {
