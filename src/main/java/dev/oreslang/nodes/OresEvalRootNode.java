@@ -428,6 +428,9 @@ public final class OresEvalRootNode extends RootNode {
 
         @SuppressWarnings("unchecked")
         private Object mutexMember(OresMutex.Lock<?> rawLock, String name) {
+            if (rawLock instanceof OresMutex.Shared<?>) {
+                context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex." + name);
+            }
             OresMutex.Lock<Object> lock = (OresMutex.Lock<Object>) rawLock;
             return switch (name) {
                 case "lock" -> (Invokable) args -> { requireZero(args, "Mutex.lock"); return lock.lock(); };
