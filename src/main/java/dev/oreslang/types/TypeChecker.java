@@ -249,6 +249,10 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
+                        + "' cannot be public; expose state through mailbox-dispatched methods");
+            }
             Type fieldType = classFieldType(klass, field);
             if (field.initializer() != null && field.type() != null) {
                 Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
