@@ -263,6 +263,9 @@ public final class OresEvalRootNode extends RootNode {
                     Object index = eval(target.index(), env);
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("index must be an integer");
                     int i = Math.toIntExact(number.longValue());
+                    if (receiver instanceof OresTuple) {
+                        throw new IllegalArgumentException("tuple elements are immutable");
+                    }
                     if (receiver instanceof List<?> raw) {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
                         list.set(i, value);
@@ -568,7 +571,7 @@ public final class OresEvalRootNode extends RootNode {
             return switch (op) {
                 case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
                 case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
-                case "==" -> Objects.equals(left, right); case "!=" -> !Objects.equals(left, right);
+                case "==" -> valueEquals(left, right); case "!=" -> !valueEquals(left, right);
                 case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
                 case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
@@ -609,6 +612,25 @@ public final class OresEvalRootNode extends RootNode {
             if (left instanceof Number a && right instanceof Number b) return Double.compare(a.doubleValue(), b.doubleValue());
             if (left instanceof String a && right instanceof String b) return a.compareTo(b);
             throw new IllegalArgumentException("values are not comparable");
+        }
+
+        private boolean valueEquals(Object left, Object right) {
+            if (left instanceof OresTuple || right instanceof OresTuple) {
+                if (!(left instanceof OresTuple leftTuple) || !(right instanceof OresTuple rightTuple)) return false;
+                return sequenceEquals(leftTuple, rightTuple);
+            }
+            if (left instanceof List<?> leftList && right instanceof List<?> rightList) {
+                return sequenceEquals(leftList, rightList);
+            }
+            return Objects.equals(left, right);
+        }
+
+        private boolean sequenceEquals(List<?> left, List<?> right) {
+            if (left.size() != right.size()) return false;
+            for (int i = 0; i < left.size(); i++) {
+                if (!valueEquals(left.get(i), right.get(i))) return false;
+            }
+            return true;
         }
 
         private boolean matchPattern(
