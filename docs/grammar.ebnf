@@ -110,6 +110,7 @@ statement       = binding_decl
                 | destructure_stmt
                 | return_stmt
                 | if_stmt
+                | match_stmt
                 | try_stmt
                 | defer_stmt
                 | for_stmt
@@ -123,6 +124,12 @@ if_stmt         = "if" condition [ ";" ] "do" { statement }
                   [ "else" { statement } ] "fi" ;
 condition       = condition_and { "|" condition_and } ;
 condition_and   = equality { "," equality } ;
+
+match_stmt      = "match" expression "{"
+                  option_match_arm option_match_arm
+                  "}" ;
+option_match_arm= "Some" "(" IDENT ")" "=>" block
+                | "None" "=>" block ;
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
@@ -263,6 +270,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - [Symbol.iterator]() may provide iterator behavior for for-of.
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
+   - Option<T> is a built-in two-state sum type. "Option" cannot be redefined,
+     and Some/None are unshadowable constructors in the value namespace.
+   - Option payload access requires an exhaustive match with exactly one
+     Some(binding) arm and one None arm. There is no unchecked unwrap form.
+   - Option<T> is Copy iff T is Copy. Some(value) owns its payload; a non-Copy
+     payload is moved into the option. match borrows by default, match take(...)
+     consumes, and match copy(...) requires a proven Copy option.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" and "take" are contextual in parameter position, not globally reserved.
    - self is an immutable receiver borrow by default and cannot be rebound.
