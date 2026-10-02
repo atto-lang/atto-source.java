@@ -134,6 +134,46 @@ final class AsyncAndNumericHardeningTest {
     }
 
     @Test
+    void futureCannotBecomeActorMessageOrSharedMemory() {
+        String actorProgram = """
+                define module app
+                  pub fnc worker(Future<int> pending) => void {
+                    return;
+                  }
+
+                  pub fnc main() => void {
+                    val ref = actor.spawn(worker);
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException actorFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(actorProgram)));
+        assertTrue(actorFailure.getMessage().contains("Future"));
+
+        String sharedProgram = """
+                define module app
+                  pub async fnc work() => int {
+                    return 1;
+                  }
+
+                  pub fnc main() => void {
+                    val pending = work();
+                    val shared = process.share_readonly(pending);
+                    return;
+                  }
+                end
+                """;
+
+        IllegalArgumentException sharedFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse(sharedProgram)));
+        assertTrue(sharedFailure.getMessage().contains("Future"));
+    }
+
+    @Test
     void asyncCallableCannotCaptureCallScopedBorrow() {
         String program = """
                 define module app
