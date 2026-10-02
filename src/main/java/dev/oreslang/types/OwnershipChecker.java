@@ -145,6 +145,18 @@ public final class OwnershipChecker {
             checkExpr(defer.expression(), scope, false);
             return;
         }
+        if (stmt instanceof Ast.AssertStmt asserted) {
+            checkExpr(asserted.condition(), scope, false);
+            return;
+        }
+        if (stmt instanceof Ast.AssumeStmt assumed) {
+            checkExpr(assumed.condition(), scope, false);
+            return;
+        }
+        if (stmt instanceof Ast.InvariantStmt invariant) {
+            checkExpr(invariant.condition(), scope, false);
+            return;
+        }
         if (stmt instanceof Ast.IfStmt conditional) {
             Map<VarState, StateSnapshot> base = stateSnapshot(scope);
             List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
@@ -285,6 +297,39 @@ public final class OwnershipChecker {
                     ? left
                     : new ValueInfo(left.type, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.MatchExpr matched) {
+            // Match owns its scrutinee. This is conservative for affine safety:
+            // copy values remain reusable, move-only values are consumed once.
+            ValueInfo subject = checkExpr(matched.subject(), scope, true);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+            ValueInfo result = null;
+            boolean allCopy = true;
+
+            for (Ast.MatchArm arm : matched.arms()) {
+                restoreState(base);
+                Scope armScope = new Scope(scope);
+                for (String name : patternBindingNames(arm.pattern())) {
+                    armScope.define(name, new VarState(
+                            subject.type,
+                            false,
+                            subject.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                            Origin.LOCAL));
+                }
+                if (arm.guard() != null) checkExpr(arm.guard(), armScope, false);
+                ValueInfo armResult = checkExpr(arm.value(), armScope, consuming);
+                if (result == null) result = armResult;
+                allCopy &= armResult.kind == ValueKind.COPY;
+                armScope.close();
+                exits.add(stateSnapshot(scope));
+            }
+
+            restoreState(base);
+            mergeBranchState(base, exits);
+            if (result == null) return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+            return allCopy ? result : new ValueInfo(result.type, ValueKind.MOVE_ONLY, null);
+        }
+        if (expr instanceof Ast.OldExpr old) return checkExpr(old.expression(), scope, false);
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
         }
@@ -513,6 +558,9 @@ public final class OwnershipChecker {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
+            else if (stmt instanceof Ast.AssertStmt e) scanExpr(e.condition(), blockLocals, outer, recursiveBinding, captures, false);
+            else if (stmt instanceof Ast.AssumeStmt e) scanExpr(e.condition(), blockLocals, outer, recursiveBinding, captures, false);
+            else if (stmt instanceof Ast.InvariantStmt e) scanExpr(e.condition(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
                     scanExpr(b.condition(), blockLocals, outer, recursiveBinding, captures, false);
@@ -571,8 +619,40 @@ public final class OwnershipChecker {
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField field : e.fields()) scanExpr(field.value(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.MatchExpr e) {
+            scanExpr(e.subject(), locals, outer, recursiveBinding, captures, false);
+            for (Ast.MatchArm arm : e.arms()) {
+                Set<String> armLocals = new HashSet<>(locals);
+                armLocals.addAll(patternBindingNames(arm.pattern()));
+                if (arm.guard() != null) scanExpr(arm.guard(), armLocals, outer, recursiveBinding, captures, false);
+                scanExpr(arm.value(), armLocals, outer, recursiveBinding, captures, false);
+            }
+        }
+        else if (expr instanceof Ast.OldExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.LambdaExpr) {
             // Nested lambda performs its own capture analysis when checked.
+        }
+    }
+
+    private Set<String> patternBindingNames(Ast.Pattern pattern) {
+        Set<String> names = new LinkedHashSet<>();
+        collectPatternBindingNames(pattern, names);
+        return names;
+    }
+
+    private void collectPatternBindingNames(Ast.Pattern pattern, Set<String> names) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            names.add(binding.name());
+        } else if (pattern instanceof Ast.ConstructorPattern constructor) {
+            for (Ast.Pattern child : constructor.arguments()) collectPatternBindingNames(child, names);
+        } else if (pattern instanceof Ast.TuplePattern tuple) {
+            for (Ast.Pattern child : tuple.elements()) collectPatternBindingNames(child, names);
+        } else if (pattern instanceof Ast.ListPattern list) {
+            for (Ast.Pattern child : list.elements()) collectPatternBindingNames(child, names);
+        } else if (pattern instanceof Ast.ObjectPattern object) {
+            for (Ast.ObjectPatternField field : object.fields()) collectPatternBindingNames(field.pattern(), names);
+        } else if (pattern instanceof Ast.OrPattern or) {
+            for (Ast.Pattern child : or.alternatives()) collectPatternBindingNames(child, names);
         }
     }
 
