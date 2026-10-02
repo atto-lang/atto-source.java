@@ -6,34 +6,34 @@ import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 
-import java.util.AbstractList;
 import java.util.List;
-import java.util.RandomAccess;
 
 /**
  * Immutable Oreslang tuple value.
  *
- * Internally it remains List-compatible for indexing/destructuring, while the
- * Truffle interop contract exposes it as a read-only guest array. Equality is
- * tuple-only so a tuple never becomes equal to an array/list merely because
- * the elements happen to match.
+ * It is intentionally not a java.util.List subtype: tuple/list identity must
+ * stay symmetric even when values cross the Java/Truffle boundary. The
+ * evaluator adapts tuples explicitly for indexing, destructuring, and
+ * iteration, while interop exposes a read-only guest array.
  */
 @ExportLibrary(InteropLibrary.class)
-public final class OresTuple extends AbstractList<Object> implements RandomAccess, TruffleObject {
+public final class OresTuple implements TruffleObject {
     private final List<Object> elements;
 
     public OresTuple(List<Object> elements) {
         this.elements = List.copyOf(elements);
     }
 
-    @Override
     public Object get(int index) {
         return elements.get(index);
     }
 
-    @Override
     public int size() {
         return elements.size();
+    }
+
+    public List<Object> elements() {
+        return elements;
     }
 
     @Override
