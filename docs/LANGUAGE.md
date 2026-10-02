@@ -576,11 +576,11 @@ The incremental compiler uses separate **source** and **ABI** digests:
 1. hash every source unit;
 2. derive a deterministic exported ABI digest from public functions/bindings, class public members and static functions, interfaces, type aliases, inheritance, structural markers, and module adherence contracts;
 3. rebuild a unit whenever its source or resolved dependency set changes;
-4. invalidate direct importers only when the dependency ABI digest changes;
-5. reuse importer artifacts across implementation-only dependency edits;
+4. when a dependency ABI digest changes, invalidate the transitive reverse-import closure conservatively;
+5. reuse every importer artifact across implementation-only dependency edits;
 6. keep unchanged/unaffected compiled-unit objects intact.
 
-This separates code-generation dirtiness from public-contract dirtiness. An implementation edit such as changing a function body from `return 42;` to `return 43;` recompiles that file without recompiling importers when the exported signature is unchanged.
+This separates code-generation dirtiness from public-contract dirtiness. An implementation edit such as changing a function body from `return 42;` to `return 43;` recompiles that file without recompiling importers when the exported signature is unchanged. Until the cross-unit linker records exact public imported-symbol dependencies, ABI changes intentionally propagate transitively for correctness.
 
 Actors and isolates consume versioned code-unit generations. A hot reload therefore does **not** require rebuilding or replacing every actor: changed units receive new generations, unchanged units can remain shared, and supervisors migrate actors/requests according to policy.
 
