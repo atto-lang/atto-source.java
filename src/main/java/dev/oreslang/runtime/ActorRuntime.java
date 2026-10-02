@@ -17,6 +17,8 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -102,6 +104,20 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId actorId() { return actorId; }
         public ActorKind actorKind() { return actorKind; }
+    }
+
+    /**
+     * Non-blocking mailbox poll result. A dedicated result type preserves the
+     * distinction between "no message" and a legitimately transported null.
+     */
+    public record ReceiveResult<M>(boolean received, M message) {
+        public static <M> ReceiveResult<M> empty() {
+            return new ReceiveResult<>(false, null);
+        }
+
+        public static <M> ReceiveResult<M> of(M message) {
+            return new ReceiveResult<>(true, message);
+        }
     }
 
     /**
@@ -310,6 +326,8 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    private enum ReceiveService { NONE, DELIVERED, WAITING }
+
     /**
      * Explicit synchronized shared-memory cell.
      *
@@ -451,6 +469,15 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /**
+         * Logical blocking receive. This never parks a dispatcher carrier:
+         * compiler/runtime lowering suspends on the returned completion.
+         */
+        CompletionStage<M> receive();
+
+        /** Immediate FIFO poll of the next mailbox message. */
+        ReceiveResult<M> tryReceive();
     }
 
     public final class ActorRef<M> {
@@ -1449,6 +1476,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private Behavior<M> behavior;
+        private CompletableFuture<M> pendingReceive;
 
         private ActorCell(
                 ActorRef<M> ref,
@@ -1463,6 +1491,82 @@ public final class ActorRuntime implements AutoCloseable {
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
+        }
+
+        private void requireCurrentTurn(String operation) {
+            if (currentActor.get() != this) {
+                throw new IllegalStateException(
+                        operation + " may only be used by the owning actor during its mailbox turn");
+            }
+        }
+
+        private CompletionStage<M> receive() {
+            requireCurrentTurn("actor.receive");
+            CompletableFuture<M> waiter;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || closed.get()) {
+                    return CompletableFuture.failedFuture(terminated(ref));
+                }
+                if (pendingReceive != null && !pendingReceive.isDone()) {
+                    throw new IllegalStateException(
+                            "actor.receive already has a pending receive; one actor may suspend on only one mailbox receive at a time");
+                }
+                pendingReceive = new CompletableFuture<>();
+                waiter = pendingReceive;
+            }
+
+            waiter.whenComplete((ignored, failure) -> {
+                if (!waiter.isCancelled()) return;
+                boolean shouldSchedule;
+                synchronized (lifecycleLock) {
+                    if (pendingReceive != waiter) return;
+                    pendingReceive = null;
+                    shouldSchedule = !mailbox.isEmpty() && !stopped.get() && !closed.get();
+                }
+                if (shouldSchedule) schedule();
+            });
+            return waiter;
+        }
+
+        @SuppressWarnings("unchecked")
+        private ReceiveResult<M> tryReceive() {
+            requireCurrentTurn("actor.try_receive");
+            MessageEnvelope envelope;
+            synchronized (lifecycleLock) {
+                if (stopped.get() || closed.get()) throw terminated(ref);
+                if (pendingReceive != null && !pendingReceive.isDone()) {
+                    throw new IllegalStateException(
+                            "actor.try_receive cannot race an outstanding actor.receive");
+                }
+                if (pendingReceive != null) pendingReceive = null;
+                envelope = mailbox.poll();
+            }
+            if (envelope == null) return ReceiveResult.empty();
+            try (envelope) {
+                return ReceiveResult.of((M) envelope.value());
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private ReceiveService servicePendingReceive() {
+            CompletableFuture<M> waiter;
+            MessageEnvelope envelope;
+            synchronized (lifecycleLock) {
+                waiter = pendingReceive;
+                if (waiter == null) return ReceiveService.NONE;
+                if (waiter.isDone()) {
+                    pendingReceive = null;
+                    return ReceiveService.NONE;
+                }
+                envelope = mailbox.poll();
+                if (envelope == null) return ReceiveService.WAITING;
+                pendingReceive = null;
+            }
+
+            try (envelope) {
+                waiter.complete((M) envelope.value());
+            }
+            return ReceiveService.DELIVERED;
         }
 
         private void reserveSharedMailbox(long bytes) {
@@ -1536,6 +1640,12 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
+                    @Override public CompletionStage<M> receive() {
+                        return ActorCell.this.receive();
+                    }
+                    @Override public ReceiveResult<M> tryReceive() {
+                        return ActorCell.this.tryReceive();
+                    }
                 };
 
                 if (behavior == null) {
@@ -1546,6 +1656,13 @@ public final class ActorRuntime implements AutoCloseable {
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                    ReceiveService receiveService = servicePendingReceive();
+                    if (receiveService == ReceiveService.WAITING) break;
+                    if (receiveService == ReceiveService.DELIVERED) {
+                        processed++;
+                        continue;
+                    }
+
                     MessageEnvelope envelope = mailbox.poll();
                     if (envelope == null) break;
                     try (envelope) {
@@ -1579,22 +1696,30 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void fail(Throwable failure) {
+            CompletableFuture<M> waiter;
             synchronized (lifecycleLock) {
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
+                waiter = pendingReceive;
+                pendingReceive = null;
                 drainMailboxReservations();
                 if (memorySlice != null) memorySlice.close();
                 unregisterActor(this);
             }
+            if (waiter != null) waiter.completeExceptionally(terminated(ref));
         }
 
         private void stop() {
+            CompletableFuture<M> waiter;
             synchronized (lifecycleLock) {
                 if (!stopped.compareAndSet(false, true)) return;
+                waiter = pendingReceive;
+                pendingReceive = null;
                 drainMailboxReservations();
                 if (memorySlice != null) memorySlice.close();
                 unregisterActor(this);
             }
+            if (waiter != null) waiter.completeExceptionally(terminated(ref));
         }
     }
 }
