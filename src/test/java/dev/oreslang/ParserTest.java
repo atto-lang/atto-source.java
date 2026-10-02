@@ -212,4 +212,38 @@ final class ParserTest {
         assertTrue(fn.body().stream().anyMatch(stmt ->
                 stmt instanceof Ast.TypeDeclStmt local && local.declaration() instanceof Ast.TraitDecl));
     }
+    @Test
+    void compactAndLongStructSyntaxNormalizeToSameAstWithContractsAndTraits() {
+        Ast.ClassDecl longForm = (Ast.ClassDecl) Parser.parse("""
+                define struct Box<T> is Named<T> with Measured<T> as
+                  pub value: T;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.ClassDecl compact = (Ast.ClassDecl) Parser.parse("""
+                struct Box<T> is Named<T> with Measured<T> {
+                  pub value: T;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        assertEquals(longForm, compact);
+        assertTrue(compact.isStruct());
+    }
+
+    @Test
+    void compactAndLongInterfaceSyntaxNormalizeToSameAst() {
+        Ast.InterfaceDecl longForm = (Ast.InterfaceDecl) Parser.parse("""
+                define interface Lock<T> as
+                  fnc lock() => T;
+                end
+                """).modules().getFirst().declarations().getFirst();
+
+        Ast.InterfaceDecl compact = (Ast.InterfaceDecl) Parser.parse("""
+                interface Lock<T> {
+                  fnc lock() => T;
+                }
+                """).modules().getFirst().declarations().getFirst();
+
+        assertEquals(longForm, compact);
+    }
 }
