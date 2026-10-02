@@ -442,7 +442,7 @@ public final class Parser {
                 if (abstractSeen) throw error(previous(), "duplicate 'abstract' modifier");
                 abstractSeen = true;
                 isAbstract = true;
-            } else if (match(SHARED)) {
+            } else if (matchContextualShared()) {
                 if (sharedSeen) throw error(previous(), "duplicate 'shared' modifier");
                 sharedSeen = true;
                 shared = true;
@@ -1228,6 +1228,15 @@ public final class Parser {
     }
 
     private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean matchContextualShared() {
+        if (match(SHARED)) return true;
+        if (check(IDENT) && peek().lexeme().equals("shared")) {
+            advance();
+            return true;
+        }
+        return false;
+    }
 
     private boolean match(Token.Type... types) {
         for (Token.Type type : types) {
