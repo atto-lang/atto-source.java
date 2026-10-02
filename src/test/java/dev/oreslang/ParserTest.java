@@ -440,4 +440,41 @@ final class ParserTest {
     }
 
 
+
+    @Test
+    void actorMailboxReceiveExpressionsFailClosedUntilProtocolTypeIsWired() {
+        IllegalArgumentException direct = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub actor fnc worker() => void {
+                          receive();
+                          return;
+                        }
+                        """)));
+        assertTrue(direct.getMessage().contains("Protocol<M>"), direct::getMessage);
+
+        IllegalArgumentException select = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub actor fnc worker() => void {
+                          select {
+                            case receive() as msg => {
+                              stdio.println(msg);
+                            }
+                          }
+                          return;
+                        }
+                        """)));
+        assertTrue(select.getMessage().contains("explicit message type"), select::getMessage);
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub actor fnc worker() => void {
+                  select {
+                    case receive() as int msg => {
+                      stdio.println(msg);
+                    }
+                  }
+                  return;
+                }
+                """)));
+    }
+
 }
