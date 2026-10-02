@@ -164,7 +164,9 @@ final class InitializationBarrierTest {
         Source source = Source.newBuilder(OresLanguage.ID, """
                 fnc init() => void {
                   stdio.stdout.write("I");
-                  panic("boom");
+                  val values = arr[1];
+                  val impossible = values[9];
+                  return;
                 }
 
                 pub routine main() => void {
