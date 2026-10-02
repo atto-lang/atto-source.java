@@ -237,7 +237,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private SyncCell(T initialValue) {
-            this.value = (T) freeze(initialValue);
+            Object frozen = freeze(initialValue);
+            rejectSharedMutableHandles(frozen, new IdentityHashMap<>());
+            this.value = (T) frozen;
         }
 
         public T snapshot() {
@@ -267,7 +269,9 @@ public final class ActorRuntime implements AutoCloseable {
             requireSharedActorTurn();
             lock.lock();
             try {
-                value = (T) freeze(updater.apply(value));
+                Object frozen = freeze(updater.apply(value));
+                rejectSharedMutableHandles(frozen, new IdentityHashMap<>());
+                value = (T) frozen;
                 return value;
             } finally {
                 lock.unlock();
@@ -505,8 +509,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     @SuppressWarnings("unchecked")
     public <T> Shared<T> shareReadonly(T value) {
-        rejectSharedMutableHandles(value, new IdentityHashMap<>());
-        return new Shared<>((T) freeze(value));
+        Object frozen = freeze(value);
+        rejectSharedMutableHandles(frozen, new IdentityHashMap<>());
+        return new Shared<>((T) frozen);
     }
 
     private static void rejectSharedMutableHandles(
