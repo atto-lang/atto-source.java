@@ -617,6 +617,22 @@ public final class TypeChecker {
             }
             return new Record(members);
         }
+        if (expr instanceof Ast.GpuExpr gpu) {
+            if (gpu.mode() == Ast.GpuMode.SINGLE) {
+                if (!(gpu.expression() instanceof Ast.LambdaExpr lambda)) {
+                    throw new IllegalArgumentException("'gpu' expression placement requires a direct lambda; use 'gpu fnc' for named functions");
+                }
+                return typeOf(lambda, env, generics, self);
+            }
+            List<Ast.Expr> elements = gpuParallelElements(gpu.expression());
+            if (elements.isEmpty()) throw new IllegalArgumentException("'gpu parallel' requires at least one direct lambda");
+            for (Ast.Expr element : elements) {
+                if (!(element instanceof Ast.LambdaExpr)) {
+                    throw new IllegalArgumentException("'gpu parallel' collections must contain only direct lambda literals");
+                }
+            }
+            return typeOf(new Ast.ListExpr(elements), env, generics, self);
+        }
         if (expr instanceof Ast.LambdaExpr lambda) {
             Env lambdaEnv = new Env(env);
             List<Type> parameters = new ArrayList<>();
@@ -641,12 +657,30 @@ public final class TypeChecker {
         return typeOf(expr, env, generics, self);
     }
 
+    private List<Ast.Expr> gpuParallelElements(Ast.Expr expression) {
+        if (expression instanceof Ast.ListExpr list) return list.elements();
+        if (expression instanceof Ast.TupleExpr tuple) return tuple.elements();
+        if (expression instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr name
+                && name.name().equals("List")
+                && member.member().equals("of")) {
+            return call.arguments();
+        }
+        throw new IllegalArgumentException("'gpu parallel' requires a list/tuple literal or List.of(...) of direct lambdas");
+    }
+
     private void defineDestructureBinding(Env env, Ast.DestructureBinding binding, Type type) {
         if (!binding.isDiscard()) env.define(binding.name(), type, binding.kind());
     }
 
     private void validateLambdaArgument(Ast.Expr argument, Type expected, Env env, Set<String> generics, Type self) {
-        if (argument instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
+        Ast.LambdaExpr lambda = null;
+        if (argument instanceof Ast.LambdaExpr direct) lambda = direct;
+        else if (argument instanceof Ast.GpuExpr gpu
+                && gpu.mode() == Ast.GpuMode.SINGLE
+                && gpu.expression() instanceof Ast.LambdaExpr direct) lambda = direct;
+        if (lambda != null && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
         }
     }
