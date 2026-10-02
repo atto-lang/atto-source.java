@@ -5,12 +5,13 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
-    public record Program(List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
             modules = List.copyOf(modules);
         }
-        public Program(List<ModuleDecl> modules) { this(List.of(), modules); }
+        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
+        public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
     public enum ImportKind { MODULE, CLASS, FUNCTION, ALL }
@@ -44,6 +45,12 @@ public final class Ast {
     public record TypeRef(String name, List<TypeRef> arguments, boolean inferArguments) {
         public TypeRef { arguments = List.copyOf(arguments); }
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
+        public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
+        public static TypeRef functionType(List<TypeRef> parameters, TypeRef result) {
+            java.util.ArrayList<TypeRef> all = new java.util.ArrayList<>(parameters);
+            all.add(result);
+            return new TypeRef("Fnc", all, false);
+        }
         public static TypeRef stringLiteral(String value) { return new TypeRef("$string$" + value, List.of(), false); }
         public boolean isStringLiteral() { return name.startsWith("$string$"); }
         public String stringLiteralValue() { return name.substring("$string$".length()); }

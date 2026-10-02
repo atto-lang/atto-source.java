@@ -6,6 +6,8 @@ import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -37,6 +39,7 @@ public final class OresEvalRootNode extends RootNode {
 
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
+        CapabilityChecker.check(program, context.isolatePolicy());
         return new Evaluator(program, context).execute(arguments);
     }
 
@@ -197,6 +200,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
+                    context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
                 };
                 if (name.name().equals("Some")) return (Invokable) args -> {
@@ -206,6 +210,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("None")) return new OptionValue(false, null);
                 Ast.ModuleDecl module = modules.get(name.name());
                 if (module != null) return new ModuleFacade(module);
+                Ast.ClassDecl klass = findClass(name.name());
+                if (klass != null) return new ClassFacade(klass);
                 Ast.FunctionDecl fn = findFunction(name.name());
                 if (fn != null) return (Invokable) args -> callFunction(fn, args);
                 throw new IllegalArgumentException("unknown name " + name.name());
@@ -234,6 +240,19 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr methodCall) {
+                    Object receiver = eval(methodCall.receiver(), env);
+                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    if (receiver instanceof OresObject object) {
+                        return invokeMethod(object, methodCall.member(), args);
+                    }
+                    if (receiver instanceof ClassFacade klass) {
+                        return invokeStaticFunction(klass.klass(), methodCall.member(), args);
+                    }
+                    Object callee = member(receiver, methodCall.member());
+                    if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
+                    return invokable.call(args);
+                }
                 Object callee = eval(call.callee(), env);
                 List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
                 if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
@@ -319,13 +338,18 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace.module, name);
+            if (receiver instanceof ClassFacade klass) {
+                List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
+                if (functions.size() == 1) {
+                    Ast.MethodDecl fn = functions.getFirst();
+                    return (Invokable) args -> callStaticFunction(klass.klass(), fn, args);
+                }
+                if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
+                throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
+            }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                return (Invokable) args -> {
-                    Ast.MethodDecl method = findMethod(object.klass, name, args.size(), new LinkedHashSet<>());
-                    if (method == null) throw new IllegalArgumentException("no method " + object.klass.name() + "." + name + " with arity " + args.size());
-                    return callMethod(object, method, args);
-                };
+                return new BoundMethod(object, name);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -334,8 +358,54 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
         }
 
+        private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
+            Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
+            if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
+            return callMethod(receiver, method, args);
+        }
+
+        private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
+            Ast.MethodDecl fn = findStaticFunction(klass, name, args.size(), new LinkedHashSet<>());
+            if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
+            return callStaticFunction(klass, fn, args);
+        }
+
+        private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
+            if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
+            if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            Env env = new Env(null);
+            for (int i = 0; i < fn.parameters().size(); i++) env.define(fn.parameters().get(i).name(), args.get(i), Ast.BindingKind.VAL);
+            try {
+                executeBlock(fn.body(), env);
+                return null;
+            } catch (ReturnSignal signal) { return signal.value; }
+        }
+
+        /**
+         * Go-style method value: one shared method definition per class plus a
+         * tiny (receiver, method-name) pair only when a method is extracted as
+         * a first-class callback. Direct receiver.method(...) calls allocate no
+         * bound-method object.
+         */
+        private final class BoundMethod implements Invokable {
+            private final OresObject receiver;
+            private final String methodName;
+
+            private BoundMethod(OresObject receiver, String methodName) {
+                this.receiver = receiver;
+                this.methodName = methodName;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return invokeMethod(receiver, methodName, arguments);
+            }
+        }
+
         private Object moduleMember(Ast.ModuleDecl module, String name) {
             for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
+                    return new ClassFacade(klass);
+                }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
                     return (Invokable) args -> callFunction(fn, args);
                 }
@@ -364,7 +434,7 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
             if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
             for (Ast.MethodDecl method : klass.methods()) {
-                if (method.name().equals(name) && method.parameters().size() == arity) {
+                if (!method.isStatic() && method.name().equals(name) && method.parameters().size() == arity) {
                     seen.remove(klass);
                     return method;
                 }
@@ -381,6 +451,44 @@ public final class OresEvalRootNode extends RootNode {
             }
             seen.remove(klass);
             return null;
+        }
+
+        private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
+            for (Ast.MethodDecl fn : klass.methods()) {
+                if (fn.isStatic() && fn.name().equals(name) && fn.parameters().size() == arity) {
+                    seen.remove(klass);
+                    return fn;
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                Ast.MethodDecl candidate = findStaticFunction(parent, name, arity, seen);
+                if (candidate != null) {
+                    seen.remove(klass);
+                    return candidate;
+                }
+            }
+            seen.remove(klass);
+            return null;
+        }
+
+        private List<Ast.MethodDecl> findStaticFunctionsByName(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return List.of();
+            LinkedHashMap<Integer, Ast.MethodDecl> result = new LinkedHashMap<>();
+            for (Ast.MethodDecl fn : klass.methods()) {
+                if (fn.isStatic() && fn.name().equals(name)) result.put(fn.parameters().size(), fn);
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent == null) continue;
+                for (Ast.MethodDecl fn : findStaticFunctionsByName(parent, name, seen)) result.putIfAbsent(fn.parameters().size(), fn);
+            }
+            seen.remove(klass);
+            return List.copyOf(result.values());
         }
 
         private List<?> iterableValues(Object value) {
@@ -507,21 +615,22 @@ public final class OresEvalRootNode extends RootNode {
     }
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
+    private record ClassFacade(Ast.ClassDecl klass) { }
     private record OptionValue(boolean present, Object value) {
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
     private record StdioFacade(OresContext context) {
-        private Object print(List<Object> args){requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
-        private Object println(List<Object> args){requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
+        private Object print(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.print");requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
+        private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.println");requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
     }
     private record StdoutFacade(OresContext context) {
-        private Object write(List<Object> args){requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
-        private Object println(List<Object> args){requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
+        private Object write(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.write");requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
+        private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.println");requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
     }
     private record ProcessFacade(OresContext context) {
-        private String contextId(){return context.contextId().toString();}
-        private Map<String,Object> descriptor(){return context.processDescriptor();}
-        private Object shareReadonly(List<Object> args){requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+        private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
+        private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
+        private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
     }
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
 }

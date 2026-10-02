@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, ClassNamespace, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -16,6 +16,9 @@ public final class Types {
     public record Named(String name, List<Type> arguments) implements Type {
         public Named { arguments = List.copyOf(arguments); }
     }
+
+    /** Compile-time meta-value for access to static class functions. */
+    public record ClassNamespace(String className) implements Type { }
 
     public record Record(Map<String, Type> members) implements Type {
         public Record { members = Map.copyOf(members); }

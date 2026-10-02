@@ -22,6 +22,13 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
+        String namespace = null;
+        if (match(NAMESPACE)) {
+            namespace = consume(IDENT, "expected flat namespace name").lexeme();
+            if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
+            consume(SEMICOLON, "namespace declaration must end with ';'");
+        }
+
         List<Ast.ImportDecl> imports = new ArrayList<>();
         while (match(IMPORT)) imports.add(parseImport());
 
@@ -61,7 +68,7 @@ public final class Parser {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), rootDeclarations));
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(imports, modules);
+        return new Ast.Program(namespace, imports, modules);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -102,7 +109,8 @@ public final class Parser {
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
-        String name = parseQualifiedName();
+        String name = consume(IDENT, "expected flat module name").lexeme();
+        if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
@@ -135,10 +143,13 @@ public final class Parser {
     }
 
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
+        if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
+        if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consume(IDENT, "expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
-        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
+        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
@@ -158,8 +169,15 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
             if (isBindingKind(peek().type())) {
+                if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(mods.visibility));
                 continue;
+            }
+            if (mods.isStatic) {
+                consume(FNC, "static class functions must be declared with 'static fnc'");
+                if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
+            } else if (check(FNC)) {
+                throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
             }
             methods.add(parseMethod(annotations, mods));
         }
@@ -248,6 +266,7 @@ public final class Parser {
 
         Ast.TypeRef receiverType = null;
         List<Ast.Param> params;
+        if (mods.isStatic && check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
         if (match(SELF)) {
             receiverType = parseTypeRef();
             consume(RPAREN, "expected ')' after explicit self receiver");
@@ -353,10 +372,34 @@ public final class Parser {
     }
 
     private List<Ast.Param> parseParametersUntil(Token.Type terminator) {
+        return parseParametersUntil(terminator, java.util.Set.of());
+    }
+
+    private List<Ast.Param> parseParametersUntil(Token.Type terminator, java.util.Set<String> annotationStructuralNames) {
         if (check(terminator)) return List.of();
         List<Ast.Param> params = new ArrayList<>();
         do {
             boolean structural = false;
+
+            // Name-first structural spelling: y structural Foo
+            if (check(IDENT) && checkNextLexeme("structural")) {
+                String name = advance().lexeme();
+                Token marker = consume(IDENT, "expected structural");
+                if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
+                Ast.TypeRef type = parseTypeRef();
+                params.add(new Ast.Param(type, name, true));
+                continue;
+            }
+
+            // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
+            if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
+                String name = advance().lexeme();
+                Ast.TypeRef type = parseTypeRef();
+                params.add(new Ast.Param(type, name, true));
+                continue;
+            }
+
+            // Existing type-first spelling: @Structural Foo y
             if (match(AT)) {
                 String annotation = consume(IDENT, "expected parameter annotation").lexeme();
                 if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
@@ -369,8 +412,52 @@ public final class Parser {
         return params;
     }
 
+    private java.util.Set<String> structuralAnnotationNames(List<Ast.Annotation> annotations) {
+        java.util.Set<String> allowed = new java.util.HashSet<>();
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("AllowStructural")) continue;
+            for (Ast.TypeRef argument : annotation.arguments()) {
+                if (!argument.arguments().isEmpty() || argument.inferArguments() || argument.isStringLiteral()) {
+                    throw error(previous(), "@AllowStructural arguments must be parameter names");
+                }
+                allowed.add(argument.name());
+            }
+        }
+        return java.util.Set.copyOf(allowed);
+    }
+
+    private List<Ast.Param> applyStructuralAnnotations(List<Ast.Param> params, List<Ast.Annotation> annotations) {
+        java.util.Set<String> allowed = new java.util.HashSet<>(structuralAnnotationNames(annotations));
+        if (allowed.isEmpty()) return params;
+        java.util.Set<String> found = new java.util.HashSet<>();
+        List<Ast.Param> result = new ArrayList<>(params.size());
+        for (Ast.Param param : params) {
+            boolean structural = param.structural() || allowed.contains(param.name());
+            if (allowed.contains(param.name())) found.add(param.name());
+            result.add(new Ast.Param(param.type(), param.name(), structural));
+        }
+        if (!found.equals(allowed)) {
+            java.util.Set<String> missing = new java.util.HashSet<>(allowed);
+            missing.removeAll(found);
+            throw error(previous(), "@AllowStructural names unknown parameter(s): " + missing);
+        }
+        return List.copyOf(result);
+    }
+
     private Ast.TypeRef parseTypeRef() {
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
+
+        if (match(TYPEOF)) {
+            consume(FNC, "typeof function types use 'typeof fnc(...) -> ReturnType'");
+            return parseFunctionTypeSignature();
+        }
+
+        if (check(LPAREN) && looksLikeFunctionType()) return parseFunctionTypeSignature();
+        if (match(LPAREN)) {
+            Ast.TypeRef grouped = parseTypeRef();
+            consume(RPAREN, "expected ')' after grouped type");
+            return grouped;
+        }
 
         String name;
         if (match(VOID)) name = "void";
@@ -388,6 +475,35 @@ public final class Parser {
             }
         }
         return new Ast.TypeRef(name, args, infer);
+    }
+
+    private Ast.TypeRef parseFunctionTypeSignature() {
+        consume(LPAREN, "expected '(' in function type");
+        List<Ast.TypeRef> params = new ArrayList<>();
+        if (!check(RPAREN)) {
+            do {
+                Ast.TypeRef paramType = parseTypeRef();
+                if (check(IDENT)) advance(); // optional documentation-only parameter name
+                params.add(paramType);
+            } while (match(COMMA));
+        }
+        consume(RPAREN, "expected ')' after function type parameters");
+        consume(ARROW, "function types use the slim arrow '->'");
+        Ast.TypeRef result = parseTypeRef();
+        return Ast.TypeRef.functionType(params, result);
+    }
+
+    private boolean looksLikeFunctionType() {
+        int depth = 0;
+        for (int i = current; i < tokens.size(); i++) {
+            Token.Type type = tokens.get(i).type();
+            if (type == LPAREN) depth++;
+            else if (type == RPAREN) {
+                depth--;
+                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+            }
+        }
+        return false;
     }
 
     private String parseQualifiedName() {
@@ -675,6 +791,7 @@ public final class Parser {
             consume(RBRACKET, "expected ']' after arr literal");
             return new Ast.ListExpr(items);
         }
+        if (check(PIPE)) return parsePipeLambda();
         if (check(LPAREN) && looksLikeLambda()) return parseLambda();
         if (match(LPAREN)) {
             Ast.Expr first = parseExpression();
@@ -717,8 +834,29 @@ public final class Parser {
         List<Ast.Param> params = parseParametersUntil(RPAREN);
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
-        if (check(LBRACE)) return new Ast.LambdaExpr(params, null, parseBlock());
-        return new Ast.LambdaExpr(params, parseExpression(), null);
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
+    }
+
+    private Ast.LambdaExpr parsePipeLambda() {
+        consume(PIPE, "expected '|'");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(PIPE)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    params.add(new Ast.Param(type, name));
+                }
+            } while (match(COMMA));
+        }
+        consume(PIPE, "expected closing '|' after lambda parameters");
+        consume(ARROW, "lambdas use the slim arrow '->'");
+        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
+        return new Ast.LambdaExpr(params, null, parseBlock());
     }
 
     private boolean looksLikeLambda() {
@@ -779,6 +917,10 @@ public final class Parser {
 
     private boolean check(Token.Type type) { return peek().type() == type; }
     private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
+    private boolean checkNextLexeme(String lexeme) {
+        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
+                && tokens.get(current + 1).lexeme().equals(lexeme);
+    }
     private Token advance() { if (!check(EOF)) current++; return previous(); }
     private Token peek() { return tokens.get(current); }
     private Token previous() { return tokens.get(current - 1); }

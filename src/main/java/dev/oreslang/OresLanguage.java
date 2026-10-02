@@ -4,11 +4,11 @@ import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.nodes.OresEvalRootNode;
 import dev.oreslang.nodes.OresInteropRootNode;
-import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
-import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.SandboxPolicy;
 
 @TruffleLanguage.Registration(
         id = OresLanguage.ID,
@@ -17,6 +17,7 @@ import dev.oreslang.types.TypeChecker;
         defaultMimeType = OresLanguage.MIME_TYPE,
         characterMimeTypes = OresLanguage.MIME_TYPE,
         contextPolicy = TruffleLanguage.ContextPolicy.EXCLUSIVE,
+        sandbox = SandboxPolicy.UNTRUSTED,
         website = "https://github.com/ores-truffle-oreslang/oreslang-source.java")
 public final class OresLanguage extends TruffleLanguage<OresContext> {
     public static final String ID = "ores";
@@ -35,7 +36,7 @@ public final class OresLanguage extends TruffleLanguage<OresContext> {
     @Override
     protected CallTarget parse(ParsingRequest request) {
         String text = request.getSource().getCharacters().toString();
-        Ast.Program program = TypeChecker.check(Parser.parse(text));
+        Ast.Program program = OresCompiler.parseAndTypeCheck(text);
         RootCallTarget evaluator = new OresEvalRootNode(this, program).getCallTarget();
         return new OresInteropRootNode(this, evaluator).getCallTarget();
     }
