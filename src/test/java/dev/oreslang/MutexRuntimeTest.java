@@ -176,6 +176,39 @@ final class MutexRuntimeTest {
     }
 
     @Test
+    void guardFutureCannotBeForgedOrTimeoutCompletedByCallers() throws Exception {
+        var mutex = OresMutex.shared(new int[]{0});
+        var guard = mutex.lock();
+
+        AtomicReference<java.util.concurrent.CompletableFuture<OresMutex.Guard<int[]>>> waitingRef = new AtomicReference<>();
+        Thread requester = Thread.ofPlatform().start(() -> waitingRef.set(mutex.lockAsync()));
+        requester.join();
+
+        var waiting = waitingRef.get();
+        assertInstanceOf(OresMutex.GuardFuture.class, waiting);
+        assertFalse(waiting.isDone());
+
+        assertThrows(UnsupportedOperationException.class, () -> waiting.complete(null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.completeExceptionally(new RuntimeException("forged")));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.completeAsync(() -> null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.orTimeout(1, TimeUnit.MILLISECONDS));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.completeOnTimeout(null, 1, TimeUnit.MILLISECONDS));
+        assertThrows(UnsupportedOperationException.class, () -> waiting.obtrudeValue(null));
+        assertThrows(UnsupportedOperationException.class,
+                () -> waiting.obtrudeException(new RuntimeException("forged")));
+
+        assertTrue(waiting.cancel(true));
+        guard.release();
+
+        var next = mutex.lock();
+        next.release();
+    }
+
+    @Test
     void sharedTryLockReportsBusyAndCancelledAsyncWaitDoesNotLeakPermit() throws Exception {
         var mutex = OresMutex.shared(new int[]{0});
         var guard = mutex.lock();
