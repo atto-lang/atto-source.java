@@ -1634,10 +1634,9 @@ public final class TypeChecker {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.name().equals(name) && method.arity() == arity) {
-                if (method.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
+                if (!methodAccessible(klass, method)) {
                     seen.remove(klass);
-                    throw new IllegalArgumentException(
-                            "method '" + klass.name() + "." + name + "' is private to " + klass.name());
+                    throw inaccessibleMethod(klass, method);
                 }
                 seen.remove(klass);
                 return method;
@@ -1660,8 +1659,7 @@ public final class TypeChecker {
         if (!seen.add(klass)) return List.of();
         LinkedHashMap<Integer, Ast.MethodDecl> methods = new LinkedHashMap<>();
         for (Ast.MethodDecl method : klass.methods()) {
-            if (!method.isStatic() && method.name().equals(name)
-                    && (method.visibility() == Ast.Visibility.PUBLIC || activeClassOwner == klass)) {
+            if (!method.isStatic() && method.name().equals(name) && methodAccessible(klass, method)) {
                 methods.put(method.arity(), method);
             }
         }
@@ -1678,10 +1676,9 @@ public final class TypeChecker {
         if (!seen.add(klass)) return null;
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic() && method.name().equals(name) && method.arity() == arity) {
-                if (method.visibility() == Ast.Visibility.PRIVATE && activeClassOwner != klass) {
+                if (!methodAccessible(klass, method)) {
                     seen.remove(klass);
-                    throw new IllegalArgumentException(
-                            "static function '" + klass.name() + "." + name + "' is private to " + klass.name());
+                    throw inaccessibleMethod(klass, method);
                 }
                 seen.remove(klass);
                 return method;
@@ -1704,8 +1701,7 @@ public final class TypeChecker {
         if (!seen.add(klass)) return List.of();
         LinkedHashMap<Integer, Ast.MethodDecl> functions = new LinkedHashMap<>();
         for (Ast.MethodDecl method : klass.methods()) {
-            if (method.isStatic() && method.name().equals(name)
-                    && (method.visibility() == Ast.Visibility.PUBLIC || activeClassOwner == klass)) {
+            if (method.isStatic() && method.name().equals(name) && methodAccessible(klass, method)) {
                 functions.put(method.arity(), method);
             }
         }
@@ -1716,6 +1712,25 @@ public final class TypeChecker {
         }
         seen.remove(klass);
         return List.copyOf(functions.values());
+    }
+
+    private boolean methodAccessible(Ast.ClassDecl owner, Ast.MethodDecl method) {
+        if (method.visibility() == Ast.Visibility.PUBLIC) return true;
+        if (method.composed()) {
+            return activeTraitOwner != null && activeTraitOwner.equals(method.compositionOwner());
+        }
+        return activeClassOwner == owner;
+    }
+
+    private IllegalArgumentException inaccessibleMethod(Ast.ClassDecl owner, Ast.MethodDecl method) {
+        if (method.composed()) {
+            return new IllegalArgumentException(
+                    "trait method '" + method.compositionOwner() + "." + method.name()
+                            + "' is private to that trait");
+        }
+        String label = method.isStatic() ? "static function" : "method";
+        return new IllegalArgumentException(
+                label + " '" + owner.name() + "." + method.name() + "' is private to " + owner.name());
     }
 
     private Ast.ClassDecl resolveClassParent(Ast.TypeRef parentRef, Ast.ClassDecl child) {
