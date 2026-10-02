@@ -47,6 +47,62 @@ public final class GpuRuntime {
         }
 
         Object invoke(Invocation invocation);
+
+        default Object uploadArray(List<?> values) {
+            throw new GpuCapabilityUnavailableException("GPU backend '" + name() + "' does not support GpuArray uploads");
+        }
+
+        default List<?> downloadArray(Object backendToken, long length) {
+            throw new GpuCapabilityUnavailableException("GPU backend '" + name() + "' does not support GpuArray downloads");
+        }
+
+        default Object openStream(Object arrayBackendToken, long length) {
+            return arrayBackendToken;
+        }
+
+        default Object collectStream(Object streamBackendToken, long lengthHint) {
+            return streamBackendToken;
+        }
+    }
+
+    /** Opaque GPU-resident array resource. Guest code cannot access backendToken directly. */
+    public static final class ArrayHandle {
+        private final Backend backend;
+        private final Object backendToken;
+        private final long length;
+
+        private ArrayHandle(Backend backend, Object backendToken, long length) {
+            this.backend = Objects.requireNonNull(backend, "backend");
+            this.backendToken = Objects.requireNonNull(backendToken, "backendToken");
+            if (length < 0) throw new IllegalArgumentException("GpuArray length cannot be negative");
+            this.length = length;
+        }
+
+        public String backendName() { return backend.name(); }
+        public long length() { return length; }
+
+        /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
+        public Object backendToken() { return backendToken; }
+    }
+
+    /** Opaque GPU-resident sequential stream resource. */
+    public static final class StreamHandle {
+        private final Backend backend;
+        private final Object backendToken;
+        private final long lengthHint;
+
+        private StreamHandle(Backend backend, Object backendToken, long lengthHint) {
+            this.backend = Objects.requireNonNull(backend, "backend");
+            this.backendToken = Objects.requireNonNull(backendToken, "backendToken");
+            if (lengthHint < -1) throw new IllegalArgumentException("GpuStream length hint must be -1 or non-negative");
+            this.lengthHint = lengthHint;
+        }
+
+        public String backendName() { return backend.name(); }
+        public long lengthHint() { return lengthHint; }
+
+        /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
+        public Object backendToken() { return backendToken; }
     }
 
     public record Invocation(
@@ -68,6 +124,14 @@ public final class GpuRuntime {
         PROCESS_BACKEND.set(null);
     }
 
+    public static ArrayHandle adoptArray(Backend backend, Object backendToken, long length) {
+        return new ArrayHandle(backend, backendToken, length);
+    }
+
+    public static StreamHandle adoptStream(Backend backend, Object backendToken, long lengthHint) {
+        return new StreamHandle(backend, backendToken, lengthHint);
+    }
+
     public boolean available() {
         return PROCESS_BACKEND.get() != null;
     }
@@ -84,17 +148,100 @@ public final class GpuRuntime {
             throw new GpuUnavailableException("gpu callable '" + callable
                     + "' requires a GPU backend; none is installed and CPU fallback is forbidden");
         }
+        validateDeviceOwnership(invocation.arguments(), backend);
         if (!backend.supports(invocation)) {
             throw new GpuCapabilityUnavailableException("GPU backend '" + backend.name()
                     + "' cannot execute gpu callable '" + callable + "'");
         }
         try {
-            return freezeValue(backend.invoke(invocation), true);
+            Object result = freezeValue(backend.invoke(invocation), true);
+            validateDeviceOwnership(result, backend);
+            return result;
         } catch (GpuException failure) {
             throw failure;
         } catch (RuntimeException failure) {
             throw new GpuExecutionException("GPU backend '" + backend.name()
                     + "' failed while executing '" + callable + "'", failure);
+        }
+    }
+
+    public ArrayHandle uploadArray(List<?> values) {
+        Backend backend = requireBackend("GpuArray.from_cpu()");
+        List<?> frozen = freezeArguments(values);
+        Object token = backend.uploadArray(frozen);
+        if (token == null) throw new GpuExecutionException("GPU backend '" + backend.name() + "' returned null from uploadArray", null);
+        return new ArrayHandle(backend, token, frozen.size());
+    }
+
+    public List<?> downloadArray(ArrayHandle array) {
+        Objects.requireNonNull(array, "array");
+        Object downloaded = array.backend.downloadArray(array.backendToken, array.length);
+        Object frozen = freezeValue(downloaded, false);
+        if (!(frozen instanceof List<?> list)) {
+            throw new GpuTransferException("GPU backend '" + array.backend.name() + "' downloadArray must return a List");
+        }
+        return list;
+    }
+
+    public StreamHandle stream(ArrayHandle array) {
+        Objects.requireNonNull(array, "array");
+        Object token = array.backend.openStream(array.backendToken, array.length);
+        if (token == null) throw new GpuExecutionException("GPU backend '" + array.backend.name() + "' returned null from openStream", null);
+        return new StreamHandle(array.backend, token, array.length);
+    }
+
+    public ArrayHandle collect(StreamHandle stream) {
+        Objects.requireNonNull(stream, "stream");
+        Object token = stream.backend.collectStream(stream.backendToken, stream.lengthHint);
+        if (token == null) throw new GpuExecutionException("GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
+        return new ArrayHandle(stream.backend, token, Math.max(0, stream.lengthHint));
+    }
+
+    public List<?> downloadStream(StreamHandle stream) {
+        return downloadArray(collect(stream));
+    }
+
+    private Backend requireBackend(String operation) {
+        Backend backend = PROCESS_BACKEND.get();
+        if (backend == null) {
+            throw new GpuUnavailableException(operation + " requires a GPU backend; none is installed and CPU fallback is forbidden");
+        }
+        return backend;
+    }
+
+    private static void validateDeviceOwnership(Object value, Backend expected) {
+        if (value == null) return;
+        if (value instanceof ArrayHandle array) {
+            if (array.backend != expected) {
+                throw new GpuTransferException("GpuArray belongs to backend '" + array.backend.name()
+                        + "' but callable is executing on backend '" + expected.name() + "'");
+            }
+            return;
+        }
+        if (value instanceof StreamHandle stream) {
+            if (stream.backend != expected) {
+                throw new GpuTransferException("GpuStream belongs to backend '" + stream.backend.name()
+                        + "' but callable is executing on backend '" + expected.name() + "'");
+            }
+            return;
+        }
+        if (value instanceof OptionValue option) {
+            if (option.present()) validateDeviceOwnership(option.value(), expected);
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) validateDeviceOwnership(item, expected);
+            return;
+        }
+        if (value instanceof Set<?> set) {
+            for (Object item : set) validateDeviceOwnership(item, expected);
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                validateDeviceOwnership(entry.getKey(), expected);
+                validateDeviceOwnership(entry.getValue(), expected);
+            }
         }
     }
 
@@ -112,7 +259,8 @@ public final class GpuRuntime {
         if (value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ComplexValue) {
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ComplexValue
+                || value instanceof ArrayHandle || value instanceof StreamHandle) {
             return value;
         }
         if (value instanceof OptionValue option) {
