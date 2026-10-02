@@ -142,7 +142,9 @@ public final class OwnershipChecker {
             return;
         }
         if (stmt instanceof Ast.DeferStmt defer) {
-            checkExpr(defer.expression(), scope, false);
+            // The callable produced at registration is owned by the callable-level
+            // defer frame until it is invoked at exit.
+            checkExpr(defer.expression(), scope, true);
             return;
         }
         if (stmt instanceof Ast.IfStmt conditional) {
