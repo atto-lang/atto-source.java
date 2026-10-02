@@ -83,6 +83,7 @@ public final class OwnershipChecker {
             Ast.ModuleDecl previous = activeModule;
             activeModule = module;
             try {
+                checkModuleFieldInitializers(module);
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
                     else if (decl instanceof Ast.InitDecl init) checkInit(module, init);
@@ -91,6 +92,20 @@ public final class OwnershipChecker {
             } finally {
                 activeModule = previous;
             }
+        }
+    }
+
+    private void checkModuleFieldInitializers(Ast.ModuleDecl module) {
+        Scope scope = new Scope(null);
+        seedModuleState(module, scope);
+        try {
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field) || field.initializer() == null) continue;
+                ValueInfo stored = checkExpr(field.initializer(), scope, true);
+                rejectStoredBorrow(stored, "module field '" + module.name() + "." + field.name() + "'");
+            }
+        } finally {
+            scope.close();
         }
     }
 
@@ -137,6 +152,19 @@ public final class OwnershipChecker {
     }
 
     private void checkClass(Ast.ModuleDecl module, Ast.ClassDecl klass) {
+        Scope fieldModuleScope = new Scope(null);
+        seedModuleState(module, fieldModuleScope);
+        try {
+            for (Ast.FieldDecl field : klass.fields()) {
+                if (field.initializer() == null) continue;
+                ValueInfo stored = checkExpr(field.initializer(), fieldModuleScope, true);
+                rejectStoredBorrow(stored, (klass.isStruct() ? "struct" : "class")
+                        + " field initializer '" + klass.name() + "." + field.name() + "'");
+            }
+        } finally {
+            fieldModuleScope.close();
+        }
+
         for (Ast.MethodDecl method : klass.methods()) {
             Scope moduleScope = new Scope(null);
             seedModuleState(module, moduleScope);
@@ -375,7 +403,21 @@ public final class OwnershipChecker {
         }
         if (expr instanceof Ast.AssignExpr assignment) {
             checkAssignmentTarget(assignment.target(), scope);
-            return checkExpr(assignment.value(), scope, true);
+            if (assignment.target() instanceof Ast.NameExpr name) {
+                VarState target = requireState(scope, name.name());
+                if (target.kind == ValueKind.IMM_BORROW || target.kind == ValueKind.MUT_BORROW
+                        || target.kind == ValueKind.SHARED
+                        || (target.type != null && target.type.isBorrow())) {
+                    throw error("reassigning borrow/share binding '" + name.name()
+                            + "' is not supported until lifetime-state reassignment is modeled explicitly; "
+                            + "introduce a new lexical binding instead");
+                }
+            }
+            ValueInfo value = checkExpr(assignment.value(), scope, true);
+            if (assignment.target() instanceof Ast.MemberExpr || assignment.target() instanceof Ast.IndexExpr) {
+                rejectStoredBorrow(value, "assignment into owning aggregate/container storage");
+            }
+            return value;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
             checkExpr(binary.left(), scope, false);
@@ -429,13 +471,13 @@ public final class OwnershipChecker {
                         yield new ValueInfo(target, resultKind, null);
                     }
                     case "take" -> {
-                        ValueInfo source = checkExpr(argument, scope, false);
+                        ValueInfo source = checkExpr(argument, scope, true);
                         if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW
                                 || source.kind == ValueKind.SHARED
                                 || (source.type != null && source.type.isBorrow())) {
                             throw error("take requires an owned value, not a borrow");
                         }
-                        yield checkExpr(argument, scope, true);
+                        yield source;
                     }
                     case "borrow" -> {
                         VarState owner = borrowOwner(argument, scope);
@@ -1112,6 +1154,11 @@ public final class OwnershipChecker {
 
     private void move(VarState state, String name) {
         requireUsable(state, name, false);
+        if (state.origin == Origin.MODULE) {
+            throw error("cannot move module-owned value '" + name
+                    + "' by ordinary value flow because the runtime module slot would retain an alias; "
+                    + "use copy(...) or share(...). Explicit module-slot extraction will require a dedicated runtime take operation");
+        }
         if (state.immutableBorrows > 0 || state.mutableBorrowed) throw error("cannot move '" + name + "' while it is borrowed");
         state.moved = true;
     }
