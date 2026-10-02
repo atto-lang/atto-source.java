@@ -442,25 +442,35 @@ public final class GpuKernelCompiler {
             }
 
             String dispatcher = null;
+            List<GpuHiddenParameter> hidden = List.of();
             if (dispatcherEligible) {
                 dispatcher = "ores_batch_" + sanitize(entry.getKey());
-                out.append("__kernel void ").append(dispatcher).append("() {\n");
+                out.append("__kernel void ").append(dispatcher)
+                        .append("(__global int* restrict __ores_error) {\n");
                 out.append("  ulong __ores_task = (ulong)get_global_id(0);\n");
+                out.append("  if (__ores_task >= ").append(targets.size()).append("UL) return;\n");
+                out.append("  __ores_error[__ores_task] = 0;\n");
                 out.append("  switch (__ores_task) {\n");
                 for (int i = 0; i < targets.size(); i++) {
                     out.append("    case ").append(i).append("UL: ")
-                            .append(targets.get(i).helperSymbol).append("(); break;\n");
+                            .append(targets.get(i).helperSymbol).append("(__ores_error); break;\n");
                 }
                 out.append("    default: break;\n");
                 out.append("  }\n");
                 out.append("}\n\n");
+                hidden = List.of(new GpuHiddenParameter(
+                        "__ores_error",
+                        "__global int* restrict",
+                        HiddenPurpose.ERROR_SLOTS,
+                        null));
             }
 
             batches.add(new GpuBatch(
                     entry.getKey(),
                     dispatcher,
                     targets.size(),
-                    targets.stream().map(target -> target.kernelSymbol).toList()));
+                    targets.stream().map(target -> target.kernelSymbol).toList(),
+                    hidden));
         }
         return List.copyOf(batches);
     }
