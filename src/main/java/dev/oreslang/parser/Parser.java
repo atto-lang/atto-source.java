@@ -24,7 +24,7 @@ public final class Parser {
     public Ast.Program parseProgram() {
         String namespace = null;
         if (match(NAMESPACE)) {
-            namespace = consume(IDENT, "expected flat namespace name").lexeme();
+            namespace = consumeIdentifier("expected flat namespace name").lexeme();
             if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
             consume(SEMICOLON, "namespace declaration must end with ';'");
         }
@@ -40,12 +40,12 @@ public final class Parser {
             Modifiers modifiers = parseModifiers();
 
             if (match(DEFINE)) {
-                if (modifiers.shared) {
-                    throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+                if (modifiers.shared || modifiers.untrusted) {
+                    throw error(previous(), "'shared'/'untrusted' must modify an actor declaration");
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || modifiers.untrusted) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
                     modules.add(parseModule(annotations));
@@ -86,7 +86,7 @@ public final class Parser {
             kind = Ast.ImportKind.ALL;
             wildcard = true;
             consume(AS, "'import *' requires 'as <namespace>'");
-            namespace = consume(IDENT, "expected import namespace").lexeme();
+            namespace = consumeIdentifier("expected import namespace").lexeme();
         } else {
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
@@ -96,13 +96,13 @@ public final class Parser {
             if (match(STAR)) {
                 wildcard = true;
                 consume(AS, "wildcard import requires 'as <namespace>'");
-                namespace = consume(IDENT, "expected import namespace").lexeme();
+                namespace = consumeIdentifier("expected import namespace").lexeme();
             } else if (match(LBRACE)) {
                 if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consume(IDENT, "expected imported name").lexeme()); while (match(COMMA));
+                do names.add(consumeIdentifier("expected imported name").lexeme()); while (match(COMMA));
                 consume(RBRACE, "expected '}' after imported names");
             } else {
-                names.add(consume(IDENT, "expected imported name").lexeme());
+                names.add(consumeIdentifier("expected imported name").lexeme());
             }
         }
 
@@ -114,7 +114,7 @@ public final class Parser {
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
-        String name = consume(IDENT, "expected flat module name").lexeme();
+        String name = consumeIdentifier("expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
@@ -149,14 +149,21 @@ public final class Parser {
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
         if (match(ACTOR)) {
-            Ast.ActorKind actorKind = modifiers.shared ? Ast.ActorKind.SHARED : Ast.ActorKind.PRIVATE;
+            if (modifiers.shared && modifiers.untrusted) {
+                throw error(previous(), "an actor cannot be both shared and untrusted");
+            }
+            Ast.ActorKind actorKind = modifiers.untrusted
+                    ? Ast.ActorKind.UNTRUSTED
+                    : modifiers.shared ? Ast.ActorKind.SHARED : Ast.ActorKind.PRIVATE;
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
                 throw error(previous(), "actor declarations do not accept async, nlex, static, or abstract modifiers");
             }
             return parseActorClass(actorKind);
         }
-        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration or actor fnc");
+        if (modifiers.shared || modifiers.untrusted) {
+            throw error(previous(), "'shared'/'untrusted' must modify an actor declaration or actor fnc");
+        }
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
@@ -180,7 +187,7 @@ public final class Parser {
         if (kind == Ast.CallableKind.ROUTINE && actorKind != Ast.ActorKind.NONE) {
             throw error(previous(), "actor entry points use fnc, not routine");
         }
-        String name = consume(IDENT, "expected callable name").lexeme();
+        String name = consumeIdentifier("expected callable name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
@@ -193,7 +200,7 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseClass(boolean isAbstract) {
-        String name = consume(IDENT, "expected class name").lexeme();
+        String name = consumeIdentifier("expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -222,7 +229,7 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
-        String name = consume(IDENT, "expected actor name").lexeme();
+        String name = consumeIdentifier("expected actor name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -235,7 +242,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
-            if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
+            if (mods.shared || mods.untrusted) {
+                throw error(previous(), "'shared'/'untrusted' is only valid on an actor declaration, not its members");
+            }
             if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
 
             if (isBindingKind(peek().type())) {
@@ -265,7 +274,7 @@ public final class Parser {
     }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
-        String name = consume(IDENT, "expected interface name").lexeme();
+        String name = consumeIdentifier("expected interface name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         boolean braceStyle = match(LBRACE);
@@ -277,7 +286,7 @@ public final class Parser {
             parseModifiers();
 
             if (match(FNC)) {
-                String memberName = consume(IDENT, "expected interface function name").lexeme();
+                String memberName = consumeIdentifier("expected interface function name").lexeme();
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -288,7 +297,7 @@ public final class Parser {
                 continue;
             }
 
-            if (check(IDENT) && checkNext(COLON)) {
+            if (checkIdentifier() && checkNext(COLON)) {
                 String fieldName = advance().lexeme();
                 consume(COLON, "expected ':' after interface field name");
                 Ast.TypeRef type = parseTypeRef();
@@ -299,7 +308,7 @@ public final class Parser {
 
             if (isBindingKind(peek().type())) advance();
             Ast.TypeRef type = parseTypeRef();
-            String fieldName = consume(IDENT, "expected interface field name").lexeme();
+            String fieldName = consumeIdentifier("expected interface field name").lexeme();
             consumeMemberTerminator(terminator, "interface field signature should end with ';'");
             members.add(new Ast.InterfaceFieldDecl(fieldName, type));
         }
@@ -318,11 +327,11 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) {
+        if (checkIdentifier() && checkNext(EQUAL)) {
             name = advance().lexeme();
         } else {
             type = parseTypeRef();
-            name = consume(IDENT, "expected field name").lexeme();
+            name = consumeIdentifier("expected field name").lexeme();
         }
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
         if (type == null && initializer == null) {
@@ -336,10 +345,10 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        if (checkIdentifier() && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
-            name = consume(IDENT, "expected binding name").lexeme();
+            name = consumeIdentifier("expected binding name").lexeme();
         }
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
@@ -378,18 +387,18 @@ public final class Parser {
 
     private String parseMethodName() {
         if (match(LBRACKET)) {
-            String namespace = consume(IDENT, "expected symbol namespace").lexeme();
+            String namespace = consumeIdentifier("expected symbol namespace").lexeme();
             consume(DOT, "expected '.' in symbol method");
-            String symbol = consume(IDENT, "expected symbol name").lexeme();
+            String symbol = consumeIdentifier("expected symbol name").lexeme();
             consume(RBRACKET, "expected ']' after symbol method");
             if (!namespace.equals("Symbol")) throw error(previous(), "symbol methods must use Symbol.<name>");
             return namespace + "." + symbol;
         }
-        return consume(IDENT, "expected method name (methods omit 'fnc')").lexeme();
+        return consumeIdentifier("expected method name (methods omit 'fnc')").lexeme();
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
-        String name = consume(IDENT, "expected type alias name").lexeme();
+        String name = consumeIdentifier("expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
         Ast.TypeRef target = parseTypeRef();
@@ -400,7 +409,7 @@ public final class Parser {
     private List<Ast.Annotation> parseAnnotations() {
         List<Ast.Annotation> result = new ArrayList<>();
         while (match(AT)) {
-            String name = consume(IDENT, "expected annotation name").lexeme();
+            String name = consumeIdentifier("expected annotation name").lexeme();
             List<Ast.TypeRef> args = new ArrayList<>();
             Token.Type close = null;
             if (match(LT)) close = GT;
@@ -421,12 +430,14 @@ public final class Parser {
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean shared = false;
+        boolean untrusted = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
         boolean nonLexicalSeen = false;
         boolean staticSeen = false;
         boolean abstractSeen = false;
         boolean sharedSeen = false;
+        boolean untrustedSeen = false;
 
         while (true) {
             if (match(PUB)) {
@@ -457,11 +468,15 @@ public final class Parser {
                 if (sharedSeen) throw error(previous(), "duplicate 'shared' modifier");
                 sharedSeen = true;
                 shared = true;
+            } else if (match(UNTRUSTED)) {
+                if (untrustedSeen) throw error(previous(), "duplicate 'untrusted' modifier");
+                untrustedSeen = true;
+                untrusted = true;
             } else {
                 break;
             }
         }
-        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared);
+        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared, untrusted);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -486,7 +501,7 @@ public final class Parser {
     private List<String> parseGenericParameters() {
         if (!match(LT)) return List.of();
         List<String> names = new ArrayList<>();
-        do names.add(consume(IDENT, "expected generic parameter name").lexeme()); while (match(COMMA));
+        do names.add(consumeIdentifier("expected generic parameter name").lexeme()); while (match(COMMA));
         consume(GT, "expected '>' after generic parameters");
         return names;
     }
@@ -502,9 +517,9 @@ public final class Parser {
             boolean structural = false;
 
             // Name-first structural spelling: y structural Foo
-            if (check(IDENT) && checkNextLexeme("structural")) {
+            if (checkIdentifier() && checkNextLexeme("structural")) {
                 String name = advance().lexeme();
-                Token marker = consume(IDENT, "expected structural");
+                Token marker = consumeIdentifier("expected structural");
                 if (!marker.lexeme().equals("structural")) throw error(marker, "expected structural");
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
@@ -513,7 +528,7 @@ public final class Parser {
             }
 
             // Function annotation spelling: @AllowStructural(y) fnc x(y Foo)
-            if (check(IDENT) && annotationStructuralNames.contains(peek().lexeme()) && checkNext(IDENT)) {
+            if (checkIdentifier() && annotationStructuralNames.contains(peek().lexeme()) && checkNextIdentifier()) {
                 String name = advance().lexeme();
                 Ast.TypeRef type = parseTypeRef();
                 boolean mutable = match(MUT);
@@ -523,13 +538,13 @@ public final class Parser {
 
             // Existing type-first spelling: @Structural Foo y
             if (match(AT)) {
-                String annotation = consume(IDENT, "expected parameter annotation").lexeme();
+                String annotation = consumeIdentifier("expected parameter annotation").lexeme();
                 if (!annotation.equals("Structural")) throw error(previous(), "only @Structural is currently supported on parameters");
                 structural = true;
             }
             Ast.TypeRef type = parseTypeRef();
             boolean mutable = match(MUT);
-            String name = consume(IDENT, "expected parameter name").lexeme();
+            String name = consumeIdentifier("expected parameter name").lexeme();
             params.add(new Ast.Param(type, name, structural, mutable));
         } while (match(COMMA));
         return params;
@@ -606,7 +621,7 @@ public final class Parser {
             if (!check(RBRACE)) {
                 do {
                     String field;
-                    if (match(IDENT, STRING)) field = previous().lexeme();
+                    if (matchIdentifier() || match(STRING)) field = previous().lexeme();
                     else throw error(peek(), "expected record type field name");
                     consume(COLON, "expected ':' after record type field name");
                     Ast.TypeRef fieldType = parseTypeRef();
@@ -655,7 +670,7 @@ public final class Parser {
         if (!check(RPAREN)) {
             do {
                 Ast.TypeRef paramType = parseTypeRef();
-                if (check(IDENT)) advance(); // optional documentation-only parameter name
+                if (checkIdentifier()) advance(); // optional documentation-only parameter name
                 params.add(paramType);
             } while (match(COMMA));
         }
@@ -679,8 +694,8 @@ public final class Parser {
     }
 
     private String parseQualifiedName() {
-        StringBuilder name = new StringBuilder(consume(IDENT, "expected name").lexeme());
-        while (match(DOT)) name.append('.').append(consume(IDENT, "expected name after '.'").lexeme());
+        StringBuilder name = new StringBuilder(consumeIdentifier("expected name").lexeme());
+        while (match(DOT)) name.append('.').append(consumeIdentifier("expected name after '.'").lexeme());
         return name.toString();
     }
 
@@ -724,7 +739,7 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
-            if (check(IDENT) && checkNext(OF)) {
+            if (checkIdentifier() && checkNext(OF)) {
                 String name = advance().lexeme();
                 consume(OF, "expected 'of' in for-of loop");
                 Ast.Expr iterable = parseExpression();
@@ -734,10 +749,10 @@ public final class Parser {
 
             Ast.TypeRef type = null;
             String name;
-            if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+            if (checkIdentifier() && checkNext(EQUAL)) name = advance().lexeme();
             else {
                 type = parseTypeRef();
-                name = consume(IDENT, "expected loop initializer binding name").lexeme();
+                name = consumeIdentifier("expected loop initializer binding name").lexeme();
             }
             consume(EQUAL, "for initializer binding requires '='");
             Ast.Expr initializer = parseExpression();
@@ -750,7 +765,7 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseBlock());
         }
 
-        if (check(IDENT) && checkNext(OF)) {
+        if (checkIdentifier() && checkNext(OF)) {
             String name = advance().lexeme();
             consume(OF, "expected 'of' in for-of loop");
             Ast.Expr iterable = parseExpression();
@@ -772,10 +787,10 @@ public final class Parser {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
-        if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
+        if (checkIdentifier() && checkNext(EQUAL)) name = advance().lexeme();
         else {
             type = parseTypeRef();
-            name = consume(IDENT, "expected binding name").lexeme();
+            name = consumeIdentifier("expected binding name").lexeme();
         }
         consume(EQUAL, "binding requires initializer");
         Ast.Expr initializer = parseExpression();
@@ -809,7 +824,7 @@ public final class Parser {
             if (currentKind == null) {
                 throw error(peek(), "destructure binding kind must be declared before the first binding");
             }
-            String name = consume(IDENT, "expected binding name in destructure").lexeme();
+            String name = consumeIdentifier("expected binding name in destructure").lexeme();
             bindings.add(new Ast.DestructureBinding(currentKind, name));
         } while (match(COMMA));
 
@@ -888,7 +903,7 @@ public final class Parser {
         List<Ast.Stmt> body = parseBlock();
         consume(CATCH, "expected catch after try block");
         consume(LPAREN, "expected '(' after catch");
-        String error = consume(IDENT, "expected catch binding").lexeme();
+        String error = consumeIdentifier("expected catch binding").lexeme();
         consume(RPAREN, "expected ')' after catch binding");
         List<Ast.Stmt> catchBody = parseBlock();
         List<Ast.Stmt> finallyBody = match(FINALLY) ? parseBlock() : List.of();
@@ -1013,7 +1028,7 @@ public final class Parser {
      */
     private static boolean isMemberNameToken(Token.Type type) {
         return switch (type) {
-            case IDENT,
+            case IDENT, SHARED, UNTRUSTED,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, DONE, AWAIT, ASYNC, NLEX, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
@@ -1035,7 +1050,7 @@ public final class Parser {
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
-        if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
+        if (matchIdentifier()) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
@@ -1083,7 +1098,7 @@ public final class Parser {
         if (!check(RBRACE)) {
             do {
                 String name;
-                if (match(IDENT, STRING)) name = previous().lexeme();
+                if (matchIdentifier() || match(STRING)) name = previous().lexeme();
                 else throw error(peek(), "expected object field name");
                 consume(COLON, "expected ':' after object field name");
                 fields.add(new Ast.ObjectField(name, parseExpression()));
@@ -1107,13 +1122,13 @@ public final class Parser {
         List<Ast.Param> params = new ArrayList<>();
         if (!check(PIPE)) {
             do {
-                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                if (checkIdentifier() && (checkNext(COMMA) || checkNext(PIPE))) {
                     String name = advance().lexeme();
                     params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
                 } else {
                     Ast.TypeRef type = parseTypeRef();
                     boolean mutable = match(MUT);
-                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
+                    String name = consumeIdentifier("expected lambda parameter name").lexeme();
                     params.add(new Ast.Param(type, name, false, mutable));
                 }
             } while (match(COMMA));
@@ -1180,6 +1195,30 @@ public final class Parser {
         throw error(peek(), message);
     }
 
+    private static boolean isIdentifierToken(Token.Type type) {
+        return type == IDENT || type == SHARED || type == UNTRUSTED;
+    }
+
+    private boolean checkIdentifier() {
+        return isIdentifierToken(peek().type());
+    }
+
+    private boolean checkNextIdentifier() {
+        return current + 1 < tokens.size()
+                && isIdentifierToken(tokens.get(current + 1).type());
+    }
+
+    private boolean matchIdentifier() {
+        if (!checkIdentifier()) return false;
+        advance();
+        return true;
+    }
+
+    private Token consumeIdentifier(String message) {
+        if (checkIdentifier()) return advance();
+        throw error(peek(), message);
+    }
+
     private boolean check(Token.Type type) { return peek().type() == type; }
     private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
     private boolean checkNextLexeme(String lexeme) {
@@ -1194,5 +1233,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared, boolean untrusted) { }
 }
