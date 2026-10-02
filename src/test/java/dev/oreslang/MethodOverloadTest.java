@@ -541,6 +541,80 @@ final class MethodOverloadTest {
     }
 
     @Test
+    void alphaRenamedGenericOverrideIsTheSameArityContract() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module m
+                  define abstract class Base
+                    pub abstract identity<T>(T value) => T;
+                  end
+
+                  define class Child extends Base
+                    pub identity<U>(U value) => U { return value; }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void genericWildcardAssignabilityCannotHideAnIncompatibleOverrideContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define module m
+                          define abstract class Base
+                            pub abstract identity<T>(T value) => T;
+                          end
+
+                          define class Child extends Base
+                            pub identity<U>(U value) => int { return 1; }
+                          end
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("conflicting member 'identity$arity1'"));
+    }
+
+    @Test
+    void alphaRenamedGenericInterfaceSlotsComposeAsOneContract() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub interface Left {
+                  fnc identity<T>(T value) => T;
+                }
+
+                pub interface Right {
+                  fnc identity<U>(U value) => U;
+                }
+
+                pub interface Combined extends Left, Right {
+                }
+
+                define module m
+                  define class C implements Combined
+                    pub identity<V>(V value) => V { return value; }
+                  end
+                end
+                """)));
+    }
+
+    @Test
+    void incompatibleGenericInterfaceContractsCannotShareOneAritySlot() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub interface Left {
+                          fnc identity<T>(T value) => T;
+                        }
+
+                        pub interface Right {
+                          fnc identity<U>(U value) => int;
+                        }
+
+                        pub interface Combined extends Left, Right {
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("conflicting member 'identity$arity1'"));
+    }
+
+    @Test
     void genericInterfaceMethodSlotUsesConcreteTypeArguments() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub interface Lookup<T> {
