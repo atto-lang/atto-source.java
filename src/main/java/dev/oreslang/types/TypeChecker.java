@@ -746,6 +746,9 @@ public final class TypeChecker {
         if (!member.equals("from_array")) {
             throw new IllegalArgumentException("unknown GpuStream core function '" + member + "'");
         }
+        if (inGpuCallable()) {
+            throw new IllegalArgumentException("GpuStream.from_array() is a host orchestration operation and cannot run inside a gpu callable");
+        }
         if (arguments.size() != 1) throw new IllegalArgumentException("GpuStream.from_array() expects exactly one GpuArray<T>");
         Type source = deref(typeOf(arguments.getFirst(), env, generics, self));
         if (!(source instanceof GpuArrayType array)) {
@@ -763,24 +766,24 @@ public final class TypeChecker {
             Type self) {
         if (receiver instanceof GpuArrayType array) {
             if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuArray." + member + "() takes no arguments");
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuArray." + member + "() is host orchestration; gpu callables consume GpuArray directly by indexing/iteration");
+            }
             return switch (member) {
                 case "stream" -> new GpuStreamType(array.element());
-                case "copy_to_cpu" -> {
-                    if (inGpuCallable()) throw new IllegalArgumentException("GpuArray.copy_to_cpu() cannot run inside a gpu callable");
-                    yield new ListType(array.element());
-                }
+                case "copy_to_cpu" -> new ListType(array.element());
                 case "length" -> Primitive.INT;
                 default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
             };
         }
         if (receiver instanceof GpuStreamType stream) {
             if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuStream." + member + "() takes no arguments");
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuStream." + member + "() is host orchestration; gpu callables consume GpuStream directly by iteration");
+            }
             return switch (member) {
                 case "collect" -> new GpuArrayType(stream.element());
-                case "copy_to_cpu" -> {
-                    if (inGpuCallable()) throw new IllegalArgumentException("GpuStream.copy_to_cpu() cannot run inside a gpu callable");
-                    yield new ListType(stream.element());
-                }
+                case "copy_to_cpu" -> new ListType(stream.element());
                 default -> throw new IllegalArgumentException("unknown GpuStream member '" + member + "'");
             };
         }
