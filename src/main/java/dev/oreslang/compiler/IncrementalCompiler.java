@@ -187,7 +187,7 @@ public final class IncrementalCompiler {
         }
         if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
             abi.append("binding ").append(field.bindingKind()).append(' ')
-                    .append(field.type() == null ? "<inferred>" : typeRef(field.type()))
+                    .append(field.type() == null ? "<inferred:" + field.initializer() + ">" : typeRef(field.type()))
                     .append(' ').append(field.name()).append('\n');
         }
     }
