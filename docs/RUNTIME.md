@@ -66,3 +66,10 @@ This preserves the language contract now without faking actor-local GC by introd
 ## Runtime facade authority
 
 `stdio`, `process`, and `actor` are namespace-like capability facades, not ordinary first-class values. Guest code may capture an authorized member such as `process.gc`, but it may not capture the entire `process` facade and later select an authority dynamically. This keeps the compiler admission pass able to see which capability is being acquired, while the runtime facade repeats the authorization check at execution time.
+
+
+## Actor-policy inheritance and references
+
+Runtime capability checks use the **current actor policy** when code is executing in an actor, not merely the enclosing isolate ceiling. A child actor with a stricter policy therefore cannot recover parent authority through runtime facades such as `process.gc()`.
+
+An `ActorRef` is also scoped to its owning `ActorRuntime`. The in-process transport accepts actor references only when sender/receiver are in that same runtime. Raw Java references are rejected across runtime/isolate boundaries; a future cross-isolate transport must use an explicit serialized remote-reference/capability format rather than leaking a host object reference.
