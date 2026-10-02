@@ -78,7 +78,7 @@ final class MutexLanguageTest {
                 end
 
                 define module app
-                  fnc bad(model.Child<int> child) => void {
+                  fnc bad(Child<int> child) => void {
                     val shared = SharedMutex.new(child);
                     stdio.println(shared.is_poisoned());
                     return;
