@@ -173,13 +173,68 @@ Destructuring carries mutability per element:
 [const code, let body] = (200, "ok");
 ```
 
-## Classes, receivers, multiple inheritance, and interfaces
+## Classes, receivers, fields, constructors, and interfaces
+
+Data members are name-first. A member without an explicit binding kind defaults
+to mutable `let`, which keeps serialization/deserialization and generated
+setters straightforward:
+
+```ores
+define class MyBlob as
+  foo: String
+  static bar: bool = false
+
+  constructor(String foo) {
+    self.foo = foo;
+  }
+end
+```
+
+The explicit forms `let foo: String`, `val foo: String`, and
+`const foo: String = "fixed"` are also valid. The older type-first form such
+as `val String foo` remains accepted during migration, but new code should use
+`name: Type`.
+
+A class `static` field belongs to the class namespace and is reached as
+`MyBlob.bar`. Its storage is owned by the same actor-local module state (or
+singleton-module service actor) that owns the class. It is therefore not a
+process-wide Java/JVM global, and static fields are not inherited by subclasses.
+
+Normal modules accept the same name-first member syntax:
+
+```ores
+define module settings as
+  endpoint: String
+  static ready: bool
+
+  init routine() => void {
+    endpoint = "https://example.invalid";
+    ready = true;
+    return;
+  }
+end
+```
+
+For a normal module, `static` is intentionally a declaration marker over the
+module's existing namespace-owned state: modules already have one state cell per
+owning actor/service, so Oreslang does not introduce a second ambient global
+storage mechanism. Typed mutable module members may be declared without an
+initializer and initialized by the module `init routine`; reading one before it
+is initialized fails at runtime. Singleton-module state remains stricter and
+still requires process-stable, context-free initialization.
+
+Constructors are explicit and use `constructor(...)`. They have implicit
+`self`, do not declare a return type, cannot be static/abstract/async, and may
+overload by arity. When a class declares any explicit constructor, `new C(...)`
+selects one by arity and the constructor must leave every instance field
+initialized. Classes without explicit constructors retain the current
+positional-field construction behavior as a compatibility path.
 
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
 
 ```ores
 define class Box<T> as
-  val T value;
+  val value: T;
 
   @Ret<self>
   identity() {
