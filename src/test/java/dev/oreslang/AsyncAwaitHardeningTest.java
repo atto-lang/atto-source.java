@@ -133,6 +133,21 @@ final class AsyncAwaitHardeningTest {
     }
 
     @Test
+    void ordinaryBorrowCannotCrossAwaitSuspension() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub async fnc fetch() => int {
+                  return 1;
+                }
+
+                pub async fnc bad(List<int> values) => int {
+                  val view = &values;
+                  return await fetch();
+                }
+                """)));
+        assertTrue(error.getMessage().contains("live across await"));
+    }
+
+    @Test
     void asyncReturnAnnotationNamesFulfilledValueNotNestedFuture() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub async fnc bad() => Future<int> {
