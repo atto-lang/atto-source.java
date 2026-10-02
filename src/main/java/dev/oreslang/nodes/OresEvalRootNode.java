@@ -1235,7 +1235,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             try {
                 LinkedHashSet<Object> copy = new LinkedHashSet<>();
-                for (Object item : set) copy.add(singletonValidationValue(item, path));
+                for (Object item : set) {
+                    Object validated = singletonValidationValue(item, path);
+                    if (!copy.add(validated)) {
+                        throw new IllegalArgumentException(
+                                "singleton state set elements collide after validation");
+                    }
+                }
                 return copy;
             } finally {
                 path.remove(set);
@@ -1250,9 +1256,10 @@ public final class OresEvalRootNode extends RootNode {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     Object key = singletonValidationValue(entry.getKey(), path);
                     Object mapped = singletonValidationValue(entry.getValue(), path);
-                    if (copy.putIfAbsent(key, mapped) != null) {
+                    if (copy.containsKey(key)) {
                         throw new IllegalArgumentException("singleton state map keys collide after validation");
                     }
+                    copy.put(key, mapped);
                 }
                 return copy;
             } finally {
