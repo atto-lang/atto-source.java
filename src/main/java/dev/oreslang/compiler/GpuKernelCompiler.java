@@ -537,7 +537,88 @@ public final class GpuKernelCompiler {
                 || !(condition.left() instanceof Ast.NameExpr left)
                 || !left.name().equals(init.name())) return null;
         if (!isCanonicalIncrement(loop.update(), init.name())) return null;
+
+        LinkedHashSet<String> mutableBuffers = new LinkedHashSet<>();
+        for (Ast.Param param : target.parameters) {
+            Ast.TypeRef type = resolveAlias(param.type(), target.module);
+            if (param.mutable() && isBuffer(type)) mutableBuffers.add(param.name());
+        }
+        if (!parallelBoundSafe(condition.right(), mutableBuffers)) return null;
+        if (!parallelBodySafe(target.module, loop.body(), init.name(), mutableBuffers)) return null;
+
         return new ParallelLoop(loop, condition.operator(), condition.right());
+    }
+
+    private boolean parallelBoundSafe(Ast.Expr expr, Set<String> mutableBuffers) {
+        if (expr instanceof Ast.LiteralExpr) return true;
+        if (expr instanceof Ast.NameExpr name) return !mutableBuffers.contains(name.name());
+        if (expr instanceof Ast.UnaryExpr unary) return parallelBoundSafe(unary.operand(), mutableBuffers);
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return parallelBoundSafe(binary.left(), mutableBuffers)
+                    && parallelBoundSafe(binary.right(), mutableBuffers);
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return parallelBoundSafe(conditional.condition(), mutableBuffers)
+                    && parallelBoundSafe(conditional.whenTrue(), mutableBuffers)
+                    && parallelBoundSafe(conditional.whenFalse(), mutableBuffers);
+        }
+        return false;
+    }
+
+    private boolean parallelBodySafe(String module, List<Ast.Stmt> statements, String induction, Set<String> mutableBuffers) {
+        for (Ast.Stmt stmt : statements) {
+            if (stmt instanceof Ast.BindingStmt binding) {
+                if (!parallelExprSafe(module, binding.initializer(), induction, mutableBuffers)) return false;
+            } else if (stmt instanceof Ast.ReturnStmt returned) {
+                if (returned.value() != null && !parallelExprSafe(module, returned.value(), induction, mutableBuffers)) return false;
+            } else if (stmt instanceof Ast.ExprStmt expression) {
+                if (!parallelExprSafe(module, expression.expression(), induction, mutableBuffers)) return false;
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (!parallelExprSafe(module, branch.condition(), induction, mutableBuffers)
+                            || !parallelBodySafe(module, branch.body(), induction, mutableBuffers)) return false;
+                }
+                if (!parallelBodySafe(module, conditional.elseBody(), induction, mutableBuffers)) return false;
+            } else {
+                // Nested loops, destructuring, for-of, defer, and try are intentionally not
+                // auto-parallelized. They still lower through the single-work-item kernel.
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean parallelExprSafe(String module, Ast.Expr expr, String induction, Set<String> mutableBuffers) {
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return true;
+        if (expr instanceof Ast.UnaryExpr unary) {
+            return parallelExprSafe(module, unary.operand(), induction, mutableBuffers);
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return parallelExprSafe(module, binary.left(), induction, mutableBuffers)
+                    && parallelExprSafe(module, binary.right(), induction, mutableBuffers);
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return parallelExprSafe(module, conditional.condition(), induction, mutableBuffers)
+                    && parallelExprSafe(module, conditional.whenTrue(), induction, mutableBuffers)
+                    && parallelExprSafe(module, conditional.whenFalse(), induction, mutableBuffers);
+        }
+        if (expr instanceof Ast.AssignExpr assignment) {
+            return parallelExprSafe(module, assignment.target(), induction, mutableBuffers)
+                    && parallelExprSafe(module, assignment.value(), induction, mutableBuffers);
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            if (indexed.receiver() instanceof Ast.NameExpr buffer && mutableBuffers.contains(buffer.name())) {
+                return indexed.index() instanceof Ast.NameExpr index && index.name().equals(induction);
+            }
+            return parallelExprSafe(module, indexed.receiver(), induction, mutableBuffers)
+                    && parallelExprSafe(module, indexed.index(), induction, mutableBuffers);
+        }
+        if (expr instanceof Ast.CallExpr) {
+            // A called GPU helper may touch a mutable buffer in a pattern this local loop
+            // analysis cannot prove race-free, so keep the parent kernel single-work-item.
+            return false;
+        }
+        return false;
     }
 
     private boolean isCanonicalIncrement(Ast.Expr update, String induction) {
