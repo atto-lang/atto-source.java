@@ -98,7 +98,7 @@ public final class OwnershipChecker {
                             Ast.TypeRef.borrowed(Ast.TypeRef.simple(klass.name()), true),
                             false,
                             ValueKind.MUT_BORROW,
-                            Origin.PARAM));
+                            Origin.RECEIVER));
                 } else {
                     // Ordinary class receivers remain immutable unless explicit
                     // mutable receiver syntax is introduced.
@@ -106,7 +106,7 @@ public final class OwnershipChecker {
                             Ast.TypeRef.simple(klass.name()),
                             false,
                             ValueKind.IMM_BORROW,
-                            Origin.PARAM));
+                            Origin.RECEIVER));
                 }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
@@ -125,7 +125,9 @@ public final class OwnershipChecker {
         ValueKind kind = param.structural() && !param.type().isBorrow() ? ValueKind.IMM_BORROW : kindOfType(param.type());
         boolean mutableOwner = param.mutable();
         if (param.type().isBorrow() && param.type().mutableBorrow()) mutableOwner = false;
-        return new VarState(param.type(), mutableOwner, kind, Origin.PARAM);
+        VarState state = new VarState(param.type(), mutableOwner, kind, Origin.PARAM);
+        if (kind == ValueKind.IMM_BORROW || kind == ValueKind.MUT_BORROW) state.lifetimeSource = state;
+        return state;
     }
 
     private void checkBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
@@ -280,10 +282,19 @@ public final class OwnershipChecker {
             value = checkExpr(binding.initializer(), scope, true);
         }
 
+        if ((value.kind == ValueKind.IMM_BORROW || value.kind == ValueKind.MUT_BORROW)
+                && value.borrowSource == null
+                && value.lifetimeSource != null
+                && !value.lifetimeSource.type.isBorrow()) {
+            beginPersistentBorrow(value.lifetimeSource, value.kind == ValueKind.MUT_BORROW);
+            value = new ValueInfo(value.type, value.kind, value.lifetimeSource, value.lifetimeSource);
+        }
+
         if (recursiveLambda) {
             placeholder.type = binding.declaredType() == null ? value.type : binding.declaredType();
             placeholder.kind = value.kind;
             placeholder.borrowSource = value.borrowSource;
+            placeholder.lifetimeSource = value.lifetimeSource;
             return;
         }
 
@@ -298,6 +309,7 @@ public final class OwnershipChecker {
                 value.kind,
                 Origin.LOCAL);
         state.borrowSource = value.borrowSource;
+        state.lifetimeSource = value.lifetimeSource;
         scope.define(binding.name(), state);
     }
 
@@ -318,7 +330,12 @@ public final class OwnershipChecker {
             }
             if (consuming && state.kind == ValueKind.MOVE_ONLY) move(state, name.name());
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
-            return new ValueInfo(state.type, state.kind, state.borrowSource);
+            VarState lifetimeSource = state.lifetimeSource;
+            if (lifetimeSource == null
+                    && (state.kind == ValueKind.IMM_BORROW || state.kind == ValueKind.MUT_BORROW)) {
+                lifetimeSource = state.borrowSource != null ? state.borrowSource : state;
+            }
+            return new ValueInfo(state.type, state.kind, state.borrowSource, lifetimeSource);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
@@ -355,6 +372,18 @@ public final class OwnershipChecker {
 
             mergeBranchState(base, List.of(leftExit, rightExit));
             Ast.TypeRef joinedType = joinConditionalType(left.type, right.type);
+            boolean leftBorrow = left.kind == ValueKind.IMM_BORROW || left.kind == ValueKind.MUT_BORROW;
+            boolean rightBorrow = right.kind == ValueKind.IMM_BORROW || right.kind == ValueKind.MUT_BORROW;
+            if (leftBorrow || rightBorrow) {
+                if (!leftBorrow || !rightBorrow || left.kind != right.kind
+                        || left.lifetimeSource == null
+                        || right.lifetimeSource == null
+                        || left.lifetimeSource != right.lifetimeSource) {
+                    throw error("conditional borrow branches have different or unknown inferred lifetimes; "
+                            + "an explicit lifetime relation is required");
+                }
+                return new ValueInfo(joinedType, left.kind, null, left.lifetimeSource);
+            }
             return new ValueInfo(
                     joinedType,
                     left.kind == ValueKind.COPY && right.kind == ValueKind.COPY
@@ -1138,16 +1167,27 @@ public final class OwnershipChecker {
     }
 
     private enum ValueKind { COPY, MOVE_ONLY, IMM_BORROW, MUT_BORROW }
-    private enum Origin { PARAM, LOCAL, CAPTURE }
+    private enum Origin { PARAM, RECEIVER, LOCAL, CAPTURE }
 
     private static final class ValueInfo {
         private final Ast.TypeRef type;
         private final ValueKind kind;
         private final VarState borrowSource;
+        private final VarState lifetimeSource;
+
         private ValueInfo(Ast.TypeRef type, ValueKind kind, VarState borrowSource) {
+            this(type, kind, borrowSource, borrowSource);
+        }
+
+        private ValueInfo(
+                Ast.TypeRef type,
+                ValueKind kind,
+                VarState borrowSource,
+                VarState lifetimeSource) {
             this.type = type;
             this.kind = kind;
             this.borrowSource = borrowSource;
+            this.lifetimeSource = lifetimeSource;
         }
     }
 
@@ -1160,6 +1200,7 @@ public final class OwnershipChecker {
         private int immutableBorrows;
         private boolean mutableBorrowed;
         private VarState borrowSource;
+        private VarState lifetimeSource;
         private String debugName = "<value>";
 
         private VarState(Ast.TypeRef type, boolean mutable, ValueKind kind, Origin origin) {
