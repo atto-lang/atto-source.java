@@ -689,11 +689,22 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
-            Type resolvedCreated = resolve(created.type(), generics, self);
-            if (klass == null) return resolvedCreated;
-            if (!(resolvedCreated instanceof Named nominal)) {
-                throw new IllegalArgumentException("constructor target must resolve to a named class type");
+            if (klass == null) return resolve(created.type(), generics, self);
+
+            Named nominal;
+            if (created.type().inferArguments()) {
+                if (!created.type().arguments().isEmpty()) {
+                    throw new IllegalArgumentException("inferred constructor type arguments must use an empty <> marker");
+                }
+                nominal = inferConstructedClassType(klass, created.arguments(), env, generics, self);
+            } else {
+                Type resolvedCreated = resolve(created.type(), generics, self);
+                if (!(resolvedCreated instanceof Named named)) {
+                    throw new IllegalArgumentException("constructor target must resolve to a named class type");
+                }
+                nominal = named;
             }
+
             List<ResolvedField> fields = effectiveFieldTargets(klass, nominal, new LinkedHashSet<>());
             if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
             for (int i = 0; i < fields.size(); i++) {
@@ -1109,6 +1120,55 @@ public final class TypeChecker {
         }
         stack.remove(iface);
         return new Record(members);
+    }
+
+    private Named inferConstructedClassType(
+            Ast.ClassDecl klass,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> callerGenerics,
+            Type callerSelf) {
+        if (klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException("class " + klass.name() + " is not generic; remove <>");
+        }
+
+        Named patternType = nominalClassType(klass);
+        List<ResolvedField> fields = effectiveFieldTargets(klass, patternType, new LinkedHashSet<>());
+        if (arguments.size() > fields.size()) {
+            throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
+        }
+
+        Map<String, Type> bindings = new HashMap<>();
+        Set<String> classGenericNames = Set.copyOf(klass.genericParameters());
+        for (int i = 0; i < arguments.size(); i++) {
+            ResolvedField resolvedField = fields.get(i);
+            Type fieldPattern = resolve(
+                    resolvedField.field().type(),
+                    Set.copyOf(resolvedField.owner().genericParameters()),
+                    resolvedField.ownerType());
+            fieldPattern = substituteGenerics(
+                    fieldPattern,
+                    classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
+            Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
+            inferGenericBindings(
+                    fieldPattern,
+                    actual,
+                    bindings,
+                    Set.of(),
+                    "constructor " + klass.name());
+        }
+
+        List<Type> inferred = new ArrayList<>(klass.genericParameters().size());
+        for (String generic : klass.genericParameters()) {
+            Type bound = bindings.get(generic);
+            if (bound == null || containsGenericNamed(bound, classGenericNames)) {
+                throw new IllegalArgumentException(
+                        "cannot infer class generic '" + generic + "' for constructor "
+                                + klass.name() + "<>; provide explicit type arguments");
+            }
+            inferred.add(bound);
+        }
+        return new Named(qualifiedClassName(klass), inferred);
     }
 
     private Map<String, Type> genericBindings(List<String> names, List<Type> arguments, String owner) {
