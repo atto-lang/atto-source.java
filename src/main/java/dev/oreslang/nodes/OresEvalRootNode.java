@@ -156,6 +156,18 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.AssertStmt asserted) {
+                if (!truth(eval(asserted.condition(), env))) throw new IllegalStateException("Oreslang assertion failed");
+                return;
+            }
+            if (stmt instanceof Ast.AssumeStmt assumed) {
+                truth(eval(assumed.condition(), env)); // validate bool; assumptions have no runtime effect
+                return;
+            }
+            if (stmt instanceof Ast.InvariantStmt invariant) {
+                if (!truth(eval(invariant.condition(), env))) throw new IllegalStateException("Oreslang invariant failed");
+                return;
+            }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
                     if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env); return; }
@@ -333,6 +345,21 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return Map.copyOf(result);
             }
+            if (expr instanceof Ast.MatchExpr matched) {
+                Object subject = eval(matched.subject(), env);
+                for (Ast.MatchArm arm : matched.arms()) {
+                    LinkedHashMap<String, Object> bindings = new LinkedHashMap<>();
+                    if (!matchPattern(arm.pattern(), subject, bindings)) continue;
+                    Env armEnv = new Env(env);
+                    for (Map.Entry<String, Object> binding : bindings.entrySet()) {
+                        armEnv.define(binding.getKey(), binding.getValue(), Ast.BindingKind.VAL);
+                    }
+                    if (arm.guard() != null && !truth(eval(arm.guard(), armEnv))) continue;
+                    return eval(arm.value(), armEnv);
+                }
+                throw new IllegalStateException("non-exhaustive match reached runtime");
+            }
+            if (expr instanceof Ast.OldExpr old) return eval(old.expression(), env);
             if (expr instanceof Ast.LambdaExpr lambda) {
                 Env captured = env.snapshot();
                 return (Invokable) args -> {
@@ -348,6 +375,76 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
+        }
+
+        private boolean matchPattern(Ast.Pattern pattern, Object value, Map<String, Object> bindings) {
+            if (pattern instanceof Ast.WildcardPattern) return true;
+            if (pattern instanceof Ast.BindingPattern binding) {
+                Object previous = bindings.putIfAbsent(binding.name(), value);
+                return previous == null || Objects.equals(previous, value);
+            }
+            if (pattern instanceof Ast.LiteralPattern literal) return Objects.equals(literal.value(), value);
+            if (pattern instanceof Ast.OrPattern or) {
+                for (Ast.Pattern alternative : or.alternatives()) {
+                    LinkedHashMap<String, Object> candidate = new LinkedHashMap<>(bindings);
+                    if (matchPattern(alternative, value, candidate)) {
+                        bindings.clear();
+                        bindings.putAll(candidate);
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (pattern instanceof Ast.ConstructorPattern constructor) {
+                if (value instanceof OptionValue option) {
+                    if (constructor.name().equals("None")) return !option.present() && constructor.arguments().isEmpty();
+                    if (constructor.name().equals("Some")) {
+                        return option.present() && constructor.arguments().size() == 1
+                                && matchPattern(constructor.arguments().getFirst(), option.value(), bindings);
+                    }
+                    return false;
+                }
+                if (value instanceof OresObject object) {
+                    Ast.ClassDecl expected = findClass(constructor.name());
+                    if (expected == null || object.klass != expected) return false;
+                    List<Ast.FieldDecl> fields = effectiveFields(expected, new LinkedHashSet<>());
+                    if (constructor.arguments().size() != fields.size()) return false;
+                    for (int i = 0; i < fields.size(); i++) {
+                        if (!matchPattern(constructor.arguments().get(i), object.fields.get(fields.get(i).name()), bindings)) return false;
+                    }
+                    return true;
+                }
+                return false;
+            }
+            if (pattern instanceof Ast.TuplePattern tuple) {
+                if (!(value instanceof List<?> list) || list.size() != tuple.elements().size()) return false;
+                for (int i = 0; i < list.size(); i++) {
+                    if (!matchPattern(tuple.elements().get(i), list.get(i), bindings)) return false;
+                }
+                return true;
+            }
+            if (pattern instanceof Ast.ListPattern listPattern) {
+                if (!(value instanceof List<?> list) || list.size() != listPattern.elements().size()) return false;
+                for (int i = 0; i < list.size(); i++) {
+                    if (!matchPattern(listPattern.elements().get(i), list.get(i), bindings)) return false;
+                }
+                return true;
+            }
+            if (pattern instanceof Ast.ObjectPattern objectPattern) {
+                for (Ast.ObjectPatternField field : objectPattern.fields()) {
+                    Object fieldValue;
+                    if (value instanceof Map<?, ?> map) {
+                        if (!map.containsKey(field.name())) return false;
+                        fieldValue = map.get(field.name());
+                    } else if (value instanceof OresObject object) {
+                        if (!object.fields.containsKey(field.name())) return false;
+                        fieldValue = object.fields.get(field.name());
+                    } else return false;
+                    if (!matchPattern(field.pattern(), fieldValue, bindings)) return false;
+                }
+                return true;
+            }
+            return false;
         }
 
         private Object member(Object receiver, String name) {
