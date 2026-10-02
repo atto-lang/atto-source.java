@@ -11,6 +11,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -289,6 +290,36 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.MemberExpr builtin
+                        && builtin.receiver() instanceof Ast.NameExpr namespace
+                        && builtinCollectionNamespaceAvailable(namespace.name())
+                        && namespace.name().equals("List")
+                        && builtin.member().equals("of")) {
+                    Object[] values = new Object[call.arguments().size()];
+                    for (int i = 0; i < call.arguments().size(); i++) values[i] = eval(call.arguments().get(i), env);
+                    return Arrays.asList(values);
+                }
+                if (call.callee() instanceof Ast.MemberExpr builtin
+                        && builtin.receiver() instanceof Ast.NameExpr namespace
+                        && builtinCollectionNamespaceAvailable(namespace.name())
+                        && namespace.name().equals("Map")
+                        && builtin.member().equals("of")) {
+                    if ((call.arguments().size() & 1) != 0) {
+                        throw new IllegalArgumentException("Map.of requires alternating string keys and values");
+                    }
+                    LinkedHashMap<String, Object> values = new LinkedHashMap<>();
+                    for (int i = 0; i < call.arguments().size(); i += 2) {
+                        Object rawKey = eval(call.arguments().get(i), env);
+                        if (!(rawKey instanceof String key)) {
+                            throw new IllegalArgumentException("Map.of record keys must be strings");
+                        }
+                        Object value = eval(call.arguments().get(i + 1), env);
+                        if (values.putIfAbsent(key, value) != null) {
+                            throw new IllegalArgumentException("duplicate Map.of record key '" + key + "'");
+                        }
+                    }
+                    return values;
+                }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
@@ -617,45 +648,195 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable, Set<Ast.TypeAliasDecl> resolving) {
-            if (declared == null) return value;
+            if (declared == null || declared.name().equals("$infer$")) return value;
 
-            Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
-            if (alias != null) {
-                if (alias.genericParameters().size() != declared.arguments().size()) {
-                    throw new IllegalArgumentException("type alias '" + alias.name() + "' expects "
-                            + alias.genericParameters().size() + " type argument(s), got " + declared.arguments().size());
-                }
-                if (!resolving.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
-                try {
-                    Map<String, Ast.TypeRef> substitutions = new HashMap<>();
-                    for (int i = 0; i < alias.genericParameters().size(); i++) {
-                        substitutions.put(alias.genericParameters().get(i), declared.arguments().get(i));
-                    }
-                    return shapeReturnedValue(substituteReturnType(alias.target(), substitutions), value, callable, resolving);
-                } finally {
-                    resolving.remove(alias);
-                }
-            }
-
-            if (declared.isTupleType()) {
+            Ast.TypeRef expanded = expandReturnAlias(declared, resolving);
+            if (expanded.isTupleType()) {
                 List<?> items = asSequence(value);
-                if (items.size() != declared.arguments().size()) {
+                if (items.size() != expanded.arguments().size()) {
                     throw new IllegalArgumentException(callable + " returned " + items.size()
-                            + " tuple element(s), expected " + declared.arguments().size());
+                            + " tuple element(s), expected " + expanded.arguments().size());
                 }
                 Object[] fixed = items.toArray();
                 for (int i = 0; i < fixed.length; i++) {
-                    fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]", resolving);
+                    fixed[i] = shapeReturnedValue(expanded.arguments().get(i), fixed[i],
+                            callable + " tuple[" + i + "]", resolving);
                 }
-                return java.util.Arrays.asList(fixed);
+                return Arrays.asList(fixed);
             }
-            if (declared.isRecordType()) {
-                for (Map.Entry<String, Ast.TypeRef> member : declared.recordMembers().entrySet()) {
+
+            if (expanded.isRecordType()) {
+                for (Map.Entry<String, Ast.TypeRef> member : expanded.recordMembers().entrySet()) {
                     Object nested = destructureMember(value, member.getKey());
                     shapeReturnedValue(member.getValue(), nested, callable + "." + member.getKey(), resolving);
                 }
+                return value instanceof Map<?, ?> map ? Map.copyOf(map) : value;
+            }
+
+            if (expanded.isUnion()) {
+                if (!runtimeMatchesAny(expanded.arguments(), value)) {
+                    throw new IllegalArgumentException(callable + " returned a value incompatible with declared union " + expanded);
+                }
+                return value;
+            }
+
+            if (expanded.isStringLiteral()) {
+                if (!(value instanceof String string) || !string.equals(expanded.stringLiteralValue())) {
+                    throw new IllegalArgumentException(callable + " returned " + value
+                            + " but expected string literal '" + expanded.stringLiteralValue() + "'");
+                }
+                return value;
+            }
+
+            switch (expanded.name()) {
+                case "void" -> {
+                    if (value != null) throw runtimeReturnTypeError(callable, expanded, value);
+                }
+                case "null" -> {
+                    if (value != null) throw runtimeReturnTypeError(callable, expanded, value);
+                }
+                case "bool", "Bool" -> {
+                    if (!(value instanceof Boolean)) throw runtimeReturnTypeError(callable, expanded, value);
+                }
+                case "string", "String" -> {
+                    if (!(value instanceof String)) throw runtimeReturnTypeError(callable, expanded, value);
+                }
+                case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> {
+                    if (!(value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long)) {
+                        throw runtimeReturnTypeError(callable, expanded, value);
+                    }
+                }
+                case "f32", "f64", "float", "decimal" -> {
+                    if (!(value instanceof Number)) throw runtimeReturnTypeError(callable, expanded, value);
+                }
+                case "complex64", "complex128", "complex" -> {
+                    if (!(value instanceof Number) && !(value instanceof Complex)) throw runtimeReturnTypeError(callable, expanded, value);
+                }
+                case "Array", "List" -> {
+                    List<?> items = asSequence(value);
+                    if (!expanded.arguments().isEmpty()) {
+                        Ast.TypeRef elementType = expanded.arguments().getFirst();
+                        for (int i = 0; i < items.size(); i++) {
+                            shapeReturnedValue(elementType, items.get(i), callable + "[" + i + "]", resolving);
+                        }
+                    }
+                }
+                case "Option" -> {
+                    if (!(value instanceof OptionValue option)) throw runtimeReturnTypeError(callable, expanded, value);
+                    if (option.present() && !expanded.arguments().isEmpty()) {
+                        shapeReturnedValue(expanded.arguments().getFirst(), option.value(), callable + ".Some", resolving);
+                    }
+                }
+                case "Fnc" -> {
+                    if (!(value instanceof Invokable)) throw runtimeReturnTypeError(callable, expanded, value);
+                }
+                default -> {
+                    // Nominal/custom values are checked statically; runtime class identity remains backend-owned.
+                }
             }
             return value;
+        }
+
+        private Ast.TypeRef expandReturnAlias(Ast.TypeRef declared, Set<Ast.TypeAliasDecl> resolving) {
+            Ast.TypeAliasDecl alias = findTypeAlias(declared.name());
+            if (alias == null) return declared;
+            if (alias.genericParameters().size() != declared.arguments().size()) {
+                throw new IllegalArgumentException("type alias '" + alias.name() + "' expects "
+                        + alias.genericParameters().size() + " type argument(s), got " + declared.arguments().size());
+            }
+            if (!resolving.add(alias)) throw new IllegalArgumentException("type alias cycle involving '" + alias.name() + "'");
+            try {
+                Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+                for (int i = 0; i < alias.genericParameters().size(); i++) {
+                    substitutions.put(alias.genericParameters().get(i), declared.arguments().get(i));
+                }
+                return expandReturnAlias(substituteReturnType(alias.target(), substitutions), resolving);
+            } finally {
+                resolving.remove(alias);
+            }
+        }
+
+        private boolean runtimeMatchesAny(List<Ast.TypeRef> candidates, Object value) {
+            for (Ast.TypeRef candidate : candidates) {
+                if (runtimeMatches(candidate, value, new LinkedHashSet<>())) return true;
+            }
+            return false;
+        }
+
+        private boolean runtimeMatches(Ast.TypeRef declared, Object value, Set<Ast.TypeAliasDecl> resolving) {
+            if (declared == null || declared.name().equals("$infer$")) return true;
+            Ast.TypeRef expanded = expandReturnAlias(declared, resolving);
+
+            if (expanded.isStringLiteral()) {
+                return value instanceof String string && string.equals(expanded.stringLiteralValue());
+            }
+            if (expanded.isUnion()) {
+                for (Ast.TypeRef candidate : expanded.arguments()) {
+                    if (runtimeMatches(candidate, value, new LinkedHashSet<>())) return true;
+                }
+                return false;
+            }
+            if (expanded.isTupleType()) {
+                List<?> items = sequenceValue(value);
+                if (items == null || items.size() != expanded.arguments().size()) return false;
+                for (int i = 0; i < items.size(); i++) {
+                    if (!runtimeMatches(expanded.arguments().get(i), items.get(i), new LinkedHashSet<>())) return false;
+                }
+                return true;
+            }
+            if (expanded.isRecordType()) {
+                if (!(value instanceof Map<?, ?>) && !(value instanceof OresObject)) return false;
+                for (Map.Entry<String, Ast.TypeRef> member : expanded.recordMembers().entrySet()) {
+                    Object nested;
+                    if (value instanceof Map<?, ?> map) {
+                        if (!map.containsKey(member.getKey())) return false;
+                        nested = map.get(member.getKey());
+                    } else {
+                        OresObject object = (OresObject) value;
+                        if (!object.fields.containsKey(member.getKey())) return false;
+                        nested = object.fields.get(member.getKey());
+                    }
+                    if (!runtimeMatches(member.getValue(), nested, new LinkedHashSet<>())) return false;
+                }
+                return true;
+            }
+
+            return switch (expanded.name()) {
+                case "void", "null" -> value == null;
+                case "bool", "Bool" -> value instanceof Boolean;
+                case "string", "String" -> value instanceof String;
+                case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" ->
+                        value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long;
+                case "f32", "f64", "float", "decimal" -> value instanceof Number;
+                case "complex64", "complex128", "complex" -> value instanceof Number || value instanceof Complex;
+                case "Array", "List" -> {
+                    List<?> items = sequenceValue(value);
+                    if (items == null) yield false;
+                    if (expanded.arguments().isEmpty()) yield true;
+                    Ast.TypeRef element = expanded.arguments().getFirst();
+                    boolean matches = true;
+                    for (Object item : items) {
+                        if (!runtimeMatches(element, item, new LinkedHashSet<>())) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    yield matches;
+                }
+                case "Option" -> {
+                    if (!(value instanceof OptionValue option)) yield false;
+                    if (!option.present()) yield true;
+                    yield expanded.arguments().isEmpty()
+                            || runtimeMatches(expanded.arguments().getFirst(), option.value(), new LinkedHashSet<>());
+                }
+                case "Fnc" -> value instanceof Invokable;
+                default -> true;
+            };
+        }
+
+        private IllegalArgumentException runtimeReturnTypeError(String callable, Ast.TypeRef expected, Object value) {
+            return new IllegalArgumentException(callable + " returned " + String.valueOf(value)
+                    + " but expected " + expected.name());
         }
 
         private Ast.TypeRef substituteReturnType(Ast.TypeRef ref, Map<String, Ast.TypeRef> substitutions) {
@@ -667,7 +848,21 @@ public final class OresEvalRootNode extends RootNode {
                     ref.inferArguments());
         }
 
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+        private boolean builtinCollectionNamespaceAvailable(String name) {
+            return !modules.containsKey(name) && !classes.containsKey(name) && !ambiguousClasses.contains(name);
+        }
+
+        private List<?> sequenceValue(Object value) {
+            if (value instanceof List<?> list) return list;
+            if (value instanceof Object[] array) return Arrays.asList(array);
+            return null;
+        }
+
+        private List<?> asSequence(Object value) {
+            List<?> sequence = sequenceValue(value);
+            if (sequence != null) return sequence;
+            throw new IllegalArgumentException("value is not sequence-destructurable");
+        }
         private Object destructureMember(Object value, String name) {
             if (value instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
