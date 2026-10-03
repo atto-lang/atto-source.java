@@ -197,7 +197,7 @@ public final class OresMutex {
      * transient JVM worker Thread. Outside actor execution, Thread identity is
      * used as the local domain.
      */
-    public static final class Local<T> implements Lock<T> {
+    public static final class Local<T> implements Lock<T>, SharedState {
         private final T value;
         private final Object ownerDomain;
         private boolean held;
@@ -272,6 +272,11 @@ public final class OresMutex {
         @Override
         public boolean isPoisoned() {
             return false;
+        }
+
+        @Override
+        public Iterable<?> sharedStateChildren() {
+            return java.util.Collections.singletonList(value);
         }
 
         private final class LocalGuard implements Guard<T> {
