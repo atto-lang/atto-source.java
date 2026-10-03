@@ -229,9 +229,7 @@ public final class TreeShaker {
 
         private Ast.Expr inlineConstantCall(
                 InlineTarget target,
-                List<Ast.Expr> arguments,
-                String module,
-                Map<String, Object> locals) {
+                List<Ast.Expr> arguments) {
             Ast.FunctionDecl function = target.function();
             Ast.ReturnStmt returned = (Ast.ReturnStmt) function.body().getFirst();
             LinkedHashMap<String, Ast.Expr> substitutions = new LinkedHashMap<>();
@@ -701,7 +699,7 @@ public final class TreeShaker {
 
                 InlineTarget target = resolveInlineTarget(callee, module, locals);
                 if (target != null && canInlineConstantCall(target, rewritten, arguments)) {
-                    return inlineConstantCall(target, arguments, module, locals);
+                    return inlineConstantCall(target, arguments);
                 }
                 return rewritten;
             }
