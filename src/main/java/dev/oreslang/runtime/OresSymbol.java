@@ -4,6 +4,7 @@ import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -51,6 +52,11 @@ public final class OresSymbol {
     private static final UUID PROCESS_DOMAIN = UUID.randomUUID();
     private static final ConcurrentHashMap<String, OresSymbol> PROCESS_SYMBOLS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<UUID, OresSymbol> STABLE_SYMBOLS = new ConcurrentHashMap<>();
+    /**
+     * Explicit protocol allowlist for the untrusted boundary. Identity remains
+     * process-global; visibility is a separate capability decision.
+     */
+    private static final Set<Wire> UNTRUSTED_EXPORTS = ConcurrentHashMap.newKeySet();
     private static final AtomicLong NEXT_PROCESS_ID = new AtomicLong(1L);
     private static final AtomicLong NEXT_STABLE_ID = new AtomicLong(1L);
     private static int dynamicProcessSymbols;
@@ -91,9 +97,9 @@ public final class OresSymbol {
         String normalized = validateKey(key);
         if (effectiveAdversarial(policy)) {
             OresSymbol known = PROCESS_SYMBOLS.get(normalized);
-            if (known == null) {
+            if (known == null || !known.visibleToUntrusted()) {
                 throw new SecurityException(
-                        "untrusted code may use only pre-existing process Symbols: " + normalized);
+                        "untrusted code may use only explicitly exported process Symbols: " + normalized);
             }
             return known;
         }
@@ -112,9 +118,9 @@ public final class OresSymbol {
         String literal = validateLiteralName(key);
         if (effectiveAdversarial(policy)) {
             OresSymbol known = PROCESS_SYMBOLS.get(literal);
-            if (known == null) {
+            if (known == null || !known.visibleToUntrusted()) {
                 throw new SecurityException(
-                        "untrusted source may reference only pre-existing Symbol literals: :" + literal);
+                        "untrusted source may reference only explicitly exported Symbol literals: :" + literal);
             }
             return known;
         }
@@ -222,10 +228,16 @@ public final class OresSymbol {
         Objects.requireNonNull(policy, "policy");
         UUID stableId = validateStableKey(uuidKey);
         OresSymbol existing = STABLE_SYMBOLS.get(stableId);
-        if (existing != null) return existing;
+        if (existing != null) {
+            if (effectiveAdversarial(policy) && !existing.visibleToUntrusted()) {
+                throw new SecurityException(
+                        "stable Symbol is not exported to untrusted execution: " + stableId);
+            }
+            return existing;
+        }
         if (effectiveAdversarial(policy)) {
             throw new SecurityException(
-                    "untrusted code may use only pre-existing stable Symbols: " + stableId);
+                    "untrusted code may use only explicitly exported stable Symbols: " + stableId);
         }
 
         synchronized (STABLE_INSERT_LOCK) {
@@ -274,6 +286,26 @@ public final class OresSymbol {
         return true;
     }
 
+    public boolean visibleToUntrusted() {
+        return UNTRUSTED_EXPORTS.contains(toWire());
+    }
+
+    /**
+     * Trusted supervisor/runtime operation. Export is visibility-only: it does
+     * not create a second identity and does not grant interning authority.
+     */
+    public static void exportToUntrusted(OresSymbol symbol, IsolatePolicy policy) {
+        Objects.requireNonNull(symbol, "symbol");
+        requireExportAuthority(policy, "export Symbol to untrusted");
+        UNTRUSTED_EXPORTS.add(symbol.toWire());
+    }
+
+    public static void revokeFromUntrusted(OresSymbol symbol, IsolatePolicy policy) {
+        Objects.requireNonNull(symbol, "symbol");
+        requireExportAuthority(policy, "revoke Symbol from untrusted");
+        UNTRUSTED_EXPORTS.remove(symbol.toWire());
+    }
+
     public Wire toWire() {
         return new Wire(scope, key);
     }
@@ -294,6 +326,10 @@ public final class OresSymbol {
                     "unknown " + wire.scope().name().toLowerCase(Locale.ROOT)
                             + " Symbol wire key; pre-register it or use fromTrustedWire(...) "
                             + "only for authenticated/trusted symbol dictionaries");
+        }
+        if (effectiveAdversarial(policy) && !known.visibleToUntrusted()) {
+            throw new SecurityException(
+                    "Symbol is not exported to the untrusted boundary: " + known);
         }
         return known;
     }
@@ -362,6 +398,15 @@ public final class OresSymbol {
         if (effectiveAdversarial(policy)) {
             throw new SecurityException(
                     "untrusted/adversarial execution has no global Symbol interning authority: " + api);
+        }
+    }
+
+    private static void requireExportAuthority(IsolatePolicy policy, String api) {
+        requireInternAuthority(policy, api);
+        policy.require(IsolatePolicy.Capability.SYMBOL_EXPORT, api);
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        if (actorPolicy != null) {
+            actorPolicy.require(IsolatePolicy.Capability.SYMBOL_EXPORT, api);
         }
     }
 
