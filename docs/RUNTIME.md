@@ -64,6 +64,26 @@ Non-adversarial contexts may therefore execute independent actor turns concurren
 
 The guest `THREAD_CREATE` capability is separate from host/runtime dispatcher scheduling. Denying guest-created threads is never bypassed merely because the runtime owns carrier pools.
 
+## Actor scheduler, fairness, and starvation contract
+
+Oreslang has exactly three **actor carrier domains**:
+
+1. **shared/host domain** — shared actors; the root/main process belongs to this semantic scheduling domain, although the current interpreter still executes the initial `main` call synchronously on the host entry thread rather than as a resumable shared-pool task;
+2. **trusted isolated domain** — private/isolated actors;
+3. **untrusted domain** — untrusted actors only.
+
+The pools are bulkheads. Untrusted work can never spill into a trusted pool, and the runtime never uses a caller-runs rejection policy because that would execute an actor on an arbitrary sender thread and break the trust boundary.
+
+Within a pool, actor scheduling is FIFO at mailbox-batch boundaries. One actor owns at most one scheduled ready token and may never execute two mailbox turns concurrently. A hot actor processes at most the configured message throughput **and** at most the configured wall-clock batch quantum (2 ms by default) before it is requeued at the tail. Untrusted actors have a stricter one-message batch regardless of the trusted throughput setting. These bounds prevent a permanently non-empty mailbox from monopolizing a carrier.
+
+The wall-clock quantum is intentionally checked **between complete messages**. Arbitrary trusted Java/Truffle call stacks are not asynchronously stopped. Compiler safepoints therefore perform cancellation/resource checks but do not call `Thread.yield()`: yielding the OS carrier does not return the actor to the dispatcher and cannot make progress on a queued peer when a pool has one worker. True BEAM-style mid-message cooperative preemption requires resumable Oreslang execution (a fiber/continuation or equivalent state-machine lowering) so a reduction-budget exhaustion can save the program counter/environment, requeue the actor, and later resume it.
+
+Untrusted code has a separate hard-preemption path: compiler/evaluator checkpoints charge execution fuel, a monotonic deadline is checked independently, and the Graal untrusted sandbox supplies hard CPU/heap/thread/output limits. Watchdog cancellation is a containment backstop, not a substitute for the isolate resource limits. No hostile actor is allowed to rely solely on Java interruption.
+
+Carrier code must not block on another actor, a contended shared mutex, synchronous child execution, or arbitrary blocking host/FFI work. Such operations must suspend/resume the actor or be mediated by an explicitly bounded host service. The runtime already rejects synchronous actor invocation from an actor turn and blocking shared-mutex acquisition in actor execution.
+
+Memory fairness is admission-controlled separately from CPU fairness: mailboxes are bounded by message count and logical bytes; private/untrusted actors have actor-owned memory slices; the runtime has an aggregate memory ceiling; and untrusted isolate heap is independently bounded. Arbitrary trusted JVM transient allocation is not yet a hard per-actor heap boundary, so production trusted-isolate execution must ultimately map private actors to physically bounded isolate heaps or route every guest allocation through metered actor-owned allocation.
+
 
 ## Mutex and shared-memory model
 
