@@ -414,6 +414,13 @@ public final class ActorRuntime implements AutoCloseable {
         default Optional<String> header(String name) { return Optional.empty(); }
         int read(ByteBuffer target) throws IOException;
         default void cancel(Throwable cause) { }
+
+        /**
+         * Final transport teardown. Native socket-backed adapters should close
+         * the underlying descriptor/handle here. The default preserves older
+         * adapters by treating close as cancellation.
+         */
+        default void closeTransport(Throwable cause) { cancel(cause); }
     }
 
     /**
@@ -427,6 +434,13 @@ public final class ActorRuntime implements AutoCloseable {
         default void flush() throws IOException { }
         default void complete() throws IOException { }
         default void abort(Throwable cause) { }
+
+        /**
+         * Final transport teardown. Native socket-backed adapters should close
+         * the underlying descriptor/handle here. The default preserves older
+         * adapters by treating close as abort.
+         */
+        default void closeTransport(Throwable cause) { abort(cause); }
     }
 
     /**
@@ -598,7 +612,7 @@ public final class ActorRuntime implements AutoCloseable {
                 responseToAbort = responseTransport;
             }
 
-            cancelAndAbort(requestToCancel, responseToAbort, cause);
+            closeTransports(requestToCancel, responseToAbort, cause);
         }
 
         @Override
@@ -617,23 +631,23 @@ public final class ActorRuntime implements AutoCloseable {
                 requestToCancel = requestTransport;
                 responseToAbort = responseTransport;
             }
-            cancelAndAbort(requestToCancel, responseToAbort, null);
+            closeTransports(requestToCancel, responseToAbort, null);
         }
 
-        private void cancelAndAbort(
+        private void closeTransports(
                 HttpRequestTransport request,
                 HttpResponseTransport response,
                 Throwable cause) {
             if (request != null) {
                 try {
-                    request.cancel(cause);
+                    request.closeTransport(cause);
                 } catch (RuntimeException ignored) {
                     // Teardown remains fail-closed even if a host adapter is bad.
                 }
             }
             if (response != null) {
                 try {
-                    response.abort(cause);
+                    response.closeTransport(cause);
                 } catch (RuntimeException ignored) {
                     // Teardown remains fail-closed even if a host adapter is bad.
                 }
@@ -641,10 +655,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private long nextLeaseGeneration(long current) {
-            if (current == Long.MAX_VALUE) {
-                throw new IllegalStateException("HTTP transport lease generation exhausted");
-            }
-            return current + 1L;
+            // Wrapping is practically unreachable, but cleanup must never throw
+            // and leave a descriptor logically owned by a dead actor.
+            return current == Long.MAX_VALUE ? 1L : current + 1L;
         }
     }
 
@@ -2371,7 +2384,7 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnUntrusted(
                 IsolatePolicy.untrustedActor(),
                 UntrustedActorLimits.defaults(),
-                null,
+                (HttpTransportLease) null,
                 behaviorFactory);
     }
 
