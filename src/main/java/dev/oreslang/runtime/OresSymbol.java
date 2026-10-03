@@ -27,6 +27,14 @@ public final class OresSymbol {
 
     public static final int MAX_KEY_LENGTH = 256;
     public static final int MAX_PROCESS_SYMBOLS = 65_536;
+    /**
+     * Dynamic Symbol.process(...) calls may not consume the whole process table.
+     * The remainder is reserved for compiler-known :literal protocol tags so
+     * trusted hot-loaded code cannot be starved by earlier dynamic interning.
+     */
+    public static final int MAX_DYNAMIC_PROCESS_SYMBOLS = 57_344;
+    public static final int RESERVED_LITERAL_PROCESS_SYMBOLS =
+            MAX_PROCESS_SYMBOLS - MAX_DYNAMIC_PROCESS_SYMBOLS;
     public static final int MAX_STABLE_SYMBOLS = 65_536;
     public static final int MAX_LOCAL_SYMBOLS_PER_ACTOR = 4_096;
 
@@ -39,7 +47,9 @@ public final class OresSymbol {
     private static final UUID PROCESS_DOMAIN = UUID.randomUUID();
     private static final Map<String, OresSymbol> PROCESS_SYMBOLS = new HashMap<>();
     private static final Map<UUID, OresSymbol> STABLE_SYMBOLS = new HashMap<>();
-    private static final AtomicLong NEXT_ID = new AtomicLong(1L);
+    private static final AtomicLong NEXT_PROCESS_ID = new AtomicLong(1L);
+    private static final AtomicLong NEXT_STABLE_ID = new AtomicLong(1L);
+    private static int dynamicProcessSymbols;
 
     private final Scope scope;
     private final String key;
@@ -74,6 +84,22 @@ public final class OresSymbol {
 
     public static OresSymbol process(String key, IsolatePolicy policy) {
         requireTrusted(policy, "Symbol.process");
+        return internProcess(key, false);
+    }
+
+    /**
+     * Compiler/runtime entry point for a statically known :literal.
+     *
+     * Dynamic callers intentionally cannot consume the reserved literal slice
+     * of the process table. Existing dynamic symbols are still reused so
+     * :ready and Symbol.process("ready") are exactly the same identity.
+     */
+    public static OresSymbol processLiteral(String key, IsolatePolicy policy) {
+        requireTrusted(policy, "Symbol literal");
+        return internProcess(key, true);
+    }
+
+    private static OresSymbol internProcess(String key, boolean compilerLiteral) {
         String normalized = validateKey(key);
         synchronized (LOCK) {
             OresSymbol existing = PROCESS_SYMBOLS.get(normalized);
@@ -83,9 +109,16 @@ public final class OresSymbol {
                         "process Symbol table limit exceeded: " + MAX_PROCESS_SYMBOLS
                                 + "; use actor-local/string data for unbounded dynamic values");
             }
+            if (!compilerLiteral && dynamicProcessSymbols >= MAX_DYNAMIC_PROCESS_SYMBOLS) {
+                throw new IllegalStateException(
+                        "dynamic process Symbol table limit exceeded: " + MAX_DYNAMIC_PROCESS_SYMBOLS
+                                + "; " + RESERVED_LITERAL_PROCESS_SYMBOLS
+                                + " slots are reserved for compiler-known :literals");
+            }
             OresSymbol created = new OresSymbol(
-                    Scope.PROCESS, normalized, nextId(), PROCESS_DOMAIN);
+                    Scope.PROCESS, normalized, nextProcessId(), PROCESS_DOMAIN);
             PROCESS_SYMBOLS.put(normalized, created);
+            if (!compilerLiteral) dynamicProcessSymbols++;
             return created;
         }
     }
@@ -110,7 +143,7 @@ public final class OresSymbol {
             }
             String canonical = stableId.toString();
             OresSymbol created = new OresSymbol(
-                    Scope.STABLE, canonical, nextId(), stableId);
+                    Scope.STABLE, canonical, nextStableId(), stableId);
             STABLE_SYMBOLS.put(stableId, created);
             return created;
         }
@@ -146,7 +179,7 @@ public final class OresSymbol {
                     "actor-local Symbol limit exceeded: " + MAX_LOCAL_SYMBOLS_PER_ACTOR);
         }
         OresSymbol created = new OresSymbol(
-                Scope.LOCAL, normalized, nextId(), actorId.value());
+                Scope.LOCAL, normalized, registry.nextId(), actorId.value());
         registry.symbols.put(normalized, created);
         return created;
     }
@@ -219,12 +252,22 @@ public final class OresSymbol {
         }
     }
 
-    private static long nextId() {
-        long id = NEXT_ID.getAndIncrement();
-        if (id <= 0) {
-            throw new IllegalStateException("process Symbol id space exhausted");
+    private static long nextProcessId() {
+        return nextMonotonicId(NEXT_PROCESS_ID, "process Symbol");
+    }
+
+    private static long nextStableId() {
+        return nextMonotonicId(NEXT_STABLE_ID, "stable Symbol");
+    }
+
+    private static long nextMonotonicId(AtomicLong counter, String domain) {
+        while (true) {
+            long current = counter.get();
+            if (current <= 0 || current == Long.MAX_VALUE) {
+                throw new IllegalStateException(domain + " id space exhausted");
+            }
+            if (counter.compareAndSet(current, current + 1)) return current;
         }
-        return id;
     }
 
     private static void requireTrusted(IsolatePolicy policy, String api) {
@@ -329,9 +372,17 @@ public final class OresSymbol {
     private static final class LocalRegistry {
         private final ActorRuntime.ActorId actorId;
         private final Map<String, OresSymbol> symbols = new HashMap<>();
+        private long nextLocalId = 1L;
 
         private LocalRegistry(ActorRuntime.ActorId actorId) {
             this.actorId = Objects.requireNonNull(actorId);
+        }
+
+        private long nextId() {
+            if (nextLocalId <= 0 || nextLocalId == Long.MAX_VALUE) {
+                throw new IllegalStateException("actor-local Symbol id space exhausted");
+            }
+            return nextLocalId++;
         }
     }
 }
