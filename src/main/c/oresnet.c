@@ -431,7 +431,9 @@ Java_dev_oreslang_net_NativeSocketBridge_connect(
         }
         if (connect_one(fd, it->ai_addr, (socklen_t)it->ai_addrlen, timeout_ms) == 0) {
             freeaddrinfo(addresses);
-            return (jlong)fd;
+            jlong handle = register_socket_handle(env, fd);
+            if (handle < 0) close_native_fd_best_effort(fd);
+            return handle;
         }
         last_error = errno;
         close(fd);
@@ -503,7 +505,9 @@ Java_dev_oreslang_net_NativeSocketBridge_listen(
         if (bind(fd, it->ai_addr, (socklen_t)it->ai_addrlen) == 0
                 && listen(fd, backlog) == 0) {
             freeaddrinfo(addresses);
-            return (jlong)fd;
+            jlong handle = register_socket_handle(env, fd);
+            if (handle < 0) close_native_fd_best_effort(fd);
+            return handle;
         }
 
         last_error = errno;
@@ -518,24 +522,28 @@ Java_dev_oreslang_net_NativeSocketBridge_listen(
 }
 
 JNIEXPORT jlong JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_accept(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_accept(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    int fd = as_fd(raw_fd);
-    if (fd < 0) {
-        throw_errno(env, "accept");
-        return -1;
-    }
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "accept", &borrow)) return -1;
 
     int accepted;
     do {
-        accepted = accept(fd, NULL, NULL);
+        accepted = accept(borrow.fd, NULL, NULL);
     } while (accepted < 0 && errno == EINTR);
 
     if (accepted < 0) {
+        int saved = errno;
+        release_socket(&borrow);
+        errno = saved;
         throw_errno(env, "accept");
         return -1;
     }
-    return (jlong)accepted;
+
+    release_socket(&borrow);
+    jlong handle = register_socket_handle(env, accepted);
+    if (handle < 0) close_native_fd_best_effort(accepted);
+    return handle;
 }
 
 static int validate_array_range(JNIEnv *env, jbyteArray bytes, jint offset, jint length) {
@@ -553,108 +561,131 @@ static int validate_array_range(JNIEnv *env, jbyteArray bytes, jint offset, jint
 
 JNIEXPORT jint JNICALL
 Java_dev_oreslang_net_NativeSocketBridge_read(
-        JNIEnv *env, jclass cls, jlong raw_fd, jbyteArray bytes, jint offset, jint length) {
+        JNIEnv *env, jclass cls, jlong raw_handle, jbyteArray bytes, jint offset, jint length) {
     (void)cls;
-    int fd = as_fd(raw_fd);
-    if (fd < 0) {
-        throw_errno(env, "recv");
-        return -1;
-    }
     if (!validate_array_range(env, bytes, offset, length)) return -1;
-    if (length == 0) return 0;
+
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "recv", &borrow)) return -1;
+    if (length == 0) {
+        release_socket(&borrow);
+        return 0;
+    }
 
     jbyte *buffer = (*env)->GetByteArrayElements(env, bytes, NULL);
-    if (buffer == NULL) return -1;
+    if (buffer == NULL) {
+        release_socket(&borrow);
+        return -1;
+    }
 
     ssize_t count;
     do {
-        count = recv(fd, buffer + offset, (size_t)length, 0);
+        count = recv(borrow.fd, buffer + offset, (size_t)length, 0);
     } while (count < 0 && errno == EINTR);
 
     if (count < 0) {
         int saved = errno;
         (*env)->ReleaseByteArrayElements(env, bytes, buffer, JNI_ABORT);
+        release_socket(&borrow);
         errno = saved;
         throw_errno(env, "recv");
         return -1;
     }
 
     (*env)->ReleaseByteArrayElements(env, bytes, buffer, 0);
+    release_socket(&borrow);
     return count == 0 ? -1 : (jint)count;
 }
 
 JNIEXPORT jint JNICALL
 Java_dev_oreslang_net_NativeSocketBridge_write(
-        JNIEnv *env, jclass cls, jlong raw_fd, jbyteArray bytes, jint offset, jint length) {
+        JNIEnv *env, jclass cls, jlong raw_handle, jbyteArray bytes, jint offset, jint length) {
     (void)cls;
-    int fd = as_fd(raw_fd);
-    if (fd < 0) {
-        throw_errno(env, "send");
-        return -1;
-    }
     if (!validate_array_range(env, bytes, offset, length)) return -1;
-    if (length == 0) return 0;
+
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "send", &borrow)) return -1;
+    if (length == 0) {
+        release_socket(&borrow);
+        return 0;
+    }
 
     jbyte *buffer = (*env)->GetByteArrayElements(env, bytes, NULL);
-    if (buffer == NULL) return -1;
+    if (buffer == NULL) {
+        release_socket(&borrow);
+        return -1;
+    }
 
     ssize_t count;
     do {
-        count = send(fd, buffer + offset, (size_t)length, MSG_NOSIGNAL);
+        count = send(borrow.fd, buffer + offset, (size_t)length, MSG_NOSIGNAL);
     } while (count < 0 && errno == EINTR);
 
     if (count < 0) {
         int saved = errno;
         (*env)->ReleaseByteArrayElements(env, bytes, buffer, JNI_ABORT);
+        release_socket(&borrow);
         errno = saved;
         throw_errno(env, "send");
         return -1;
     }
 
     (*env)->ReleaseByteArrayElements(env, bytes, buffer, JNI_ABORT);
+    release_socket(&borrow);
     return (jint)count;
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_available(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_available(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    int fd = as_fd(raw_fd);
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "ioctl(FIONREAD)", &borrow)) return -1;
     int count = 0;
-    if (fd < 0 || ioctl(fd, FIONREAD, &count) < 0) {
+    if (ioctl(borrow.fd, FIONREAD, &count) < 0) {
+        int saved = errno;
+        release_socket(&borrow);
+        errno = saved;
         throw_errno(env, "ioctl(FIONREAD)");
         return -1;
     }
+    release_socket(&borrow);
     return (jint)count;
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_shutdownInput(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_shutdownInput(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    int fd = as_fd(raw_fd);
-    if (fd < 0 || shutdown(fd, SHUT_RD) < 0) {
-        if (errno != ENOTCONN) throw_errno(env, "shutdown(input)");
-    }
-}
-
-JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_shutdownOutput(JNIEnv *env, jclass cls, jlong raw_fd) {
-    (void)cls;
-    int fd = as_fd(raw_fd);
-    if (fd < 0 || shutdown(fd, SHUT_WR) < 0) {
-        if (errno != ENOTCONN) throw_errno(env, "shutdown(output)");
-    }
-}
-
-JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_close(JNIEnv *env, jclass cls, jlong raw_fd) {
-    (void)cls;
-    int fd = as_fd(raw_fd);
-    if (fd < 0) return;
-    while (close(fd) < 0) {
-        if (errno == EINTR) continue;
-        throw_errno(env, "close");
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "shutdown(input)", &borrow)) return;
+    if (shutdown(borrow.fd, SHUT_RD) < 0 && errno != ENOTCONN) {
+        int saved = errno;
+        release_socket(&borrow);
+        errno = saved;
+        throw_errno(env, "shutdown(input)");
         return;
     }
+    release_socket(&borrow);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_net_NativeSocketBridge_shutdownOutput(JNIEnv *env, jclass cls, jlong raw_handle) {
+    (void)cls;
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "shutdown(output)", &borrow)) return;
+    if (shutdown(borrow.fd, SHUT_WR) < 0 && errno != ENOTCONN) {
+        int saved = errno;
+        release_socket(&borrow);
+        errno = saved;
+        throw_errno(env, "shutdown(output)");
+        return;
+    }
+    release_socket(&borrow);
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_net_NativeSocketBridge_close(JNIEnv *env, jclass cls, jlong raw_handle) {
+    (void)cls;
+    (void)close_socket_handle(env, raw_handle);
 }
 
 static int socket_name(JNIEnv *env, int fd, int peer, char *host, size_t host_len, int *port) {
