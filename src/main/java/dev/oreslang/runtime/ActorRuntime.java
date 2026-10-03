@@ -65,14 +65,14 @@ public final class ActorRuntime implements AutoCloseable {
     public static final Duration HARD_MAX_UNTRUSTED_LIFETIME = Duration.ofSeconds(300);
     private static final long DEFAULT_UNTRUSTED_FUEL_PER_TURN = 100_000L;
     private static final long DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES = 1024L * 1024L;
-    private static final long DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES = 16L * 1024L * 1024L;
-    private static final long DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES = 16L * 1024L * 1024L;
-    private static final int MAX_UNTRUSTED_HTTP_REQUEST_HEADER_LOOKUPS = 128;
-    private static final long MAX_UNTRUSTED_HTTP_REQUEST_METADATA_BYTES = 64L * 1024L;
-    private static final long MAX_UNTRUSTED_HTTP_REQUEST_PATH_BYTES = 8L * 1024L;
-    private static final long MAX_UNTRUSTED_HTTP_REQUEST_HEADER_VALUE_BYTES = 16L * 1024L;
-    private static final int MAX_UNTRUSTED_HTTP_RESPONSE_HEADERS = 128;
-    private static final long MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES = 64L * 1024L;
+    private static final long DEFAULT_HTTP_REQUEST_BYTES = 16L * 1024L * 1024L;
+    private static final long DEFAULT_HTTP_RESPONSE_BYTES = 16L * 1024L * 1024L;
+    private static final int MAX_HTTP_REQUEST_HEADER_LOOKUPS = 128;
+    private static final long MAX_HTTP_REQUEST_METADATA_BYTES = 64L * 1024L;
+    private static final long MAX_HTTP_REQUEST_PATH_BYTES = 8L * 1024L;
+    private static final long MAX_HTTP_REQUEST_HEADER_VALUE_BYTES = 16L * 1024L;
+    private static final int MAX_HTTP_RESPONSE_HEADERS = 128;
+    private static final long MAX_HTTP_RESPONSE_HEADER_BYTES = 64L * 1024L;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
@@ -377,7 +377,7 @@ public final class ActorRuntime implements AutoCloseable {
                     maxLifetime,
                     fuelPerTurn,
                     maxMailboxReturnBytes,
-                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
+                    DEFAULT_HTTP_REQUEST_BYTES,
                     maxHttpResponseBytes);
         }
 
@@ -386,8 +386,8 @@ public final class ActorRuntime implements AutoCloseable {
                     HARD_MAX_UNTRUSTED_LIFETIME,
                     DEFAULT_UNTRUSTED_FUEL_PER_TURN,
                     DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES,
-                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
-                    DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES);
+                    DEFAULT_HTTP_REQUEST_BYTES,
+                    DEFAULT_HTTP_RESPONSE_BYTES);
         }
     }
 
@@ -406,8 +406,8 @@ public final class ActorRuntime implements AutoCloseable {
 
         public static HttpTransportLimits defaults() {
             return new HttpTransportLimits(
-                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
-                    DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES);
+                    DEFAULT_HTTP_REQUEST_BYTES,
+                    DEFAULT_HTTP_RESPONSE_BYTES);
         }
     }
 
@@ -438,7 +438,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Host adapter for one HTTP response. Implementations must be non-blocking
-     * or scheduler-aware; untrusted guest code never receives a raw socket/fd.
+     * or scheduler-aware; isolated guest code never receives a raw socket/fd.
      */
     public interface HttpResponseTransport {
         default void status(int statusCode) throws IOException { }
@@ -480,7 +480,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Owner-bound, non-Sendable HTTP request capability. It reads from the
+     * Owner-bound, non-Sendable HTTP request capability for a memory-isolated actor. It reads from the
      * host's already-admitted HTTP request stream without copying request-body
      * chunks through the actor mailbox.
      */
@@ -554,10 +554,10 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("HTTP request path cannot contain CR/LF");
             }
             long bytes = path.getBytes(StandardCharsets.UTF_8).length;
-            if (bytes > MAX_UNTRUSTED_HTTP_REQUEST_PATH_BYTES) {
+            if (bytes > MAX_HTTP_REQUEST_PATH_BYTES) {
                 throw new HttpRequestLimitExceededException(
                         "untrusted actor HTTP request path exceeds "
-                                + MAX_UNTRUSTED_HTTP_REQUEST_PATH_BYTES + " bytes");
+                                + MAX_HTTP_REQUEST_PATH_BYTES + " bytes");
             }
             chargeRequestMetadata(bytes);
             cachedPath.compareAndSet(null, path);
@@ -571,11 +571,11 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("invalid or oversized HTTP request header name");
             }
             int lookups = headerLookups.incrementAndGet();
-            if (lookups > MAX_UNTRUSTED_HTTP_REQUEST_HEADER_LOOKUPS) {
+            if (lookups > MAX_HTTP_REQUEST_HEADER_LOOKUPS) {
                 headerLookups.decrementAndGet();
                 throw new HttpRequestLimitExceededException(
                         "untrusted actor HTTP request header lookup limit exceeded: "
-                                + MAX_UNTRUSTED_HTTP_REQUEST_HEADER_LOOKUPS);
+                                + MAX_HTTP_REQUEST_HEADER_LOOKUPS);
             }
 
             Optional<String> result = Objects.requireNonNull(
@@ -594,10 +594,10 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("HTTP request header value cannot contain CR/LF");
             }
             long valueBytes = value.getBytes(StandardCharsets.UTF_8).length;
-            if (valueBytes > MAX_UNTRUSTED_HTTP_REQUEST_HEADER_VALUE_BYTES) {
+            if (valueBytes > MAX_HTTP_REQUEST_HEADER_VALUE_BYTES) {
                 throw new HttpRequestLimitExceededException(
                         "untrusted actor HTTP request header value exceeds "
-                                + MAX_UNTRUSTED_HTTP_REQUEST_HEADER_VALUE_BYTES + " bytes");
+                                + MAX_HTTP_REQUEST_HEADER_VALUE_BYTES + " bytes");
             }
             chargeRequestMetadata((long) name.length() + valueBytes);
             return Optional.of(value);
@@ -606,11 +606,11 @@ public final class ActorRuntime implements AutoCloseable {
         private void chargeRequestMetadata(long bytes) {
             if (bytes < 0) throw new IllegalArgumentException("HTTP request metadata bytes cannot be negative");
             long next = metadataBytes.addAndGet(bytes);
-            if (next > MAX_UNTRUSTED_HTTP_REQUEST_METADATA_BYTES) {
+            if (next > MAX_HTTP_REQUEST_METADATA_BYTES) {
                 metadataBytes.addAndGet(-bytes);
                 throw new HttpRequestLimitExceededException(
                         "untrusted actor HTTP request metadata limit exceeded: "
-                                + MAX_UNTRUSTED_HTTP_REQUEST_METADATA_BYTES + " bytes");
+                                + MAX_HTTP_REQUEST_METADATA_BYTES + " bytes");
             }
         }
 
@@ -672,7 +672,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Owner-bound, non-Sendable HTTP response capability. This deliberately
+     * Owner-bound, non-Sendable HTTP response capability for a memory-isolated actor. This deliberately
      * bypasses actor mailboxes for response body bytes while preserving a hard
      * byte limit and actor ownership check on every operation.
      */
@@ -748,7 +748,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (name.length() > 256) {
                 throw new HttpResponseLimitExceededException("HTTP response header name exceeds 256 characters");
             }
-            if (value.length() > MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES) {
+            if (value.length() > MAX_HTTP_RESPONSE_HEADER_BYTES) {
                 throw new HttpResponseLimitExceededException(
                         "HTTP response header value exceeds metadata ceiling");
             }
@@ -759,21 +759,21 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("HTTP header value cannot contain CR/LF");
             }
             int nextCount = headerCount.incrementAndGet();
-            if (nextCount > MAX_UNTRUSTED_HTTP_RESPONSE_HEADERS) {
+            if (nextCount > MAX_HTTP_RESPONSE_HEADERS) {
                 headerCount.decrementAndGet();
                 throw new HttpResponseLimitExceededException(
                         "untrusted actor HTTP response header-count limit exceeded: "
-                                + MAX_UNTRUSTED_HTTP_RESPONSE_HEADERS);
+                                + MAX_HTTP_RESPONSE_HEADERS);
             }
             long bytes = (long) name.length()
                     + value.getBytes(StandardCharsets.UTF_8).length;
             long nextBytes = headerBytes.addAndGet(bytes);
-            if (nextBytes > MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES) {
+            if (nextBytes > MAX_HTTP_RESPONSE_HEADER_BYTES) {
                 headerBytes.addAndGet(-bytes);
                 headerCount.decrementAndGet();
                 throw new HttpResponseLimitExceededException(
                         "untrusted actor HTTP response header-byte limit exceeded: "
-                                + MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES);
+                                + MAX_HTTP_RESPONSE_HEADER_BYTES);
             }
             transportLease.withActorIo(owner, "response.header", () -> {
                 transport.header(name, value);
@@ -823,11 +823,19 @@ public final class ActorRuntime implements AutoCloseable {
         public void complete() throws IOException {
             requireOwner("complete");
             responseStarted.set(true);
-            if (completed.compareAndSet(false, true)) {
+            if (!completed.compareAndSet(false, true)) return;
+            try {
                 transportLease.withActorIo(owner, "response.complete", () -> {
                     transport.complete();
                     return null;
                 });
+            } catch (IOException | RuntimeException | Error failure) {
+                try {
+                    transport.abort(failure);
+                } catch (RuntimeException ignored) {
+                    // The original completion failure remains authoritative.
+                }
+                throw failure;
             }
         }
 
