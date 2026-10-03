@@ -448,6 +448,40 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void adversarialPolicyCannotReenableSharedMutexWithCapabilityFlag() {
+        IsolatePolicy adversarialShared = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY);
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define module shared_state
+                  fnc use(SharedMutex<int> value) => void {
+                    return;
+                  }
+                end
+                """));
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, adversarialShared));
+        assertTrue(denied.getMessage().contains("shared mutable"));
+    }
+
+    @Test
+    void adversarialActorCannotCreateSyncCellEvenWithSharedMemoryCapability() throws Exception {
+        IsolatePolicy adversarialShared = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<String> target = runtime.spawnShared(
+                    adversarialShared,
+                    factoryContext -> (message, turn) -> turn.runtime().syncCell(1));
+
+            target.send("go");
+            assertTrue(target.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, target.failure().orElseThrow());
+        }
+    }
+
+    @Test
     void adversarialSharedActorCannotReceiveLiveSharedMutableCapability() {
         IsolatePolicy adversarialShared = IsolatePolicy.strictFaas()
                 .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY);
