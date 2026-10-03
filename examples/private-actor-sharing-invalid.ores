@@ -45,7 +45,7 @@ actor InvalidPrivateCounter {
 
   // Static method values are another callback-laundering path.
   pub try_static_callback_indirection() : void {
-    val callback = Helpers.make_shared;
+    val callback = Helpers::make_shared;
     callback();
     return;
   }
