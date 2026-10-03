@@ -100,8 +100,16 @@ public final class CapabilityChecker {
     }
 
     private Ast.MethodDecl findStaticMethod(Ast.Expr callee, int arity) {
-        if (!(callee instanceof Ast.MemberExpr member)) return null;
-        String ownerName = memberPath(member.receiver());
+        Ast.Expr receiver;
+        String memberName;
+        if (callee instanceof Ast.MemberExpr member) {
+            receiver = member.receiver();
+            memberName = member.member();
+        } else if (callee instanceof Ast.StaticMemberExpr member) {
+            receiver = member.receiver();
+            memberName = member.member();
+        } else return null;
+        String ownerName = memberPath(receiver);
         if (ownerName == null) return null;
         Ast.ClassDecl owner = findClass(ownerName);
         if (owner == null) return null;
@@ -109,7 +117,7 @@ public final class CapabilityChecker {
         Ast.MethodDecl found = null;
         for (Ast.MethodDecl method : owner.methods()) {
             if (!method.isStatic()
-                    || !method.name().equals(member.member())
+                    || !method.name().equals(memberName)
                     || method.parameters().size() != arity) {
                 continue;
             }
@@ -119,15 +127,25 @@ public final class CapabilityChecker {
         return found;
     }
 
-    private Ast.MethodDecl findUniqueStaticMethodValue(Ast.MemberExpr member) {
-        String ownerName = memberPath(member.receiver());
+    private Ast.MethodDecl findUniqueStaticMethodValue(Ast.Expr expr) {
+        Ast.Expr receiver;
+        String memberName;
+        if (expr instanceof Ast.MemberExpr member) {
+            receiver = member.receiver();
+            memberName = member.member();
+        } else if (expr instanceof Ast.StaticMemberExpr member) {
+            receiver = member.receiver();
+            memberName = member.member();
+        } else return null;
+
+        String ownerName = memberPath(receiver);
         if (ownerName == null) return null;
         Ast.ClassDecl owner = findClass(ownerName);
         if (owner == null) return null;
 
         Ast.MethodDecl found = null;
         for (Ast.MethodDecl method : owner.methods()) {
-            if (!method.isStatic() || !method.name().equals(member.member())) continue;
+            if (!method.isStatic() || !method.name().equals(memberName)) continue;
             if (found != null) return null;
             found = method;
         }
@@ -322,6 +340,15 @@ public final class CapabilityChecker {
             if (staticMethod != null) checkReferencedMethod(staticMethod, policy);
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
+        } else if (expr instanceof Ast.StaticMemberExpr m) {
+            String path = memberPath(m);
+            if (path != null) {
+                Ast.FunctionDecl referenced = findFunction(path);
+                if (referenced != null) checkReferencedFunction(referenced, policy);
+                Ast.MethodDecl staticValue = findUniqueStaticMethodValue(m);
+                if (staticValue != null) checkReferencedMethod(staticValue, policy);
+            }
+            checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.MemberExpr m) {
             String path = memberPath(m);
             if (path != null) {
@@ -376,6 +403,10 @@ public final class CapabilityChecker {
     private static String memberPath(Ast.Expr expr) {
         if (expr instanceof Ast.NameExpr n) return n.name();
         if (expr instanceof Ast.MemberExpr m) {
+            String parent = memberPath(m.receiver());
+            return parent == null ? null : parent + "." + m.member();
+        }
+        if (expr instanceof Ast.StaticMemberExpr m) {
             String parent = memberPath(m.receiver());
             return parent == null ? null : parent + "." + m.member();
         }
