@@ -248,6 +248,33 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void privateActorMayRetainItsOwnLocalSymbolAcrossTurns() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivate(
+                    factoryContext -> {
+                        OresSymbol retained = OresSymbol.local(
+                                "retained-local",
+                                factoryContext.runtime(),
+                                factoryContext.policy());
+                        return (message, turn) -> {
+                            OresSymbol again = OresSymbol.local(
+                                    "retained-local",
+                                    turn.runtime(),
+                                    turn.policy());
+                            if (retained != again) {
+                                throw new AssertionError("retained LOCAL Symbol lost actor canonicality");
+                            }
+                            turn.self().stop();
+                        };
+                    });
+
+            actor.send("verify");
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+        }
+    }
+
+    @Test
     void wireFormatUsesScopeAndKeyNeverProcessIds() {
         OresSymbol process = OresSymbol.process("wire-key");
         OresSymbol stable = OresSymbol.stable(UUID_KEY);
