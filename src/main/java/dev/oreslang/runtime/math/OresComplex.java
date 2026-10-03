@@ -1,11 +1,11 @@
 package dev.oreslang.runtime.math;
 
-import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.ImmutableGuestValue;
 
 import java.util.List;
 
 /** Immutable complex128 value used by the Oreslang numeric runtime. */
-public record OresComplex(double real, double imaginary) implements OresMutex.SharedState {
+public record OresComplex(double real, double imaginary) implements ImmutableGuestValue {
     public static final OresComplex ZERO = new OresComplex(0.0, 0.0);
     public static final OresComplex ONE = new OresComplex(1.0, 0.0);
     public static final OresComplex I = new OresComplex(0.0, 1.0);
@@ -113,6 +113,11 @@ public record OresComplex(double real, double imaginary) implements OresMutex.Sh
         return new OresComplex(
                 Math.cos(real) * Math.cosh(imaginary),
                 -Math.sin(real) * Math.sinh(imaginary));
+    }
+
+    @Override
+    public long logicalBytes() {
+        return 32L;
     }
 
     @Override
