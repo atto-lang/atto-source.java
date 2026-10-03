@@ -833,6 +833,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong privateRejectedTurns = new AtomicLong();
         private final AtomicLong sharedRejectedTurns = new AtomicLong();
         private final AtomicLong untrustedRejectedTurns = new AtomicLong();
+        private int actorCount;
+        private int privateActorCount;
+        private int sharedActorCount;
+        private int untrustedActorCount;
 
         private DispatcherGroup(DispatcherConfig config, String prefix) {
             this.config = Objects.requireNonNull(config);
@@ -858,6 +862,45 @@ public final class ActorRuntime implements AutoCloseable {
                     namedFactory(prefix + "untrusted-watchdog-"));
             this.messageWatchdog = newUntrustedWatchdog(
                     namedFactory(prefix + "actor-turn-watchdog-"));
+        }
+
+        private synchronized void reserveActor(ActorKind kind) {
+            if (actorCount >= config.maxActors()) {
+                throw new IllegalStateException(
+                        "process actor limit exceeded: maximum " + config.maxActors());
+            }
+            if (kind == ActorKind.UNTRUSTED
+                    && untrustedActorCount >= config.maxUntrustedActors()) {
+                throw new IllegalStateException(
+                        "untrusted actor limit exceeded: maximum "
+                                + config.maxUntrustedActors());
+            }
+            actorCount++;
+            switch (kind) {
+                case PRIVATE -> privateActorCount++;
+                case SHARED -> sharedActorCount++;
+                case UNTRUSTED -> untrustedActorCount++;
+            }
+        }
+
+        private synchronized void releaseActor(ActorKind kind) {
+            actorCount--;
+            switch (kind) {
+                case PRIVATE -> privateActorCount--;
+                case SHARED -> sharedActorCount--;
+                case UNTRUSTED -> untrustedActorCount--;
+            }
+            if (actorCount < 0
+                    || privateActorCount < 0
+                    || sharedActorCount < 0
+                    || untrustedActorCount < 0) {
+                throw new IllegalStateException(
+                        "process actor carrier-group accounting underflow");
+            }
+        }
+
+        private synchronized int actorCount() {
+            return actorCount;
         }
 
         private void shutdownNow() {
@@ -1006,6 +1049,7 @@ public final class ActorRuntime implements AutoCloseable {
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
     public int actorCount() { return actorCount.get(); }
+    public int processCarrierActorCount() { return dispatcherGroup.actorCount(); }
 
     /**
      * Snapshot one carrier pool without exposing the executor itself. Queue
@@ -2283,18 +2327,25 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void reserveActorSlot(ActorKind kind) {
         Objects.requireNonNull(kind);
-        if (actorCount.get() >= dispatcherConfig.maxActors()) {
-            throw new IllegalStateException(
-                    "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
+        dispatcherGroup.reserveActor(kind);
+        boolean localReserved = false;
+        try {
+            if (actorCount.get() >= dispatcherConfig.maxActors()) {
+                throw new IllegalStateException(
+                        "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
+            }
+            if (kind == ActorKind.UNTRUSTED
+                    && untrustedActorCount.get() >= dispatcherConfig.maxUntrustedActors()) {
+                throw new IllegalStateException(
+                        "untrusted actor limit exceeded: maximum "
+                                + dispatcherConfig.maxUntrustedActors());
+            }
+            actorCount.incrementAndGet();
+            actorCountFor(kind).incrementAndGet();
+            localReserved = true;
+        } finally {
+            if (!localReserved) dispatcherGroup.releaseActor(kind);
         }
-        if (kind == ActorKind.UNTRUSTED
-                && untrustedActorCount.get() >= dispatcherConfig.maxUntrustedActors()) {
-            throw new IllegalStateException(
-                    "untrusted actor limit exceeded: maximum "
-                            + dispatcherConfig.maxUntrustedActors());
-        }
-        actorCount.incrementAndGet();
-        actorCountFor(kind).incrementAndGet();
     }
 
     private void releaseReservedActorSlot(ActorKind kind) {
@@ -2305,6 +2356,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (domainRemaining < 0) actorCountFor(kind).incrementAndGet();
             throw new IllegalStateException("reserved actor slot accounting underflow");
         }
+        dispatcherGroup.releaseActor(kind);
     }
 
     private void unregisterActor(ActorCell<?> cell) {
@@ -2316,6 +2368,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (domainRemaining < 0) actorCountFor(cell.kind).incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
+            dispatcherGroup.releaseActor(cell.kind);
         }
     }
 
