@@ -1446,7 +1446,9 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("classes inside singleton module '" + module.name()
                                 + "' are actor-private and cannot be accessed through its external proxy");
                     }
-                    return new ClassNamespace(qualifiedClassName(memberClass));
+                    return memberClass.singleton()
+                            ? new SingletonClass(nominalClassType(memberClass))
+                            : new ClassNamespace(qualifiedClassName(memberClass));
                 }
                 if (module.singleton()) {
                     for (Ast.Decl decl : module.declarations()) {
