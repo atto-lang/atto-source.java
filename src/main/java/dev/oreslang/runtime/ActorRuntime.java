@@ -76,6 +76,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
+    private static final ThreadLocal<Long> CURRENT_ROOT_DEADLINE_NANOS = new ThreadLocal<>();
 
     private record ActorExecutionContext(
             ActorRuntime runtime,
@@ -1230,6 +1231,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final CompletableFuture<T> completion = new CompletableFuture<>();
         private final AtomicInteger phase = new AtomicInteger(QUEUED);
         private volatile Thread carrier;
+        private volatile ScheduledFuture<?> deadlineFuture;
+        private final AtomicBoolean compensationClaimed = new AtomicBoolean();
+        private volatile long deadlineNanos = Long.MAX_VALUE;
 
         private RootTask(Supplier<T> task) {
             this.task = task;
@@ -1241,10 +1245,14 @@ public final class ActorRuntime implements AutoCloseable {
             carrier = Thread.currentThread();
             ACTOR_CARRIER.set(Boolean.TRUE);
             CURRENT_ROOT_RUNTIME.set(ActorRuntime.this);
+            deadlineNanos = rootDeadlineNanos();
+            CURRENT_ROOT_DEADLINE_NANOS.set(deadlineNanos);
+            armRootDeadline();
             if (closed.get()) carrier.interrupt();
             try {
                 turnExecutor.execute(() -> {
                     try {
+                        schedulerSafepoint();
                         completion.complete(task.get());
                     } catch (Throwable failure) {
                         completion.completeExceptionally(failure);
@@ -1259,12 +1267,62 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                disarmRootDeadline();
                 Thread.interrupted();
                 carrier = null;
+                CURRENT_ROOT_DEADLINE_NANOS.remove();
                 CURRENT_ROOT_RUNTIME.remove();
                 ACTOR_CARRIER.remove();
                 phase.set(FINISHED);
                 releaseRootTask(this);
+            }
+        }
+
+        private long rootDeadlineNanos() {
+            long durationNanos;
+            try {
+                durationNanos = policyCeiling.maxWallTime().toNanos();
+            } catch (ArithmeticException overflow) {
+                return Long.MAX_VALUE;
+            }
+            if (durationNanos <= 0) return System.nanoTime();
+            long now = System.nanoTime();
+            return durationNanos >= Long.MAX_VALUE - now
+                    ? Long.MAX_VALUE
+                    : now + durationNanos;
+        }
+
+        private void armRootDeadline() {
+            if (deadlineNanos == Long.MAX_VALUE) return;
+            long delay = Math.max(1L, deadlineNanos - System.nanoTime());
+            deadlineFuture = messageWatchdog.schedule(
+                    this::expireRootTask,
+                    delay,
+                    TimeUnit.NANOSECONDS);
+        }
+
+        private void expireRootTask() {
+            if (phase.get() != RUNNING) return;
+            Thread running = carrier;
+            if (running == null) return;
+
+            sharedOverrunTurns.incrementAndGet();
+            if (compensationClaimed.compareAndSet(false, true)
+                    && !claimCompensatingThread(ActorKind.SHARED)) {
+                compensationClaimed.set(false);
+            }
+            completion.completeExceptionally(new CancellationException(
+                    "root/main process exceeded max wall time "
+                            + policyCeiling.maxWallTime()));
+            running.interrupt();
+        }
+
+        private void disarmRootDeadline() {
+            ScheduledFuture<?> deadline = deadlineFuture;
+            deadlineFuture = null;
+            if (deadline != null) deadline.cancel(false);
+            if (compensationClaimed.compareAndSet(true, false)) {
+                releaseCompensatingThread(ActorKind.SHARED);
             }
         }
 
@@ -2900,8 +2958,18 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
-        if (CURRENT_ROOT_RUNTIME.get() == this && Thread.currentThread().isInterrupted()) {
-            throw new CancellationException("root/main execution interrupted");
+        if (CURRENT_ROOT_RUNTIME.get() == this) {
+            Long rootDeadline = CURRENT_ROOT_DEADLINE_NANOS.get();
+            if (rootDeadline != null
+                    && rootDeadline != Long.MAX_VALUE
+                    && System.nanoTime() - rootDeadline >= 0) {
+                throw new CancellationException(
+                        "root/main process exceeded max wall time "
+                                + policyCeiling.maxWallTime());
+            }
+            if (Thread.currentThread().isInterrupted()) {
+                throw new CancellationException("root/main execution interrupted");
+            }
         }
         ActorCell<?> cell = currentActor.get();
         if (cell != null) {
