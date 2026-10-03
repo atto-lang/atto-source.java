@@ -180,14 +180,14 @@ Sequence destructuring requires a returned tuple or array/list. Finite tuples ar
 
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
 
-Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
+Methods omit `fnc`. Instance methods always have an implicit receiver named `self`, and their return type is declared with `: ReturnType`. Instance method declarations never use `->` or `=>`.
 
 ```ores
 define class Box<T> as
   val T value;
 
   @Ret<self>
-  identity() {
+  identity() : self {
     return self;
   }
 end
@@ -818,7 +818,7 @@ A deployment may still aggregate many code units into one Native Image for start
 
 ## Static class functions
 
-Instance methods continue to omit `fnc`:
+Instance methods continue to omit `fnc` and require the visually distinct `name(...) : ReturnType { ... }` form:
 
 ```ores
 define class Counter as
