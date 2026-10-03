@@ -617,6 +617,16 @@ public final class OresMutex {
             }
         }
 
+        private void validateBoundPayload() {
+            ActorRuntime runtime;
+            synchronized (this) {
+                runtime = owningRuntime;
+            }
+            if (runtime != null) {
+                runtime.validateBoundSharedMutexPayload(value);
+            }
+        }
+
         private Guard<T> checkedGuardAfterAcquire(Object ownerDomain, boolean enforceOwnerDomain) {
             endWait(ownerDomain);
             if (poisoned.get()) {
@@ -877,6 +887,7 @@ public final class OresMutex {
                 }
                 try {
                     R result = repair.apply(value);
+                    validateBoundPayload();
                     poisoned.set(false);
                     return result;
                 } catch (RuntimeException | Error failure) {
@@ -939,9 +950,19 @@ public final class OresMutex {
 
             private void releaseFromRuntime() {
                 if (!released.compareAndSet(false, true)) return;
-                clearOwner(ownerDomain);
-                releaseDomain(ownerDomain);
-                releasePermitOrHandoff();
+                Throwable validationFailure = null;
+                try {
+                    validateBoundPayload();
+                } catch (RuntimeException | Error failure) {
+                    poisoned.set(true);
+                    validationFailure = failure;
+                } finally {
+                    clearOwner(ownerDomain);
+                    releaseDomain(ownerDomain);
+                    releasePermitOrHandoff();
+                }
+                if (validationFailure instanceof RuntimeException runtimeFailure) throw runtimeFailure;
+                if (validationFailure instanceof Error error) throw error;
             }
 
             @Override
