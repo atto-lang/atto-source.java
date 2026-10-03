@@ -514,6 +514,29 @@ final class NativeNetworkingLanguageTest {
     }
 
     @Test
+    void nativeNetStdlibTypechecksWithOpaqueSocketCapability() throws Exception {
+        String nativeApi = java.nio.file.Files.readString(
+                java.nio.file.Path.of("stdlib/net/native.ores"));
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(nativeApi)));
+    }
+
+    @Test
+    void nativeSocketHandleIsMoveOnly() {
+        IllegalArgumentException moved = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc consume() => void {
+                          val handle = native_net.listen("127.0.0.1", 0, 8, true);
+                          val second = handle;
+                          native_net.close(handle);
+                          native_net.close(second);
+                          return;
+                        }
+                        """)));
+        assertTrue(moved.getMessage().contains("moved"));
+    }
+
+    @Test
     void pureOreslangNetStdlibFilesRemainFreeOfJavaTransportDependencies() throws Exception {
         String nativeApi = java.nio.file.Files.readString(
                 java.nio.file.Path.of("stdlib/net/native.ores"));
