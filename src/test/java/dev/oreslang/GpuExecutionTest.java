@@ -209,7 +209,7 @@ final class GpuExecutionTest {
                 + "(ores_v_a, ores_v_b, __ores_error)"));
         assertTrue(kernel.helperSymbol().matches("ores_dev_math_add_a2_[0-9a-f]{12}"));
         assertTrue(kernel.kernelSymbol().matches("ores_kernel_math_add_a2_[0-9a-f]{12}"));
-        assertTrue(gpu.source().contains("#define ORES_GPU_ABI_VERSION 1"));
+        assertTrue(gpu.source().contains("#define ORES_GPU_ABI_VERSION 2"));
         assertTrue(gpu.manifest().startsWith("abi=" + GpuKernelCompiler.ABI_VERSION + "\n"));
         assertTrue(kernel.hiddenParameters().stream()
                 .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.RESULT));
@@ -237,6 +237,7 @@ final class GpuExecutionTest {
         assertEquals("n", kernel.launchPlan().errorSlotsExpression());
         assertEquals("0", kernel.launchPlan().resultSlotsExpression());
         assertTrue(kernel.launchPlan().clampNegativeGlobalWorkItemsToZero());
+        assertTrue(kernel.launchPlan().skipLaunchWhenGlobalWorkItemsZero());
         assertTrue(kernel.launchPlan().enforceNoAliasBuffers());
         String source = compilation.gpuProgram().source();
         assertTrue(source.contains("__global float* restrict ores_v_xs"));
@@ -289,6 +290,7 @@ final class GpuExecutionTest {
         assertEquals("3", batch.fallbackDispatcherLaunchPlan().errorSlotsExpression());
         assertEquals("0", batch.fallbackDispatcherLaunchPlan().resultSlotsExpression());
         assertFalse(batch.fallbackDispatcherLaunchPlan().clampNegativeGlobalWorkItemsToZero());
+        assertFalse(batch.fallbackDispatcherLaunchPlan().skipLaunchWhenGlobalWorkItemsZero());
         assertFalse(batch.fallbackDispatcherLaunchPlan().enforceNoAliasBuffers());
         assertTrue(compilation.gpuProgram().manifest().contains("CONCURRENT_KERNELS"));
         assertTrue(compilation.gpuProgram().source().contains("__kernel void " + batch.dispatcherSymbol()));
@@ -604,6 +606,65 @@ final class GpuExecutionTest {
         assertEquals("__ores_len_values", kernel.launchPlan().resultSlotsExpression());
         assertTrue(compilation.gpuProgram().source()
                 .contains("__ores_out[get_global_id(0)] = "));
+    }
+
+    @Test
+    void simtIdentityPropagatesTransitivelyThroughGpuHelpers() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                gpu fnc index_of(GpuArray<i32> values) => i32 {
+                  return values[gpu.index];
+                }
+
+                gpu fnc outer(GpuArray<i32> values) => i32 {
+                  return index_of(values);
+                }
+                """);
+
+        GpuKernelCompiler.GpuKernel outer = compilation.gpuProgram().kernels().stream()
+                .filter(k -> k.sourceName().equals("outer"))
+                .findFirst().orElseThrow();
+
+        assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, outer.executionShape());
+        assertEquals("__ores_len_values", outer.launchPlan().globalWorkItemsExpression());
+        assertEquals("__ores_len_values", outer.launchPlan().resultSlotsExpression());
+        assertTrue(outer.launchPlan().skipLaunchWhenGlobalWorkItemsZero());
+    }
+
+    @Test
+    void simtHelperWithNoLaunchDriverFailsInsteadOfSilentlyRunningOneWorkItem() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc intrinsic_only() => u64 {
+                          return gpu.index;
+                        }
+
+                        gpu fnc outer() => u64 {
+                          return intrinsic_only();
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("one unambiguous launch buffer"));
+    }
+
+    @Test
+    void zeroExtentDataParallelLaunchesCarryAnExplicitSkipContract() {
+        GpuKernelCompiler.GpuKernel kernel = OresCompiler.compile("""
+                gpu fnc map(GpuArray<i32> values) => i32 {
+                  return values[gpu.index];
+                }
+                """).gpuProgram().kernels().getFirst();
+
+        assertTrue(kernel.launchPlan().skipLaunchWhenGlobalWorkItemsZero());
+        assertEquals("__ores_len_values", kernel.launchPlan().globalWorkItemsExpression());
+
+        GpuKernelCompiler.GpuKernel scalar = OresCompiler.compile("""
+                gpu fnc scalar(i32 value) => i32 {
+                  return value + 1;
+                }
+                """).gpuProgram().kernels().getFirst();
+
+        assertFalse(scalar.launchPlan().skipLaunchWhenGlobalWorkItemsZero());
+        assertEquals("1", scalar.launchPlan().globalWorkItemsExpression());
     }
 
     @Test
