@@ -1244,6 +1244,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         IsolatePolicy callerPolicy = currentActorPolicy();
         if (callerPolicy != null) {
+            if (callerPolicy.adversarial()) {
+                throw new SecurityException(
+                        "adversarial actors cannot create SyncCell or other live shared mutable state");
+            }
             callerPolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
         } else {
             policyCeiling.require(IsolatePolicy.Capability.SHARED_MEMORY, "SyncCell");
@@ -1287,6 +1291,10 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = currentActor.get();
         if (cell == null || cell.kind != ActorKind.SHARED) {
             throw new IllegalStateException("shared state mutation requires a shared actor mailbox turn");
+        }
+        if (cell.policy.adversarial()) {
+            throw new SecurityException(
+                    "adversarial actors cannot access live shared mutable state");
         }
     }
 
@@ -1604,7 +1612,13 @@ public final class ActorRuntime implements AutoCloseable {
             requireMutexTransport(target, shared.value(), visiting, depth + 1);
             return;
         }
-        if (value instanceof SyncCell<?>) return;
+        if (value instanceof SyncCell<?>) {
+            if (target.policy.adversarial()) {
+                throw new SecurityException(
+                        "adversarial actors cannot receive SyncCell or other live shared mutable state");
+            }
+            return;
+        }
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
         }
