@@ -5,6 +5,7 @@ import dev.oreslang.runtime.IsolatePolicy;
 import org.junit.jupiter.api.Test;
 
 import java.util.AbstractList;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -1567,6 +1568,38 @@ final class ActorRuntimeTest {
                 // A prior close already completed or reported its own teardown issue.
             }
             second.close();
+        }
+    }
+
+    @Test
+    void cooperativeRunawayRootIsWallTimeBoundedAndCompensated() {
+        var base = IsolatePolicy.developer();
+        var shortRootPolicy = new IsolatePolicy(
+                base.capabilities(),
+                base.maxHeapBytes(),
+                base.maxMailboxMessages(),
+                Duration.ofMillis(40),
+                false);
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                2,
+                1,
+                64,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.MILLISECONDS.toNanos(250),
+                1,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(shortRootPolicy, config)) {
+            assertThrows(
+                    java.util.concurrent.CancellationException.class,
+                    () -> runtime.executeRootTask(() -> {
+                        while (true) runtime.schedulerSafepoint();
+                    }));
+
+            assertTrue(
+                    runtime.dispatcherStats(ActorRuntime.ActorKind.SHARED).overrunTurns() >= 1,
+                    "root wall-time expiration must be observable on the shared dispatcher");
         }
     }
 
