@@ -1053,11 +1053,7 @@ public final class TypeChecker {
             if (klass != null) {
                 ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                 if (field != null) {
-                    Type pattern = fieldType(
-                                field.field(),
-                                Set.copyOf(field.owner().genericParameters()),
-                                field.ownerType(),
-                                field.owner().name());
+                    Type pattern = classFieldType(field.owner(), field.field());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
             }
@@ -1212,7 +1208,7 @@ public final class TypeChecker {
             // a parent T must never be resolved as an unrelated child T.
             for (Ast.FieldDecl field : klass.fields()) {
                 Type fieldType = resolveSharedGeneric(
-                        fieldType(field, classGenerics, nominal, klass.name()),
+                        classFieldType(klass, field),
                         classBindings);
                 if (!isSharedSafe(fieldType, seen, classBindings)) return false;
             }
@@ -1499,11 +1495,7 @@ public final class TypeChecker {
         Set<String> classGenericNames = Set.copyOf(klass.genericParameters());
         for (int i = 0; i < arguments.size(); i++) {
             ResolvedField resolvedField = fields.get(i);
-            Type fieldPattern = fieldType(
-                    resolvedField.field(),
-                    Set.copyOf(resolvedField.owner().genericParameters()),
-                    resolvedField.ownerType(),
-                    resolvedField.owner().name());
+            Type fieldPattern = classFieldType(resolvedField.owner(), resolvedField.field());
             fieldPattern = substituteGenerics(
                     fieldPattern,
                     classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
