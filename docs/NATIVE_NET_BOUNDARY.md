@@ -67,3 +67,17 @@ mechanism (for example Unix `SCM_RIGHTS`) rather than serializing fd integers.
 
 For HTTP/2 and HTTP/3, connection ownership stays with the multiplexing runtime
 and actor ownership is granted per request/response stream.
+
+
+## Bounded actor I/O
+
+A Java carrier-thread interrupt is not sufficient to preempt a thread blocked
+inside `recv(2)` or `send(2)`. Before direct handoff to an isolated actor,
+the native transport must therefore install positive kernel-enforced receive
+and send timeouts. `NativeSocketBridge.setActorIoTimeout` sets both
+`SO_RCVTIMEO` and `SO_SNDTIMEO` and rejects zero/infinite timeouts.
+
+The final actor/native adapter should choose a timeout no larger than the
+runtime's current actor-turn quantum (and no larger than the remaining
+untrusted-actor lifetime). Timeout expiry returns control to the runtime so fuel,
+deadline, cancellation, and ownership checks can run again.
