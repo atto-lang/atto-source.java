@@ -199,11 +199,21 @@ public final class Parser {
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
-        consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
-        List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
-        consume(RPAREN, "expected ')' after parameters");
-        Ast.TypeRef returnType = parseReturnType(annotations);
+
+        List<Ast.Param> params;
+        Ast.TypeRef returnType;
+        if (match(EQUAL)) {
+            params = applyStructuralAnnotations(parseNamedFunctionExpressionParameters(), annotations);
+            consume(ARROW, "named function expressions use '= |...| -> ReturnType { ... }'");
+            returnType = parseExpressionReturnType(annotations);
+        } else {
+            consume(LPAREN, "expected '(' after callable name, or '=' for a named function expression");
+            params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
+            consume(RPAREN, "expected ')' after parameters");
+            returnType = parseDeclaredReturnType(annotations, "callable");
+        }
+
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics, params,
                 returnType, annotations, body);
@@ -304,7 +314,10 @@ public final class Parser {
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                Ast.TypeRef returns = match(FAT_ARROW) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                if (check(ARROW) || check(FAT_ARROW)) {
+                    throw error(peek(), "interface function declarations use ': ReturnType', not arrows");
+                }
+                Ast.TypeRef returns = match(COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
                 continue;
@@ -372,11 +385,21 @@ public final class Parser {
     private Ast.MethodDecl parseStaticFunction(List<Ast.Annotation> annotations, Modifiers mods) {
         String name = parseMethodName();
         List<String> generics = parseGenericParameters();
-        consume(LPAREN, "expected '(' after static function name");
-        if (check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
-        List<Ast.Param> params = parseParametersUntil(RPAREN);
-        consume(RPAREN, "expected ')' after static function parameters");
-        Ast.TypeRef returnType = parseReturnType(annotations);
+
+        List<Ast.Param> params;
+        Ast.TypeRef returnType;
+        if (match(EQUAL)) {
+            params = parseNamedFunctionExpressionParameters();
+            consume(ARROW, "static named function expressions use '= |...| -> ReturnType { ... }'");
+            returnType = parseExpressionReturnType(annotations);
+        } else {
+            consume(LPAREN, "expected '(' after static function name, or '=' for a named function expression");
+            if (check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
+            params = parseParametersUntil(RPAREN);
+            consume(RPAREN, "expected ')' after static function parameters");
+            returnType = parseDeclaredReturnType(annotations, "static function");
+        }
+
         List<Ast.Stmt> body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, true, false, mods.async,
                 null, generics, params, returnType, annotations, body);
@@ -400,12 +423,7 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
-        if (check(ARROW) || check(FAT_ARROW)) {
-            throw error(peek(), "instance methods do not use '->' or '=>'; write 'name(...) : ReturnType { ... }'");
-        }
-        consume(COLON, "expected ':' before instance method return type; write 'name(...) : ReturnType { ... }'");
-        Ast.TypeRef returnType = parseTypeRef();
-        validateAnnotatedReturnType(annotations, returnType);
+        Ast.TypeRef returnType = parseDeclaredReturnType(annotations, "instance method");
 
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
@@ -416,14 +434,63 @@ public final class Parser {
                 receiverType, generics, params, returnType, annotations, body);
     }
 
-    private void validateAnnotatedReturnType(List<Ast.Annotation> annotations, Ast.TypeRef declared) {
+    private Ast.TypeRef parseDeclaredReturnType(List<Ast.Annotation> annotations, String kind) {
+        if (check(ARROW) || check(FAT_ARROW)) {
+            throw error(peek(), kind + " declarations do not use '->' or '=>'; use ': ReturnType' or @Ret<ReturnType>");
+        }
+
+        Ast.TypeRef annotated = annotatedReturnType(annotations);
+        Ast.TypeRef declared = match(COLON) ? parseTypeRef() : null;
+        if (annotated != null && declared != null && !sameType(annotated, declared)) {
+            throw error(previous(), "@Ret type and ':' return type disagree");
+        }
+        return declared != null ? declared : annotated != null ? annotated : Ast.TypeRef.simple("void");
+    }
+
+    private Ast.TypeRef parseExpressionReturnType(List<Ast.Annotation> annotations) {
+        Ast.TypeRef annotated = annotatedReturnType(annotations);
+        if (check(LBRACE)) {
+            if (annotated == null) {
+                throw error(peek(), "function expressions require a return type after '->' unless @Ret<ReturnType> is present");
+            }
+            return annotated;
+        }
+        Ast.TypeRef declared = parseTypeRef();
+        if (annotated != null && !sameType(annotated, declared)) {
+            throw error(previous(), "@Ret type and function-expression return type disagree");
+        }
+        return declared;
+    }
+
+    private Ast.TypeRef annotatedReturnType(List<Ast.Annotation> annotations) {
+        Ast.TypeRef annotated = null;
         for (Ast.Annotation annotation : annotations) {
             if (!annotation.name().equals("Ret")) continue;
             if (annotation.arguments().size() != 1) throw error(previous(), "@Ret requires exactly one type");
-            if (!sameType(annotation.arguments().getFirst(), declared)) {
-                throw error(previous(), "@Ret type and ':' method return type disagree");
-            }
+            if (annotated != null) throw error(previous(), "duplicate @Ret annotation");
+            annotated = annotation.arguments().getFirst();
         }
+        return annotated;
+    }
+
+    private List<Ast.Param> parseNamedFunctionExpressionParameters() {
+        consume(PIPE, "named function expressions use '|...|' parameters");
+        List<Ast.Param> params = new ArrayList<>();
+        if (!check(PIPE)) {
+            do {
+                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
+                    String name = advance().lexeme();
+                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, false));
+                } else {
+                    Ast.TypeRef type = parseTypeRef();
+                    boolean mutable = match(MUT);
+                    String name = consume(IDENT, "expected function-expression parameter name").lexeme();
+                    params.add(new Ast.Param(type, name, false, mutable));
+                }
+            } while (match(COMMA));
+        }
+        consume(PIPE, "expected closing '|' after function-expression parameters");
+        return List.copyOf(params);
     }
 
     private String parseMethodName() {
@@ -512,21 +579,6 @@ public final class Parser {
             }
         }
         return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared);
-    }
-
-    private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
-        Ast.TypeRef annotated = null;
-        for (Ast.Annotation annotation : annotations) {
-            if (annotation.name().equals("Ret")) {
-                if (annotation.arguments().size() != 1) throw error(previous(), "@Ret requires exactly one type");
-                annotated = annotation.arguments().getFirst();
-            }
-        }
-        Ast.TypeRef arrow = match(FAT_ARROW) ? parseTypeRef() : null;
-        if (annotated != null && arrow != null && !sameType(annotated, arrow)) {
-            throw error(previous(), "@Ret type and => return type disagree");
-        }
-        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.simple("void");
     }
 
     private boolean sameType(Ast.TypeRef a, Ast.TypeRef b) {
