@@ -14,6 +14,10 @@ final class GpuResidentDataLanguageTest {
                   return GpuArray.from_cpu(values);
                 }
 
+                fnc zeros(GpuArray<i32> values) => GpuArray<i32> {
+                  return GpuArray.zeros_like(values);
+                }
+
                 fnc as_stream(GpuArray<i32> values) => GpuStream<i32> {
                   return values.stream();
                 }
@@ -89,6 +93,15 @@ final class GpuResidentDataLanguageTest {
                         }
                         """)));
         assertTrue(download.getMessage().contains("host orchestration"));
+
+        IllegalArgumentException allocate = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        gpu fnc bad(GpuArray<i32> values) => GpuArray<i32> {
+                          return GpuArray.zeros_like(values);
+                        }
+                        """)));
+        assertTrue(allocate.getMessage().contains("host orchestration"));
     }
 
     @Test
