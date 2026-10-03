@@ -141,6 +141,41 @@ final class HttpTransportLeaseTest {
     }
 
     @Test
+    void privateActorCanOwnAndStreamDirectlyThroughTransportLease() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            HttpTransportLease lease = new HttpTransportLease();
+            AtomicInteger bytes = new AtomicInteger();
+            ActorRuntime.HttpResponseTransport response = new ActorRuntime.HttpResponseTransport() {
+                @Override
+                public int write(ByteBuffer source) {
+                    int count = source.remaining();
+                    source.position(source.limit());
+                    bytes.addAndGet(count);
+                    return count;
+                }
+            };
+
+            var actor = runtime.<String>spawnPrivateHttp(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.HttpTransportLimits(1024, 1024),
+                    null,
+                    response,
+                    lease,
+                    ignored -> (message, turn) -> {
+                        turn.httpResponse().orElseThrow()
+                                .write(ByteBuffer.wrap(new byte[]{4, 5, 6, 7}));
+                        turn.self().stop();
+                    });
+
+            actor.send("go");
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(actor.failure().isEmpty());
+            assertEquals(4, bytes.get());
+            assertEquals(HttpTransportLease.OwnerKind.RELEASED, lease.owner().kind());
+        }
+    }
+
+    @Test
     void guestActorCannotPerformSupervisorOwnershipTransfer() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             HttpTransportLease lease = new HttpTransportLease();
