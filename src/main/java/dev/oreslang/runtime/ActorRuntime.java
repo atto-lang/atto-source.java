@@ -2896,6 +2896,11 @@ public final class ActorRuntime implements AutoCloseable {
                 true);
         spawnedRef.set(ref);
         ActorSpawn<M, R> spawn = new ActorSpawn<>(ref, completion);
+        ref.readiness().whenComplete((readyRef, startupFailure) -> {
+            if (startupFailure != null && !completion.isDone()) {
+                completion.failFromRuntime(OresFuture.unwrap(startupFailure));
+            }
+        });
 
         try {
             send(ref, message);
@@ -4853,6 +4858,12 @@ public final class ActorRuntime implements AutoCloseable {
         private void finalizeStopLocked() {
             if (finalized || activeTurns != 0) return;
             finalized = true;
+            if (!ref.readiness().isDone()) {
+                Throwable cause = ref.terminationCause.get();
+                ref.failReady(cause != null
+                        ? cause
+                        : new CancellationException("actor terminated before reaching READY"));
+            }
             ScheduledFuture<?> timer = lifetimeFuture;
             lifetimeFuture = null;
             if (timer != null) timer.cancel(false);
