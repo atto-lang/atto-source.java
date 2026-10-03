@@ -161,6 +161,49 @@ final class ReceivePatternSymbolTest {
     }
 
     @Test
+    void symbolHasStableVerifiedIdentityForTrustedIsolateBridges() {
+        OresSymbol ping = OresSymbol.of("ping");
+        OresSymbol.SymbolId pingId = OresSymbol.idForName("ping");
+
+        assertEquals(pingId, ping.id());
+        assertEquals(64, pingId.hex().length());
+        assertEquals(ping.canonicalForm(), new OresSymbol.CanonicalForm(pingId, "ping"));
+        assertNotEquals(pingId, OresSymbol.idForName("pong"));
+
+        OresSymbol reconstructed = OresSymbol.fromCanonical(
+                ping.canonicalForm(),
+                IsolatePolicy.developer());
+        assertSame(ping, reconstructed,
+                "trusted bridge reconstruction must re-enter the local canonical interner");
+
+        OresSymbol.CanonicalForm forged = new OresSymbol.CanonicalForm(
+                new OresSymbol.SymbolId(0L, 0L, 0L, 0L),
+                "ping");
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.fromCanonical(forged, IsolatePolicy.developer()));
+        assertTrue(mismatch.getMessage().contains("mismatched id"));
+
+        assertThrows(
+                SecurityException.class,
+                () -> OresSymbol.fromCanonical(
+                        ping.canonicalForm(),
+                        IsolatePolicy.strictFaas()));
+    }
+
+    @Test
+    void concurrentTrustedInterningStillProducesOneHeapCanonicalObject() {
+        List<OresSymbol> symbols = java.util.stream.IntStream.range(0, 256)
+                .parallel()
+                .mapToObj(ignored -> OresSymbol.of("concurrent_tag"))
+                .toList();
+
+        OresSymbol first = symbols.getFirst();
+        assertTrue(symbols.stream().allMatch(symbol -> symbol == first));
+        assertEquals(OresSymbol.idForName("concurrent_tag"), first.id());
+    }
+
+    @Test
     void untrustedPoliciesCannotCreateOrReceiveProcessSymbols() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 pub fnc protocol_tag() => Symbol {
