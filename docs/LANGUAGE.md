@@ -184,7 +184,7 @@ val Symbol durable = Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
 
 PROCESS and STABLE symbols are Copy/Sendable immutable values for trusted actors. Their wire representation is `(scope, key)`, never an internal numeric handle. Ordinary wire decoding is **lookup-only**: an unknown wire key is rejected rather than silently creating a permanent registry entry. Authenticated/trusted protocol dictionaries may explicitly admit an unknown key with the trusted wire-admission API before normal decode. This prevents attacker-controlled strings or UUIDs from turning into immortal process identities. Symbol IDs are implementation details used only for fast local equality/hash paths.
 
-The `:name` source form is identifier-only and limited to 128 characters. Only the compiler/runtime literal path may consume the reserved literal capacity; arbitrary runtime strings cannot claim that reserve.
+The `:name` source form is identifier-only and limited to 128 characters. Only the compiler/runtime literal path may consume the reserved literal capacity; arbitrary runtime strings cannot claim that reserve. All source literals in a code unit are staged during capability checking and atomically registered only after the entire code unit passes admission, before guest statements execute. Rejected code therefore cannot consume permanent literal slots, and valid protocol tags are available to lookup-only wire decoding even if the branch containing the literal has never executed.
 
 Oreslang protocol symbols are exposed from the same namespace. `Symbol.iterator` is a well-known canonical PROCESS Symbol and is the identity named by a class method declared as `[Symbol.iterator]()`; it is not a separate stringly runtime convention.
 
