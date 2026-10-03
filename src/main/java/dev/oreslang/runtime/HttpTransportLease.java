@@ -82,7 +82,7 @@ public final class HttpTransportLease implements AutoCloseable {
      * lock is the transfer barrier: it waits for every current I/O lease to
      * finish and prevents new I/O from starting until ownership is published.
      */
-    public void transferToActor(ActorRuntime.ActorId target) {
+    void transferToActor(ActorRuntime.ActorId target) {
         requireSupervisorContext("transfer HTTP transport ownership");
         Objects.requireNonNull(target, "target");
         gate.writeLock().lock();
@@ -101,7 +101,7 @@ public final class HttpTransportLease implements AutoCloseable {
      * Run one non-throwing transport metadata operation while proving actor
      * ownership.
      */
-    public <T> T withActorOperation(
+    <T> T withActorOperation(
             ActorRuntime.ActorId actorId,
             String operation,
             Operation<T> action) {
@@ -122,7 +122,7 @@ public final class HttpTransportLease implements AutoCloseable {
      * operations by the same owner may proceed concurrently, but a transfer or
      * revocation cannot race any of them.
      */
-    public <T> T withActorIo(
+    <T> T withActorIo(
             ActorRuntime.ActorId actorId,
             String operation,
             IoOperation<T> io) throws IOException {
@@ -138,7 +138,7 @@ public final class HttpTransportLease implements AutoCloseable {
         }
     }
 
-    public void assertActorOwner(ActorRuntime.ActorId actorId, String operation) {
+    void assertActorOwner(ActorRuntime.ActorId actorId, String operation) {
         Objects.requireNonNull(actorId, "actorId");
         Objects.requireNonNull(operation, "operation");
         gate.readLock().lock();
