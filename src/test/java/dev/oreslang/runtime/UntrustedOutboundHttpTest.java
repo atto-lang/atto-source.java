@@ -101,11 +101,18 @@ final class UntrustedOutboundHttpTest {
 
     @Test
     void cancellationDoesNotReleasePermitUntilTransportActuallyTerminates() throws Exception {
-        java.util.List<CompletableFuture<ActorRuntime.OutboundHttpResponse>> upstream =
+        class NonCancellingFuture<T> extends CompletableFuture<T> {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                return false;
+            }
+        }
+
+        java.util.List<NonCancellingFuture<ActorRuntime.OutboundHttpResponse>> upstream =
                 new java.util.concurrent.CopyOnWriteArrayList<>();
         ActorRuntime.OutboundHttpTransport transport = request -> {
-            CompletableFuture<ActorRuntime.OutboundHttpResponse> future =
-                    new CompletableFuture<>();
+            NonCancellingFuture<ActorRuntime.OutboundHttpResponse> future =
+                    new NonCancellingFuture<>();
             upstream.add(future);
             return future;
         };
@@ -142,10 +149,9 @@ final class UntrustedOutboundHttpTest {
                                     "second request must not reach host transport");
                         }
 
-                        // CompletableFuture.cancel completes the underlying
-                        // transport, so its completion callback can now release
-                        // the permit. The assertion above occurs before this
-                        // actor turn can start a replacement request.
+                        // This transport intentionally ignores cancellation.
+                        // Therefore the host operation is still genuinely in
+                        // flight and its permit must remain occupied.
                         turn.self().stop();
                     });
 
