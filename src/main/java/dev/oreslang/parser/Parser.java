@@ -88,6 +88,9 @@ public final class Parser {
             consume(AS, "'import *' requires 'as <namespace>'");
             namespace = consume(IDENT, "expected import namespace").lexeme();
         } else {
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "function imports use 'import fnc', not 'import fn'");
+            }
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
@@ -162,6 +165,9 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        if (isLegacyFnSpelling()) {
+            throw error(peek(), "functions are declared with 'fnc', not 'fn'");
+        }
         if (match(ACTOR, ISOACTOR)) {
             Token actorToken = previous();
             boolean isolated = actorToken.type() == ISOACTOR;
@@ -169,6 +175,9 @@ public final class Parser {
                 throw error(actorToken, "'shared isoactor' is contradictory; use either actor/shared actor or isoactor");
             }
             Ast.ActorKind actorKind = isolated ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "actor functions are declared with 'actor fnc', not 'actor fn'");
+            }
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
@@ -233,6 +242,10 @@ public final class Parser {
         while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isLegacyFnSpelling()) {
+                if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
+                throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
+            }
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
@@ -265,6 +278,10 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (isLegacyFnSpelling()) {
+                if (mods.isStatic) throw error(peek(), "static actor functions use 'static fnc', not 'static fn'");
+                throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
+            }
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
             if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
 
@@ -304,6 +321,9 @@ public final class Parser {
             parseAnnotations();
             parseModifiers();
 
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
+            }
             if (match(FNC)) {
                 String memberName = consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
@@ -666,7 +686,10 @@ public final class Parser {
         }
 
         if (match(TYPEOF)) {
-            consume(FNC, "typeof function types use 'typeof fnc(...) -> ReturnType'");
+            if (isLegacyFnSpelling()) {
+                throw error(peek(), "function types use 'typeof fnc(...) => ReturnType', not 'typeof fn(...)'");
+            }
+            consume(FNC, "typeof function types use 'typeof fnc(...) => ReturnType'");
             return parseFunctionTypeSignature();
         }
 
@@ -1421,6 +1444,10 @@ public final class Parser {
         advance();
         return true;
     }
+    private boolean isLegacyFnSpelling() {
+        return check(IDENT) && peek().lexeme().equals("fn");
+    }
+
     private boolean checkNextLexeme(String lexeme) {
         return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
                 && tokens.get(current + 1).lexeme().equals(lexeme);
