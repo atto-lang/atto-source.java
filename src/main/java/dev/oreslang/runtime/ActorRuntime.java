@@ -784,7 +784,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || cell.stopped.get()) throw terminated(ref);
         if (cell.policy.adversarial()) {
-            rejectProcessSymbols(message, new IdentityHashMap<>(), 0);
+            rejectTrustedSymbols(message, new IdentityHashMap<>(), 0);
         }
         requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
         if (cell.mailbox.remainingCapacity() == 0) {
@@ -911,7 +911,7 @@ public final class ActorRuntime implements AutoCloseable {
         return shared;
     }
 
-    private static void rejectProcessSymbols(
+    private static void rejectTrustedSymbols(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
@@ -919,12 +919,12 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null) return;
         if (value instanceof OresSymbol) {
             throw new SecurityException(
-                    "process-wide symbols cannot cross into an adversarial/untrusted actor");
+                    "trusted symbols cannot cross into an adversarial/untrusted actor");
         }
         if (isScalar(value) || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.SyncCell<?>) return;
         if (value instanceof Shared<?> shared) {
-            rejectProcessSymbols(shared.value(), visiting, depth + 1);
+            rejectTrustedSymbols(shared.value(), visiting, depth + 1);
             return;
         }
         if (visiting.put(value, Boolean.TRUE) != null) {
@@ -932,18 +932,18 @@ public final class ActorRuntime implements AutoCloseable {
         }
         try {
             if (value instanceof List<?> list) {
-                for (Object item : list) rejectProcessSymbols(item, visiting, depth + 1);
+                for (Object item : list) rejectTrustedSymbols(item, visiting, depth + 1);
             } else if (value instanceof Set<?> set) {
-                for (Object item : set) rejectProcessSymbols(item, visiting, depth + 1);
+                for (Object item : set) rejectTrustedSymbols(item, visiting, depth + 1);
             } else if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    rejectProcessSymbols(entry.getKey(), visiting, depth + 1);
-                    rejectProcessSymbols(entry.getValue(), visiting, depth + 1);
+                    rejectTrustedSymbols(entry.getKey(), visiting, depth + 1);
+                    rejectTrustedSymbols(entry.getValue(), visiting, depth + 1);
                 }
             } else if (value.getClass().isArray()) {
                 int length = Array.getLength(value);
                 for (int i = 0; i < length; i++) {
-                    rejectProcessSymbols(Array.get(value, i), visiting, depth + 1);
+                    rejectTrustedSymbols(Array.get(value, i), visiting, depth + 1);
                 }
             }
         } finally {
