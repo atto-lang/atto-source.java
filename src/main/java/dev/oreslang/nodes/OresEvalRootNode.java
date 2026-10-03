@@ -8,6 +8,7 @@ import dev.oreslang.ast.Ast;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ExecutionTerminated;
 import dev.oreslang.runtime.OresContext;
+import dev.oreslang.runtime.OresSymbol;
 import dev.oreslang.runtime.OresValues.Complex;
 import dev.oreslang.runtime.OresValues.OptionValue;
 import dev.oreslang.runtime.CapabilityChecker;
@@ -266,6 +267,29 @@ public final class OresEvalRootNode extends RootNode {
                     (state, frozenArgs) -> transactionalSingletonCall(
                             state,
                             working -> callSingletonFunction(working, fn, frozenArgs)));
+        }
+
+        private CompletionStage<Object> readSingletonSymbol(Ast.ModuleDecl module, Ast.FieldDecl field) {
+            ProcessSingletonRegistry.Handle<SingletonState> handle = singletonHandle(module);
+            return handle.call(
+                    List.of(),
+                    context.isolatePolicy().maxMailboxMessages(),
+                    context.actors().remainingCurrentActorWallTime(context.isolatePolicy().maxWallTime()),
+                    (state, ignored) -> {
+                        String currentSchema = singletonSchema(module);
+                        if (!state.schema.equals(currentSchema)) {
+                            throw new IllegalStateException("singleton module state schema changed for "
+                                    + module.name()
+                                    + "; process-lifetime state cannot be reinterpreted without an explicit migration");
+                        }
+                        authorizeSingletonCodeGeneration(state, module);
+                        Object value = state.fields.lookup(field.name());
+                        if (!(value instanceof OresSymbol)) {
+                            throw new IllegalStateException("singleton Symbol field changed type for "
+                                    + module.name() + "." + field.name());
+                        }
+                        return value;
+                    });
         }
 
         private Object transactionalSingletonCall(
@@ -578,6 +602,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Symbol symbol) {
+                    return OresSymbol.of(symbol.name(), context.isolatePolicy());
+                }
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -772,6 +799,16 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Symbol")) {
+                    if (!created.type().arguments().isEmpty() || created.arguments().size() != 1) {
+                        throw new IllegalArgumentException("new Symbol(...) expects exactly one String key");
+                    }
+                    Object key = eval(created.arguments().getFirst(), env);
+                    if (!(key instanceof String text)) {
+                        throw new IllegalArgumentException("new Symbol(...) key must be a String");
+                    }
+                    return OresSymbol.of(text, context.isolatePolicy());
+                }
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 Ast.ModuleDecl owner = ownerModule(klass);
@@ -1044,9 +1081,14 @@ public final class OresEvalRootNode extends RootNode {
                             if (local == Env.MISSING) throw new IllegalStateException("missing singleton field " + module.name() + "." + name);
                             return local;
                         }
+                        if (field.type() != null
+                                && field.type().name().equals("Symbol")
+                                && field.type().arguments().isEmpty()) {
+                            return new SingletonReply(readSingletonSymbol(module, field));
+                        }
                         Ast.ClassDecl klass = field.type() == null ? null : findClass(field.type().name());
                         if (klass == null) {
-                            throw new IllegalArgumentException("singleton module exports only class-instance proxy fields: "
+                            throw new IllegalArgumentException("singleton module exports only class-instance proxy or Symbol fields: "
                                     + module.name() + "." + name);
                         }
                         return new SingletonObjectProxy(module, field.name(), klass);
@@ -1263,7 +1305,8 @@ public final class OresEvalRootNode extends RootNode {
                 || value instanceof Number
                 || value instanceof Boolean
                 || value instanceof Character
-                || value instanceof Complex) {
+                || value instanceof Complex
+                || value instanceof OresSymbol) {
             return value;
         }
         Object existing = copies.get(value);
