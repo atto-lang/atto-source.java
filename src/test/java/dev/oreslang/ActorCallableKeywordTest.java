@@ -389,6 +389,54 @@ final class ActorCallableKeywordTest {
         assertTrue(failure.getMessage().contains("parallel actor method cannot directly read mutable actor field 'box'"));
     }
 
+    @Test
+    void parallelActorRequiresSharedMutexRatherThanActorLocalMutex() {
+        IllegalArgumentException localMutex = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Worker {
+                          val Mutex<int> state = Mutex.new(0);
+
+                          pub parallel actor bad() => int {
+                            val guard = self.state.try_lock();
+                            return 1;
+                          }
+                        }
+                        """)));
+        assertTrue(localMutex.getMessage().contains("parallel actor method cannot directly read mutable actor field 'state'"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                shared actor Worker {
+                  val SharedMutex<int> state = SharedMutex.new(0);
+
+                  pub parallel actor try_read() => int {
+                    val maybe_guard = self.state.try_lock();
+                    if maybe_guard.is_none(); do
+                      return -1;
+                    fi
+                    val guard = maybe_guard.unwrap();
+                    val value = guard.value;
+                    guard.release();
+                    return value;
+                  }
+                }
+                """)));
+    }
+
+    @Test
+    void actorCapabilityReturnCannotHideInsideContainers() {
+        IllegalArgumentException nested = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Worker {
+                          pub actor leak() => Array<SharedMutex<int>> {
+                            return arr[SharedMutex.new(1)];
+                          }
+                        }
+                        """)));
+        assertTrue(nested.getMessage().contains("cannot return SharedMutex"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "actor-callables.ores")
