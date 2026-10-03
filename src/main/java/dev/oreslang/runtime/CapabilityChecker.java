@@ -73,6 +73,7 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
                 if (path.startsWith("process.collect_singleton")) require(policy, IsolatePolicy.Capability.PROCESS_SINGLETON, path);
+                if (path.startsWith("Symbol.")) requireTrustedSymbols(policy, path);
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
