@@ -32,8 +32,12 @@ end
 
 type F = typeof fnc() -> String;
 
+pub fnc choose(bool t) => F {
+  return t ? A.foo : B.foo;
+}
+
 pub routine main() => void {
-  val F selected = use_a ? A.foo : B.foo;
+  val F selected = choose(use_a);
   stdio.stdout.write(selected());
   return;
 }
@@ -62,7 +66,7 @@ oreslang-compiler --build-analysis --define=use_a=true app.ores
 
 It prints retained and removed symbols. This is intentionally an analysis surface until the per-application artifact emitter is wired; it already consumes the same pruned AST that the emitter should consume.
 
-With `use_a=true`, the ternary reduces to `A.foo` before reachability. `B.foo` is not reachable, so module `B` disappears if it has no other retained declarations.
+With `use_a=true`, the build constant becomes a literal at the call site. The optimizer specializes the simple single-return `choose(true)` call, folds its ternary to `A.foo`, and then performs reachability. `choose`, `B.foo`, and module `B` disappear when nothing else retains them.
 
 The compiler API is:
 
@@ -114,7 +118,7 @@ The first pass is symbol-level within an Oreslang program and folds explicit bui
 
 Further optimizer work can build on the same symbolic reachability graph:
 
-- context-sensitive function specialization / partial evaluation such as `choose(true)`;
+- broaden constant-argument specialization beyond simple single-return `fnc` bodies to multi-statement/control-flow partial evaluation;
 - cross-file symbol-level linking rather than file-granular import retention;
 - class-member-level removal after virtual dispatch / reflection rules are fully specified;
 - build reports with retained-byte attribution once the code-emission backend exposes sizes.
