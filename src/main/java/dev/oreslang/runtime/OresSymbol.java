@@ -119,9 +119,18 @@ public final class OresSymbol {
         }
         for (int i = 0; i < key.length(); i++) {
             char c = key.charAt(i);
-            if (Character.isISOControl(c) || Character.isSurrogate(c)) {
-                throw new IllegalArgumentException(
-                        "symbol key cannot contain control or unpaired surrogate characters");
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 >= key.length() || !Character.isLowSurrogate(key.charAt(i + 1))) {
+                    throw new IllegalArgumentException("symbol key cannot contain unpaired surrogate characters");
+                }
+                i++;
+                continue;
+            }
+            if (Character.isLowSurrogate(c)) {
+                throw new IllegalArgumentException("symbol key cannot contain unpaired surrogate characters");
+            }
+            if (Character.isISOControl(c)) {
+                throw new IllegalArgumentException("symbol key cannot contain control characters");
             }
         }
         return key;
