@@ -1,5 +1,7 @@
 package dev.oreslang.gpu;
 
+import dev.oreslang.compiler.GpuKernelCompiler;
+
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -132,11 +134,30 @@ public final class GpuRuntime {
         public Object backendToken() { return backendToken; }
     }
 
-    public record Invocation(String callable, CallableKind callableKind, List<?> arguments) {
+    public record Invocation(
+            String callable,
+            CallableKind callableKind,
+            List<?> arguments,
+            GpuKernelCompiler.GpuProgram program,
+            GpuKernelCompiler.GpuKernel kernel) {
         public Invocation {
             Objects.requireNonNull(callable, "callable");
             Objects.requireNonNull(callableKind, "callableKind");
             arguments = freezeArguments(Objects.requireNonNull(arguments, "arguments"));
+            if ((program == null) != (kernel == null)) {
+                throw new IllegalArgumentException("compiled GPU invocation requires both program and kernel metadata");
+            }
+            if (program != null && !program.kernels().contains(kernel)) {
+                throw new IllegalArgumentException("GPU invocation kernel is not part of the supplied compiled artifact");
+            }
+        }
+
+        public Invocation(String callable, CallableKind callableKind, List<?> arguments) {
+            this(callable, callableKind, arguments, null, null);
+        }
+
+        public boolean compiled() {
+            return program != null;
         }
     }
 
@@ -166,9 +187,19 @@ public final class GpuRuntime {
     }
 
     public Object dispatch(String callable, CallableKind callableKind, List<?> arguments) {
-        Invocation invocation = new Invocation(callable, callableKind, arguments);
+        return dispatch(callable, callableKind, arguments, null, null);
+    }
+
+    public Object dispatch(
+            String callable,
+            CallableKind callableKind,
+            List<?> arguments,
+            GpuKernelCompiler.GpuProgram program,
+            GpuKernelCompiler.GpuKernel kernel) {
+        Invocation invocation = new Invocation(callable, callableKind, arguments, program, kernel);
         Backend backend = requireBackend("gpu callable '" + callable + "'");
         validateDeviceOwnership(invocation.arguments(), backend);
+        validateCompiledInvocation(invocation);
 
         boolean supported = backendCall(backend, "supports(" + callable + ")",
                 () -> backend.supports(invocation));
@@ -181,6 +212,46 @@ public final class GpuRuntime {
         Object frozen = freezeValue(result, true);
         validateDeviceOwnership(frozen, backend);
         return frozen;
+    }
+
+    private static void validateCompiledInvocation(Invocation invocation) {
+        if (!invocation.compiled()) return;
+
+        GpuKernelCompiler.GpuKernel kernel = invocation.kernel();
+        List<?> arguments = invocation.arguments();
+        if (arguments.size() != kernel.parameters().size()) {
+            throw new GpuTransferException(
+                    "GPU callable '" + invocation.callable() + "' expects "
+                            + kernel.parameters().size() + " argument(s), got " + arguments.size());
+        }
+
+        Set<ArrayHandle> seenDeviceBuffers = Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (int i = 0; i < kernel.parameters().size(); i++) {
+            GpuKernelCompiler.GpuParameter parameter = kernel.parameters().get(i);
+            Object argument = arguments.get(i);
+            if (!parameter.buffer()) continue;
+
+            if (!(argument instanceof List<?>) && !(argument instanceof ArrayHandle)) {
+                throw new GpuTransferException(
+                        "GPU buffer parameter '" + parameter.name()
+                                + "' requires an Array/List or GpuArray value");
+            }
+
+            if (parameter.mutable() && argument instanceof List<?>) {
+                throw new GpuTransferException(
+                        "mutable GPU buffer parameter '" + parameter.name()
+                                + "' cannot use a host Array/List because copy-back semantics are not implicit; "
+                                + "upload/allocate a GpuArray and pass that device-resident buffer");
+            }
+
+            if (argument instanceof ArrayHandle handle
+                    && kernel.launchPlan().enforceNoAliasBuffers()
+                    && !seenDeviceBuffers.add(handle)) {
+                throw new GpuTransferException(
+                        "GPU callable '" + invocation.callable()
+                                + "' received the same GpuArray for multiple restrict/no-alias buffer parameters");
+            }
+        }
     }
 
     public ArrayHandle uploadArray(List<?> values) {
@@ -246,7 +317,8 @@ public final class GpuRuntime {
         Backend backend = PROCESS_BACKEND.get();
         if (backend == null) {
             throw new GpuUnavailableException(
-                    operation + " requires a GPU backend; none is installed and CPU fallback is forbidden");
+                    operation + " requires a GPU backend; none is installed. CPU fallback is forbidden; "
+                            + "Oreslang never falls back to CPU for gpu code");
         }
         return backend;
     }
