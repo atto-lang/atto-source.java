@@ -2728,6 +2728,12 @@ public final class TypeChecker {
                 for (Ast.Stmt nested : b.body()) collectCalls(nested, module, out);
             }
             for (Ast.Stmt nested : s.elseBody()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.SwitchStmt s) {
+            collectCalls(s.subject(), module, out);
+            for (Ast.SwitchClause clause : s.clauses()) {
+                if (clause.guard() != null) collectCalls(clause.guard(), module, out);
+                for (Ast.Stmt nested : clause.body()) collectCalls(nested, module, out);
+            }
         } else if (stmt instanceof Ast.TryStmt s) {
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
             for (Ast.Stmt nested : s.catchBody()) collectCalls(nested, module, out);
