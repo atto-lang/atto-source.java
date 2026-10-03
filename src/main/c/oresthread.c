@@ -260,3 +260,126 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadId(
     (void)cls;
     return (jlong)(uintptr_t)pthread_self();
 }
+
+
+/* ------------------------------------------------------------------------- */
+/* Privileged standalone OresThread support.                                 */
+/* ------------------------------------------------------------------------- */
+
+typedef struct {
+    JavaVM *jvm;
+    jobject thread_object;
+    jmethodID run_method;
+    char *name;
+} ores_standalone_thread;
+
+static void *standalone_thread_main(void *raw) {
+    ores_standalone_thread *thread = (ores_standalone_thread *)raw;
+    JNIEnv *env = NULL;
+    JavaVMAttachArgs attach;
+    memset(&attach, 0, sizeof(attach));
+    attach.version = JNI_VERSION_1_8;
+    attach.name = thread->name;
+    attach.group = NULL;
+
+    // Explicit OresThread instances are platform threads, not actor carriers,
+    // so attach as a normal (non-daemon) JVM thread.
+    jint status = (*thread->jvm)->AttachCurrentThread(
+            thread->jvm, (void **)&env, &attach);
+    if (status == JNI_OK && env != NULL) {
+        (*env)->CallVoidMethod(env, thread->thread_object, thread->run_method);
+        if ((*env)->ExceptionCheck(env)) {
+            (*env)->ExceptionDescribe(env);
+            (*env)->ExceptionClear(env);
+        }
+        (*env)->DeleteGlobalRef(env, thread->thread_object);
+        (*thread->jvm)->DetachCurrentThread(thread->jvm);
+    }
+
+    free(thread->name);
+    free(thread);
+    return NULL;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeStart(
+        JNIEnv *env, jclass cls, jobject thread_object, jstring name) {
+    (void)cls;
+    if (thread_object == NULL || name == NULL) {
+        throw_illegal_state(env, "OresThread native start requires a thread object and name");
+        return;
+    }
+
+    ores_standalone_thread *thread =
+            (ores_standalone_thread *)calloc(1, sizeof(*thread));
+    if (thread == NULL) {
+        throw_illegal_state(env, "failed to allocate OresThread native state");
+        return;
+    }
+
+    if ((*env)->GetJavaVM(env, &thread->jvm) != JNI_OK || thread->jvm == NULL) {
+        free(thread);
+        throw_illegal_state(env, "JNI GetJavaVM failed for OresThread");
+        return;
+    }
+
+    thread->thread_object = (*env)->NewGlobalRef(env, thread_object);
+    if (thread->thread_object == NULL) {
+        free(thread);
+        throw_illegal_state(env, "failed to root OresThread while native pthread is running");
+        return;
+    }
+
+    jclass thread_class = (*env)->GetObjectClass(env, thread_object);
+    if (thread_class == NULL) {
+        (*env)->DeleteGlobalRef(env, thread->thread_object);
+        free(thread);
+        return;
+    }
+    thread->run_method = (*env)->GetMethodID(env, thread_class, "nativeRun", "()V");
+    (*env)->DeleteLocalRef(env, thread_class);
+    if (thread->run_method == NULL) {
+        (*env)->DeleteGlobalRef(env, thread->thread_object);
+        free(thread);
+        throw_illegal_state(env, "OresThread.nativeRun() JNI callback is missing");
+        return;
+    }
+
+    const char *raw_name = (*env)->GetStringUTFChars(env, name, NULL);
+    if (raw_name == NULL) {
+        (*env)->DeleteGlobalRef(env, thread->thread_object);
+        free(thread);
+        return;
+    }
+    thread->name = strdup(raw_name);
+    (*env)->ReleaseStringUTFChars(env, name, raw_name);
+    if (thread->name == NULL) {
+        (*env)->DeleteGlobalRef(env, thread->thread_object);
+        free(thread);
+        throw_illegal_state(env, "failed to copy OresThread name");
+        return;
+    }
+
+    pthread_t native_thread;
+    int create_status = pthread_create(
+            &native_thread, NULL, standalone_thread_main, thread);
+    if (create_status != 0) {
+        (*env)->DeleteGlobalRef(env, thread->thread_object);
+        free(thread->name);
+        free(thread);
+        throw_illegal_state(env, "pthread_create failed for OresThread");
+        return;
+    }
+    // Completion/join is tracked by the Java peer's CompletableFuture. Detach
+    // the pthread so native resources are reclaimed even if user code never
+    // calls join().
+    pthread_detach(native_thread);
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeCurrentThreadId(
+        JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    return (jlong)(uintptr_t)pthread_self();
+}
