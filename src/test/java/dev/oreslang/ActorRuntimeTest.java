@@ -1585,5 +1585,43 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void processSharedMemoryAccountingSpansContextsAndReleasesOnClose() {
+        ActorRuntime first = ActorRuntime.processShared(
+                IsolatePolicy.developer(),
+                ActorRuntime.TurnExecutor.direct());
+        ActorRuntime second = ActorRuntime.processShared(
+                IsolatePolicy.developer(),
+                ActorRuntime.TurnExecutor.direct());
+        ActorRuntime.SyncCell<List<Integer>> cell = null;
+        try {
+            long baseline = second.processCarrierMemoryBytes();
+            cell = first.syncCell(List.of(1, 2, 3, 4));
+            long reserved = second.processCarrierMemoryBytes();
+
+            assertTrue(reserved > baseline,
+                    "process carrier memory accounting must include other contexts");
+
+            first.close();
+            assertTrue(cell.closed());
+            assertThrows(IllegalStateException.class, cell::snapshot);
+            assertEquals(
+                    baseline,
+                    second.processCarrierMemoryBytes(),
+                    "closing one context must release its process-level reservations");
+
+            assertEquals(
+                    "still-alive",
+                    second.executeRootTask(() -> "still-alive"),
+                    "releasing one context's memory must not shut the shared carriers");
+        } finally {
+            try {
+                first.close();
+            } catch (IllegalStateException ignored) {
+            }
+            second.close();
+        }
+    }
+
 
 }
