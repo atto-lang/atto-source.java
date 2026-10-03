@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -61,17 +62,32 @@ public final class TypeChecker {
 
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
+        Set<String> localNames = new HashSet<>(Set.of(
+                "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
+                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
+                "self", "null"));
+
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
+                else if (declaration instanceof Ast.ClassDecl klass) localNames.add(klass.name());
+                else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
+                else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
+                else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+            }
+        }
+
         for (Ast.ImportDecl imported : program.imports()) {
-            if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
-            if (imported.wildcard()) {
-                if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
-                if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
-                importedValues.add(imported.namespace());
-            } else {
-                if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
-                for (String name : imported.names()) {
-                    if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
+            ImportRules.validate(imported);
+            for (String name : ImportRules.exposedBindings(imported)) {
+                if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                if (localNames.contains(name)) {
+                    throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
+                }
+                if (imported.kind() != Ast.ImportKind.CLASS || ImportRules.isJavaPath(imported.path())) {
+                    importedValues.add(name);
                 }
             }
         }
@@ -217,8 +233,28 @@ public final class TypeChecker {
         }
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null, fn.nonLexical());
-        for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        for (Ast.Param param : fn.parameters()) {
+            Type parameterType = resolveParam(param, generics, null);
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                validateActorCallableBoundaryType(
+                        parameterType,
+                        fn.actorKind(),
+                        false,
+                        "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
+            }
+            env.define(
+                    param.name(),
+                    parameterType,
+                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+        }
         Type returns = resolve(fn.returnType(), generics, null);
+        if (fn.actorKind() != Ast.ActorKind.NONE) {
+            validateActorCallableBoundaryType(
+                    returns,
+                    fn.actorKind(),
+                    true,
+                    "return type of actor callable '" + module + "." + fn.name() + "'");
+        }
         Ast.ActorKind previousActorKind = currentActorKind;
         currentActorKind = fn.actorKind();
         try {
@@ -562,9 +598,12 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException("actor fnc '" + target.name()
-                                + "' cannot execute as an ordinary synchronous call; spawn it through the actor runtime");
+                    if (target.actorKind() != Ast.ActorKind.NONE
+                            && currentActorKind != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + target.name()
+                                        + "' cannot be synchronously invoked from another actor turn; "
+                                        + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
@@ -584,9 +623,12 @@ public final class TypeChecker {
                     && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException("actor fnc '" + namespace.name() + "." + target.name()
-                                + "' cannot execute as an ordinary synchronous call; spawn it through the actor runtime");
+                    if (target.actorKind() != Ast.ActorKind.NONE
+                            && currentActorKind != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + namespace.name() + "." + target.name()
+                                        + "' cannot be synchronously invoked from another actor turn; "
+                                        + "use mailbox-oriented actor composition");
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
@@ -1033,6 +1075,93 @@ public final class TypeChecker {
             }
         }
         throw new IllegalArgumentException("assignment target '" + member.member() + "' is not a mutable data field");
+    }
+
+    private void validateActorCallableBoundaryType(
+            Type type,
+            Ast.ActorKind actorKind,
+            boolean returnPosition,
+            String where) {
+        if (returnPosition && type == Primitive.VOID) return;
+        if (type == Primitive.VOID) {
+            throw new IllegalArgumentException(where + " cannot be void");
+        }
+        if (type == Unknown.INSTANCE || type instanceof Generic || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) {
+            throw new IllegalArgumentException(
+                    where + " must be a concrete owned/sendable data type; borrows, functions, and unresolved types cannot cross an actor boundary");
+        }
+        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        if (type instanceof ListType list) {
+            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i);
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                validateActorCallableBoundaryType(option, actorKind, false, where + " union member");
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> member : record.members().entrySet()) {
+                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'");
+            }
+            return;
+        }
+        if (!(type instanceof Named named)) {
+            throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
+        }
+
+        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
+            throw new IllegalArgumentException(
+                    where + " cannot use " + named.name() + " across an actor boundary");
+        }
+        if (named.name().equals("SharedMutex")) {
+            if (actorKind == Ast.ActorKind.PRIVATE) {
+                throw new IllegalArgumentException(
+                        where + " cannot use SharedMutex<T> with isoactor/private actors");
+            }
+            if (named.arguments().size() != 1
+                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException(
+                        where + " requires SharedMutex<T> to contain shared-safe owned data");
+            }
+            return;
+        }
+
+        for (Type argument : named.arguments()) {
+            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
+        }
+
+        // Built-in sum/container values are data-only when their arguments pass.
+        if (named.name().equals("Option") || named.name().equals("Result")
+                || named.name().equals("OptionUnwrapError")) {
+            return;
+        }
+
+        Ast.ClassDecl klass = findClass(named.name());
+        if (klass == null) {
+            // Runtime capability types (for example ActorId/ActorRef) are
+            // validated again by transport. Do not silently admit known
+            // mutable/suspending primitives above, but avoid rejecting opaque
+            // capability types solely because they have no source class body.
+            return;
+        }
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport an actor instance by value; pass an actor capability/reference");
+        }
+
+        if (!isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
+            throw new IllegalArgumentException(
+                    where + " contains state that is not safe to transport across an actor boundary");
+        }
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {

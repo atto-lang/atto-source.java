@@ -26,13 +26,23 @@ Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
 import module foo from "../xyz";
+import module foo as apiFoo from "../xyz";
 import module {foo, bar} from "../xyz";
-import class {x} from '../xyz';
-import fnc * as funcs from '../xyz';
-import * as x from './xyz';
+import class Widget as ApiWidget from "../xyz";
+import fnc add as apiAdd from "../xyz";
+import fnc * as funcs from "../xyz";
+import * as package from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+Wildcard imports always require a namespace alias. A single named module/class/function import may use `as` to choose its local binding; the original source name still controls export resolution. This avoids namespace pollution while supporting Kotlin-style disambiguation. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+
+Java host classes use an explicit `java:` URI and the same alias syntax:
+
+```ores
+import class ArrayList as JArrayList from "java:java.util.ArrayList";
+```
+
+The selected name (`ArrayList`) must match the Java simple class name; `JArrayList` is only the Oreslang-local alias. Java imports never grant authority by themselves: runtime use additionally requires the `JAVA_INTEROP` capability and an exact host-class allowlist supplied by the launcher/embedder.
 
 ### Circular imports and file initialization
 
@@ -381,6 +391,14 @@ try {
 ```
 
 `defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
+
+## Callable-only reserved keywords
+
+`stop`, `do`, and `done` are reserved language keywords. They cannot be used as ordinary identifiers for bindings, parameters, fields, types, classes, modules, or bare function references.
+
+They have one narrow compatibility exception: the three words may be declared as callable names and used when invoking that callable. This includes `fnc`/`routine` declarations, class/actor methods, interface function signatures, `import fnc` selections, direct calls such as `stop()`, and qualified calls such as `worker.done()`.
+
+The exception does not turn the keywords back into general identifiers. For example, `val stop = 1`, `fnc f(int do)`, `val callback = done`, and `val callback = worker.stop` are invalid.
 
 ## Async / await
 

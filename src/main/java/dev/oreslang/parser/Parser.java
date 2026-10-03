@@ -99,10 +99,17 @@ public final class Parser {
                 namespace = consume(IDENT, "expected import namespace").lexeme();
             } else if (match(LBRACE)) {
                 if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consume(IDENT, "expected imported name").lexeme()); while (match(COMMA));
+                do names.add(consumeImportName(kind)); while (match(COMMA));
                 consume(RBRACE, "expected '}' after imported names");
             } else {
-                names.add(consume(IDENT, "expected imported name").lexeme());
+                names.add(consumeImportName(kind));
+            }
+
+            if (!wildcard && match(AS)) {
+                if (names.size() != 1) {
+                    throw error(previous(), "named import aliases require exactly one selected name");
+                }
+                namespace = consume(IDENT, "expected import alias").lexeme();
             }
         }
 
@@ -111,6 +118,13 @@ public final class Parser {
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
         return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+    }
+
+    private String consumeImportName(Ast.ImportKind kind) {
+        if (kind == Ast.ImportKind.FUNCTION) {
+            return consumeCallableName("expected imported function name");
+        }
+        return consume(IDENT, "expected imported name").lexeme();
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
@@ -148,15 +162,21 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
-        if (match(ACTOR)) {
-            Ast.ActorKind actorKind = modifiers.shared ? Ast.ActorKind.SHARED : Ast.ActorKind.PRIVATE;
+        if (match(ACTOR, ISOACTOR)) {
+            Token actorToken = previous();
+            boolean isolated = actorToken.type() == ISOACTOR;
+            if (isolated && modifiers.shared) {
+                throw error(actorToken, "'shared isoactor' is contradictory; use either actor/shared actor or isoactor");
+            }
+            Ast.ActorKind actorKind = isolated ? Ast.ActorKind.PRIVATE : Ast.ActorKind.SHARED;
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
+            if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
             if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
-                throw error(previous(), "actor declarations do not accept async, nlex, static, or abstract modifiers");
+                throw error(actorToken, "actor declarations do not accept async, nlex, static, or abstract modifiers");
             }
             return parseActorClass(actorKind);
         }
-        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration or actor fnc");
+        if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
@@ -177,10 +197,7 @@ public final class Parser {
             Ast.ActorKind actorKind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
-        if (kind == Ast.CallableKind.ROUTINE && actorKind != Ast.ActorKind.NONE) {
-            throw error(previous(), "actor entry points use fnc, not routine");
-        }
-        String name = consume(IDENT, "expected callable name").lexeme();
+        String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
@@ -276,7 +293,7 @@ public final class Parser {
             parseModifiers();
 
             if (match(FNC)) {
-                String memberName = consume(IDENT, "expected interface function name").lexeme();
+                String memberName = consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
@@ -384,7 +401,7 @@ public final class Parser {
             if (!namespace.equals("Symbol")) throw error(previous(), "symbol methods must use Symbol.<name>");
             return namespace + "." + symbol;
         }
-        return consume(IDENT, "expected method name (methods omit 'fnc')").lexeme();
+        return consumeCallableName("expected method name (methods omit 'fnc')");
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
@@ -1072,24 +1089,56 @@ public final class Parser {
     }
 
     private boolean looksLikeTypeArgumentCall() {
+        return looksLikeTypeArgumentCallAt(current);
+    }
+
+    private boolean looksLikeTypeArgumentCallAt(int startIndex) {
         int depth = 0;
-        for (int i = current; i < tokens.size(); i++) {
+        for (int i = startIndex; i < tokens.size(); i++) {
             Token.Type type = tokens.get(i).type();
             if (type == LT) depth++;
             else if (type == GT) {
                 depth--;
                 if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == LPAREN;
                 if (depth < 0) return false;
-            } else if (type == SEMICOLON || type == EQUAL || type == QUESTION || type == COLON) {
+            } else if (type == SEMICOLON || type == EQUAL || type == QUESTION || type == COLON || type == EOF) {
                 return false;
             }
         }
         return false;
     }
 
+    private String consumeCallableName(String message) {
+        Token token = peek();
+        if (token.type() == IDENT || isReservedCallableName(token.type())) {
+            advance();
+            return token.lexeme();
+        }
+        throw error(token, message);
+    }
+
+    private boolean reservedCallableNameFollowedByInvocation(int nameIndex) {
+        int nextIndex = nameIndex + 1;
+        if (nextIndex >= tokens.size()) return false;
+        Token next = tokens.get(nextIndex);
+        if (next.type() == LPAREN) return true;
+        return next.type() == LT
+                && adjacent(tokens.get(nameIndex), next)
+                && looksLikeTypeArgumentCallAt(nextIndex);
+    }
+
+    private static boolean isReservedCallableName(Token.Type type) {
+        return type == STOP || type == DO || type == DONE;
+    }
+
     private String consumeMemberName() {
         Token token = peek();
         if (isMemberNameToken(token.type())) {
+            if (isReservedCallableName(token.type())
+                    && !reservedCallableNameFollowedByInvocation(current)) {
+                throw error(token, "'" + token.lexeme()
+                        + "' is reserved and may only be used as a function name in a call");
+            }
             advance();
             return token.lexeme();
         }
@@ -1106,7 +1155,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -1128,6 +1177,10 @@ public final class Parser {
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
         if (match(ACTOR)) return new Ast.NameExpr("actor");
+        if (isReservedCallableName(peek().type())
+                && reservedCallableNameFollowedByInvocation(current)) {
+            return new Ast.NameExpr(advance().lexeme());
+        }
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();

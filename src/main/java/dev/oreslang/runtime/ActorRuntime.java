@@ -18,6 +18,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -26,6 +28,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -645,6 +648,15 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Compiler/interpreter callback for a one-shot source-level actor callable.
+     * Guest code never receives this host callback object.
+     */
+    @FunctionalInterface
+    public interface Invocation<M, R> {
+        R run(M message, ActorContext<M> context) throws Exception;
+    }
+
+    /**
      * Compiler-facing actor constructor. The actor context is available before
      * state initialization, so private actor fields can reserve/allocate in the
      * actor's confined memory slice rather than being captured from the caller.
@@ -1042,7 +1054,8 @@ public final class ActorRuntime implements AutoCloseable {
         IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
                 ? policy.withoutCapabilities(
                         IsolatePolicy.Capability.SHARED_MEMORY,
-                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
+                        IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                        IsolatePolicy.Capability.JAVA_INTEROP)
                 : policy;
         requireWithinCallerPolicy(effectivePolicy);
         if (kind == ActorKind.SHARED) {
@@ -1066,6 +1079,96 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RuntimeException | Error failure) {
                 actorCount.decrementAndGet();
                 throw failure;
+            }
+        }
+    }
+
+    /**
+     * Compiler-only lowering target for source-level actor/isoactor callables.
+     *
+     * A fresh actor receives exactly one transported message, computes one
+     * data-only result, then terminates. Synchronous nesting from an actor turn
+     * is rejected so a bounded dispatcher cannot be starved by callers waiting
+     * on actors scheduled onto the same runtime.
+     */
+    public <M, R> R invoke(
+            ActorKind kind,
+            M message,
+            Invocation<M, R> invocation) {
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(invocation, "invocation");
+        requireCallerRuntimeAffinity("invoke actor callables");
+        if (inActorExecution()) {
+            throw new IllegalStateException(
+                    "synchronous actor-callable invocation from an actor turn is forbidden; "
+                            + "use mailbox-oriented actor composition");
+        }
+
+        IsolatePolicy policy = defaultSpawnPolicy();
+        CompletableFuture<R> completion = new CompletableFuture<>();
+        ActorRef<M> ref = spawnInternal(
+                kind,
+                policy,
+                factoryContext -> (delivered, turnContext) -> {
+                    try {
+                        @SuppressWarnings("unchecked")
+                        R frozen = (R) freeze(invocation.run(delivered, turnContext));
+                        completion.complete(frozen);
+                    } catch (VirtualMachineError fatal) {
+                        completion.completeExceptionally(fatal);
+                        throw fatal;
+                    } catch (ThreadDeath fatal) {
+                        completion.completeExceptionally(fatal);
+                        throw fatal;
+                    } catch (LinkageError fatal) {
+                        completion.completeExceptionally(fatal);
+                        throw fatal;
+                    } catch (Throwable failure) {
+                        completion.completeExceptionally(failure);
+                    } finally {
+                        turnContext.self().stop();
+                    }
+                },
+                true);
+
+        try {
+            try {
+                send(ref, message);
+            } catch (ActorTerminatedException terminatedBeforeDelivery) {
+                Throwable startupFailure = ref.terminationCause.get();
+                if (startupFailure instanceof RuntimeException runtime) throw runtime;
+                if (startupFailure instanceof Error error) throw error;
+                if (startupFailure != null) throw new RuntimeException(startupFailure);
+                throw terminatedBeforeDelivery;
+            }
+            long timeoutNanos;
+            try {
+                timeoutNanos = policy.maxWallTime().toNanos();
+            } catch (ArithmeticException overflow) {
+                timeoutNanos = Long.MAX_VALUE;
+            }
+            if (timeoutNanos <= 0) timeoutNanos = 1;
+
+            return completion.get(timeoutNanos, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("actor callable invocation interrupted");
+        } catch (TimeoutException timedOut) {
+            throw new IllegalStateException(
+                    "actor callable exceeded max wall time " + policy.maxWallTime(),
+                    timedOut);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new RuntimeException(cause);
+        } finally {
+            if (ref.isAlive()) {
+                try {
+                    stop(ref);
+                } catch (IllegalStateException alreadyStopping) {
+                    if (ref.isAlive()) throw alreadyStopping;
+                }
             }
         }
     }
