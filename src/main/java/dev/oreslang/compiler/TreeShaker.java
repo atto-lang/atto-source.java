@@ -178,10 +178,53 @@ public final class TreeShaker {
                     || function.body().size() != 1
                     || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
                     || returned.value() == null
+                    || containsLambda(returned.value())
                     || functionsBeingInlined.contains(target.id())) {
                 return false;
             }
             return arguments.stream().allMatch(Ast.LiteralExpr.class::isInstance);
+        }
+
+        private boolean containsLambda(Ast.Expr expression) {
+            if (expression == null) return false;
+            if (expression instanceof Ast.LambdaExpr) return true;
+            if (expression instanceof Ast.BinaryExpr binary) {
+                return containsLambda(binary.left()) || containsLambda(binary.right());
+            }
+            if (expression instanceof Ast.UnaryExpr unary) return containsLambda(unary.operand());
+            if (expression instanceof Ast.AssignExpr assignment) {
+                return containsLambda(assignment.target()) || containsLambda(assignment.value());
+            }
+            if (expression instanceof Ast.ConditionalExpr conditional) {
+                return containsLambda(conditional.condition())
+                        || containsLambda(conditional.whenTrue())
+                        || containsLambda(conditional.whenFalse());
+            }
+            if (expression instanceof Ast.CallExpr call) {
+                if (containsLambda(call.callee())) return true;
+                return call.arguments().stream().anyMatch(this::containsLambda);
+            }
+            if (expression instanceof Ast.MemberExpr member) return containsLambda(member.receiver());
+            if (expression instanceof Ast.IndexExpr indexed) {
+                return containsLambda(indexed.receiver()) || containsLambda(indexed.index());
+            }
+            if (expression instanceof Ast.NewExpr created) {
+                return created.arguments().stream().anyMatch(this::containsLambda);
+            }
+            if (expression instanceof Ast.AwaitExpr awaited) return containsLambda(awaited.expression());
+            if (expression instanceof Ast.ListExpr list) {
+                return list.elements().stream().anyMatch(this::containsLambda);
+            }
+            if (expression instanceof Ast.TupleExpr tuple) {
+                return tuple.elements().stream().anyMatch(this::containsLambda);
+            }
+            if (expression instanceof Ast.ObjectExpr object) {
+                for (Ast.ObjectField field : object.fields()) {
+                    if (field.isDynamic() && containsLambda(field.dynamicName())) return true;
+                    if (containsLambda(field.value())) return true;
+                }
+            }
+            return false;
         }
 
         private Ast.Expr inlineConstantCall(
@@ -199,7 +242,7 @@ public final class TreeShaker {
             functionsBeingInlined.add(target.id());
             try {
                 Ast.Expr substituted = substitute(returned.value(), substitutions, Set.of());
-                return rewriteExpression(substituted, moduleOf(target.id()), locals);
+                return rewriteExpression(substituted, moduleOf(target.id()), Map.of());
             } finally {
                 functionsBeingInlined.remove(target.id());
             }
