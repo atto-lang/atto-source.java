@@ -1017,6 +1017,16 @@ public final class OwnershipChecker {
                     scanStatements(b.body(), blockLocals, outer, recursiveBinding, captures);
                 }
                 scanStatements(s.elseBody(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.SwitchStmt s) {
+                scanExpr(s.subject(), blockLocals, outer, recursiveBinding, captures, false);
+                for (Ast.SwitchClause clause : s.clauses()) {
+                    Set<String> clauseLocals = new HashSet<>(blockLocals);
+                    addPatternBindingNames(clause.pattern(), clauseLocals);
+                    if (clause.guard() != null) {
+                        scanExpr(clause.guard(), clauseLocals, outer, recursiveBinding, captures, false);
+                    }
+                    scanStatements(clause.body(), clauseLocals, outer, recursiveBinding, captures);
+                }
             } else if (stmt instanceof Ast.TryStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
                 Set<String> caught = new HashSet<>(blockLocals);
@@ -1034,6 +1044,30 @@ public final class OwnershipChecker {
                 if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             }
+        }
+    }
+
+    private static void addPatternBindingNames(Ast.Pattern pattern, Set<String> locals) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            locals.add(binding.name());
+            return;
+        }
+        if (pattern instanceof Ast.TypePattern typed && typed.bindingName() != null) {
+            locals.add(typed.bindingName());
+            return;
+        }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            for (Ast.Pattern child : sequence.elements()) addPatternBindingNames(child, locals);
+            return;
+        }
+        if (pattern instanceof Ast.ObjectPattern object) {
+            for (Ast.ObjectPatternField field : object.fields()) {
+                addPatternBindingNames(field.pattern(), locals);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.VariantPattern variant) {
+            for (Ast.Pattern child : variant.arguments()) addPatternBindingNames(child, locals);
         }
     }
 
