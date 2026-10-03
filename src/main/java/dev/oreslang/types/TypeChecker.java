@@ -1628,6 +1628,10 @@ public final class TypeChecker {
                 validateSingletonTransportCallChildren(call, currentModule);
                 return;
             }
+            if (awaited.expression() instanceof Ast.MemberExpr member
+                    && isExternalSingletonSymbolFieldMember(member, currentModule)) {
+                return;
+            }
             validateSingletonTransportExpr(awaited.expression(), currentModule);
             return;
         }
@@ -1666,6 +1670,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("singleton object proxy handles cannot be extracted; call and await a method on "
                         + ((Ast.NameExpr) member.receiver()).name() + "." + member.member() + " directly");
             }
+            if (isExternalSingletonSymbolFieldMember(member, currentModule)) {
+                throw new IllegalArgumentException("singleton Symbol fields must be immediately awaited: "
+                        + ((Ast.NameExpr) member.receiver()).name() + "." + member.member());
+            }
             validateSingletonTransportExpr(member.receiver(), currentModule);
         } else if (expr instanceof Ast.IndexExpr indexed) {
             validateSingletonTransportExpr(indexed.receiver(), currentModule);
@@ -1703,6 +1711,23 @@ public final class TypeChecker {
                     && field.visibility() == Ast.Visibility.PUBLIC
                     && field.name().equals(member.member())
                     && singletonProxyClass(field) != null) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isExternalSingletonSymbolFieldMember(Ast.MemberExpr member, String currentModule) {
+        if (!(member.receiver() instanceof Ast.NameExpr namespace)) return false;
+        Ast.ModuleDecl owner = modules.get(namespace.name());
+        if (owner == null || !owner.singleton() || owner.name().equals(currentModule)) return false;
+        for (Ast.Decl decl : owner.declarations()) {
+            if (decl instanceof Ast.FieldDecl field
+                    && field.visibility() == Ast.Visibility.PUBLIC
+                    && field.name().equals(member.member())
+                    && field.type() != null
+                    && field.type().name().equals("Symbol")
+                    && field.type().arguments().isEmpty()) {
                 return true;
             }
         }
