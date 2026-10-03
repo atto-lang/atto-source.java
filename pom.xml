@@ -102,7 +102,7 @@
 
   <profiles>
     <profile>
-      <id>native-thread-unix</id>
+      <id>native-runtime-unix</id>
       <activation>
         <os>
           <family>unix</family>
@@ -123,6 +123,17 @@
                   <executable>sh</executable>
                   <arguments>
                     <argument>${project.basedir}/scripts/build-native-thread.sh</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>build-native-net</id>
+                <phase>generate-resources</phase>
+                <goals><goal>exec</goal></goals>
+                <configuration>
+                  <executable>sh</executable>
+                  <arguments>
+                    <argument>${project.basedir}/scripts/build-native-net.sh</argument>
                   </arguments>
                 </configuration>
               </execution>
