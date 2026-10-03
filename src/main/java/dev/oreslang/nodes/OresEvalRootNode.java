@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -337,15 +338,16 @@ public final class OresEvalRootNode extends RootNode {
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
 
-            boolean actorReceiver = receiver.klass.actorKind() != Ast.ActorKind.NONE;
-            boolean stateLocked = actorReceiver
+            ReentrantLock actorLock = receiver.actorOwnerLock;
+            boolean actorOwnedReceiver = actorLock != null;
+            boolean stateLocked = actorOwnedReceiver
                     && method.actorMethodKind() != Ast.ActorMethodKind.PARALLEL;
             Ast.ActorMethodKind previousActorMethodKind = activeActorMethodKind.get();
             Ast.ActorMethodKind effectiveActorMethodKind =
-                    actorReceiver && method.actorMethodKind() != Ast.ActorMethodKind.NONE
+                    actorOwnedReceiver && method.actorMethodKind() != Ast.ActorMethodKind.NONE
                             ? method.actorMethodKind()
                             : previousActorMethodKind;
-            if (stateLocked) receiver.actorStateLock.lock();
+            if (stateLocked) actorLock.lock();
             activeActorMethodKind.set(effectiveActorMethodKind);
             try {
                 Env env = new Env(null);
@@ -362,7 +364,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
             } finally {
                 activeActorMethodKind.set(previousActorMethodKind);
-                if (stateLocked) receiver.actorStateLock.unlock();
+                if (stateLocked) actorLock.unlock();
             }
         }
 
@@ -533,6 +535,12 @@ public final class OresEvalRootNode extends RootNode {
                         if (field.bindingKind() != Ast.BindingKind.LET) {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
+                        }
+                        if (object.actorOwnerLock != null) {
+                            adoptActorOwnedValue(
+                                    value,
+                                    object.actorOwnerLock,
+                                    new IdentityHashMap<>());
                         }
                         object.fields.put(target.member(), value);
                         return value;
@@ -859,21 +867,25 @@ public final class OresEvalRootNode extends RootNode {
                 else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
                 fields.put(field.name(), value);
             }
-            return new OresObject(this, klass, fields);
+            OresObject state = new OresObject(this, klass, fields);
+            state.actorOwnerLock = state.actorStateLock;
+            adoptActorOwnedValue(state, state.actorStateLock, new IdentityHashMap<>());
+            return state;
         }
 
         private void requireSynchronizedActorFieldAccess(
                 OresObject object,
                 String fieldName,
                 boolean write) {
-            if (object.klass.actorKind() == Ast.ActorKind.NONE) return;
+            ReentrantLock actorLock = object.actorOwnerLock;
+            if (actorLock == null) return;
             if (activeActorMethodKind.get() != Ast.ActorMethodKind.PARALLEL) return;
-            if (object.actorStateLock.isHeldByCurrentThread()) return;
+            if (actorLock.isHeldByCurrentThread()) return;
 
             throw new IllegalStateException(
                     "parallel actor method attempted unsynchronized "
                             + (write ? "write to" : "read of")
-                            + " actor field '" + object.klass.name() + "." + fieldName
+                            + " actor-owned field '" + object.klass.name() + "." + fieldName
                             + "'; use an ordinary actor helper/Mutex/SharedMutex or an exclusive actor method");
         }
 
@@ -947,6 +959,12 @@ public final class OresEvalRootNode extends RootNode {
                 if (object.fields.containsKey(name)) {
                     requireSynchronizedActorFieldAccess(object, name, false);
                     return object.fields.get(name);
+                }
+                if (object.klass.actorKind() != Ast.ActorKind.NONE
+                        && hasActorEntrypointNamed(object.klass, name, new LinkedHashSet<>())) {
+                    throw new IllegalStateException(
+                            "actor entrypoint '" + object.klass.name() + "." + name
+                                    + "' cannot be extracted from raw actor state; use ActorRef with spawn");
                 }
                 return new BoundMethod(object.owner, object, name);
             }
@@ -1144,7 +1162,27 @@ public final class OresEvalRootNode extends RootNode {
         private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
             Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE && method.isActorEntry()) {
+                throw new IllegalStateException(
+                        "actor entrypoint '" + receiver.klass.name() + "." + method.name()
+                                + "' cannot be called on raw actor state; invoke it through ActorRef with spawn");
+            }
             return callMethod(receiver, method, args);
+        }
+
+        private boolean hasActorEntrypointNamed(
+                Ast.ClassDecl klass,
+                String name,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return false;
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (method.name().equals(name) && method.isActorEntry()) return true;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent != null && hasActorEntrypointNamed(parent, name, seen)) return true;
+            }
+            return false;
         }
 
         private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
@@ -1288,6 +1326,60 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), value);
             }
             return new OresObject(this, klass, fields);
+        }
+
+        private void adoptActorOwnedValue(
+                Object value,
+                ReentrantLock actorLock,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (value == null
+                    || value instanceof String
+                    || value instanceof Number
+                    || value instanceof Boolean
+                    || value instanceof Character
+                    || value instanceof Enum<?>) {
+                return;
+            }
+            if (value instanceof ActorRuntime.ActorRef<?>
+                    || value instanceof OresMutex.Lock<?>
+                    || value instanceof OresMutex.Guard<?>) {
+                return;
+            }
+            if (seen.put(value, Boolean.TRUE) != null) return;
+
+            if (value instanceof OresObject object) {
+                if (object.actorOwnerLock == null) {
+                    object.actorOwnerLock = actorLock;
+                } else if (object.actorOwnerLock != actorLock) {
+                    throw new IllegalStateException(
+                            "mutable object '" + object.klass.name()
+                                    + "' is already owned by a different actor synchronization domain");
+                }
+                for (Object fieldValue : object.fields.values()) {
+                    adoptActorOwnedValue(fieldValue, actorLock, seen);
+                }
+                return;
+            }
+            if (value instanceof DynamicStructValue dynamic) {
+                for (Object fieldValue : dynamic.fields.values()) {
+                    adoptActorOwnedValue(fieldValue, actorLock, seen);
+                }
+                return;
+            }
+            if (value instanceof List<?> list) {
+                for (Object item : list) adoptActorOwnedValue(item, actorLock, seen);
+                return;
+            }
+            if (value instanceof Set<?> set) {
+                for (Object item : set) adoptActorOwnedValue(item, actorLock, seen);
+                return;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    adoptActorOwnedValue(entry.getKey(), actorLock, seen);
+                    adoptActorOwnedValue(entry.getValue(), actorLock, seen);
+                }
+            }
         }
 
         private static String normalizeUnitId(String id) {
@@ -1605,6 +1697,7 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             if (value instanceof OresObject object) {
+                requireSynchronizedActorFieldAccess(object, name, false);
                 if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
                 return object.fields.get(name);
             }
@@ -1754,6 +1847,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
         private final ReentrantLock actorStateLock = new ReentrantLock(true);
+        private volatile ReentrantLock actorOwnerLock;
 
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
