@@ -286,7 +286,7 @@ public final class OresSymbol {
     }
 
     private static String escaped(String value) {
-        return value.replace("\\", "\\\\").replace(""", "\\"");
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     @Override
