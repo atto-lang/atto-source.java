@@ -2,57 +2,29 @@ import fnc * as nio from "./native.ores";
 
 // HTTP belongs to Oreslang, not Java.
 //
-// This file is the canonical home for HTTP request serialization, response
-// framing/parsing, redirect policy, header policy, and eventually pooling.
-// Native/JNI code beneath nio is limited to OS/TLS primitives.
+// Keep this module deliberately within syntax/runtime features already
+// implemented by the compiler. Rich String parsing helpers can be layered in
+// Oreslang as the stdlib grows; they must not migrate back into Java.
 
 define module http_wire
-  pub fnc canonical_header_name(String name) => String {
-    return name.lowercase();
-  }
-
   pub fnc is_redirect(Int status) => Bool {
     return status == 301 || status == 302 || status == 303
         || status == 307 || status == 308;
   }
 
   pub fnc default_port(String scheme) => Int {
-    if scheme == "http" {
+    if scheme == "http"
       return 80;
-    }
-    if scheme == "https" {
+    fi
+    if scheme == "https"
       return 443;
-    }
+    fi
     raise "unsupported URI scheme";
   }
 
-  pub fnc validate_content_length(Array<String> values) => Int {
-    if values.length() == 0 {
-      return -1;
-    }
-    val first = values[0].trim();
-    val index = 1;
-    while index < values.length() {
-      if values[index].trim() != first {
-        raise "conflicting Content-Length response headers";
-      }
-      index = index + 1;
-    }
-    val parsed = first.parse_int();
-    if parsed < 0 {
-      raise "invalid Content-Length response header";
-    }
-    return parsed;
-  }
-
-  pub fnc validate_framing(String transfer_encoding, Array<String> content_lengths) => void {
-    if transfer_encoding.length() > 0 && content_lengths.length() > 0 {
-      raise "ambiguous HTTP response framing: Transfer-Encoding with Content-Length";
-    }
-    if transfer_encoding.length() > 0 && transfer_encoding.trim().lowercase() != "chunked" {
-      raise "unsupported HTTP Transfer-Encoding";
-    }
-    validate_content_length(content_lengths);
-    return;
+  pub fnc framing_is_ambiguous(
+      String transfer_encoding,
+      Array<String> content_lengths) => Bool {
+    return transfer_encoding != "" && content_lengths.length > 0;
   }
 end
