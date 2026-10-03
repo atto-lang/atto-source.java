@@ -1,0 +1,23 @@
+name: Multiple inheritance hardening CI
+
+on:
+  push:
+    branches:
+      - harden/multiple-inheritance-diamond-super-20261003
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Compile and run inheritance tests
+        run: mvn -B -ntp -Dtest=MultipleInheritanceTest,TraitCompositionTest,LanguageHardeningTest test
