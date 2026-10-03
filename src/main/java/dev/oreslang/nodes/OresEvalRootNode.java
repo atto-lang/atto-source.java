@@ -726,6 +726,129 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        private Object evalSpawn(Ast.Expr expression, Env env) {
+            if (!(expression instanceof Ast.CallExpr call)) {
+                throw new IllegalArgumentException("spawn requires an actor construction or actor invocation");
+            }
+
+            if (call.callee() instanceof Ast.NameExpr name) {
+                Ast.FunctionDecl fn = findFunction(name.name());
+                if (fn != null && fn.actorKind() != Ast.ActorKind.NONE) {
+                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return spawnFunction(fn, args);
+                }
+
+                Ast.ClassDecl klass = findClass(name.name());
+                if (klass != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return spawnActorClass(klass, args);
+                }
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr memberCall) {
+                if (memberCall.receiver() instanceof Ast.NameExpr namespace) {
+                    Ast.ModuleDecl module = modules.get(namespace.name());
+                    if (module != null) {
+                        Ast.FunctionDecl fn = functions.get(namespace.name() + "." + memberCall.member());
+                        if (fn != null && fn.actorKind() != Ast.ActorKind.NONE) {
+                            List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                            return spawnFunction(fn, args);
+                        }
+                    }
+                }
+
+                Object receiver = eval(memberCall.receiver(), env);
+                if (receiver instanceof SourceActorRef actorRef) {
+                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    return actorRef.spawn(memberCall.member(), args);
+                }
+            }
+
+            throw new IllegalArgumentException(
+                    "spawn target must be an actor/isoactor callable, actor class, or ActorRef actor method");
+        }
+
+        private SourceActorRef spawnActorClass(Ast.ClassDecl klass, List<Object> constructorArgs) {
+            if (klass.actorKind() == Ast.ActorKind.PRIVATE) {
+                throw new IllegalStateException(
+                        "source-level isoactor class construction is not yet lowered to confined actor memory; "
+                                + "shared actor classes are supported without weakening isoactor isolation");
+            }
+            if (klass.actorKind() != Ast.ActorKind.SHARED) {
+                throw new IllegalArgumentException("spawn target is not an actor class: " + klass.name());
+            }
+
+            ConcurrentHashMap<String, CompletableFuture<Object>> pending = new ConcurrentHashMap<>();
+            AtomicLong ids = new AtomicLong();
+            List<Object> capturedConstructorArgs = List.copyOf(constructorArgs);
+
+            ActorRuntime.TurnClassifier<Map<String, Object>> classifier = message -> {
+                Object mode = message.get("mode");
+                if (!(mode instanceof String text)) {
+                    throw new IllegalArgumentException("actor invocation missing execution mode");
+                }
+                return ActorRuntime.TurnMode.valueOf(text);
+            };
+
+            ActorRuntime.ActorRef<Map<String, Object>> runtimeRef =
+                    context.actors().spawnSharedConcurrentTrusted(
+                            classifier,
+                            actorContext -> {
+                                OresObject state = instantiateActorState(klass, capturedConstructorArgs);
+                                return (message, turnContext) -> {
+                                    Object idValue = message.get("id");
+                                    Object methodValue = message.get("method");
+                                    Object argsValue = message.get("args");
+                                    if (!(idValue instanceof String id)
+                                            || !(methodValue instanceof String methodName)
+                                            || !(argsValue instanceof List<?> deliveredArgs)) {
+                                        throw new IllegalArgumentException("malformed source actor invocation");
+                                    }
+
+                                    CompletableFuture<Object> completion = pending.remove(id);
+                                    if (completion == null) {
+                                        throw new IllegalStateException("missing actor invocation completion " + id);
+                                    }
+
+                                    Ast.MethodDecl method = findMethod(
+                                            klass, methodName, deliveredArgs.size(), new LinkedHashSet<>());
+                                    if (method == null || !method.isActorEntry()) {
+                                        completion.completeExceptionally(
+                                                new IllegalArgumentException(
+                                                        "unknown actor entrypoint " + klass.name() + "." + methodName));
+                                        return;
+                                    }
+
+                                    try {
+                                        Object result = callMethod(state, method, deliveredArgs);
+                                        completion.complete(ActorRuntime.freeze(result));
+                                    } catch (Throwable failure) {
+                                        completion.completeExceptionally(failure);
+                                    }
+                                };
+                            });
+
+            return new SourceActorRef(this, klass, runtimeRef, pending, ids);
+        }
+
+        private OresObject instantiateActorState(Ast.ClassDecl klass, List<Object> args) {
+            List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
+            if (args.size() > classFields.size()) {
+                throw new IllegalArgumentException("too many constructor arguments for actor " + klass.name());
+            }
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            Env env = new Env(null);
+            for (int i = 0; i < classFields.size(); i++) {
+                Ast.FieldDecl field = classFields.get(i);
+                Object value;
+                if (i < args.size()) value = args.get(i);
+                else if (field.initializer() != null) value = eval(field.initializer(), env);
+                else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
+                fields.put(field.name(), value);
+            }
+            return new OresObject(this, klass, fields);
+        }
+
         private Object member(Object receiver, String name) {
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
