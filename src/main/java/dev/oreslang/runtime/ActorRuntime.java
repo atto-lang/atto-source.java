@@ -2011,13 +2011,27 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (isScalar(value) || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.SyncCell<?>
-                || value instanceof OresMutex.Shared<?>
                 || value instanceof OresMutex.Local<?>
                 || value instanceof OresMutex.Guard<?>) {
             return;
         }
         if (value instanceof Shared<?> shared) {
             rejectTrustedSymbols(shared.value(), visiting, depth + 1);
+            return;
+        }
+        if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            rejectTrustedSymbols(sharedMutex.transportValue(), visiting, depth + 1);
+            return;
+        }
+        if (value instanceof OresMutex.SharedState aggregate) {
+            if (visiting.put(value, Boolean.TRUE) != null) return;
+            try {
+                for (Object child : aggregate.sharedStateChildren()) {
+                    rejectTrustedSymbols(child, visiting, depth + 1);
+                }
+            } finally {
+                visiting.remove(value);
+            }
             return;
         }
         if (visiting.put(value, Boolean.TRUE) != null) return;
