@@ -1762,9 +1762,10 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private static void requireSupervisorContext(String operation) {
-        if (inActorExecution()) {
+        if (inActorExecution() || inRootExecution()) {
             throw new SecurityException(
-                    "actor code cannot " + operation + "; this operation belongs to the host/supervisor");
+                    "guest code cannot " + operation
+                            + "; this operation belongs to the host/supervisor");
         }
     }
 
