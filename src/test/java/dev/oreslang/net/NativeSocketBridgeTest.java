@@ -19,6 +19,25 @@ final class NativeSocketBridgeTest {
     }
 
     @Test
+    void staleAndForgedSocketHandlesFailClosed() throws Exception {
+        long first = NativeSocketBridge.listen("127.0.0.1", 0, 8, true);
+        NativeSocketBridge.close(first);
+
+        assertThrows(java.io.IOException.class, () -> NativeSocketBridge.localPort(first));
+        assertThrows(java.io.IOException.class, () -> NativeSocketBridge.close(first));
+        assertThrows(java.io.IOException.class, () -> NativeSocketBridge.available(1L));
+
+        long second = NativeSocketBridge.listen("127.0.0.1", 0, 8, true);
+        try {
+            assertNotEquals(first, second, "a reused registry slot must receive a fresh cookie");
+            assertThrows(java.io.IOException.class, () -> NativeSocketBridge.localPort(first));
+            assertTrue(NativeSocketBridge.localPort(second) > 0);
+        } finally {
+            NativeSocketBridge.close(second);
+        }
+    }
+
+    @Test
     void roundTripsTcpOverJniSocketSyscalls() throws Exception {
         long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
