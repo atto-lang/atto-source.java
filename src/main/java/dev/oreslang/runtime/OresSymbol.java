@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -99,13 +101,45 @@ public final class OresSymbol {
      */
     public static OresSymbol processLiteral(String key, IsolatePolicy policy) {
         requireTrusted(policy, "Symbol literal");
-        String literal = validateKey(key);
-        if (literal.length() > MAX_LITERAL_NAME_LENGTH || !IDENTIFIER.matcher(literal).matches()) {
-            throw new IllegalArgumentException(
-                    "Symbol literal key must be an identifier of at most "
-                            + MAX_LITERAL_NAME_LENGTH + " characters");
+        return internProcess(validateLiteralName(key), true);
+    }
+
+    /**
+     * Atomically admit all compiler/source literals for a successfully checked
+     * code unit. Capacity is preflighted under the insertion lock, so a failed
+     * code load cannot leave a partially installed permanent identity set.
+     */
+    public static void registerProcessLiterals(
+            Collection<String> keys,
+            IsolatePolicy policy) {
+        Objects.requireNonNull(keys, "keys");
+        requireTrusted(policy, "source Symbol literal registration");
+
+        LinkedHashSet<String> literals = new LinkedHashSet<>();
+        for (String key : keys) literals.add(validateLiteralName(key));
+        if (literals.isEmpty()) return;
+
+        synchronized (PROCESS_INSERT_LOCK) {
+            int missing = 0;
+            for (String literal : literals) {
+                if (!PROCESS_SYMBOLS.containsKey(literal)) missing++;
+            }
+            if (missing > MAX_PROCESS_SYMBOLS - PROCESS_SYMBOLS.size()) {
+                throw new IllegalStateException(
+                        "process Symbol table lacks capacity for " + missing
+                                + " new source literal(s); limit=" + MAX_PROCESS_SYMBOLS);
+            }
+            for (String literal : literals) {
+                if (PROCESS_SYMBOLS.containsKey(literal)) continue;
+                PROCESS_SYMBOLS.put(
+                        literal,
+                        new OresSymbol(
+                                Scope.PROCESS,
+                                literal,
+                                nextProcessId(),
+                                PROCESS_DOMAIN));
+            }
         }
-        return internProcess(literal, true);
     }
 
     /** Built-in protocol identity such as Symbol.iterator. */
@@ -332,6 +366,16 @@ public final class OresSymbol {
             throw new SecurityException(
                     "Symbols are unavailable to adversarial/untrusted isolates: " + api);
         }
+    }
+
+    private static String validateLiteralName(String raw) {
+        String literal = validateKey(raw);
+        if (literal.length() > MAX_LITERAL_NAME_LENGTH || !IDENTIFIER.matcher(literal).matches()) {
+            throw new IllegalArgumentException(
+                    "Symbol literal key must be an identifier of at most "
+                            + MAX_LITERAL_NAME_LENGTH + " characters");
+        }
+        return literal;
     }
 
     private static String validateKey(String key) {
