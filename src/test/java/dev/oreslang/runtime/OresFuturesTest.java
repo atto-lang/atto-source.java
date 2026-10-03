@@ -51,6 +51,17 @@ final class OresFuturesTest {
     }
 
     @Test
+    void guestCannotForgeFutureCompletion() {
+        OresFuture<Integer> future = new OresFuture<>();
+
+        assertThrows(UnsupportedOperationException.class, () -> future.complete(99));
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> future.completeExceptionally(new IllegalStateException("forged")));
+        assertFalse(future.isDone());
+    }
+
+    @Test
     void raceCompletesWithFirstCompletion() {
         CompletableFuture<Integer> slow = new CompletableFuture<>();
         CompletableFuture<Integer> fast = new CompletableFuture<>();
