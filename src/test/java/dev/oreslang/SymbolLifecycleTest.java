@@ -102,6 +102,22 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void symbolLocalTypechecksInsideActorExecution() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define module actors
+                  pub actor fnc use_local() => void {
+                    val Symbol local = Symbol.local("request-local");
+                    if (local == local) {
+                      return;
+                    }
+                    return;
+                  }
+                end
+                """));
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
     void processAndStableSymbolsAreStronglyCanonicalInTheirDomains() {
         OresSymbol first = OresSymbol.process("shared-key");
         OresSymbol again = OresSymbol.process("shared-key");
@@ -289,6 +305,21 @@ final class SymbolLifecycleTest {
         assertSame(process, OresSymbol.fromWire(processWire, IsolatePolicy.developer()));
         assertSame(stable, OresSymbol.fromWire(stableWire, IsolatePolicy.developer()));
 
+        int processEntriesBefore = OresSymbol.processRegistryEntries();
+        OresSymbol.Wire unknownProcess =
+                new OresSymbol.Wire(OresSymbol.Scope.PROCESS, "wire-not-preinterned");
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.fromWire(unknownProcess, IsolatePolicy.developer()));
+        assertEquals(
+                processEntriesBefore,
+                OresSymbol.processRegistryEntries(),
+                "ordinary wire decode must not intern attacker-controlled process keys");
+
+        OresSymbol admitted =
+                OresSymbol.fromTrustedWire(unknownProcess, IsolatePolicy.developer());
+        assertSame(admitted, OresSymbol.fromWire(unknownProcess, IsolatePolicy.developer()));
+
         assertThrows(
                 SecurityException.class,
                 () -> OresSymbol.fromWire(processWire, IsolatePolicy.strictFaas()));
@@ -408,5 +439,13 @@ final class SymbolLifecycleTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> OresSymbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.processLiteral("not-a-source-literal!", IsolatePolicy.developer()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.processLiteral(
+                        "x".repeat(OresSymbol.MAX_LITERAL_NAME_LENGTH + 1),
+                        IsolatePolicy.developer()));
     }
 }
