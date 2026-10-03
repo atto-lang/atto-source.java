@@ -288,9 +288,11 @@ Oreslang has a dedicated immutable `Symbol` value for finite protocol tags:
 val Symbol action = :put;
 ```
 
-A symbol is **not** a string alias. In trusted execution it is a canonical, process-runtime interned identity: every occurrence of the same symbol name resolves to the same `Symbol` object across the main execution path and trusted actors that share the runtime heap. The registry is strongly rooted, so ordinary/automatic GC never reclaims symbols or changes their identity.
+A symbol is **not** a string alias. Inside one trusted runtime heap, every occurrence of the same symbol name resolves to the exact same interned `Symbol` object. Across separate trusted Graal/native isolate heaps, raw object identity cannot be shared safely, so language-level symbol identity is the canonical ASCII name plus a deterministic 256-bit `SymbolId` derived with domain-separated SHA-256. Trusted isolate bridges carry and verify both fields before re-entering the destination heap's local interner. This preserves one semantic symbol identity without sharing pointers between heaps.
 
-Unlike Erlang's historically unbounded atom table, Oreslang's process symbol table is bounded. Symbol names are identifier-shaped and limited in length, and the runtime caps the total number of interned symbols. Adversarial/untrusted isolates do not participate in this registry and cannot receive symbol-bearing messages; convert a tag to an explicitly validated string or another sandbox-safe protocol value before crossing that boundary.
+The local interner is strongly rooted, so ordinary/automatic GC never reclaims a live symbol or changes its identity. It is bounded to 65,536 entries per trusted runtime heap; symbol names are ASCII identifier-shaped and limited to 128 characters. A multi-isolate supervisor must also enforce an aggregate process budget when it hosts multiple trusted heaps. Adversarial/untrusted isolates do not participate in the symbol namespace and cannot create or receive symbol-bearing messages; convert a tag to an explicitly validated string or another sandbox-safe protocol value before crossing that boundary.
+
+Canonical bridge forms are integrity checked: the destination recomputes the `SymbolId` from the name and rejects a mismatched pair. The runtime also collision-checks the local ID registry, and equality verifies both canonical name and ID rather than trusting a digest alone.
 
 Strings remain real strings, arrays/lists remain collections, and numeric code-point lists are never printed or reinterpreted as strings merely because their contents happen to look textual. Variable capitalization has no semantic connection to symbols.
 
