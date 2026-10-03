@@ -1,10 +1,8 @@
 package dev.oreslang.runtime;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -14,19 +12,22 @@ import java.util.regex.Pattern;
 /**
  * Immutable Symbol identity.
  *
- * <p>Oreslang deliberately has three identity domains:</p>
+ * <p>Every Oreslang Symbol is a globally comparable immutable identity across
+ * every memory domain in one OS process. Physical wrapper objects may differ
+ * across isolated heaps, but identity never depends on an object pointer.</p>
+ *
  * <ul>
- *   <li>LOCAL: canonical only inside one actor and reclaimed with that actor.</li>
- *   <li>PROCESS: strongly interned for the trusted OS-process lifetime.</li>
- *   <li>STABLE: UUID identity whose equality/wire identity survives process restart.</li>
+ *   <li>PROCESS: process-lifetime identity keyed by canonical text.</li>
+ *   <li>STABLE: UUID identity whose equality/wire identity also survives process restart.</li>
  * </ul>
  *
- * <p>No Symbol is a permission to share mutable heap state. Process/stable symbols
- * cross trusted actor heaps as immutable values. Local symbols are non-Send. An
- * adversarial/untrusted isolate is never admitted to any Symbol domain.</p>
+ * <p>Untrusted/adversarial code may receive, compare, hash, pattern-match, and
+ * decode already-admitted Symbols. It may not create new process-global
+ * registry entries from arbitrary text. That split keeps protocol identities
+ * universal without exposing an atom-table exhaustion capability.</p>
  */
 public final class OresSymbol {
-    public enum Scope { LOCAL, PROCESS, STABLE }
+    public enum Scope { PROCESS, STABLE }
 
     public static final int MAX_KEY_LENGTH = 256;
     public static final int MAX_PROCESS_SYMBOLS = 65_536;
@@ -39,7 +40,6 @@ public final class OresSymbol {
     public static final int RESERVED_LITERAL_PROCESS_SYMBOLS =
             MAX_PROCESS_SYMBOLS - MAX_DYNAMIC_PROCESS_SYMBOLS;
     public static final int MAX_STABLE_SYMBOLS = 65_536;
-    public static final int MAX_LOCAL_SYMBOLS_PER_ACTOR = 4_096;
     public static final int MAX_LITERAL_NAME_LENGTH = 128;
 
     /** Backward-compatible name for the process-table bound. */
@@ -48,7 +48,6 @@ public final class OresSymbol {
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final Object PROCESS_INSERT_LOCK = new Object();
     private static final Object STABLE_INSERT_LOCK = new Object();
-    private static final Object LOCAL_REGISTRY_KEY = new Object();
     private static final UUID PROCESS_DOMAIN = UUID.randomUUID();
     private static final ConcurrentHashMap<String, OresSymbol> PROCESS_SYMBOLS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<UUID, OresSymbol> STABLE_SYMBOLS = new ConcurrentHashMap<>();
@@ -88,8 +87,17 @@ public final class OresSymbol {
     }
 
     public static OresSymbol process(String key, IsolatePolicy policy) {
-        requireTrusted(policy, "Symbol.process");
-        return internProcess(key, false);
+        Objects.requireNonNull(policy, "policy");
+        String normalized = validateKey(key);
+        if (effectiveAdversarial(policy)) {
+            OresSymbol known = PROCESS_SYMBOLS.get(normalized);
+            if (known == null) {
+                throw new SecurityException(
+                        "untrusted code may use only pre-existing process Symbols: " + normalized);
+            }
+            return known;
+        }
+        return internProcess(normalized, false);
     }
 
     /**
@@ -100,8 +108,17 @@ public final class OresSymbol {
      * :ready and Symbol.process("ready") are exactly the same identity.
      */
     public static OresSymbol processLiteral(String key, IsolatePolicy policy) {
-        requireTrusted(policy, "Symbol literal");
-        return internProcess(validateLiteralName(key), true);
+        Objects.requireNonNull(policy, "policy");
+        String literal = validateLiteralName(key);
+        if (effectiveAdversarial(policy)) {
+            OresSymbol known = PROCESS_SYMBOLS.get(literal);
+            if (known == null) {
+                throw new SecurityException(
+                        "untrusted source may reference only pre-existing Symbol literals: :" + literal);
+            }
+            return known;
+        }
+        return internProcess(literal, true);
     }
 
     /**
@@ -113,7 +130,7 @@ public final class OresSymbol {
             Collection<String> keys,
             IsolatePolicy policy) {
         Objects.requireNonNull(keys, "keys");
-        requireTrusted(policy, "source Symbol literal registration");
+        requireInternAuthority(policy, "source Symbol literal registration");
 
         LinkedHashSet<String> literals = new LinkedHashSet<>();
         for (String key : keys) literals.add(validateLiteralName(key));
@@ -148,13 +165,19 @@ public final class OresSymbol {
 
     /** Built-in protocol identity. Currently Symbol.iterator is defined. */
     public static OresSymbol wellKnown(String name, IsolatePolicy policy) {
-        requireTrusted(policy, "well-known Symbol");
+        Objects.requireNonNull(policy, "policy");
         String validated = validateLiteralName(name);
-        return switch (validated) {
-            case "iterator" -> internProcess("Symbol.iterator", true);
+        String key = switch (validated) {
+            case "iterator" -> "Symbol.iterator";
             default -> throw new IllegalArgumentException(
                     "unknown well-known Symbol." + validated);
         };
+        OresSymbol known = PROCESS_SYMBOLS.get(key);
+        if (known != null) return known;
+        if (effectiveAdversarial(policy)) {
+            throw new SecurityException("well-known Symbol has not been admitted by the trusted runtime: " + key);
+        }
+        return internProcess(key, true);
     }
 
     private static OresSymbol internProcess(String key, boolean compilerLiteral) {
@@ -196,10 +219,14 @@ public final class OresSymbol {
     }
 
     public static OresSymbol stable(String uuidKey, IsolatePolicy policy) {
-        requireTrusted(policy, "Symbol.stable");
+        Objects.requireNonNull(policy, "policy");
         UUID stableId = validateStableKey(uuidKey);
         OresSymbol existing = STABLE_SYMBOLS.get(stableId);
         if (existing != null) return existing;
+        if (effectiveAdversarial(policy)) {
+            throw new SecurityException(
+                    "untrusted code may use only pre-existing stable Symbols: " + stableId);
+        }
 
         synchronized (STABLE_INSERT_LOCK) {
             existing = STABLE_SYMBOLS.get(stableId);
@@ -214,45 +241,6 @@ public final class OresSymbol {
             STABLE_SYMBOLS.put(stableId, created);
             return created;
         }
-    }
-
-    /**
-     * Actor-owned identity. Same-key values are canonical only within the current
-     * actor and the whole local table dies with the actor cell.
-     */
-    public static OresSymbol local(
-            String key,
-            ActorRuntime runtime,
-            IsolatePolicy policy) {
-        requireTrusted(policy, "Symbol.local");
-        Objects.requireNonNull(runtime, "runtime");
-        String normalized = validateKey(key);
-        if (ActorRuntime.currentActorRuntime() != runtime) {
-            throw new IllegalStateException(
-                    "Symbol.local(...) must use the currently executing actor runtime");
-        }
-        ActorRuntime.ActorId actorId = runtime.currentActorId();
-        if (actorId == null) {
-            throw new IllegalStateException(
-                    "Symbol.local(...) is only valid while executing an actor");
-        }
-
-        LocalRegistry registry = runtime.currentActorLocal(
-                LOCAL_REGISTRY_KEY,
-                () -> new LocalRegistry(actorId));
-        if (registry == null || !registry.actorId.equals(actorId)) {
-            throw new IllegalStateException("actor-local Symbol registry is unavailable");
-        }
-        OresSymbol existing = registry.symbols.get(normalized);
-        if (existing != null) return existing;
-        if (registry.symbols.size() >= MAX_LOCAL_SYMBOLS_PER_ACTOR) {
-            throw new IllegalStateException(
-                    "actor-local Symbol limit exceeded: " + MAX_LOCAL_SYMBOLS_PER_ACTOR);
-        }
-        OresSymbol created = new OresSymbol(
-                Scope.LOCAL, normalized, registry.nextId(), actorId.value());
-        registry.symbols.put(normalized, created);
-        return created;
     }
 
     public Scope scope() {
@@ -279,18 +267,14 @@ public final class OresSymbol {
     }
 
     public boolean sendable() {
-        return scope != Scope.LOCAL;
+        return true;
     }
 
     public boolean processStable() {
-        return scope == Scope.PROCESS || scope == Scope.STABLE;
+        return true;
     }
 
     public Wire toWire() {
-        if (scope == Scope.LOCAL) {
-            throw new IllegalStateException(
-                    "actor-local Symbols are not serializable or Sendable");
-        }
         return new Wire(scope, key);
     }
 
@@ -300,12 +284,10 @@ public final class OresSymbol {
      */
     public static OresSymbol fromWire(Wire wire, IsolatePolicy policy) {
         Objects.requireNonNull(wire, "wire");
-        requireTrusted(policy, "Symbol wire decode");
+        Objects.requireNonNull(policy, "policy");
         OresSymbol known = switch (wire.scope()) {
             case PROCESS -> PROCESS_SYMBOLS.get(validateKey(wire.key()));
             case STABLE -> STABLE_SYMBOLS.get(validateStableKey(wire.key()));
-            case LOCAL -> throw new IllegalArgumentException(
-                    "actor-local Symbol wire values are forbidden");
         };
         if (known == null) {
             throw new IllegalArgumentException(
@@ -323,12 +305,10 @@ public final class OresSymbol {
      */
     public static OresSymbol fromTrustedWire(Wire wire, IsolatePolicy policy) {
         Objects.requireNonNull(wire, "wire");
-        requireTrusted(policy, "trusted Symbol wire decode");
+        requireInternAuthority(policy, "trusted Symbol wire decode");
         return switch (wire.scope()) {
-            case PROCESS -> process(wire.key(), policy);
+            case PROCESS -> internProcess(wire.key(), false);
             case STABLE -> stable(wire.key(), policy);
-            case LOCAL -> throw new IllegalArgumentException(
-                    "actor-local Symbol wire values are forbidden");
         };
     }
 
@@ -372,12 +352,16 @@ public final class OresSymbol {
         }
     }
 
-    private static void requireTrusted(IsolatePolicy policy, String api) {
-        Objects.requireNonNull(policy, "policy");
+    private static boolean effectiveAdversarial(IsolatePolicy policy) {
         IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
-        if (policy.adversarial() || (actorPolicy != null && actorPolicy.adversarial())) {
+        return policy.adversarial() || (actorPolicy != null && actorPolicy.adversarial());
+    }
+
+    private static void requireInternAuthority(IsolatePolicy policy, String api) {
+        Objects.requireNonNull(policy, "policy");
+        if (effectiveAdversarial(policy)) {
             throw new SecurityException(
-                    "Symbols are unavailable to adversarial/untrusted isolates: " + api);
+                    "untrusted/adversarial execution has no global Symbol interning authority: " + api);
         }
     }
 
@@ -448,14 +432,14 @@ public final class OresSymbol {
     @Override
     public boolean equals(Object other) {
         if (!(other instanceof OresSymbol symbol) || symbol.scope != scope) return false;
-        if (scope == Scope.STABLE) return domain.equals(symbol.domain);
-        return id == symbol.id && domain.equals(symbol.domain);
+        // Logical identity must survive isolated heaps. Never use pointer,
+        // process-local numeric handle, or heap-local domain for equality.
+        return key.equals(symbol.key);
     }
 
     @Override
     public int hashCode() {
-        if (scope == Scope.STABLE) return Objects.hash(scope, domain);
-        return Objects.hash(scope, domain, id);
+        return Objects.hash(scope, key);
     }
 
     @Override
@@ -467,37 +451,15 @@ public final class OresSymbol {
                             ? ":" + key
                             : "Symbol.process(\"" + escaped(key) + "\")";
             case STABLE -> "Symbol.stable(\"" + escaped(key) + "\")";
-            case LOCAL -> "Symbol.local(\"" + escaped(key) + "\")";
         };
     }
 
     public record Wire(Scope scope, String key) {
         public Wire {
             Objects.requireNonNull(scope, "scope");
-            if (scope == Scope.LOCAL) {
-                throw new IllegalArgumentException(
-                        "actor-local Symbol wire values are forbidden");
-            }
             key = scope == Scope.STABLE
                     ? validateStableKey(key).toString()
                     : validateKey(key);
-        }
-    }
-
-    private static final class LocalRegistry {
-        private final ActorRuntime.ActorId actorId;
-        private final Map<String, OresSymbol> symbols = new HashMap<>();
-        private long nextLocalId = 1L;
-
-        private LocalRegistry(ActorRuntime.ActorId actorId) {
-            this.actorId = Objects.requireNonNull(actorId);
-        }
-
-        private long nextId() {
-            if (nextLocalId <= 0 || nextLocalId == Long.MAX_VALUE) {
-                throw new IllegalStateException("actor-local Symbol id space exhausted");
-            }
-            return nextLocalId++;
         }
     }
 }
