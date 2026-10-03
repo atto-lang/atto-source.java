@@ -733,6 +733,77 @@ final class OwnershipIntrinsicsHardeningTest {
                 """));
     }
 
+    @Test
+    void inheritedClassCopyDoesNotSatisfySubclassIdentityContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Base as
+                          pub copy() => Base {
+                            return new Base();
+                          }
+                        end
+
+                        define class Child extends Base as
+                        end
+
+                        fnc bad() => void {
+                          let Child child = new Child();
+                          let Child duplicate = copy(child);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("declared directly on the class"), error.getMessage());
+    }
+
+    @Test
+    void structCopyRecursesThroughCopyableClassFields() throws Exception {
+        assertEquals("79", run("""
+                define class Buffer as
+                  pub let int value = 0;
+
+                  pub copy() => Buffer {
+                    return new Buffer(self.value);
+                  }
+                end
+
+                struct Holder {
+                  buffer: Buffer;
+                }
+
+                pub routine main() => void {
+                  let Holder original = Holder { buffer = new Buffer(7) };
+                  let Holder duplicate = copy(original);
+                  duplicate.buffer.value = 9;
+                  stdio.stdout.write(original.buffer.value);
+                  stdio.stdout.write(duplicate.buffer.value);
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void structCopyRejectsNestedClassWithoutCopyContract() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Buffer as
+                          pub let int value = 0;
+                        end
+
+                        struct Holder {
+                          buffer: Buffer;
+                        }
+
+                        fnc bad() => void {
+                          let Holder original = Holder { buffer = new Buffer(7) };
+                          let Holder duplicate = copy(original);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("class 'Buffer' is not copyable"), error.getMessage());
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "ownership-hardening.ores")
