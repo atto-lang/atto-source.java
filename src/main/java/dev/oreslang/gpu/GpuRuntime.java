@@ -78,6 +78,11 @@ public final class GpuRuntime {
                     "GPU backend '" + name() + "' does not support GpuArray downloads");
         }
 
+        default Object zeroArrayLike(Object arrayBackendToken, long length) {
+            throw new GpuCapabilityUnavailableException(
+                    "GPU backend '" + name() + "' does not support GpuArray.zeros_like()");
+        }
+
         default Object openStream(Object arrayBackendToken, long length) {
             return arrayBackendToken;
         }
@@ -264,6 +269,17 @@ public final class GpuRuntime {
                     "GPU backend '" + backend.name() + "' returned null from uploadArray", null);
         }
         return new ArrayHandle(backend, token, frozen.size());
+    }
+
+    public ArrayHandle zerosLike(ArrayHandle source) {
+        Objects.requireNonNull(source, "source");
+        Object token = backendCall(source.backend, "zeroArrayLike",
+                () -> source.backend.zeroArrayLike(source.backendToken, source.length));
+        if (token == null) {
+            throw new GpuExecutionException(
+                    "GPU backend '" + source.backend.name() + "' returned null from zeroArrayLike", null);
+        }
+        return new ArrayHandle(source.backend, token, source.length);
     }
 
     public List<?> downloadArray(ArrayHandle array) {
