@@ -340,6 +340,11 @@ public final class OresEvalRootNode extends RootNode {
 
             ReentrantLock actorLock = receiver.actorOwnerLock;
             boolean actorOwnedReceiver = actorLock != null;
+            if (actorOwnedReceiver && receiver.actorOwnerDomain != ActorRuntime.currentActorExecutionDomain()) {
+                throw new IllegalStateException(
+                        "actor-owned object '" + receiver.klass.name()
+                                + "' cannot be invoked outside its owning actor execution domain");
+            }
             boolean stateLocked = actorOwnedReceiver
                     && method.actorMethodKind() != Ast.ActorMethodKind.PARALLEL;
             Ast.ActorMethodKind previousActorMethodKind = activeActorMethodKind.get();
@@ -540,6 +545,7 @@ public final class OresEvalRootNode extends RootNode {
                             adoptActorOwnedValue(
                                     value,
                                     object.actorOwnerLock,
+                                    object.actorOwnerDomain,
                                     new IdentityHashMap<>());
                         }
                         object.fields.put(target.member(), value);
@@ -868,8 +874,13 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), value);
             }
             OresObject state = new OresObject(this, klass, fields);
+            Object actorDomain = ActorRuntime.currentActorExecutionDomain();
+            if (actorDomain == null) {
+                throw new IllegalStateException("actor state construction requires an active actor execution domain");
+            }
             state.actorOwnerLock = state.actorStateLock;
-            adoptActorOwnedValue(state, state.actorStateLock, new IdentityHashMap<>());
+            state.actorOwnerDomain = actorDomain;
+            adoptActorOwnedValue(state, state.actorStateLock, actorDomain, new IdentityHashMap<>());
             return state;
         }
 
@@ -879,6 +890,11 @@ public final class OresEvalRootNode extends RootNode {
                 boolean write) {
             ReentrantLock actorLock = object.actorOwnerLock;
             if (actorLock == null) return;
+            if (object.actorOwnerDomain != ActorRuntime.currentActorExecutionDomain()) {
+                throw new IllegalStateException(
+                        "actor-owned field '" + object.klass.name() + "." + fieldName
+                                + "' cannot be accessed outside its owning actor execution domain");
+            }
             if (activeActorMethodKind.get() != Ast.ActorMethodKind.PARALLEL) return;
             if (actorLock.isHeldByCurrentThread()) return;
 
@@ -1331,6 +1347,7 @@ public final class OresEvalRootNode extends RootNode {
         private void adoptActorOwnedValue(
                 Object value,
                 ReentrantLock actorLock,
+                Object actorDomain,
                 IdentityHashMap<Object, Boolean> seen) {
             if (value == null
                     || value instanceof String
@@ -1350,34 +1367,35 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) {
                 if (object.actorOwnerLock == null) {
                     object.actorOwnerLock = actorLock;
-                } else if (object.actorOwnerLock != actorLock) {
+                    object.actorOwnerDomain = actorDomain;
+                } else if (object.actorOwnerLock != actorLock || object.actorOwnerDomain != actorDomain) {
                     throw new IllegalStateException(
                             "mutable object '" + object.klass.name()
-                                    + "' is already owned by a different actor synchronization domain");
+                                    + "' is already owned by a different actor execution domain");
                 }
                 for (Object fieldValue : object.fields.values()) {
-                    adoptActorOwnedValue(fieldValue, actorLock, seen);
+                    adoptActorOwnedValue(fieldValue, actorLock, actorDomain, seen);
                 }
                 return;
             }
             if (value instanceof DynamicStructValue dynamic) {
                 for (Object fieldValue : dynamic.fields.values()) {
-                    adoptActorOwnedValue(fieldValue, actorLock, seen);
+                    adoptActorOwnedValue(fieldValue, actorLock, actorDomain, seen);
                 }
                 return;
             }
             if (value instanceof List<?> list) {
-                for (Object item : list) adoptActorOwnedValue(item, actorLock, seen);
+                for (Object item : list) adoptActorOwnedValue(item, actorLock, actorDomain, seen);
                 return;
             }
             if (value instanceof Set<?> set) {
-                for (Object item : set) adoptActorOwnedValue(item, actorLock, seen);
+                for (Object item : set) adoptActorOwnedValue(item, actorLock, actorDomain, seen);
                 return;
             }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
-                    adoptActorOwnedValue(entry.getKey(), actorLock, seen);
-                    adoptActorOwnedValue(entry.getValue(), actorLock, seen);
+                    adoptActorOwnedValue(entry.getKey(), actorLock, actorDomain, seen);
+                    adoptActorOwnedValue(entry.getValue(), actorLock, actorDomain, seen);
                 }
             }
         }
@@ -1848,6 +1866,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String,Object> fields;
         private final ReentrantLock actorStateLock = new ReentrantLock(true);
         private volatile ReentrantLock actorOwnerLock;
+        private volatile Object actorOwnerDomain;
 
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
