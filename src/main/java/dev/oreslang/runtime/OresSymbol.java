@@ -129,6 +129,10 @@ public final class OresSymbol {
                         "process Symbol table lacks capacity for " + missing
                                 + " new source literal(s); limit=" + MAX_PROCESS_SYMBOLS);
             }
+            long nextReservedId = reserveMonotonicIds(
+                    NEXT_PROCESS_ID,
+                    missing,
+                    "process Symbol");
             for (String literal : literals) {
                 if (PROCESS_SYMBOLS.containsKey(literal)) continue;
                 PROCESS_SYMBOLS.put(
@@ -136,7 +140,7 @@ public final class OresSymbol {
                         new OresSymbol(
                                 Scope.PROCESS,
                                 literal,
-                                nextProcessId(),
+                                nextReservedId++,
                                 PROCESS_DOMAIN));
             }
         }
@@ -350,12 +354,22 @@ public final class OresSymbol {
     }
 
     private static long nextMonotonicId(AtomicLong counter, String domain) {
+        return reserveMonotonicIds(counter, 1, domain);
+    }
+
+    private static long reserveMonotonicIds(
+            AtomicLong counter,
+            int count,
+            String domain) {
+        if (count < 0) throw new IllegalArgumentException("id reservation count cannot be negative");
+        if (count == 0) return counter.get();
         while (true) {
             long current = counter.get();
-            if (current <= 0 || current == Long.MAX_VALUE) {
+            if (current <= 0 || current > Long.MAX_VALUE - count) {
                 throw new IllegalStateException(domain + " id space exhausted");
             }
-            if (counter.compareAndSet(current, current + 1)) return current;
+            long next = current + count;
+            if (counter.compareAndSet(current, next)) return current;
         }
     }
 
