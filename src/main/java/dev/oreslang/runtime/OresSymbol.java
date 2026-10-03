@@ -38,6 +38,7 @@ public final class OresSymbol {
             MAX_PROCESS_SYMBOLS - MAX_DYNAMIC_PROCESS_SYMBOLS;
     public static final int MAX_STABLE_SYMBOLS = 65_536;
     public static final int MAX_LOCAL_SYMBOLS_PER_ACTOR = 4_096;
+    public static final int MAX_LITERAL_NAME_LENGTH = 128;
 
     /** Backward-compatible name for the process-table bound. */
     public static final int MAX_LIVE_SYMBOLS = MAX_PROCESS_SYMBOLS;
@@ -98,7 +99,13 @@ public final class OresSymbol {
      */
     public static OresSymbol processLiteral(String key, IsolatePolicy policy) {
         requireTrusted(policy, "Symbol literal");
-        return internProcess(key, true);
+        String literal = validateKey(key);
+        if (literal.length() > MAX_LITERAL_NAME_LENGTH || !IDENTIFIER.matcher(literal).matches()) {
+            throw new IllegalArgumentException(
+                    "Symbol literal key must be an identifier of at most "
+                            + MAX_LITERAL_NAME_LENGTH + " characters");
+        }
+        return internProcess(literal, true);
     }
 
     private static OresSymbol internProcess(String key, boolean compilerLiteral) {
@@ -238,9 +245,36 @@ public final class OresSymbol {
         return new Wire(scope, key);
     }
 
+    /**
+     * Safe wire decode: resolve only identities already admitted to this
+     * process. This deliberately does not intern attacker-controlled wire text.
+     */
     public static OresSymbol fromWire(Wire wire, IsolatePolicy policy) {
         Objects.requireNonNull(wire, "wire");
         requireTrusted(policy, "Symbol wire decode");
+        OresSymbol known = switch (wire.scope()) {
+            case PROCESS -> PROCESS_SYMBOLS.get(validateKey(wire.key()));
+            case STABLE -> STABLE_SYMBOLS.get(validateStableKey(wire.key()));
+            case LOCAL -> throw new IllegalArgumentException(
+                    "actor-local Symbol wire values are forbidden");
+        };
+        if (known == null) {
+            throw new IllegalArgumentException(
+                    "unknown " + wire.scope().name().toLowerCase(Locale.ROOT)
+                            + " Symbol wire key; pre-register it or use fromTrustedWire(...) "
+                            + "only for authenticated/trusted symbol dictionaries");
+        }
+        return known;
+    }
+
+    /**
+     * Explicitly trusted wire admission. This may create a permanent bounded
+     * PROCESS/STABLE registry entry and therefore must never be used directly
+     * on unauthenticated or attacker-controlled text.
+     */
+    public static OresSymbol fromTrustedWire(Wire wire, IsolatePolicy policy) {
+        Objects.requireNonNull(wire, "wire");
+        requireTrusted(policy, "trusted Symbol wire decode");
         return switch (wire.scope()) {
             case PROCESS -> process(wire.key(), policy);
             case STABLE -> stable(wire.key(), policy);
