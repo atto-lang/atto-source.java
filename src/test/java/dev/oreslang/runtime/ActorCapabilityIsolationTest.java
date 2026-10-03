@@ -73,7 +73,7 @@ final class ActorCapabilityIsolationTest {
     @Test
     void privateActorCannotLaunderSharedMemoryThroughOrdinaryHelperFunction() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                fnc build_shared() => void {
+                fnc build_shared() : void {
                   val shared = SharedMutex.new(1);
                   stdio.println(shared);
                   return;
@@ -98,7 +98,7 @@ final class ActorCapabilityIsolationTest {
     void privateActorCannotLaunderSharedMemoryThroughStaticClassHelper() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define class Helpers as
-                  pub static fnc build_shared() => void {
+                  pub static fnc build_shared() : void {
                     val shared = SharedMutex.new(1);
                     stdio.println(shared);
                     return;
@@ -228,7 +228,7 @@ final class ActorCapabilityIsolationTest {
     @Test
     void privateActorCannotLaunderSharedMemoryThroughFunctionValue() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                fnc build_shared() => void {
+                fnc build_shared() : void {
                   val shared = SharedMutex.new(1);
                   stdio.println(shared);
                   return;
@@ -254,7 +254,7 @@ final class ActorCapabilityIsolationTest {
     void privateActorCannotLaunderReadonlyShareThroughQualifiedFunctionValue() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define module helpers
-                  pub fnc expose() => void {
+                  pub fnc expose() : void {
                     val shared = process.share_readonly(arr[1, 2, 3]);
                     stdio.println(shared);
                     return;
@@ -282,7 +282,7 @@ final class ActorCapabilityIsolationTest {
     void privateActorCannotLaunderSharedMemoryThroughStaticMethodValue() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define class Helpers as
-                  pub static fnc build_shared() => void {
+                  pub static fnc build_shared() : void {
                     val shared = SharedMutex.new(1);
                     stdio.println(shared);
                     return;
