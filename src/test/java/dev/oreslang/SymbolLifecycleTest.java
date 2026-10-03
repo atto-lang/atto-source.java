@@ -8,8 +8,12 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresSymbol;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -43,6 +47,38 @@ final class SymbolLifecycleTest {
         Ast.BindingStmt first = (Ast.BindingStmt) fn.body().getFirst();
         Ast.LiteralExpr literal = (Ast.LiteralExpr) first.initializer();
         assertEquals("connected", ((Ast.Symbol) literal.value()).name());
+    }
+
+    @Test
+    void languageRuntimeCanonicalizesLiteralAndProcessFactory() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, """
+                pub fnc main() => void {
+                  val Symbol literal = :ready;
+                  val Symbol dynamic = Symbol.process("ready");
+                  val Symbol stable =
+                      new Symbol("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+
+                  if (literal == dynamic) {
+                    stdio.println("same-process-symbol");
+                  }
+                  stdio.println(stable);
+                  return;
+                }
+                """, "symbols.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("same-process-symbol"));
+        assertTrue(rendered.contains("Symbol.stable"));
     }
 
     @Test
