@@ -29,7 +29,7 @@ final class GpuRuntimeTest {
 
         GpuRuntime.GpuUnavailableException upload = assertThrows(
                 GpuRuntime.GpuUnavailableException.class,
-                () -> runtime.uploadArray(List.of(1L, 2L, 3L)));
+                () -> runtime.uploadArray("i64", List.of(1L, 2L, 3L)));
         assertTrue(upload.getMessage().contains("CPU fallback is forbidden"));
     }
 
@@ -65,7 +65,7 @@ final class GpuRuntimeTest {
         GpuRuntime.Backend second = new TransferBackend("second");
 
         GpuRuntime.installBackend(first);
-        GpuRuntime.ArrayHandle array = new GpuRuntime().uploadArray(List.of(1L, 2L));
+        GpuRuntime.ArrayHandle array = new GpuRuntime().uploadArray("i64", List.of(1L, 2L));
 
         GpuRuntime.installBackend(second);
         GpuRuntime.GpuTransferException failure = assertThrows(
@@ -80,7 +80,7 @@ final class GpuRuntimeTest {
         GpuRuntime.installBackend(new TransferBackend("stream-test"));
         GpuRuntime runtime = new GpuRuntime();
 
-        GpuRuntime.ArrayHandle uploaded = runtime.uploadArray(List.of(1L, 2L, 3L));
+        GpuRuntime.ArrayHandle uploaded = runtime.uploadArray("i64", List.of(1L, 2L, 3L));
         GpuRuntime.StreamHandle stream = runtime.stream(uploaded);
         GpuRuntime.ArrayHandle collected = runtime.collect(stream);
 
@@ -96,7 +96,7 @@ final class GpuRuntimeTest {
         GpuRuntime.installBackend(new TransferBackend("mutable-download"));
         GpuRuntime runtime = new GpuRuntime();
 
-        GpuRuntime.ArrayHandle array = runtime.uploadArray(List.of(1L, 2L, 3L));
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i64", List.of(1L, 2L, 3L));
         List<?> downloaded = runtime.downloadArray(array);
 
         @SuppressWarnings("unchecked")
@@ -109,16 +109,57 @@ final class GpuRuntimeTest {
     }
 
     @Test
+    void residentHandlesPreserveExactElementAbiAcrossStreamsAndCollections() {
+        GpuRuntime.installBackend(new TransferBackend("typed-resident"));
+        GpuRuntime runtime = new GpuRuntime();
+
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i32", List.of(1L, 2L));
+        GpuRuntime.StreamHandle stream = runtime.stream(array);
+        GpuRuntime.ArrayHandle collected = runtime.collect(stream);
+
+        assertEquals("i32", array.elementAbiType());
+        assertEquals("i32", stream.elementAbiType());
+        assertEquals("i32", collected.elementAbiType());
+    }
+
+    @Test
+    void residentUploadsRejectUnknownOrOutOfRangeElementAbi() {
+        GpuRuntime.installBackend(new TransferBackend("typed-validation"));
+        GpuRuntime runtime = new GpuRuntime();
+
+        assertThrows(GpuRuntime.GpuTransferException.class,
+                () -> runtime.uploadArray("object", List.of(1L)));
+
+        GpuRuntime.GpuTransferException overflow = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> runtime.uploadArray("i8", List.of(128L)));
+        assertTrue(overflow.getMessage().contains("GpuArray<i8>"));
+
+        assertDoesNotThrow(() -> runtime.uploadArray(
+                "u64",
+                List.of(new java.math.BigInteger("18446744073709551615"))));
+        assertThrows(GpuRuntime.GpuTransferException.class, () -> runtime.uploadArray(
+                "u64",
+                List.of(new java.math.BigInteger("18446744073709551616"))));
+    }
+
+    @Test
     void rejectsBackendDownloadLengthMismatch() {
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
             @Override public String name() { return "bad-length"; }
             @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
-            @Override public Object uploadArray(List<?> values) { return List.copyOf(values); }
-            @Override public List<?> downloadArray(Object token, long length) { return List.of(1L); }
+            @Override public Object uploadArray(String elementAbiType, List<?> values) {
+                assertEquals("i64", elementAbiType);
+                return List.copyOf(values);
+            }
+            @Override public List<?> downloadArray(String elementAbiType, Object token, long length) {
+                assertEquals("i64", elementAbiType);
+                return List.of(1L);
+            }
         });
 
         GpuRuntime runtime = new GpuRuntime();
-        GpuRuntime.ArrayHandle array = runtime.uploadArray(List.of(1L, 2L));
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i64", List.of(1L, 2L));
 
         GpuRuntime.GpuTransferException failure = assertThrows(
                 GpuRuntime.GpuTransferException.class,
@@ -145,7 +186,11 @@ final class GpuRuntimeTest {
 
     private record TransferBackend(String name) implements GpuRuntime.Backend {
         @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
-        @Override public Object uploadArray(List<?> values) { return List.copyOf(values); }
-        @Override public List<?> downloadArray(Object token, long length) { return (List<?>) token; }
+        @Override public Object uploadArray(String elementAbiType, List<?> values) {
+            return List.copyOf(values);
+        }
+        @Override public List<?> downloadArray(String elementAbiType, Object token, long length) {
+            return (List<?>) token;
+        }
     }
 }
