@@ -491,9 +491,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Symbol")) {
-                    if (!created.type().arguments().isEmpty() || created.arguments().size() != 1) {
+                    if (created.type().inferArguments()
+                            || !created.type().arguments().isEmpty()
+                            || created.arguments().size() != 1) {
                         throw new IllegalArgumentException(
-                                "new Symbol(...) expects exactly one UUID String");
+                                "new Symbol(...) expects exactly one UUID String and accepts no type arguments");
                     }
                     Object key = eval(created.arguments().getFirst(), env);
                     if (!(key instanceof String text)) {
