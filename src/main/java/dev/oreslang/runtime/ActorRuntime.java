@@ -3879,6 +3879,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.Recipient<?>
+                || value instanceof ActorRuntime.ActorSpawn<?, ?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Shared<?>) {
@@ -3953,6 +3954,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null || isScalar(value)) return;
         if (value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.Recipient<?>
+                || value instanceof ActorRuntime.ActorSpawn<?, ?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
@@ -3996,6 +3998,14 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.Recipient<?> recipient) return recipient;
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4187,6 +4197,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.Recipient<?>) return 48L;
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
@@ -4785,6 +4799,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 + TimeUnit.NANOSECONDS.toMillis(dispatcherConfig.maxMessageNanos())
                                 + " ms");
                 ref.terminationCause.compareAndSet(null, failure);
+                ref.failReady(failure);
                 stopped.set(true);
                 drainMailboxReservations();
                 overrunCounter(kind).incrementAndGet();
