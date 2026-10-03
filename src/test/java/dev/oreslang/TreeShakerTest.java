@@ -45,8 +45,12 @@ final class TreeShakerTest {
 
                 type F = typeof fnc() -> String;
 
+                pub fnc choose(bool t) => F {
+                  return t ? A.foo : B.foo;
+                }
+
                 pub routine main() => void {
-                  val F selected = use_a ? A.foo : B.foo;
+                  val F selected = choose(use_a);
                   stdio.stdout.write(selected());
                   return;
                 }
@@ -56,6 +60,8 @@ final class TreeShakerTest {
         assertTrue(result.removed("B.foo"));
         assertTrue(result.removed(Parser.ROOT_MODULE + ".use_a"),
                 "a const used only to fold build-time control flow should disappear");
+        assertTrue(result.removed(Parser.ROOT_MODULE + ".choose"),
+                "a constant-argument helper should disappear after specialization when no runtime call remains");
 
         Set<String> modules = result.program().modules().stream()
                 .map(module -> module.name())
