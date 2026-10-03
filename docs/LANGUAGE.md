@@ -949,6 +949,18 @@ flat-buffer ABI forms for host/device boundary lowering. Nested buffer layouts, 
 object graphs, host references, class instances, strings, `Option`, records, and other
 pointer-heavy host layouts are rejected by the current device ABI.
 
+For writable outputs, host orchestration can allocate resident VRAM without staging a
+throwaway CPU array:
+
+```ores
+val input = GpuArray.from_cpu(values);
+val out = GpuArray.zeros_like(input);
+```
+
+`zeros_like` preserves the source array's backend and length and delegates type/element
+layout to the backend token that created the source. It is host orchestration only; it
+cannot run from inside a GPU kernel.
+
 For multi-field data, structure-of-arrays layouts are generally friendlier to coalesced
 GPU access than pointer-rich arrays of host objects. That is a performance guideline,
 not a separate type-system rule.
