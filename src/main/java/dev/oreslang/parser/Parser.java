@@ -60,11 +60,15 @@ public final class Parser {
                     modules.add(parseModule(annotations, singleton));
                     continue;
                 }
-                if (singleton) throw error(previous(), "'singleton' may only qualify a module");
                 if (match(CLASS)) {
-                    rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
+                    boolean classAbstract = modifiers.isAbstract || afterDefineAbstract;
+                    if (singleton && classAbstract) {
+                        throw error(previous(), "singleton classes cannot be abstract");
+                    }
+                    rootDeclarations.add(parseClass(classAbstract, singleton));
                     continue;
                 }
+                if (singleton) throw error(previous(), "'singleton' may only qualify a module or class");
                 if (match(INTERFACE)) {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
@@ -146,7 +150,15 @@ public final class Parser {
 
         if (match(DEFINE)) {
             boolean afterDefineAbstract = match(ABSTRACT);
-            if (match(CLASS)) return parseClass(modifiers.isAbstract || afterDefineAbstract);
+            boolean singleton = match(SINGLETON);
+            if (match(CLASS)) {
+                boolean classAbstract = modifiers.isAbstract || afterDefineAbstract;
+                if (singleton && classAbstract) {
+                    throw error(previous(), "singleton classes cannot be abstract");
+                }
+                return parseClass(classAbstract, singleton);
+            }
+            if (singleton) throw error(previous(), "'singleton' may only qualify a class inside a module");
             if (match(INTERFACE)) return parseInterface(modifiers.visibility);
             throw error(previous(), "expected class or interface after 'define'");
         }
@@ -190,6 +202,10 @@ public final class Parser {
     }
 
     private Ast.ClassDecl parseClass(boolean isAbstract) {
+        return parseClass(isAbstract, false);
+    }
+
+    private Ast.ClassDecl parseClass(boolean isAbstract, boolean singleton) {
         String name = consume(IDENT, "expected class name").lexeme();
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
@@ -218,7 +234,7 @@ public final class Parser {
             methods.add(parseMethod(annotations, mods));
         }
         consume(END, "expected 'end' to close class " + name);
-        return new Ast.ClassDecl(name, isAbstract, generics, parents, interfaces, fields, methods);
+        return new Ast.ClassDecl(name, isAbstract, singleton, generics, parents, interfaces, fields, methods);
     }
 
     private Ast.InterfaceDecl parseInterface(Ast.Visibility visibility) {
