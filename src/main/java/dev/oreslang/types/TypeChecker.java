@@ -331,6 +331,19 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && !method.isStatic()) {
+                if (method.isActorEntry() && method.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor mailbox entrypoint '" + klass.name() + "." + method.name()
+                                    + "' must be public");
+                }
+                if (!method.isActorEntry() && method.visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "ordinary actor method '" + klass.name() + "." + method.name()
+                                    + "' is internal and must be private; use 'pub actor " + method.name()
+                                    + "(...)' for mailbox API");
+                }
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE && method.async()) {
                 throw new IllegalArgumentException(
                         "actor method '" + klass.name() + "." + method.name()
