@@ -2,6 +2,13 @@
 
 Oreslang separates **lifetime semantics** from **physical heap reclamation**.
 
+Oreslang has three complementary lifetime classes:
+
+1. **Managed** values: ordinary unreachable managed graphs may be reclaimed automatically by the host/runtime collector.
+2. **Owned** values: move/borrow rules determine semantic lifetime and deterministic drop/close points, Rust-style, even when the JVM performs physical heap reclamation later.
+3. **Pinned roots**: process-runtime identities/state such as singleton registries and interned symbols stay strongly rooted by default. Ordinary `process.gc()` / `actor.gc()` requests never release them; reclamation requires the owning subsystem's explicit, memory-safe lifecycle operation.
+
+
 ## Ownership is authoritative
 
 Normal guest values follow the ownership/borrow checker. Move-only values have one owner, immutable borrows may overlap, mutable borrows are exclusive, borrows cannot outlive their owners, and moved values cannot be used. These rules define when a value is semantically dead independently of the host VM.
@@ -19,6 +26,8 @@ The first Truffle implementation runs on a managed JVM heap. Consequently, Oresl
 - requests are rate-limited so guest code cannot turn full-heap collection into a tight-loop denial of service;
 - `actor.gc()` is valid only in an actor execution domain;
 - on a shared JVM heap, `actor.gc()` cannot promise a physically actor-local collection.
+- neither `process.gc()` nor `actor.gc()` changes the semantic reachability of pinned runtime roots;
+- explicit teardown of a pinned root is a separate application/runtime lifecycle action and must invalidate handles safely rather than expose `free(ptr)` semantics.
 
 ## Shared actors
 
