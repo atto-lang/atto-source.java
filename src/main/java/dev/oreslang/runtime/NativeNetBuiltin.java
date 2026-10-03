@@ -17,6 +17,66 @@ import java.util.List;
 public final class NativeNetBuiltin implements BuiltinValue {
     private final OresContext context;
 
+    /**
+     * Runtime-owned linear-ish socket capability. The numeric liboresnet token
+     * is intentionally never exposed to guest code as an Int.
+     *
+     * Ordinary supervisor code may use a handle from any non-actor turn in the
+     * same OresContext. A handle created from actor execution is bound to that
+     * stable actor execution domain and cannot be used by another actor.
+     * Generic actor transport rejects this opaque host capability; explicit
+     * HTTP lease handoff is the only supported cross-domain ownership path.
+     */
+    public static final class NativeSocketHandle {
+        private final OresContext context;
+        private final Object actorDomain;
+        private long token;
+        private boolean closed;
+
+        private NativeSocketHandle(OresContext context, long token) {
+            this.context = context;
+            this.actorDomain = ActorRuntime.currentActorExecutionDomain();
+            this.token = token;
+        }
+
+        private synchronized long requireToken(OresContext expectedContext, String operation) {
+            if (context != expectedContext) {
+                throw new SecurityException("native socket handle belongs to a different OresContext");
+            }
+            if (closed) {
+                throw new IllegalStateException("native socket handle is closed: " + operation);
+            }
+            Object currentActorDomain = ActorRuntime.currentActorExecutionDomain();
+            if (actorDomain == null) {
+                if (currentActorDomain != null) {
+                    throw new SecurityException(
+                            "supervisor-owned native socket handle cannot be used from actor execution: "
+                                    + operation);
+                }
+            } else if (currentActorDomain != actorDomain) {
+                throw new SecurityException(
+                        "native socket handle may only be used by its owning actor: " + operation);
+            }
+            return token;
+        }
+
+        private synchronized long takeForClose(OresContext expectedContext) {
+            long current = requireToken(expectedContext, "close");
+            closed = true;
+            token = 0L;
+            return current;
+        }
+
+        public synchronized boolean isClosed() {
+            return closed;
+        }
+
+        @Override
+        public String toString() {
+            return "NativeSocketHandle[opaque]";
+        }
+    }
+
     public NativeNetBuiltin(OresContext context) {
         this.context = context;
     }
@@ -27,23 +87,31 @@ public final class NativeNetBuiltin implements BuiltinValue {
             case "connect" -> (BuiltinCallable) args -> {
                 require(args, 3, name);
                 admit(name);
-                return yieldIo(() -> NativeSocketBridge.connect(str(args, 0), integer(args, 1), integer(args, 2)));
+                long token = yieldIo(() -> NativeSocketBridge.connect(
+                        str(args, 0), integer(args, 1), integer(args, 2)));
+                return new NativeSocketHandle(context, token);
             };
             case "listen" -> (BuiltinCallable) args -> {
                 require(args, 4, name); admit(name);
-                return yieldIo(() -> NativeSocketBridge.listen(
+                long token = yieldIo(() -> NativeSocketBridge.listen(
                         str(args, 0), integer(args, 1), integer(args, 2), bool(args, 3)));
+                return new NativeSocketHandle(context, token);
             };
             case "accept" -> (BuiltinCallable) args -> {
                 require(args, 1, name); admit(name);
-                return yieldIo(() -> NativeSocketBridge.accept(integer64(args, 0)));
+                NativeSocketHandle listener = socketHandle(args, 0, name);
+                long token = yieldIo(() -> NativeSocketBridge.accept(
+                        listener.requireToken(context, "accept")));
+                return new NativeSocketHandle(context, token);
             };
             case "read" -> (BuiltinCallable) args -> {
                 require(args, 4, name); admit(name);
                 List<Object> target = byteList(args.get(1), name);
                 byte[] bytes = toBytes(target);
+                NativeSocketHandle handle = socketHandle(args, 0, name);
                 int count = yieldIo(() -> NativeSocketBridge.read(
-                        integer64(args, 0), bytes, integer(args, 2), integer(args, 3)));
+                        handle.requireToken(context, "read"),
+                        bytes, integer(args, 2), integer(args, 3)));
                 if (count > 0) {
                     for (int i = 0; i < bytes.length; i++) target.set(i, (long) (bytes[i] & 0xff));
                 }
@@ -52,12 +120,22 @@ public final class NativeNetBuiltin implements BuiltinValue {
             case "write" -> (BuiltinCallable) args -> {
                 require(args, 4, name); admit(name);
                 byte[] bytes = toBytes(byteList(args.get(1), name));
+                NativeSocketHandle handle = socketHandle(args, 0, name);
                 return (long) yieldIo(() -> NativeSocketBridge.write(
-                        integer64(args, 0), bytes, integer(args, 2), integer(args, 3)));
+                        handle.requireToken(context, "write"),
+                        bytes, integer(args, 2), integer(args, 3)));
             };
             case "close" -> (BuiltinCallable) args -> {
                 require(args, 1, name); admit(name);
-                yieldIoVoid(() -> NativeSocketBridge.close(integer64(args, 0)));
+                NativeSocketHandle handle = socketHandle(args, 0, name);
+                long token = handle.takeForClose(context);
+                try {
+                    yieldIoVoid(() -> NativeSocketBridge.close(token));
+                } catch (RuntimeException failure) {
+                    // The native registry revokes before physical close. Never
+                    // resurrect a guest capability after close has begun.
+                    throw failure;
+                }
                 return OresNull.INSTANCE;
             };
             case "resolve_all" -> (BuiltinCallable) args -> {
@@ -95,6 +173,16 @@ public final class NativeNetBuiltin implements BuiltinValue {
     private static long integer64(List<Object> args, int index) {
         if (args.get(index) instanceof Number value) return value.longValue();
         throw new IllegalArgumentException("native_net expects integer argument " + index);
+    }
+
+    private static NativeSocketHandle socketHandle(
+            List<Object> args,
+            int index,
+            String operation) {
+        Object value = args.get(index);
+        if (value instanceof NativeSocketHandle handle) return handle;
+        throw new IllegalArgumentException(
+                "native_net." + operation + " expects NativeSocketHandle argument " + index);
     }
 
     private static boolean bool(List<Object> args, int index) {
