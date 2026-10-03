@@ -44,7 +44,7 @@ import java.util.function.Supplier;
  */
 public final class ProcessGlobalRegistry {
     private static final int MAILBOX_CAPACITY = 8_192;
-    private static final int MAX_PROCESS_SINGLETONS = 4_096;
+    private static final int MAX_PROCESS_GLOBALS = 4_096;
     private static final int MAX_KEY_CHARS = 2_048;
     private static final Duration DEFAULT_WALL_TIME = Duration.ofMinutes(10);
     private static final Duration DEFAULT_INITIALIZATION_WALL_TIME = Duration.ofSeconds(30);
@@ -54,7 +54,7 @@ public final class ProcessGlobalRegistry {
     private static final Object REGISTRY_LOCK = new Object();
 
     /*
-     * Each global owner is serial. Tracking outstanding singleton-to-
+     * Each global owner is serial. Tracking outstanding global-to-
      * global calls lets us reject a wait cycle before two mailboxes can
      * deadlock one another.
      */
@@ -69,7 +69,7 @@ public final class ProcessGlobalRegistry {
 
     private static ScheduledThreadPoolExecutor timeoutExecutor() {
         ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, runnable -> {
-            Thread thread = new Thread(runnable, "ores-process-singleton-timeouts");
+            Thread thread = new Thread(runnable, "ores-process-global-timeouts");
             thread.setDaemon(true);
             return thread;
         });
@@ -106,8 +106,8 @@ public final class ProcessGlobalRegistry {
         synchronized (REGISTRY_LOCK) {
             Cell existing = CELLS.get(normalized);
             if (existing == null || existing.retryableInitializationFailure()) {
-                if (existing == null && CELLS.size() >= MAX_PROCESS_SINGLETONS) {
-                    throw new IllegalStateException("process global limit exceeded: " + MAX_PROCESS_SINGLETONS);
+                if (existing == null && CELLS.size() >= MAX_PROCESS_GLOBALS) {
+                    throw new IllegalStateException("process global limit exceeded: " + MAX_PROCESS_GLOBALS);
                 }
                 cell = new Cell(normalized, initializationWallTime, stateFactory);
                 CELLS.put(normalized, cell);
@@ -119,7 +119,7 @@ public final class ProcessGlobalRegistry {
         return new Handle<>(cell);
     }
 
-    public static int processSingletonCount() {
+    public static int processGlobalCount() {
         return CELLS.size();
     }
 
@@ -164,7 +164,7 @@ public final class ProcessGlobalRegistry {
     }
 
     /**
-     * Compiler/runtime-injected cooperative budget check. Singleton function
+     * Compiler/runtime-injected cooperative budget check. Global function
      * entries and loop safepoints call this so a request cannot consume its
      * caller's wall-time budget indefinitely.
      */
@@ -263,7 +263,7 @@ public final class ProcessGlobalRegistry {
                         new TimeoutException("global call wall-time budget expired during argument transport"));
             }
             if (!(frozenGraph instanceof List<?> frozenList)) {
-                throw new IllegalStateException("singleton argument transport did not freeze to a list");
+                throw new IllegalStateException("global argument transport did not freeze to a list");
             }
             @SuppressWarnings("unchecked")
             List<Object> frozen = (List<Object>) frozenList;
@@ -506,7 +506,7 @@ public final class ProcessGlobalRegistry {
             int remaining = queuedRequests.decrementAndGet();
             if (remaining < 0) {
                 queuedRequests.incrementAndGet();
-                throw new IllegalStateException("singleton queued-request accounting underflow for " + diagnosticId);
+                throw new IllegalStateException("global queued-request accounting underflow for " + diagnosticId);
             }
         }
 
@@ -528,7 +528,7 @@ public final class ProcessGlobalRegistry {
                         collected.complete(null);
                         return collected;
                     }
-                    // An initialized singleton whose worker later terminated still
+                    // An initialized global whose worker later terminated still
                     // owns process state. Try explicit cleanup outside lifecycleLock;
                     // cleanup failure must keep the state/root pinned as a tombstone.
                     terminalState = state;
@@ -541,7 +541,7 @@ public final class ProcessGlobalRegistry {
                         releaseQueuedSlot();
                         collectionRequested.set(false);
                         throw new IllegalStateException(
-                                "singleton collection barrier could not be admitted for " + diagnosticId);
+                                "global collection barrier could not be admitted for " + diagnosticId);
                     }
                 }
             }
@@ -552,7 +552,7 @@ public final class ProcessGlobalRegistry {
         private void ensureStarted() {
             if (!started.compareAndSet(false, true)) return;
             Thread.ofVirtual()
-                    .name("ores-process-singleton-" + diagnosticId
+                    .name("ores-process-global-" + diagnosticId
                             + "-" + instanceId.toString().substring(0, 8))
                     .start(this::run);
         }
