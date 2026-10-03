@@ -185,10 +185,15 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     }
 
     pthread_attr_t attr;
-    if (pthread_attr_init(&attr) != 0
-            || pthread_attr_setstacksize(&attr, (size_t)stack_bytes) != 0) {
+    if (pthread_attr_init(&attr) != 0) {
         (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
-        if (pthread_attr_init(&attr) == 0) pthread_attr_destroy(&attr);
+        free_pool(env, pool);
+        throw_illegal_state(env, "pthread_attr_init failed for native carrier");
+        return 0;
+    }
+    if (pthread_attr_setstacksize(&attr, (size_t)stack_bytes) != 0) {
+        pthread_attr_destroy(&attr);
+        (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
         free_pool(env, pool);
         throw_illegal_state(env, "failed to configure native carrier stack size");
         return 0;
