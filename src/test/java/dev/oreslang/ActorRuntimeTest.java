@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -1447,6 +1448,59 @@ final class ActorRuntimeTest {
 
             releaseHog.countDown();
             assertTrue(hog.awaitTermination(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void entryWaitIsWatchdogBoundedBeforeTurnExecutorRunsGuestCode() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                64,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.MILLISECONDS.toNanos(40),
+                1,
+                64);
+
+        ReentrantLock contextGate = new ReentrantLock(true);
+        contextGate.lock();
+        ActorRuntime.TurnExecutor interruptibleEntry = turn -> {
+            boolean locked = false;
+            try {
+                contextGate.lockInterruptibly();
+                locked = true;
+                turn.run();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new java.util.concurrent.CancellationException(
+                        "interrupted before actor context entry");
+            } finally {
+                if (locked) contextGate.unlock();
+            }
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                config,
+                interruptibleEntry)) {
+            var blocked = runtime.<String>spawnPrivateTrusted(
+                    IsolatePolicy.developer(),
+                    ignored -> (message, turn) -> fail(
+                            "guest callback must not run while context entry is blocked"));
+
+            blocked.send("blocked");
+
+            assertTrue(
+                    blocked.awaitTermination(2, TimeUnit.SECONDS),
+                    "context-entry wait must be covered by the actor turn watchdog");
+            assertInstanceOf(
+                    ActorRuntime.ActorTurnExceededException.class,
+                    blocked.failure().orElseThrow());
+            assertTrue(
+                    runtime.dispatcherStats(ActorRuntime.ActorKind.PRIVATE).overrunTurns() >= 1);
+        } finally {
+            contextGate.unlock();
         }
     }
 
