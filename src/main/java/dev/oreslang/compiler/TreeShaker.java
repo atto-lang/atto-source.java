@@ -65,6 +65,11 @@ public final class TreeShaker {
         private final Map<String, Object> constantValues = new LinkedHashMap<>();
         private final Set<String> constantsBeingEvaluated = new LinkedHashSet<>();
 
+        private final Map<String, Ast.FunctionDecl> inlineFunctions = new LinkedHashMap<>();
+        private final Map<String, String> uniqueInlineFunctions = new LinkedHashMap<>();
+        private final Set<String> ambiguousInlineFunctions = new LinkedHashSet<>();
+        private final Set<String> functionsBeingInlined = new LinkedHashSet<>();
+
         private final Map<String, Symbol> symbols = new LinkedHashMap<>();
         private final Map<String, String> uniqueSymbols = new LinkedHashMap<>();
         private final Set<String> ambiguousSymbols = new LinkedHashSet<>();
@@ -83,6 +88,7 @@ public final class TreeShaker {
 
         Result run() {
             collectConstants();
+            collectInlineFunctions();
             applyBuildDefines();
             materializeConstantValues();
             rewritten = rewriteProgram(input);
@@ -115,6 +121,192 @@ public final class TreeShaker {
                     }
                 }
             }
+        }
+
+        private void collectInlineFunctions() {
+            for (Ast.ModuleDecl module : input.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (!(declaration instanceof Ast.FunctionDecl function)) continue;
+                    String qualified = qualify(module.name(), function.name());
+                    inlineFunctions.put(qualified, function);
+                    String previous = uniqueInlineFunctions.putIfAbsent(function.name(), qualified);
+                    if (previous != null && !previous.equals(qualified)) {
+                        uniqueInlineFunctions.remove(function.name());
+                        ambiguousInlineFunctions.add(function.name());
+                    }
+                }
+            }
+        }
+
+        private record InlineTarget(String id, Ast.FunctionDecl function) { }
+
+        private InlineTarget resolveInlineTarget(
+                Ast.Expr callee,
+                String module,
+                Map<String, Object> locals) {
+            if (callee instanceof Ast.NameExpr name) {
+                if (locals.containsKey(name.name())) return null;
+                String local = qualify(module, name.name());
+                if (inlineFunctions.containsKey(local)) {
+                    return new InlineTarget(local, inlineFunctions.get(local));
+                }
+                if (ambiguousInlineFunctions.contains(name.name())) return null;
+                String qualified = uniqueInlineFunctions.get(name.name());
+                return qualified == null ? null : new InlineTarget(qualified, inlineFunctions.get(qualified));
+            }
+            if (callee instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace
+                    && !locals.containsKey(namespace.name())) {
+                String qualified = qualify(namespace.name(), member.member());
+                Ast.FunctionDecl function = inlineFunctions.get(qualified);
+                return function == null ? null : new InlineTarget(qualified, function);
+            }
+            return null;
+        }
+
+        private boolean canInlineConstantCall(
+                InlineTarget target,
+                Ast.CallExpr call,
+                List<Ast.Expr> arguments) {
+            Ast.FunctionDecl function = target.function();
+            if (call.typeArgumentsPresent()
+                    || !function.genericParameters().isEmpty()
+                    || function.kind() != Ast.CallableKind.FNC
+                    || function.actorKind() != Ast.ActorKind.NONE
+                    || function.async()
+                    || function.parameters().size() != arguments.size()
+                    || function.body().size() != 1
+                    || !(function.body().getFirst() instanceof Ast.ReturnStmt returned)
+                    || returned.value() == null
+                    || functionsBeingInlined.contains(target.id())) {
+                return false;
+            }
+            return arguments.stream().allMatch(Ast.LiteralExpr.class::isInstance);
+        }
+
+        private Ast.Expr inlineConstantCall(
+                InlineTarget target,
+                List<Ast.Expr> arguments,
+                String module,
+                Map<String, Object> locals) {
+            Ast.FunctionDecl function = target.function();
+            Ast.ReturnStmt returned = (Ast.ReturnStmt) function.body().getFirst();
+            LinkedHashMap<String, Ast.Expr> substitutions = new LinkedHashMap<>();
+            for (int i = 0; i < function.parameters().size(); i++) {
+                substitutions.put(function.parameters().get(i).name(), arguments.get(i));
+            }
+
+            functionsBeingInlined.add(target.id());
+            try {
+                Ast.Expr substituted = substitute(returned.value(), substitutions, Set.of());
+                return rewriteExpression(substituted, moduleOf(target.id()), locals);
+            } finally {
+                functionsBeingInlined.remove(target.id());
+            }
+        }
+
+        private Ast.Expr substitute(
+                Ast.Expr expression,
+                Map<String, Ast.Expr> substitutions,
+                Set<String> shadowed) {
+            if (expression == null || expression instanceof Ast.LiteralExpr) return expression;
+            if (expression instanceof Ast.NameExpr name) {
+                if (!shadowed.contains(name.name()) && substitutions.containsKey(name.name())) {
+                    return substitutions.get(name.name());
+                }
+                return expression;
+            }
+            if (expression instanceof Ast.BinaryExpr binary) {
+                return new Ast.BinaryExpr(
+                        binary.operator(),
+                        substitute(binary.left(), substitutions, shadowed),
+                        substitute(binary.right(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.UnaryExpr unary) {
+                return new Ast.UnaryExpr(
+                        unary.operator(),
+                        substitute(unary.operand(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.AssignExpr assignment) {
+                return new Ast.AssignExpr(
+                        substitute(assignment.target(), substitutions, shadowed),
+                        substitute(assignment.value(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.ConditionalExpr conditional) {
+                return new Ast.ConditionalExpr(
+                        substitute(conditional.condition(), substitutions, shadowed),
+                        substitute(conditional.whenTrue(), substitutions, shadowed),
+                        substitute(conditional.whenFalse(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.CallExpr call) {
+                List<Ast.Expr> arguments = new ArrayList<>();
+                for (Ast.Expr argument : call.arguments()) {
+                    arguments.add(substitute(argument, substitutions, shadowed));
+                }
+                return new Ast.CallExpr(
+                        substitute(call.callee(), substitutions, shadowed),
+                        call.typeArguments(),
+                        call.typeArgumentsPresent(),
+                        arguments);
+            }
+            if (expression instanceof Ast.MemberExpr member) {
+                return new Ast.MemberExpr(
+                        substitute(member.receiver(), substitutions, shadowed),
+                        member.member());
+            }
+            if (expression instanceof Ast.IndexExpr indexed) {
+                return new Ast.IndexExpr(
+                        substitute(indexed.receiver(), substitutions, shadowed),
+                        substitute(indexed.index(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.NewExpr created) {
+                List<Ast.Expr> arguments = new ArrayList<>();
+                for (Ast.Expr argument : created.arguments()) {
+                    arguments.add(substitute(argument, substitutions, shadowed));
+                }
+                return new Ast.NewExpr(created.type(), arguments);
+            }
+            if (expression instanceof Ast.AwaitExpr awaited) {
+                return new Ast.AwaitExpr(substitute(awaited.expression(), substitutions, shadowed));
+            }
+            if (expression instanceof Ast.ListExpr list) {
+                List<Ast.Expr> elements = new ArrayList<>();
+                for (Ast.Expr element : list.elements()) {
+                    elements.add(substitute(element, substitutions, shadowed));
+                }
+                return new Ast.ListExpr(elements);
+            }
+            if (expression instanceof Ast.TupleExpr tuple) {
+                List<Ast.Expr> elements = new ArrayList<>();
+                for (Ast.Expr element : tuple.elements()) {
+                    elements.add(substitute(element, substitutions, shadowed));
+                }
+                return new Ast.TupleExpr(elements);
+            }
+            if (expression instanceof Ast.ObjectExpr object) {
+                List<Ast.ObjectField> fields = new ArrayList<>();
+                for (Ast.ObjectField field : object.fields()) {
+                    fields.add(field.isDynamic()
+                            ? Ast.ObjectField.dynamic(
+                                    substitute(field.dynamicName(), substitutions, shadowed),
+                                    substitute(field.value(), substitutions, shadowed))
+                            : Ast.ObjectField.named(
+                                    field.name(),
+                                    substitute(field.value(), substitutions, shadowed)));
+                }
+                return new Ast.ObjectExpr(fields);
+            }
+            if (expression instanceof Ast.LambdaExpr lambda) {
+                LinkedHashSet<String> nestedShadowed = new LinkedHashSet<>(shadowed);
+                for (Ast.Param parameter : lambda.parameters()) nestedShadowed.add(parameter.name());
+                return new Ast.LambdaExpr(
+                        lambda.parameters(),
+                        substitute(lambda.expressionBody(), substitutions, nestedShadowed),
+                        lambda.blockBody(),
+                        lambda.nonLexical());
+            }
+            throw new IllegalStateException(
+                    "unhandled expression during specialization " + expression.getClass().getSimpleName());
         }
 
         private void applyBuildDefines() {
@@ -453,15 +645,22 @@ public final class TreeShaker {
                         rewriteExpression(conditional.whenFalse(), module, locals));
             }
             if (expression instanceof Ast.CallExpr call) {
+                Ast.Expr callee = rewriteExpression(call.callee(), module, locals);
                 List<Ast.Expr> arguments = new ArrayList<>();
                 for (Ast.Expr argument : call.arguments()) {
                     arguments.add(rewriteExpression(argument, module, locals));
                 }
-                return new Ast.CallExpr(
-                        rewriteExpression(call.callee(), module, locals),
+                Ast.CallExpr rewritten = new Ast.CallExpr(
+                        callee,
                         call.typeArguments(),
                         call.typeArgumentsPresent(),
                         arguments);
+
+                InlineTarget target = resolveInlineTarget(callee, module, locals);
+                if (target != null && canInlineConstantCall(target, rewritten, arguments)) {
+                    return inlineConstantCall(target, arguments, module, locals);
+                }
+                return rewritten;
             }
             if (expression instanceof Ast.MemberExpr member) {
                 return new Ast.MemberExpr(
