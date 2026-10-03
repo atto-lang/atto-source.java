@@ -1304,6 +1304,10 @@ public final class GpuKernelCompiler {
         if (expr instanceof Ast.CallExpr call) {
             Target target = resolveCallTarget(module, call);
             if (target == null) throw new IllegalArgumentException("GPU call target could not be lowered");
+            if (findMatrixMatmul(target) != null) {
+                throw new IllegalArgumentException(
+                        "a gpu callable containing GpuMatrix @ is a kernel launch boundary and cannot be invoked as a device helper yet");
+            }
             return target.helperSymbol + "(" + renderCallArguments(module, call, target, env) + ")";
         }
         if (expr instanceof Ast.IndexExpr indexed) {
