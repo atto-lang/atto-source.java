@@ -1350,6 +1350,11 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
                 return true;
             }
+            if (value instanceof OresSymbol symbol) {
+                // PROCESS/STABLE identities are immutable SharedSafe scalars;
+                // LOCAL identities are actor-owned and must never enter shared state.
+                return symbol.sendable();
+            }
 
             if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>
                     || value instanceof CompletionStage<?> || value instanceof Invokable) {
