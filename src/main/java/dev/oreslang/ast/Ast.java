@@ -245,7 +245,7 @@ public final class Ast {
     public enum BindingKind { CONST, VAL, LET }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
-            IfStmt, TryStmt, ForOfStmt, ForStmt { }
+            IfStmt, SwitchStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) {
@@ -288,6 +288,60 @@ public final class Ast {
         }
     }
 
+    public sealed interface Pattern permits WildcardPattern, BindingPattern, LiteralPattern,
+            TypePattern, VariantPattern, SequencePattern, ObjectPattern { }
+
+    public record WildcardPattern() implements Pattern { }
+
+    public record BindingPattern(String name) implements Pattern {
+        public BindingPattern {
+            if (name == null || name.isBlank() || name.equals("_")) {
+                throw new IllegalArgumentException("pattern binding requires a non-discard name");
+            }
+        }
+    }
+
+    public record LiteralPattern(Object value) implements Pattern { }
+
+    /** Nominal type test with optional whole-value binding. */
+    public record TypePattern(TypeRef type, String bindingName) implements Pattern { }
+
+    /** Ok(...), Err(...), Some(...), None, or a nominal class constructor pattern. */
+    public record VariantPattern(String name, List<Pattern> arguments) implements Pattern {
+        public VariantPattern {
+            arguments = List.copyOf(arguments);
+        }
+    }
+
+    public enum PatternSequenceKind { LIST, TUPLE }
+
+    public record SequencePattern(PatternSequenceKind kind, List<Pattern> elements) implements Pattern {
+        public SequencePattern {
+            elements = List.copyOf(elements);
+        }
+    }
+
+    public record ObjectPatternField(String name, Pattern pattern) { }
+
+    public record ObjectPattern(List<ObjectPatternField> fields) implements Pattern {
+        public ObjectPattern {
+            fields = List.copyOf(fields);
+        }
+    }
+
+    public record SwitchClause(Pattern pattern, Expr guard, List<Stmt> body) {
+        public SwitchClause {
+            body = List.copyOf(body);
+        }
+    }
+
+    public record SwitchStmt(Expr subject, List<SwitchClause> clauses) implements Stmt {
+        public SwitchStmt {
+            clauses = List.copyOf(clauses);
+            if (clauses.isEmpty()) throw new IllegalArgumentException("switch requires at least one clause");
+        }
+    }
+
     public record TryStmt(List<Stmt> body, String errorName, List<Stmt> catchBody, List<Stmt> finallyBody) implements Stmt {
         public TryStmt {
             body = List.copyOf(body);
@@ -309,6 +363,20 @@ public final class Ast {
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
+
+    /** Identifier-form process Symbol literal, e.g. :timeout. */
+    public record Symbol(String name) {
+        public Symbol {
+            if (name == null || name.isBlank()) {
+                throw new IllegalArgumentException("symbol literal name cannot be blank");
+            }
+            if (name.length() > 128 || !name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                throw new IllegalArgumentException(
+                        "symbol literal name must be an identifier of at most 128 characters");
+            }
+        }
+    }
+
     public record NameExpr(String name) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
