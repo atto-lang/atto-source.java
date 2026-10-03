@@ -5,6 +5,7 @@ import java.lang.foreign.Arena;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +16,7 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -23,6 +25,7 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -67,6 +70,8 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES = 1024L * 1024L;
     private static final long DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES = 16L * 1024L * 1024L;
     private static final long DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES = 16L * 1024L * 1024L;
+    public static final int DEFAULT_UNTRUSTED_MAX_CONCURRENT_HTTP_CALLS = 5;
+    public static final int HARD_MAX_UNTRUSTED_MAX_CONCURRENT_HTTP_CALLS = 64;
     private static final int MAX_UNTRUSTED_HTTP_REQUEST_HEADER_LOOKUPS = 128;
     private static final long MAX_UNTRUSTED_HTTP_REQUEST_METADATA_BYTES = 64L * 1024L;
     private static final long MAX_UNTRUSTED_HTTP_REQUEST_PATH_BYTES = 8L * 1024L;
@@ -351,7 +356,8 @@ public final class ActorRuntime implements AutoCloseable {
             long fuelPerTurn,
             long maxMailboxReturnBytes,
             long maxHttpRequestBytes,
-            long maxHttpResponseBytes) {
+            long maxHttpResponseBytes,
+            int maxConcurrentHttpCalls) {
         public UntrustedActorLimits {
             Objects.requireNonNull(maxLifetime, "maxLifetime");
             if (maxLifetime.isZero() || maxLifetime.isNegative()) {
@@ -366,6 +372,30 @@ public final class ActorRuntime implements AutoCloseable {
             if (maxMailboxReturnBytes <= 0) throw new IllegalArgumentException("maxMailboxReturnBytes must be positive");
             if (maxHttpRequestBytes <= 0) throw new IllegalArgumentException("maxHttpRequestBytes must be positive");
             if (maxHttpResponseBytes <= 0) throw new IllegalArgumentException("maxHttpResponseBytes must be positive");
+            if (maxConcurrentHttpCalls <= 0) {
+                throw new IllegalArgumentException("maxConcurrentHttpCalls must be positive");
+            }
+            if (maxConcurrentHttpCalls > HARD_MAX_UNTRUSTED_MAX_CONCURRENT_HTTP_CALLS) {
+                throw new IllegalArgumentException(
+                        "maxConcurrentHttpCalls cannot exceed "
+                                + HARD_MAX_UNTRUSTED_MAX_CONCURRENT_HTTP_CALLS);
+            }
+        }
+
+        /** Compatibility constructor preserving the pre-async-HTTP limits shape. */
+        public UntrustedActorLimits(
+                Duration maxLifetime,
+                long fuelPerTurn,
+                long maxMailboxReturnBytes,
+                long maxHttpRequestBytes,
+                long maxHttpResponseBytes) {
+            this(
+                    maxLifetime,
+                    fuelPerTurn,
+                    maxMailboxReturnBytes,
+                    maxHttpRequestBytes,
+                    maxHttpResponseBytes,
+                    DEFAULT_UNTRUSTED_MAX_CONCURRENT_HTTP_CALLS);
         }
 
         public UntrustedActorLimits(
@@ -378,7 +408,8 @@ public final class ActorRuntime implements AutoCloseable {
                     fuelPerTurn,
                     maxMailboxReturnBytes,
                     DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
-                    maxHttpResponseBytes);
+                    maxHttpResponseBytes,
+                    DEFAULT_UNTRUSTED_MAX_CONCURRENT_HTTP_CALLS);
         }
 
         public static UntrustedActorLimits defaults() {
@@ -387,7 +418,8 @@ public final class ActorRuntime implements AutoCloseable {
                     DEFAULT_UNTRUSTED_FUEL_PER_TURN,
                     DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES,
                     DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
-                    DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES);
+                    DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES,
+                    DEFAULT_UNTRUSTED_MAX_CONCURRENT_HTTP_CALLS);
         }
     }
 
@@ -405,6 +437,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static final class HttpResponseLimitExceededException extends RuntimeException {
         public HttpResponseLimitExceededException(String message) { super(message); }
+    }
+
+    public static final class HttpConcurrencyLimitExceededException extends RuntimeException {
+        public HttpConcurrencyLimitExceededException(String message) { super(message); }
     }
 
     /** Host adapter for one already-admitted HTTP request, not general NETWORK authority. */
@@ -427,6 +463,241 @@ public final class ActorRuntime implements AutoCloseable {
         default void flush() throws IOException { }
         default void complete() throws IOException { }
         default void abort(Throwable cause) { }
+    }
+
+    /**
+     * Host adapter for stateless outbound HTTP. The guest never receives a
+     * socket, TCP connection, connection-pool handle, cookie jar, or upgrade
+     * handle. A host implementation may pool HTTP connections internally, but
+     * that state is not actor-visible and must not create a session capability.
+     */
+    @FunctionalInterface
+    public interface OutboundHttpTransport {
+        CompletionStage<OutboundHttpResponse> send(OutboundHttpRequest request);
+    }
+
+    public record OutboundHttpRequest(
+            String method,
+            URI uri,
+            Map<String, List<String>> headers,
+            byte[] body) {
+        public OutboundHttpRequest {
+            Objects.requireNonNull(method, "method");
+            Objects.requireNonNull(uri, "uri");
+            headers = immutableHttpHeaders(headers);
+            body = body == null ? new byte[0] : body.clone();
+        }
+
+        @Override
+        public byte[] body() {
+            return body.clone();
+        }
+    }
+
+    public record OutboundHttpResponse(
+            int statusCode,
+            Map<String, List<String>> headers,
+            byte[] body) {
+        public OutboundHttpResponse {
+            if (statusCode < 100 || statusCode > 599) {
+                throw new IllegalArgumentException("invalid HTTP status code " + statusCode);
+            }
+            headers = immutableHttpHeaders(headers);
+            body = body == null ? new byte[0] : body.clone();
+        }
+
+        @Override
+        public byte[] body() {
+            return body.clone();
+        }
+    }
+
+    private static Map<String, List<String>> immutableHttpHeaders(
+            Map<String, List<String>> source) {
+        if (source == null || source.isEmpty()) return Map.of();
+        LinkedHashMap<String, List<String>> copy = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : source.entrySet()) {
+            String name = Objects.requireNonNull(entry.getKey(), "HTTP header name");
+            if (name.indexOf('\r') >= 0 || name.indexOf('\n') >= 0) {
+                throw new IllegalArgumentException("HTTP header name contains a line break");
+            }
+            ArrayList<String> values = new ArrayList<>();
+            for (String value : Objects.requireNonNull(entry.getValue(), "HTTP header values")) {
+                String checked = Objects.requireNonNull(value, "HTTP header value");
+                if (checked.indexOf('\r') >= 0 || checked.indexOf('\n') >= 0) {
+                    throw new IllegalArgumentException("HTTP header value contains a line break");
+                }
+                values.add(checked);
+            }
+            copy.put(name, List.copyOf(values));
+        }
+        return Collections.unmodifiableMap(copy);
+    }
+
+    /**
+     * Actor-owned outbound HTTP object capability. This is the only outbound
+     * network surface intended for UNTRUSTED actors.
+     *
+     * The semaphore is fail-fast rather than queued: an actor can own at most
+     * maxConcurrentHttpCalls live outbound operations, including operations
+     * whose cancellation has been requested but whose transport has not yet
+     * actually completed. This prevents cancellation churn from bypassing the
+     * network concurrency budget.
+     */
+    public final class OutboundHttpCapability {
+        private final ActorId owner;
+        private final OutboundHttpTransport transport;
+        private final Semaphore permits;
+        private final int maxConcurrent;
+        private final long maxRequestBytes;
+        private final long maxResponseBytes;
+        private final Set<OresFuture<OutboundHttpResponse>> inFlight = ConcurrentHashMap.newKeySet();
+
+        private OutboundHttpCapability(
+                ActorId owner,
+                OutboundHttpTransport transport,
+                int maxConcurrent,
+                long maxRequestBytes,
+                long maxResponseBytes) {
+            this.owner = Objects.requireNonNull(owner, "owner");
+            this.transport = Objects.requireNonNull(transport, "transport");
+            this.maxConcurrent = maxConcurrent;
+            this.maxRequestBytes = maxRequestBytes;
+            this.maxResponseBytes = maxResponseBytes;
+            this.permits = new Semaphore(maxConcurrent, true);
+        }
+
+        public int maxConcurrent() {
+            requireCurrentOwner("inspect outbound HTTP limits");
+            return maxConcurrent;
+        }
+
+        public int inFlight() {
+            requireCurrentOwner("inspect outbound HTTP state");
+            return maxConcurrent - permits.availablePermits();
+        }
+
+        public OresFuture<OutboundHttpResponse> send(OutboundHttpRequest request) {
+            requireCurrentOwner("perform outbound HTTP");
+            Objects.requireNonNull(request, "request");
+            validateOutboundRequest(request);
+
+            if (!permits.tryAcquire()) {
+                return OresFuture.failed(new HttpConcurrencyLimitExceededException(
+                        "untrusted actor outbound HTTP concurrency limit exceeded: "
+                                + maxConcurrent));
+            }
+
+            AtomicReference<CompletableFuture<?>> upstreamRef = new AtomicReference<>();
+            AtomicBoolean released = new AtomicBoolean();
+            AtomicReference<OresFuture<OutboundHttpResponse>> resultRef = new AtomicReference<>();
+            Runnable release = () -> {
+                if (!released.compareAndSet(false, true)) return;
+                OresFuture<OutboundHttpResponse> result = resultRef.get();
+                if (result != null) inFlight.remove(result);
+                permits.release();
+            };
+
+            OresFuture<OutboundHttpResponse> result = new OresFuture<>(() -> {
+                CompletableFuture<?> upstream = upstreamRef.get();
+                if (upstream != null) upstream.cancel(true);
+            });
+            resultRef.set(result);
+            inFlight.add(result);
+
+            final CompletionStage<OutboundHttpResponse> stage;
+            try {
+                stage = Objects.requireNonNull(
+                        transport.send(request),
+                        "OutboundHttpTransport returned null");
+                upstreamRef.set(stage.toCompletableFuture());
+            } catch (Throwable failure) {
+                result.completeExceptionally(failure);
+                release.run();
+                return result;
+            }
+
+            stage.whenComplete((response, failure) -> {
+                try {
+                    if (failure != null) {
+                        result.completeExceptionally(OresFuture.unwrap(failure));
+                    } else {
+                        validateOutboundResponse(response);
+                        result.complete(response);
+                    }
+                } catch (Throwable validationFailure) {
+                    result.completeExceptionally(validationFailure);
+                } finally {
+                    release.run();
+                }
+            });
+            return result;
+        }
+
+        private void validateOutboundRequest(OutboundHttpRequest request) {
+            String method = request.method().trim().toUpperCase(Locale.ROOT);
+            if (method.isEmpty()) throw new IllegalArgumentException("HTTP method cannot be empty");
+            if (method.equals("CONNECT")) {
+                throw new SecurityException("untrusted actors cannot open HTTP CONNECT tunnels");
+            }
+            URI uri = request.uri();
+            String scheme = uri.getScheme();
+            if (scheme == null
+                    || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                throw new SecurityException(
+                        "untrusted outbound networking is HTTP/HTTPS only");
+            }
+            if (uri.getUserInfo() != null) {
+                throw new SecurityException(
+                        "userinfo-bearing outbound HTTP URIs are forbidden");
+            }
+            if (request.body().length > maxRequestBytes) {
+                throw new HttpRequestLimitExceededException(
+                        "outbound HTTP request body exceeds limit of "
+                                + maxRequestBytes + " bytes");
+            }
+            for (Map.Entry<String, List<String>> entry : request.headers().entrySet()) {
+                String name = entry.getKey().toLowerCase(Locale.ROOT);
+                if (name.equals("upgrade") || name.equals("proxy-connection")) {
+                    throw new SecurityException(
+                            "untrusted outbound HTTP cannot request protocol upgrades or proxy tunnels");
+                }
+                if (name.equals("connection")) {
+                    for (String value : entry.getValue()) {
+                        if (value.toLowerCase(Locale.ROOT).contains("upgrade")) {
+                            throw new SecurityException(
+                                    "untrusted outbound HTTP cannot request protocol upgrades");
+                        }
+                    }
+                }
+            }
+        }
+
+        private void validateOutboundResponse(OutboundHttpResponse response) {
+            Objects.requireNonNull(response, "outbound HTTP response");
+            if (response.body().length > maxResponseBytes) {
+                throw new HttpResponseLimitExceededException(
+                        "outbound HTTP response body exceeds limit of "
+                                + maxResponseBytes + " bytes");
+            }
+        }
+
+        private void requireCurrentOwner(String operation) {
+            ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+            if (current == null
+                    || current.runtime() != ActorRuntime.this
+                    || current.kind() != ActorKind.UNTRUSTED
+                    || !current.actorId().equals(owner)) {
+                throw new SecurityException(
+                        operation + " requires the owning untrusted actor");
+            }
+        }
+
+        private void cancelFromRuntime(Throwable cause) {
+            for (OresFuture<OutboundHttpResponse> future : List.copyOf(inFlight)) {
+                future.cancel(true);
+            }
+        }
     }
 
     /** Lightweight scheduler telemetry suitable for ores-otel/JMX export. */
@@ -1860,6 +2131,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** Present only for an UNTRUSTED actor explicitly bound to one HTTP response. */
         Optional<HttpResponseCapability> httpResponse();
 
+        /** Optional stateless outbound HTTP capability; never exposes raw TCP. */
+        Optional<OutboundHttpCapability> outboundHttp();
+
         /** Mandatory compiler/runtime scheduling checkpoint. */
         void checkpoint();
 
@@ -2133,6 +2407,22 @@ public final class ActorRuntime implements AutoCloseable {
             HttpRequestTransport requestTransport,
             HttpResponseTransport responseTransport,
             BehaviorFactory<M> behaviorFactory) {
+        return spawnUntrusted(
+                policy,
+                limits,
+                requestTransport,
+                responseTransport,
+                null,
+                behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnUntrusted(
+            IsolatePolicy policy,
+            UntrustedActorLimits limits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            OutboundHttpTransport outboundTransport,
+            BehaviorFactory<M> behaviorFactory) {
         requireSupervisorContext("spawn untrusted actors");
         Objects.requireNonNull(policy);
         Objects.requireNonNull(limits);
@@ -2144,7 +2434,8 @@ public final class ActorRuntime implements AutoCloseable {
                 false,
                 limits,
                 requestTransport,
-                responseTransport);
+                responseTransport,
+                outboundTransport);
     }
 
     /** Compatibility path for trusted host callers. */
@@ -2348,7 +2639,7 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
-        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null, null);
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null, null, null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -2358,7 +2649,8 @@ public final class ActorRuntime implements AutoCloseable {
             boolean trustedFactory,
             UntrustedActorLimits untrustedLimits,
             HttpRequestTransport requestTransport,
-            HttpResponseTransport responseTransport) {
+            HttpResponseTransport responseTransport,
+            OutboundHttpTransport outboundTransport) {
         requireCallerRuntimeAffinity("spawn actors");
         ActorCell<?> callerCell = currentActor.get();
         if (callerCell != null && callerCell.kind == ActorKind.UNTRUSTED) {
@@ -2374,7 +2666,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("untrusted actor hard limits are required");
         }
         if (kind != ActorKind.UNTRUSTED
-                && (untrustedLimits != null || requestTransport != null || responseTransport != null)) {
+                && (untrustedLimits != null
+                    || requestTransport != null
+                    || responseTransport != null
+                    || outboundTransport != null)) {
             throw new IllegalArgumentException(
                     "untrusted limits/HTTP capabilities may only be attached to UNTRUSTED actors");
         }
@@ -2416,7 +2711,8 @@ public final class ActorRuntime implements AutoCloseable {
                         trustedFactory,
                         untrustedLimits,
                         requestTransport,
-                        responseTransport);
+                        responseTransport,
+                        outboundTransport);
                 actors.put(id, cell);
                 cell.armLifetimeLimit();
                 return ref;
@@ -2425,6 +2721,7 @@ public final class ActorRuntime implements AutoCloseable {
                     actors.remove(cell.ref.id(), cell);
                     if (cell.httpRequest != null) cell.httpRequest.cancelFromRuntime(failure);
                     if (cell.httpResponse != null) cell.httpResponse.abortFromRuntime(failure);
+                    if (cell.outboundHttp != null) cell.outboundHttp.cancelFromRuntime(failure);
                     if (cell.memorySlice != null) cell.memorySlice.close();
                 }
                 releaseReservedActorSlot(kind);
@@ -4177,6 +4474,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final UntrustedActorLimits untrustedLimits;
         private final HttpRequestCapability httpRequest;
         private final HttpResponseCapability httpResponse;
+        private final OutboundHttpCapability outboundHttp;
         private final AtomicLong fuelRemaining = new AtomicLong(Long.MAX_VALUE);
         private final long createdNanos;
         private final Duration hardLifetime;
@@ -4205,7 +4503,8 @@ public final class ActorRuntime implements AutoCloseable {
                 boolean trustedFactory,
                 UntrustedActorLimits untrustedLimits,
                 HttpRequestTransport requestTransport,
-                HttpResponseTransport responseTransport) {
+                HttpResponseTransport responseTransport,
+                OutboundHttpTransport outboundTransport) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
@@ -4241,11 +4540,20 @@ public final class ActorRuntime implements AutoCloseable {
                                 ref.id(),
                                 responseTransport,
                                 untrustedLimits.maxHttpResponseBytes());
+                this.outboundHttp = outboundTransport == null
+                        ? null
+                        : new OutboundHttpCapability(
+                                ref.id(),
+                                outboundTransport,
+                                untrustedLimits.maxConcurrentHttpCalls(),
+                                untrustedLimits.maxHttpRequestBytes(),
+                                untrustedLimits.maxHttpResponseBytes());
             } else {
                 this.hardLifetime = policy.maxWallTime();
                 this.deadlineNanos = Long.MAX_VALUE;
                 this.httpRequest = null;
                 this.httpResponse = null;
+                this.outboundHttp = null;
             }
         }
 
@@ -4426,6 +4734,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (httpResponse != null) {
                 httpResponse.abortFromRuntime(ref.terminationCause.get());
             }
+            if (outboundHttp != null) {
+                outboundHttp.cancelFromRuntime(ref.terminationCause.get());
+            }
             if (memorySlice != null) {
                 // ActorMemorySlice.close() zeroes owned direct-memory blocks,
                 // releases every reservation, and makes leaked handles fail.
@@ -4560,6 +4871,9 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public Optional<HttpResponseCapability> httpResponse() {
                         return Optional.ofNullable(httpResponse);
+                    }
+                    @Override public Optional<OutboundHttpCapability> outboundHttp() {
+                        return Optional.ofNullable(outboundHttp);
                     }
                     @Override public void checkpoint() {
                         ActorRuntime.this.schedulerSafepoint();
