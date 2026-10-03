@@ -4409,15 +4409,30 @@ public final class ActorRuntime implements AutoCloseable {
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
             boolean turnActive = beginTurn();
+            long entryDeadline = 0L;
             try {
                 if (!turnActive) return;
-                turnExecutor.execute(this::runBatchEntered);
+
+                // Cover the entire runtime/Truffle admission path, not only the
+                // guest callback. In adversarial contexts TurnExecutor may wait
+                // for a context-entry lock; that wait must still be bounded or
+                // one hostile turn can strand every untrusted carrier behind it.
+                activeCarrier = Thread.currentThread();
+                entryDeadline = armMessageDeadline("runtime context entry");
+                final long armedEntryDeadline = entryDeadline;
+                turnExecutor.execute(() -> {
+                    disarmMessageDeadline(armedEntryDeadline);
+                    throwIfControlStopped();
+                    runBatchEntered();
+                });
             } catch (Throwable failure) {
                 fail(failure);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                disarmMessageDeadline(entryDeadline);
+                activeCarrier = null;
                 if (turnActive) endTurn();
                 scheduled.set(false);
                 if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
@@ -4429,7 +4444,6 @@ public final class ActorRuntime implements AutoCloseable {
 
         @SuppressWarnings("unchecked")
         private void runBatchEntered() {
-            activeCarrier = Thread.currentThread();
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
@@ -4516,7 +4530,6 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                activeCarrier = null;
                 CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
                 // Runtime watchdog interrupts are control-plane signals and
