@@ -214,10 +214,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null) throw new IllegalStateException("unknown actor " + ref.id());
-        if (cell.policy.adversarial()) {
-            rejectProcessSymbols(message, new IdentityHashMap<>(), 0);
-        }
         Object frozen = freezeForThisRuntime(message);
+        if (cell.policy.adversarial()) {
+            // Inspect only the already-bounded frozen graph so an attempted
+            // untrusted send cannot bypass normal message depth/node/size limits.
+            rejectProcessSymbols(frozen, new IdentityHashMap<>(), 0);
+        }
         if (!cell.mailbox.offer(frozen)) {
             throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
         }
