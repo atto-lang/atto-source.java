@@ -1409,7 +1409,9 @@ public final class TypeChecker {
 
         if (operator.equals("/") && leftLinear && Types.isNumeric(right)) {
             return new Named(leftNamed.name(), List.of(
-                    Types.numericJoin(leftNamed.arguments().getFirst(), right)));
+                    linearAlgebraJoin(
+                            leftNamed.arguments().getFirst(),
+                            linearAlgebraScalar(right, operator))));
         }
 
         throw new IllegalArgumentException(
@@ -1420,7 +1422,8 @@ public final class TypeChecker {
         return type != null
                 && (type.name().equals("Matrix") || type.name().equals("Vector"))
                 && type.arguments().size() == 1
-                && Types.isNumeric(type.arguments().getFirst());
+                && (type.arguments().getFirst() == Primitive.FLOAT
+                    || type.arguments().getFirst() == Primitive.COMPLEX);
     }
 
     private Type builtinMathMember(Type receiver, String member) {
