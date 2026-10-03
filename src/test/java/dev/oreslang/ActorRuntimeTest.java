@@ -1321,7 +1321,7 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void mainProcessTasksShareSharedLaneAndPrivateActorsCannotSubmitThem() throws Exception {
+    void mainProcessTasksShareSharedLaneAndActorTurnsCannotAmplifyIt() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 1, 1, 4, 128);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
             AtomicReference<String> processThread = new AtomicReference<>();
@@ -1335,6 +1335,12 @@ final class ActorRuntimeTest {
             isolated.send("attempt");
             assertTrue(isolated.awaitTermination(2, TimeUnit.SECONDS));
             assertInstanceOf(SecurityException.class, isolated.failure().orElseThrow());
+
+            var sharedActor = runtime.<String>spawnShared(factory -> (message, context) ->
+                    context.runtime().submitProcessTask(() -> { }));
+            sharedActor.send("attempt");
+            assertTrue(sharedActor.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, sharedActor.failure().orElseThrow());
 
             ActorRuntime.DispatcherStats shared =
                     runtime.dispatcherStats(ActorRuntime.ActorKind.SHARED);
