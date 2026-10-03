@@ -44,7 +44,7 @@ public final class PatternSupport {
         if (pattern instanceof Ast.LiteralPattern literal) {
             if (literal.value() instanceof Ast.Symbol symbol) {
                 return value instanceof OresSymbol runtimeSymbol
-                        && runtimeSymbol.name().equals(symbol.name());
+                        && runtimeSymbol.matchesName(symbol.name());
             }
             return valueEquals(literal.value(), value);
         }
