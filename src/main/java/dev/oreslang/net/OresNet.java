@@ -1,5 +1,6 @@
 package dev.oreslang.net;
 
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.BuiltinCallable;
 import dev.oreslang.runtime.BuiltinValue;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -46,6 +47,10 @@ public final class OresNet {
         final void requireNetwork(String api) {
             context.requireCapability(IsolatePolicy.Capability.NETWORK, api);
         }
+
+        final void requireRawNetwork(String api) {
+            OresNet.requireRawNetwork(context, api);
+        }
     }
 
     private static final class NetPackage extends NetworkValue {
@@ -72,7 +77,7 @@ public final class OresNet {
         public Object member(String name) {
             if (!name.equals("new")) throw unknown("net.Socket", name);
             return (BuiltinCallable) args -> {
-                requireNetwork("net.Socket.new");
+                requireRawNetwork("net.Socket.new");
                 if (args.isEmpty()) return SocketValue.unconnected(context);
                 if (args.size() == 2) {
                     return SocketValue.connect(
@@ -93,7 +98,7 @@ public final class OresNet {
         public Object member(String name) {
             if (!name.equals("new")) throw unknown("net.ServerSocket", name);
             return (BuiltinCallable) args -> {
-                requireNetwork("net.ServerSocket.new");
+                requireRawNetwork("net.ServerSocket.new");
                 if (args.isEmpty()) return ServerSocketValue.unbound(context);
                 if (args.size() == 1) {
                     return ServerSocketValue.bound(context, "", intArg(args, 0, "net.ServerSocket.new"), 50);
@@ -121,7 +126,7 @@ public final class OresNet {
         public Object member(String name) {
             return switch (name) {
                 case "getByName" -> (BuiltinCallable) args -> {
-                    requireNetwork("net.InetAddress.getByName");
+                    requireRawNetwork("net.InetAddress.getByName");
                     requireArity(args, 1, "net.InetAddress.getByName");
                     String host = stringArg(args, 0, "net.InetAddress.getByName");
                     String[] values = io(() -> NativeSocketBridge.resolveAll(host));
@@ -129,7 +134,7 @@ public final class OresNet {
                     return new InetAddressValue(context, host, values[0]);
                 };
                 case "getAllByName" -> (BuiltinCallable) args -> {
-                    requireNetwork("net.InetAddress.getAllByName");
+                    requireRawNetwork("net.InetAddress.getAllByName");
                     requireArity(args, 1, "net.InetAddress.getAllByName");
                     String host = stringArg(args, 0, "net.InetAddress.getAllByName");
                     String[] values = io(() -> NativeSocketBridge.resolveAll(host));
@@ -231,7 +236,7 @@ public final class OresNet {
                 case "getAddress" ->
                         (BuiltinCallable) args -> {
                             requireArity(args, 0, "InetSocketAddress.getAddress");
-                            requireNetwork("InetSocketAddress.getAddress");
+                            requireRawNetwork("InetSocketAddress.getAddress");
                             String[] values = io(() -> NativeSocketBridge.resolveAll(host));
                             return values.length == 0 ? OresNull.INSTANCE : new InetAddressValue(context, host, values[0]);
                         };
@@ -268,7 +273,7 @@ public final class OresNet {
         }
 
         static SocketValue connect(OresContext context, String host, int port, int timeoutMillis) {
-            context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.Socket.connect");
+            requireRawNetwork(context, "net.Socket.connect");
             checkPort(port, "net.Socket.connect");
             NativeSocketHandle handle = io(() -> NativeSocketBridge.connectHandle(host, port, timeoutMillis));
             return new SocketValue(context, handle, true);
@@ -296,7 +301,7 @@ public final class OresNet {
                 case "shutdownInput" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.shutdownInput");
                     ensureConnected();
-                    requireNetwork("Socket.shutdownInput");
+                    requireRawNetwork("Socket.shutdownInput");
                     ioVoid(() -> NativeSocketBridge.shutdownInput(handle));
                     inputShutdown = true;
                     return OresNull.INSTANCE;
@@ -304,7 +309,7 @@ public final class OresNet {
                 case "shutdownOutput" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "Socket.shutdownOutput");
                     ensureConnected();
-                    requireNetwork("Socket.shutdownOutput");
+                    requireRawNetwork("Socket.shutdownOutput");
                     ioVoid(() -> NativeSocketBridge.shutdownOutput(handle));
                     outputShutdown = true;
                     return OresNull.INSTANCE;
@@ -384,7 +389,7 @@ public final class OresNet {
         }
 
         private Object connect(List<Object> args) {
-            requireNetwork("Socket.connect");
+            requireRawNetwork("Socket.connect");
             if (connected || closed) throw new IllegalStateException("socket is already connected or closed");
             InetSocketAddressValue endpoint;
             int timeout = 0;
@@ -448,7 +453,7 @@ public final class OresNet {
 
         private void close() {
             if (closed) return;
-            requireNetwork("Socket.close");
+            requireRawNetwork("Socket.close");
             NativeSocketHandle current = handle;
             if (current != null && current.isOpen()) {
                 ioVoid(() -> NativeSocketBridge.close(current));
@@ -472,7 +477,7 @@ public final class OresNet {
                 case "available" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "InputStream.available");
                     socket.ensureConnected();
-                    requireNetwork("InputStream.available");
+                    requireRawNetwork("InputStream.available");
                     return (long) io(() -> NativeSocketBridge.available(socket.handle));
                 };
                 case "close" -> (BuiltinCallable) args -> {
@@ -486,7 +491,7 @@ public final class OresNet {
 
         private Object read(List<Object> args) {
             socket.ensureConnected();
-            requireNetwork("InputStream.read");
+            requireRawNetwork("InputStream.read");
             if (args.isEmpty()) {
                 byte[] one = new byte[1];
                 int count = io(() -> NativeSocketBridge.read(socket.handle, one, 0, 1));
@@ -544,7 +549,7 @@ public final class OresNet {
 
         private Object write(List<Object> args) {
             socket.ensureConnected();
-            requireNetwork("OutputStream.write");
+            requireRawNetwork("OutputStream.write");
             if (args.size() == 1 && args.getFirst() instanceof Number number) {
                 writeAll(new byte[] {(byte) (number.intValue() & 0xff)});
                 return OresNull.INSTANCE;
@@ -592,7 +597,7 @@ public final class OresNet {
         }
 
         static ServerSocketValue bound(OresContext context, String host, int port, int backlog) {
-            context.requireCapability(IsolatePolicy.Capability.NETWORK, "net.ServerSocket.bind");
+            requireRawNetwork(context, "net.ServerSocket.bind");
             checkPort(port, "net.ServerSocket.bind");
             NativeSocketHandle handle = io(() -> NativeSocketBridge.listenHandle(host, port, backlog, true));
             return new ServerSocketValue(context, handle, true);
@@ -605,7 +610,7 @@ public final class OresNet {
                 case "accept" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "ServerSocket.accept");
                     ensureBound();
-                    requireNetwork("ServerSocket.accept");
+                    requireRawNetwork("ServerSocket.accept");
                     NativeSocketHandle accepted = io(() -> NativeSocketBridge.accept(handle));
                     return new SocketValue(context, accepted, true);
                 };
@@ -679,7 +684,7 @@ public final class OresNet {
         }
 
         private Object bind(List<Object> args) {
-            requireNetwork("ServerSocket.bind");
+            requireRawNetwork("ServerSocket.bind");
             if (bound || closed) throw new IllegalStateException("server socket is already bound or closed");
             if (args.size() != 1 && args.size() != 2) throw arity("ServerSocket.bind", "1 or 2", args.size());
             InetSocketAddressValue endpoint = addressArg(args, 0, "ServerSocket.bind");
@@ -697,7 +702,7 @@ public final class OresNet {
 
         private void close() {
             if (closed) return;
-            requireNetwork("ServerSocket.close");
+            requireRawNetwork("ServerSocket.close");
             NativeSocketHandle current = handle;
             if (current != null && current.isOpen()) {
                 ioVoid(() -> NativeSocketBridge.close(current));
@@ -1701,6 +1706,21 @@ public final class OresNet {
         Object value = args.get(index);
         if (value instanceof InetSocketAddressValue address) return address;
         throw new IllegalArgumentException(api + " expects net.InetSocketAddress at argument " + (index + 1));
+    }
+
+    private static boolean adversarialExecution(OresContext context) {
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        return context.isolatePolicy().adversarial()
+                || (actorPolicy != null && actorPolicy.adversarial());
+    }
+
+    private static void requireRawNetwork(OresContext context, String api) {
+        context.requireCapability(IsolatePolicy.Capability.NETWORK, api);
+        if (adversarialExecution(context)) {
+            throw new SecurityException(
+                    "adversarial isolates cannot access raw sockets through "
+                            + api + "; use the bounded stateless HTTP surface");
+        }
     }
 
     private static BuiltinCallable noArg(String api, Object result) {
