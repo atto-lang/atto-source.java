@@ -83,14 +83,27 @@ public final class ProcessGlobalRegistry {
         Object apply(S state, List<Object> arguments) throws Exception;
     }
 
+    /**
+     * Trusted host convenience entry point. Language/runtime code should pass
+     * the effective isolate policy explicitly.
+     */
     public static <S> Handle<S> getOrCreate(String key, Supplier<? extends S> stateFactory) {
-        return getOrCreate(key, DEFAULT_INITIALIZATION_WALL_TIME, stateFactory);
+        return getOrCreate(key, IsolatePolicy.developer(), DEFAULT_INITIALIZATION_WALL_TIME, stateFactory);
     }
 
     public static <S> Handle<S> getOrCreate(
             String key,
+            IsolatePolicy policy,
+            Supplier<? extends S> stateFactory) {
+        return getOrCreate(key, policy, DEFAULT_INITIALIZATION_WALL_TIME, stateFactory);
+    }
+
+    public static <S> Handle<S> getOrCreate(
+            String key,
+            IsolatePolicy policy,
             Duration initializationWallTime,
             Supplier<? extends S> stateFactory) {
+        requireGlobalAuthority(policy, "global lookup/create");
         String normalized = Objects.requireNonNull(key, "key").trim();
         if (normalized.isEmpty()) throw new IllegalArgumentException("global key cannot be blank");
         if (normalized.length() > MAX_KEY_CHARS) {
@@ -132,6 +145,11 @@ public final class ProcessGlobalRegistry {
      * root is removed, and only then may a later access create a fresh instance.
      */
     public static CompletionStage<Boolean> collect(String key) {
+        return collect(key, IsolatePolicy.developer());
+    }
+
+    public static CompletionStage<Boolean> collect(String key, IsolatePolicy policy) {
+        requireGlobalAuthority(policy, "global collection");
         String normalized = Objects.requireNonNull(key, "key").trim();
         if (normalized.isEmpty()) throw new IllegalArgumentException("global key cannot be blank");
         if (normalized.length() > MAX_KEY_CHARS) {
@@ -205,6 +223,10 @@ public final class ProcessGlobalRegistry {
         }
     }
 
+    /**
+     * Opaque process-global capability. This object is never the global state
+     * pointer itself; it can only enqueue operations onto the single owner.
+     */
     public static final class Handle<S> {
         private final Cell cell;
 
@@ -212,8 +234,16 @@ public final class ProcessGlobalRegistry {
             this.cell = cell;
         }
 
+        public String globalKey() {
+            return cell.key;
+        }
+
         public UUID instanceId() {
             return cell.instanceId;
+        }
+
+        public boolean stale() {
+            return cell.collectionRequested.get();
         }
 
         /**
@@ -233,6 +263,10 @@ public final class ProcessGlobalRegistry {
                 int callerMailboxLimit,
                 Duration callerWallTime,
                 Operation<S> operation) {
+            IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+            if (actorPolicy != null) {
+                requireGlobalAuthority(actorPolicy, "global call " + cell.diagnosticId);
+            }
             Objects.requireNonNull(arguments, "arguments");
             Objects.requireNonNull(callerWallTime, "callerWallTime");
             Objects.requireNonNull(operation, "operation");
@@ -747,6 +781,24 @@ public final class ProcessGlobalRegistry {
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) removeWaitEdge(caller, target);
+        }
+    }
+
+    private static void requireGlobalAuthority(IsolatePolicy policy, String api) {
+        Objects.requireNonNull(policy, "policy");
+        if (policy.adversarial()) {
+            throw new SecurityException(
+                    "adversarial/untrusted execution cannot hold process-global references; "
+                            + "copy/freeze global results through a mailbox instead: " + api);
+        }
+        policy.require(IsolatePolicy.Capability.PROCESS_GLOBAL, api);
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        if (actorPolicy != null) {
+            if (actorPolicy.adversarial()) {
+                throw new SecurityException(
+                        "untrusted actor cannot use process-global reference: " + api);
+            }
+            actorPolicy.require(IsolatePolicy.Capability.PROCESS_GLOBAL, api);
         }
     }
 
