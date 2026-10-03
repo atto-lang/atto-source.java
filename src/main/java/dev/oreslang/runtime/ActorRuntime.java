@@ -834,9 +834,9 @@ public final class ActorRuntime implements AutoCloseable {
      */
     private static final class DispatcherGroup {
         private final DispatcherConfig config;
-        private final ThreadPoolExecutor privateDispatcher;
-        private final ThreadPoolExecutor sharedDispatcher;
-        private final ThreadPoolExecutor untrustedDispatcher;
+        private final NativeCarrierExecutor privateDispatcher;
+        private final NativeCarrierExecutor sharedDispatcher;
+        private final NativeCarrierExecutor untrustedDispatcher;
         private final ScheduledThreadPoolExecutor untrustedWatchdog;
         private final ScheduledThreadPoolExecutor messageWatchdog;
         private final Semaphore rootSlots;
@@ -1026,9 +1026,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherGroup dispatcherGroup;
     private final boolean ownsDispatcherGroup;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
-    private final ThreadPoolExecutor privateDispatcher;
-    private final ThreadPoolExecutor sharedDispatcher;
-    private final ThreadPoolExecutor untrustedDispatcher;
+    private final NativeCarrierExecutor privateDispatcher;
+    private final NativeCarrierExecutor sharedDispatcher;
+    private final NativeCarrierExecutor untrustedDispatcher;
     private final ScheduledThreadPoolExecutor untrustedWatchdog;
     private final ScheduledThreadPoolExecutor messageWatchdog;
     private final AtomicInteger privateCompensatingThreads;
@@ -1165,11 +1165,11 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public DispatcherStats dispatcherStats(ActorKind kind) {
         Objects.requireNonNull(kind, "kind");
-        ThreadPoolExecutor executor = dispatcherFor(kind);
+        NativeCarrierExecutor executor = dispatcherFor(kind);
         return new DispatcherStats(
                 dispatcherConfig.parallelismFor(kind),
                 executor.getActiveCount(),
-                executor.getQueue().size(),
+                executor.getQueueSize(),
                 executor.getCompletedTaskCount(),
                 compensationCounter(kind).get(),
                 overrunCounter(kind).get(),
@@ -4058,7 +4058,7 @@ public final class ActorRuntime implements AutoCloseable {
         untrustedActorCount.set(0);
     }
 
-    private ThreadPoolExecutor dispatcherFor(ActorKind kind) {
+    private NativeCarrierExecutor dispatcherFor(ActorKind kind) {
         return switch (kind) {
             case PRIVATE -> privateDispatcher;
             case SHARED -> sharedDispatcher;
@@ -4099,7 +4099,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (current >= limit) return false;
             if (!counter.compareAndSet(current, current + 1)) continue;
 
-            ThreadPoolExecutor executor = dispatcherFor(kind);
+            NativeCarrierExecutor executor = dispatcherFor(kind);
             synchronized (executor) {
                 int base = dispatcherConfig.parallelismFor(kind);
                 int target = Math.min(
@@ -4119,7 +4119,7 @@ public final class ActorRuntime implements AutoCloseable {
             counter.incrementAndGet();
             throw new IllegalStateException("dispatcher compensation accounting underflow for " + kind);
         }
-        ThreadPoolExecutor executor = dispatcherFor(kind);
+        NativeCarrierExecutor executor = dispatcherFor(kind);
         synchronized (executor) {
             int base = dispatcherConfig.parallelismFor(kind);
             int target = Math.max(base, base + remaining);
@@ -4135,7 +4135,7 @@ public final class ActorRuntime implements AutoCloseable {
         return executor;
     }
 
-    private static ThreadPoolExecutor newDispatcher(
+    private static NativeCarrierExecutor newDispatcher(
             int parallelism,
             int readyQueueCapacity,
             int maxCompensatingThreads,
@@ -4146,15 +4146,11 @@ public final class ActorRuntime implements AutoCloseable {
         } catch (ArithmeticException overflow) {
             maxThreads = Integer.MAX_VALUE;
         }
-        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+        return new NativeCarrierExecutor(
                 parallelism,
                 maxThreads,
-                50L,
-                TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity, true),
-                namedFactory(threadPrefix),
-                new ThreadPoolExecutor.AbortPolicy());
-        return executor;
+                readyQueueCapacity,
+                threadPrefix);
     }
 
     private static ThreadFactory namedFactory(String prefix) {
