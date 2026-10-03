@@ -2024,6 +2024,7 @@ public final class ActorRuntime implements AutoCloseable {
                 return ref;
             } catch (RuntimeException | Error failure) {
                 actorCount.decrementAndGet();
+                actorCountFor(kind).decrementAndGet();
                 throw failure;
             }
         }
