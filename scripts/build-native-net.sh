@@ -36,6 +36,7 @@ mkdir -p target/native
 
 "$cc_bin" \
   -std=c11 \
+  -D_DEFAULT_SOURCE \
   -O2 \
   -fPIC \
   $shared_flags \
