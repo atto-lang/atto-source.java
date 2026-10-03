@@ -1,0 +1,349 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.CapabilityChecker;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresSymbol;
+import dev.oreslang.types.OwnershipChecker;
+import dev.oreslang.types.TypeChecker;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class SymbolLifecycleTest {
+    private static final String UUID_KEY = "5d60d832-fc6a-4fa2-a551-1448c2df6bf2";
+
+    @Test
+    void colonAndScopedFactoriesTypecheckAsCopySymbols() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define module symbols as
+                  pub fnc same() => bool {
+                    val Symbol literal = :connected;
+                    val Symbol compat = new Symbol("1d46c11d-580c-4ee0-b5ff-cb3bbd83d596");
+                    val Symbol process = Symbol.process("connected");
+                    val Symbol stable = Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+                    return literal == process;
+                  }
+                end
+                """));
+
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.BindingStmt first = (Ast.BindingStmt) fn.body().getFirst();
+        Ast.LiteralExpr literal = (Ast.LiteralExpr) first.initializer();
+        assertEquals("connected", ((Ast.Symbol) literal.value()).name());
+    }
+
+    @Test
+    void symbolLocalIsRejectedOutsideActorExecutionByStaticAndRuntimeChecks() {
+        IllegalArgumentException staticFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module symbols as
+                          pub fnc bad() => Symbol {
+                            return Symbol.local("request");
+                          }
+                        end
+                        """)));
+        assertTrue(staticFailure.getMessage().contains("actor-local"));
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> OresSymbol.local("off-actor", runtime, IsolatePolicy.developer()));
+        }
+    }
+
+    @Test
+    void processAndStableSymbolsAreStronglyCanonicalInTheirDomains() {
+        OresSymbol first = OresSymbol.process("shared-key");
+        OresSymbol again = OresSymbol.process("shared-key");
+        OresSymbol other = OresSymbol.process("other-key");
+        OresSymbol stable = OresSymbol.stable(UUID_KEY);
+        OresSymbol stableAgain = OresSymbol.stable(UUID_KEY.toUpperCase());
+
+        assertSame(first, again);
+        assertEquals(OresSymbol.Scope.PROCESS, first.scope());
+        assertEquals(first.id(), again.id());
+        assertNotEquals(first.id(), other.id());
+        assertTrue(other.id() > first.id());
+
+        assertSame(stable, stableAgain);
+        assertEquals(OresSymbol.Scope.STABLE, stable.scope());
+        assertNotEquals(first, stable);
+        assertTrue(first.processStable());
+        assertTrue(stable.processStable());
+        assertTrue(first.sendable());
+        assertTrue(stable.sendable());
+    }
+
+    @Test
+    void processAndStableInterningRemainCanonicalUnderConcurrency() throws Exception {
+        OresSymbol expectedProcess = OresSymbol.process("concurrent-process-key");
+        OresSymbol expectedStable =
+                OresSymbol.stable("93c1d30c-e89f-47ca-bca5-2f9208f21701");
+
+        try (ExecutorService pool = Executors.newFixedThreadPool(8)) {
+            List<Future<OresSymbol>> processResults = new ArrayList<>();
+            List<Future<OresSymbol>> stableResults = new ArrayList<>();
+            for (int i = 0; i < 64; i++) {
+                processResults.add(pool.submit(
+                        () -> OresSymbol.process("concurrent-process-key")));
+                stableResults.add(pool.submit(
+                        () -> OresSymbol.stable("93c1d30c-e89f-47ca-bca5-2f9208f21701")));
+            }
+            for (Future<OresSymbol> result : processResults) {
+                assertSame(expectedProcess, result.get(2, TimeUnit.SECONDS));
+            }
+            for (Future<OresSymbol> result : stableResults) {
+                assertSame(expectedStable, result.get(2, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    @Test
+    void compilerLiteralAndDynamicProcessFactoryShareCanonicalIdentity() {
+        OresSymbol dynamicFirst = OresSymbol.process("literal-shared-key");
+        OresSymbol literalAfter = OresSymbol.processLiteral(
+                "literal-shared-key", IsolatePolicy.developer());
+        OresSymbol literalFirst = OresSymbol.processLiteral(
+                "literal-first-key", IsolatePolicy.developer());
+        OresSymbol dynamicAfter = OresSymbol.process("literal-first-key");
+
+        assertSame(dynamicFirst, literalAfter);
+        assertSame(literalFirst, dynamicAfter);
+        assertEquals(dynamicFirst.id(), literalAfter.id());
+        assertEquals(literalFirst.id(), dynamicAfter.id());
+        assertTrue(OresSymbol.RESERVED_LITERAL_PROCESS_SYMBOLS > 0);
+        assertTrue(OresSymbol.MAX_DYNAMIC_PROCESS_SYMBOLS < OresSymbol.MAX_PROCESS_SYMBOLS);
+    }
+
+    @Test
+    void trustedActorTransportPreservesProcessAndStableSymbolIdentity() throws Exception {
+        OresSymbol process = OresSymbol.process("trusted-transport");
+        OresSymbol stable =
+                OresSymbol.stable("64bcc7a9-cef3-4324-8dd6-91a06120963e");
+        AtomicReference<Object> observed = new AtomicReference<>();
+        CountDownLatch delivered = new CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<Object> target = runtime.spawnPrivateTrusted(
+                    context -> (message, turn) -> {
+                        observed.set(message);
+                        delivered.countDown();
+                    });
+
+            target.send(List.of(process, stable));
+            assertTrue(delivered.await(2, TimeUnit.SECONDS));
+        }
+
+        List<?> received = assertInstanceOf(List.class, observed.get());
+        assertSame(process, received.get(0));
+        assertSame(stable, received.get(1));
+    }
+
+    @Test
+    void localSymbolsAreCanonicalPerActorDistinctAcrossActorsAndNonSendable() throws Exception {
+        AtomicReference<OresSymbol> firstActorSymbol = new AtomicReference<>();
+        AtomicReference<OresSymbol> secondActorSymbol = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch finished = new CountDownLatch(2);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<Object> target = runtime.spawnSharedTrusted(
+                    context -> (message, turn) -> {
+                        throw new AssertionError("local Symbol must never be delivered");
+                    });
+
+            ActorRuntime.ActorRef<String> actorA = runtime.spawnPrivateTrusted(
+                    context -> (message, turn) -> {
+                        try {
+                            OresSymbol first = OresSymbol.local(
+                                    "request-local", turn.runtime(), turn.policy());
+                            OresSymbol again = OresSymbol.local(
+                                    "request-local", turn.runtime(), turn.policy());
+                            assertSame(first, again);
+                            assertEquals(OresSymbol.Scope.LOCAL, first.scope());
+                            assertFalse(first.sendable());
+                            assertThrows(IllegalStateException.class, first::toWire);
+                            assertThrows(IllegalArgumentException.class, () -> target.send(first));
+                            firstActorSymbol.set(first);
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            finished.countDown();
+                        }
+                    });
+
+            ActorRuntime.ActorRef<String> actorB = runtime.spawnPrivateTrusted(
+                    context -> (message, turn) -> {
+                        try {
+                            secondActorSymbol.set(OresSymbol.local(
+                                    "request-local", turn.runtime(), turn.policy()));
+                        } catch (Throwable problem) {
+                            failure.compareAndSet(null, problem);
+                        } finally {
+                            finished.countDown();
+                        }
+                    });
+
+            actorA.send("go");
+            actorB.send("go");
+            assertTrue(finished.await(2, TimeUnit.SECONDS));
+            assertNull(failure.get());
+        }
+
+        assertNotNull(firstActorSymbol.get());
+        assertNotNull(secondActorSymbol.get());
+        assertNotSame(firstActorSymbol.get(), secondActorSymbol.get());
+        assertNotEquals(firstActorSymbol.get(), secondActorSymbol.get());
+        assertNotEquals(firstActorSymbol.get().domainId(), secondActorSymbol.get().domainId());
+    }
+
+    @Test
+    void wireFormatUsesScopeAndKeyNeverProcessIds() {
+        OresSymbol process = OresSymbol.process("wire-key");
+        OresSymbol stable = OresSymbol.stable(UUID_KEY);
+
+        OresSymbol.Wire processWire = process.toWire();
+        OresSymbol.Wire stableWire = stable.toWire();
+
+        assertEquals(OresSymbol.Scope.PROCESS, processWire.scope());
+        assertEquals("wire-key", processWire.key());
+        assertEquals(OresSymbol.Scope.STABLE, stableWire.scope());
+        assertEquals(UUID_KEY, stableWire.key());
+        assertSame(process, OresSymbol.fromWire(processWire, IsolatePolicy.developer()));
+        assertSame(stable, OresSymbol.fromWire(stableWire, IsolatePolicy.developer()));
+
+        assertThrows(
+                SecurityException.class,
+                () -> OresSymbol.fromWire(processWire, IsolatePolicy.strictFaas()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new OresSymbol.Wire(OresSymbol.Scope.LOCAL, "forbidden"));
+    }
+
+    @Test
+    void symbolBuiltinNamespaceCannotBeShadowedIncludingGenericScopes() {
+        assertTrue(assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module Symbol as
+                          pub fnc x() => int { return 1; }
+                        end
+                        """))).getMessage().contains("reserved"));
+
+        assertTrue(assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          define class Symbol as
+                          end
+                        end
+                        """))).getMessage().contains("reserved"));
+
+        assertTrue(assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          pub fnc x() => int {
+                            val int Symbol = 1;
+                            return Symbol;
+                          }
+                        end
+                        """))).getMessage().contains("reserved"));
+
+        assertTrue(assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          pub fnc identity<Symbol>(Symbol value) => Symbol {
+                            return value;
+                          }
+                        end
+                        """))).getMessage().contains("reserved"));
+    }
+
+    @Test
+    void adversarialPoliciesCannotCreateDecodeOrReceiveSymbols() {
+        Ast.Program literalProgram = TypeChecker.check(Parser.parse("""
+                define module app as
+                  pub fnc tag() => Symbol {
+                    return :secret;
+                  }
+                end
+                """));
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(literalProgram, IsolatePolicy.strictFaas()));
+
+        Ast.Program factoryProgram = TypeChecker.check(Parser.parse("""
+                define module app as
+                  pub fnc tag() => Symbol {
+                    return Symbol.process("secret");
+                  }
+                end
+                """));
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(factoryProgram, IsolatePolicy.strictFaas()));
+
+        assertThrows(
+                SecurityException.class,
+                () -> OresSymbol.process("secret", IsolatePolicy.strictFaas()));
+        assertThrows(
+                SecurityException.class,
+                () -> OresSymbol.stable(UUID_KEY, IsolatePolicy.strictFaas()));
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<Object> restricted = runtime.spawnPrivate(
+                    IsolatePolicy.strictFaas(),
+                    factoryContext -> (message, turn) -> { });
+
+            SecurityException transportDenied = assertThrows(
+                    SecurityException.class,
+                    () -> restricted.send(List.of(
+                            "safe",
+                            List.of(OresSymbol.process("nested-secret")))));
+            assertTrue(transportDenied.getMessage().contains("Symbol"));
+        }
+    }
+
+    @Test
+    void adversarialActorCannotBypassSymbolPolicyWithPermissiveArgument() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<String> restricted = runtime.spawnPrivate(
+                    IsolatePolicy.strictFaas(),
+                    factoryContext -> (message, turn) ->
+                            OresSymbol.process("policy-bypass", IsolatePolicy.developer()));
+
+            restricted.send("go");
+            assertTrue(restricted.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(SecurityException.class, restricted.failure().orElseThrow());
+        }
+    }
+
+    @Test
+    void keysAndStableIdsAreStrictlyValidatedAndBounded() {
+        assertThrows(IllegalArgumentException.class, () -> OresSymbol.process("   "));
+        assertThrows(IllegalArgumentException.class, () -> OresSymbol.process("bad\nkey"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.process("x".repeat(OresSymbol.MAX_KEY_LENGTH + 1)));
+        assertThrows(IllegalArgumentException.class, () -> OresSymbol.stable("not-a-uuid"));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf"));
+    }
+}
