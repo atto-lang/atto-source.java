@@ -12,6 +12,8 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresSymbol;
+import dev.oreslang.runtime.PatternMatchError;
 import dev.oreslang.runtime.ActorRuntime;
 
 import java.nio.file.Path;
@@ -398,6 +400,22 @@ public final class OresEvalRootNode extends RootNode {
                 executeBlock(ifStmt.elseBody(), env);
                 return;
             }
+            if (stmt instanceof Ast.SwitchStmt switched) {
+                Object subject = eval(switched.subject(), env);
+                for (Ast.SwitchClause clause : switched.clauses()) {
+                    Env clauseEnv = new Env(env);
+                    if (!matchPattern(clause.pattern(), subject, clauseEnv)) continue;
+                    if (clause.guard() != null) {
+                        requirePurePatternGuard(clause.guard());
+                        if (!truth(eval(clause.guard(), clauseEnv))) continue;
+                    }
+                    executeBlock(clause.body(), clauseEnv);
+                    return;
+                }
+                throw new PatternMatchError(
+                        "no switch pattern matched value of type "
+                                + (subject == null ? "null" : subject.getClass().getSimpleName()));
+            }
             if (stmt instanceof Ast.TryStmt tried) {
                 try { executeBlock(tried.body(), env); }
                 catch (ReturnSignal signal) { throw signal; }
@@ -430,10 +448,186 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private boolean matchPattern(Ast.Pattern pattern, Object value, Env env) {
+            if (pattern instanceof Ast.WildcardPattern) return true;
+
+            if (pattern instanceof Ast.BindingPattern binding) {
+                env.define(binding.name(), value, Ast.BindingKind.VAL);
+                return true;
+            }
+
+            if (pattern instanceof Ast.LiteralPattern literal) {
+                Object expected = literal.value() instanceof Ast.Symbol symbol
+                        ? OresSymbol.processLiteral(symbol.name(), context.isolatePolicy())
+                        : literal.value();
+                return Objects.equals(expected, value);
+            }
+
+            if (pattern instanceof Ast.TypePattern typed) {
+                if (!matchesNominalType(value, typed.type().name())) return false;
+                if (typed.bindingName() != null) {
+                    env.define(typed.bindingName(), value, Ast.BindingKind.VAL);
+                }
+                return true;
+            }
+
+            if (pattern instanceof Ast.SequencePattern sequence) {
+                if (!(value instanceof List<?> list)
+                        || list.size() != sequence.elements().size()) {
+                    return false;
+                }
+                for (int i = 0; i < list.size(); i++) {
+                    if (!matchPattern(sequence.elements().get(i), list.get(i), env)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            if (pattern instanceof Ast.ObjectPattern objectPattern) {
+                for (Ast.ObjectPatternField field : objectPattern.fields()) {
+                    Object child;
+                    if (value instanceof OresObject object) {
+                        if (!object.fields.containsKey(field.name())) return false;
+                        child = object.fields.get(field.name());
+                    } else if (value instanceof DynamicStructValue dynamic) {
+                        if (!dynamic.fields.containsKey(field.name())) return false;
+                        child = dynamic.fields.get(field.name());
+                    } else if (value instanceof Map<?, ?> map) {
+                        if (!map.containsKey(field.name())) return false;
+                        child = map.get(field.name());
+                    } else {
+                        return false;
+                    }
+                    if (!matchPattern(field.pattern(), child, env)) return false;
+                }
+                return true;
+            }
+
+            if (pattern instanceof Ast.VariantPattern variant) {
+                String name = variant.name();
+
+                if (name.equals("Ok") || name.equals("Err")) {
+                    if (!(value instanceof ResultValue result)
+                            || result.ok() != name.equals("Ok")
+                            || variant.arguments().size() != 1) {
+                        return false;
+                    }
+                    return matchPattern(variant.arguments().getFirst(), result.value(), env);
+                }
+
+                if (name.equals("Some")) {
+                    if (!(value instanceof OptionValue option)
+                            || !option.present()
+                            || variant.arguments().size() != 1) {
+                        return false;
+                    }
+                    return matchPattern(variant.arguments().getFirst(), option.value(), env);
+                }
+
+                if (name.equals("None")) {
+                    return value instanceof OptionValue option
+                            && !option.present()
+                            && variant.arguments().isEmpty();
+                }
+
+                if (value instanceof OresObject object && matchesNominalType(object, name)) {
+                    List<Ast.FieldDecl> fields =
+                            effectiveFields(object.klass, new LinkedHashSet<>());
+                    if (fields.size() != variant.arguments().size()) return false;
+                    for (int i = 0; i < fields.size(); i++) {
+                        Object child = object.fields.get(fields.get(i).name());
+                        if (!matchPattern(variant.arguments().get(i), child, env)) return false;
+                    }
+                    return true;
+                }
+
+                return variant.arguments().isEmpty() && matchesNominalType(value, name);
+            }
+
+            throw new IllegalStateException(
+                    "unsupported switch pattern " + pattern.getClass().getSimpleName());
+        }
+
+        private boolean matchesNominalType(Object value, String typeName) {
+            if (value == null) return false;
+            if (value instanceof OresObject object) {
+                return classIsOrExtends(object.klass, typeName, new LinkedHashSet<>());
+            }
+            for (Class<?> type = value.getClass(); type != null; type = type.getSuperclass()) {
+                if (type.getSimpleName().equals(typeName) || type.getName().equals(typeName)) {
+                    return true;
+                }
+            }
+            for (Class<?> iface : value.getClass().getInterfaces()) {
+                if (iface.getSimpleName().equals(typeName) || iface.getName().equals(typeName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean classIsOrExtends(
+                Ast.ClassDecl klass,
+                String typeName,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return false;
+            if (klass.name().equals(typeName)) return true;
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals(typeName)) return true;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent != null && classIsOrExtends(parent, typeName, seen)) return true;
+            }
+            return false;
+        }
+
+        /**
+         * Runtime defense in depth for Erlang-style guards. Compiler checking
+         * applies the same rule, but malformed AST must not smuggle effects into
+         * clause selection.
+         */
+        private static void requirePurePatternGuard(Ast.Expr expr) {
+            if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return;
+            if (expr instanceof Ast.MemberExpr member) {
+                requirePurePatternGuard(member.receiver());
+                return;
+            }
+            if (expr instanceof Ast.IndexExpr indexed) {
+                requirePurePatternGuard(indexed.receiver());
+                requirePurePatternGuard(indexed.index());
+                return;
+            }
+            if (expr instanceof Ast.UnaryExpr unary) {
+                if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
+                    throw new IllegalArgumentException(
+                            "pattern guard cannot borrow or mutate state");
+                }
+                requirePurePatternGuard(unary.operand());
+                return;
+            }
+            if (expr instanceof Ast.BinaryExpr binary) {
+                requirePurePatternGuard(binary.left());
+                requirePurePatternGuard(binary.right());
+                return;
+            }
+            if (expr instanceof Ast.ConditionalExpr conditional) {
+                requirePurePatternGuard(conditional.condition());
+                requirePurePatternGuard(conditional.whenTrue());
+                requirePurePatternGuard(conditional.whenFalse());
+                return;
+            }
+            throw new IllegalArgumentException(
+                    "pattern guard must be side-effect free; calls, assignment, allocation, await, "
+                            + "lambdas, and container construction are not allowed");
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Symbol symbol) {
+                    return OresSymbol.processLiteral(symbol.name(), context.isolatePolicy());
+                }
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -1610,7 +1804,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>
+                    || value instanceof OresSymbol) {
                 return true;
             }
 
