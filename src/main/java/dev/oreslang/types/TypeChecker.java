@@ -731,7 +731,15 @@ public final class TypeChecker {
                     requireAssignable(right, Primitive.BOOL, "boolean operand");
                     yield Primitive.BOOL;
                 }
-                case "==", "!=" -> Primitive.BOOL;
+                case "==", "!=" -> {
+                    boolean leftSymbol = isSymbolLike(left);
+                    boolean rightSymbol = isSymbolLike(right);
+                    if (leftSymbol != rightSymbol) {
+                        throw new IllegalArgumentException(
+                                "Symbol equality requires Symbol on both sides; Symbols are not string aliases");
+                    }
+                    yield Primitive.BOOL;
+                }
                 case "<", "<=", ">", ">=" -> {
                     if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
                         throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
@@ -1084,6 +1092,13 @@ public final class TypeChecker {
 
     private boolean isStringLike(Type type) {
         return type == Primitive.STRING || type instanceof StringLiteral;
+    }
+
+    private boolean isSymbolLike(Type type) {
+        Type value = deref(type);
+        return value instanceof Named named
+                && named.name().equals("Symbol")
+                && named.arguments().isEmpty();
     }
 
     private Record classShape(Ast.ClassDecl klass, Set<Ast.ClassDecl> stack) {
