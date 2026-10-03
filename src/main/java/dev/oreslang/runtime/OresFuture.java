@@ -28,13 +28,13 @@ public final class OresFuture<T> extends CompletableFuture<T> {
 
     public static <T> OresFuture<T> completed(T value) {
         OresFuture<T> future = new OresFuture<>();
-        future.complete(value);
+        future.completeFromRuntime(value);
         return future;
     }
 
     public static <T> OresFuture<T> failed(Throwable failure) {
         OresFuture<T> future = new OresFuture<>();
-        future.completeExceptionally(Objects.requireNonNull(failure, "failure"));
+        future.failFromRuntime(Objects.requireNonNull(failure, "failure"));
         return future;
     }
 
@@ -49,12 +49,57 @@ public final class OresFuture<T> extends CompletableFuture<T> {
         OresFuture<T> result = new OresFuture<>(() -> source.cancel(true));
         stage.whenComplete((value, failure) -> {
             if (failure == null) {
-                result.complete(value);
+                result.completeFromRuntime(value);
             } else {
-                result.completeExceptionally(unwrap(failure));
+                result.failFromRuntime(unwrap(failure));
             }
         });
         return result;
+    }
+
+    boolean completeFromRuntime(T value) {
+        return super.complete(value);
+    }
+
+    boolean failFromRuntime(Throwable failure) {
+        return super.completeExceptionally(Objects.requireNonNull(failure, "failure"));
+    }
+
+    /**
+     * Completion authority belongs to the runtime/host operation that created
+     * the Future. Guest code may observe or cancel but cannot forge a result.
+     */
+    @Override
+    public boolean complete(T value) {
+        throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
+    }
+
+    @Override
+    public boolean completeExceptionally(Throwable ex) {
+        throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
+    }
+
+    @Override
+    public CompletableFuture<T> completeAsync(
+            java.util.function.Supplier<? extends T> supplier) {
+        throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
+    }
+
+    @Override
+    public CompletableFuture<T> completeAsync(
+            java.util.function.Supplier<? extends T> supplier,
+            java.util.concurrent.Executor executor) {
+        throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
+    }
+
+    @Override
+    public void obtrudeValue(T value) {
+        throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
+    }
+
+    @Override
+    public void obtrudeException(Throwable ex) {
+        throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
     }
 
     @Override
