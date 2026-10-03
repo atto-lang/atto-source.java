@@ -432,6 +432,34 @@ final class NativeNetworkingLanguageTest {
                 "redirect URI resolution must move to native liboresnet");
     }
 
+
+    @Test
+    void nativeNetBuiltinIsCapabilityGatedWithoutGeneralNativeAuthority() throws Exception {
+        String denied = """
+                define module app
+                  pub fnc main() => void {
+                    native_net.resolve_all("localhost");
+                    return;
+                  }
+                end
+                """;
+        Exception error = assertThrows(Exception.class, () -> evaluate(denied));
+        assertTrue(error.toString().contains("NETWORK"));
+    }
+
+    @Test
+    void pureOreslangNetStdlibFilesRemainFreeOfJavaTransportDependencies() throws Exception {
+        String nativeApi = java.nio.file.Files.readString(
+                java.nio.file.Path.of("stdlib/net/native.ores"));
+        String http = java.nio.file.Files.readString(
+                java.nio.file.Path.of("stdlib/net/http.ores"));
+        assertTrue(nativeApi.contains("native_net."));
+        assertFalse(nativeApi.contains("java:"));
+        assertFalse(http.contains("java:"));
+        assertFalse(http.contains("java.net"));
+        assertFalse(http.contains("java.net.http"));
+    }
+
     private static String evaluate(String program) throws Exception {
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.NETWORK);
