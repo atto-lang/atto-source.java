@@ -566,6 +566,28 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), left, right);
             }
             if (expr instanceof Ast.CallExpr call) {
+                if (call.callee() instanceof Ast.StaticMemberExpr staticCall) {
+                    Object receiver = eval(staticCall.receiver(), env);
+                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    if (receiver instanceof ClassFacade klass) {
+                        return klass.owner().invokeStaticFunction(klass.klass(), staticCall.member(), args);
+                    }
+                    if (receiver instanceof ModuleFacade module) {
+                        Object callee = module.owner().moduleMember(module.module(), staticCall.member());
+                        if (!(callee instanceof Invokable invokable)) {
+                            throw new IllegalArgumentException("static module member is not callable: " + staticCall.member());
+                        }
+                        return invokable.call(args);
+                    }
+                    if (receiver instanceof ImportedNamespace namespace) {
+                        Object callee = member(namespace, staticCall.member());
+                        if (!(callee instanceof Invokable invokable)) {
+                            throw new IllegalArgumentException("imported static member is not callable: " + staticCall.member());
+                        }
+                        return invokable.call(args);
+                    }
+                    throw new IllegalArgumentException("'::' call requires a module or class namespace");
+                }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
@@ -583,6 +605,13 @@ public final class OresEvalRootNode extends RootNode {
                 List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
                 if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
                 return invokable.call(args);
+            }
+            if (expr instanceof Ast.StaticMemberExpr staticMember) {
+                Object receiver = eval(staticMember.receiver(), env);
+                if (receiver instanceof ModuleFacade || receiver instanceof ClassFacade || receiver instanceof ImportedNamespace) {
+                    return member(receiver, staticMember.member());
+                }
+                throw new IllegalArgumentException("'::' requires a module or class namespace");
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member());
             if (expr instanceof Ast.IndexExpr indexed) {
