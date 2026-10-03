@@ -26,7 +26,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT
 
 module_member   = actor_decl
                 | actor_callable_decl
-                | callable_decl
+                | module_static_callable_decl
                 | class_decl
                 | interface_decl
                 | type_decl
@@ -37,12 +37,21 @@ callable_modifier = "abstract" | "async" | "nlex" ;
 method_modifier   = "abstract" | "async" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
-                  "(" [ param_list ] ")" return_spec block ;
+                  callable_definition ;
 callable_kind   = "fnc" | "routine" ;
+callable_definition
+                = "(" [ param_list ] ")" declared_return_spec block
+                | "=" pipe_params "->" [ type_ref ] block ;
+pipe_params     = "|" [ pipe_param { "," pipe_param } ] "|" ;
+pipe_param      = IDENT | type_ref [ "mut" ] IDENT ;
+
+module_static_callable_decl
+                = { annotation } visibility "static" [ "async" ] [ "nlex" ] callable_kind IDENT [ generic_params ]
+                  callable_definition ;
 
 actor_callable_decl
-                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
-                  "(" [ param_list ] ")" return_spec block ;
+                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" callable_kind IDENT [ generic_params ]
+                  callable_definition ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -76,7 +85,7 @@ explicit_receiver = "self" type_ref ;
 
 static_function_decl
                 = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
-                  "(" [ param_list ] ")" return_spec block ;
+                  callable_definition ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -88,16 +97,17 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" declared_return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
 type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
-return_spec     = [ "=>" type_ref ] ;
+declared_return_spec
+                = [ ":" type_ref ] ;
 method_return_spec
-                = ":" type_ref ;
+                = [ ":" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
@@ -253,8 +263,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - instance methods may overload only when arity differs.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.
-   - Instance/actor methods use ": ReturnType" and never "->" or "=>".
-   - "=>" remains the named fnc/routine/static-fnc return declaration syntax.
+   - fnc/routine declarations use ": ReturnType"; named function-expression
+     bindings use "= |...| -> ReturnType { ... }".
+   - @Ret<T> may replace the explicit ": T" on declarations/methods and may
+     supply the result type for a function expression whose "->" is followed
+     directly by the body.
+   - Instance/actor methods omit fnc/routine and never use "->" or "=>".
+   - "=>" is not a callable return declaration operator.
    - "->" belongs to function types and lambdas.
    - Unqualified "actor" declarations are private actors; "shared actor" opts
      into the SHARED_MEMORY execution domain.
