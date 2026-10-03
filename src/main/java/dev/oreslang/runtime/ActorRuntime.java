@@ -2020,7 +2020,8 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            rejectTrustedSymbols(sharedMutex.transportValue(), visiting, depth + 1);
+            sharedMutex.inspectForTransport(
+                    payload -> rejectTrustedSymbols(payload, visiting, depth + 1));
             return;
         }
         if (value instanceof OresMutex.SharedState aggregate) {
