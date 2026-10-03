@@ -556,6 +556,10 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException(
                                 "await would block an actor dispatcher carrier; actor continuation lowering must suspend/resume the mailbox turn");
                     }
+                    if (ActorRuntime.currentRootIsAdversarial() && !future.isDone()) {
+                        throw new IllegalStateException(
+                                "await would block an adversarial serialized root context; continuation lowering must suspend/resume before awaiting actor readiness/result");
+                    }
                     return future.join();
                 }
                 return value;
