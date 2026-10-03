@@ -180,10 +180,13 @@ public final class CapabilityChecker {
     }
 
     private static IsolatePolicy actorPolicy(Ast.ActorKind kind, IsolatePolicy parent) {
-        if (kind != Ast.ActorKind.PRIVATE) return parent;
-        return parent.withoutCapabilities(
-                IsolatePolicy.Capability.SHARED_MEMORY,
-                IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+        return switch (kind) {
+            case PRIVATE -> parent.withoutCapabilities(
+                    IsolatePolicy.Capability.SHARED_MEMORY,
+                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+            case UNTRUSTED -> IsolatePolicy.untrustedActor();
+            default -> parent;
+        };
     }
 
     private void checkCallableTypes(
