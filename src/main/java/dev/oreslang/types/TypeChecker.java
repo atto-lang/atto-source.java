@@ -822,6 +822,7 @@ public final class TypeChecker {
                 return switch (member.member()) {
                     case "local", "process", "stable" ->
                             new Function(List.of(Primitive.STRING), new Named("Symbol", List.of()));
+                    case "iterator" -> new Named("Symbol", List.of());
                     default -> throw new IllegalArgumentException(
                             "unknown Symbol member '" + member.member() + "'");
                 };
