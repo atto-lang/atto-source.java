@@ -19,8 +19,16 @@ import java.util.regex.Pattern;
  */
 public final class MixedSourceUnit {
     public enum PrimaryLanguage { ORES, JAVA }
+    public enum IslandKind { DECLARATION, EXECUTION }
 
-    public record Island(String language, int keywordStart, int bodyStart, int bodyEnd, int blockEnd, String body) { }
+    public record Island(
+            String language,
+            IslandKind kind,
+            int keywordStart,
+            int bodyStart,
+            int bodyEnd,
+            int blockEnd,
+            String body) { }
     public record JavaBinding(String simpleName, String binaryName) { }
     public record JavaSource(String className, String sourceText) { }
 
@@ -81,15 +89,23 @@ public final class MixedSourceUnit {
             List<JavaSource> javaSources = new ArrayList<>();
             List<JavaBinding> bindings = new ArrayList<>();
             Map<String, Boolean> names = new LinkedHashMap<>();
+            Map<Island, String> executionBindings = new LinkedHashMap<>();
+            int executionOrdinal = 0;
             for (Island island : islands) {
-                JavaIslandType type = parseJavaIsland(island.body(), generatedPackage);
+                JavaIslandType type;
+                if (island.kind() == IslandKind.EXECUTION) {
+                    type = parseJavaExecutionIsland(island.body(), generatedPackage, executionOrdinal++);
+                    executionBindings.put(island, type.simpleName());
+                } else {
+                    type = parseJavaIsland(island.body(), generatedPackage);
+                }
                 if (names.putIfAbsent(type.simpleName(), Boolean.TRUE) != null) {
                     throw new IllegalArgumentException("duplicate Java island type '" + type.simpleName() + "'");
                 }
                 javaSources.add(new JavaSource(type.binaryName(), type.sourceText()));
                 bindings.add(new JavaBinding(type.simpleName(), type.binaryName()));
             }
-            String ores = maskBlocks(raw, islands);
+            String ores = rewriteOresSource(raw, islands, executionBindings);
             ores = injectJavaImports(ores, bindings, raw, !islands.isEmpty());
             return new MixedSourceUnit(unitId, primary, raw, ores, "", generatedPackage,
                     islands, bindings, javaSources);
@@ -166,6 +182,26 @@ public final class MixedSourceUnit {
         return new JavaIslandType(type.name(), generatedPackage + "." + type.name(), source);
     }
 
+    private static JavaIslandType parseJavaExecutionIsland(
+            String body,
+            String generatedPackage,
+            int ordinal) {
+        if (PACKAGE_ANYWHERE.matcher(body).find()) {
+            throw new IllegalArgumentException(
+                    "do java { ... } executes Java statements and cannot declare a package");
+        }
+        String simpleName = "OresJavaExec" + ordinal;
+        String binaryName = generatedPackage + "." + simpleName;
+        String source = "package " + generatedPackage + ";\n"
+                + "public final class " + simpleName + " {\n"
+                + "  private " + simpleName + "() {}\n"
+                + "  public static void run() {\n"
+                + body + "\n"
+                + "  }\n"
+                + "}\n";
+        return new JavaIslandType(simpleName, binaryName, source);
+    }
+
     private static String detectJavaPackage(String javaSource) {
         Matcher matcher = JAVA_PACKAGE.matcher(javaSource);
         return matcher.find() ? matcher.group(1) : "";
@@ -237,21 +273,65 @@ public final class MixedSourceUnit {
             if (c == '"' || c == '\'' || c == '`') {
                 i = skipQuoted(source, i, c); continue;
             }
-            if (Character.isJavaIdentifierStart(c)) {
-                int start = i++;
-                while (i < source.length() && Character.isJavaIdentifierPart(source.charAt(i))) i++;
-                if (!source.substring(start, i).equals(keyword)) continue;
-                int open = skipWhitespaceAndComments(source, i);
-                if (open >= source.length() || source.charAt(open) != '{') continue;
-                int close = matchingBrace(source, open);
-                islands.add(new Island(keyword, start, open + 1, close, close + 1,
-                        source.substring(open + 1, close)));
-                i = close + 1;
+            if (!Character.isJavaIdentifierStart(c)) {
+                i++;
                 continue;
             }
-            i++;
+
+            int start = i++;
+            while (i < source.length() && Character.isJavaIdentifierPart(source.charAt(i))) i++;
+            String word = source.substring(start, i);
+
+            if (keyword.equals("java") && word.equals("do")) {
+                int javaStart = skipWhitespaceAndComments(source, i);
+                int javaEnd = identifierEnd(source, javaStart);
+                if (javaEnd > javaStart && source.substring(javaStart, javaEnd).equals("java")) {
+                    int open = skipWhitespaceAndComments(source, javaEnd);
+                    if (open < source.length() && source.charAt(open) == '{') {
+                        int close = matchingBrace(source, open);
+                        int blockEnd = consumeOptionalStatementSemicolon(source, close + 1);
+                        islands.add(new Island(
+                                keyword,
+                                IslandKind.EXECUTION,
+                                start,
+                                open + 1,
+                                close,
+                                blockEnd,
+                                source.substring(open + 1, close)));
+                        i = blockEnd;
+                        continue;
+                    }
+                }
+            }
+
+            if (!word.equals(keyword)) continue;
+            int open = skipWhitespaceAndComments(source, i);
+            if (open >= source.length() || source.charAt(open) != '{') continue;
+            int close = matchingBrace(source, open);
+            islands.add(new Island(
+                    keyword,
+                    IslandKind.DECLARATION,
+                    start,
+                    open + 1,
+                    close,
+                    close + 1,
+                    source.substring(open + 1, close)));
+            i = close + 1;
         }
         return islands;
+    }
+
+    private static int identifierEnd(String source, int start) {
+        if (start >= source.length() || !Character.isJavaIdentifierStart(source.charAt(start))) return start;
+        int i = start + 1;
+        while (i < source.length() && Character.isJavaIdentifierPart(source.charAt(i))) i++;
+        return i;
+    }
+
+    private static int consumeOptionalStatementSemicolon(String source, int index) {
+        int i = index;
+        while (i < source.length() && Character.isWhitespace(source.charAt(i))) i++;
+        return i < source.length() && source.charAt(i) == ';' ? i + 1 : index;
     }
 
     private static int matchingBrace(String source, int open) {
@@ -308,6 +388,46 @@ public final class MixedSourceUnit {
             if (c == quote) return i;
         }
         throw new IllegalArgumentException("unterminated quoted literal in mixed source");
+    }
+
+    private static String rewriteOresSource(
+            String source,
+            List<Island> islands,
+            Map<Island, String> executionBindings) {
+        if (islands.isEmpty()) return source;
+        StringBuilder out = new StringBuilder(source.length() + islands.size() * 16);
+        int cursor = 0;
+        for (Island island : islands) {
+            out.append(source, cursor, island.keywordStart());
+            String original = source.substring(island.keywordStart(), island.blockEnd());
+            if (island.kind() == IslandKind.EXECUTION) {
+                String binding = executionBindings.get(island);
+                if (binding == null) {
+                    throw new IllegalStateException("missing generated Java execution binding");
+                }
+                out.append(binding).append(".run();");
+                appendLineBreaks(out, original);
+            } else {
+                appendMasked(out, original);
+            }
+            cursor = island.blockEnd();
+        }
+        out.append(source, cursor, source.length());
+        return out.toString();
+    }
+
+    private static void appendMasked(StringBuilder out, String source) {
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            out.append(c == '\n' || c == '\r' ? c : ' ');
+        }
+    }
+
+    private static void appendLineBreaks(StringBuilder out, String source) {
+        for (int i = 0; i < source.length(); i++) {
+            char c = source.charAt(i);
+            if (c == '\n' || c == '\r') out.append(c);
+        }
     }
 
     private static String maskBlocks(String source, List<Island> islands) {
