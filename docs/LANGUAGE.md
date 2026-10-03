@@ -196,7 +196,7 @@ end
 The explicit receiver form remains available:
 
 ```ores
-find(self Box)(int key) => self {
+find(self Box)(int key) : self {
   return self;
 }
 ```
@@ -438,7 +438,7 @@ pub actor fnc worker(int value) => int {
 shared actor Account {
   let int balance = 100;
 
-  pub fnc withdraw(int amount) => void {
+  pub withdraw(int amount) : void {
     self.balance = self.balance - amount;
     return;
   }
@@ -593,11 +593,11 @@ Only methods overload, and only by arity:
 
 ```ores
 define class Lookup as
-  find() => Option<int> {
+  find() : Option<int> {
     return None;
   }
 
-  find(int id) => Option<int> {
+  find(int id) : Option<int> {
     return Some(id);
   }
 end
@@ -637,7 +637,7 @@ Classes can expose a JavaScript-like iterator symbol:
 
 ```ores
 define class Bag as
-  [Symbol.iterator]() => Array<int> {
+  [Symbol.iterator]() : Array<int> {
     return arr[1, 2, 3];
   }
 end
@@ -822,7 +822,7 @@ Instance methods continue to omit `fnc`:
 
 ```ores
 define class Counter as
-  read() => int {
+  read() : int {
     return self.value;
   }
 end
