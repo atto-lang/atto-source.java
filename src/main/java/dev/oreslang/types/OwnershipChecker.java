@@ -347,6 +347,10 @@ public final class OwnershipChecker {
         if (expr instanceof Ast.CallExpr call) {
             return checkCall(call, scope);
         }
+        if (expr instanceof Ast.StaticMemberExpr member) {
+            checkExpr(member.receiver(), scope, false);
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
@@ -523,6 +527,22 @@ public final class OwnershipChecker {
             }
         }
 
+        if (call.callee() instanceof Ast.StaticMemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace) {
+            Ast.FunctionDecl fn = findFunction(namespace.name() + "." + qualified.member());
+            if (fn != null) {
+                CallSignature signature = specializeCall(
+                        fn.genericParameters(), fn.genericParameters(),
+                        fn.parameters(), fn.returnType(), call, scope, Map.of());
+                checkArguments(
+                        call.arguments(),
+                        signature.parameters(),
+                        scope,
+                        "function " + namespace.name() + "::" + qualified.member());
+                return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+            }
+        }
+
         if (call.callee() instanceof Ast.MemberExpr qualified
                 && qualified.receiver() instanceof Ast.NameExpr namespace) {
             Ast.FunctionDecl fn = findFunction(namespace.name() + "." + qualified.member());
@@ -536,6 +556,30 @@ public final class OwnershipChecker {
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
                 return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+            }
+        }
+
+        if (call.callee() instanceof Ast.StaticMemberExpr member) {
+            Ast.ClassDecl staticClass = classNamespaceOf(member.receiver(), scope);
+            if (staticClass != null) {
+                Ast.MethodDecl staticFunction = findStaticMethod(
+                        staticClass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                if (staticFunction != null) {
+                    CallSignature signature = specializeCall(
+                            staticFunction.genericParameters(),
+                            staticFunction.genericParameters(),
+                            staticFunction.parameters(),
+                            staticFunction.returnType(),
+                            call,
+                            scope,
+                            Map.of());
+                    checkArguments(
+                            call.arguments(),
+                            signature.parameters(),
+                            scope,
+                            "static function " + staticClass.name() + "::" + staticFunction.name());
+                    return new ValueInfo(signature.result(), kindOfType(signature.result()), null);
+                }
             }
         }
 
@@ -952,6 +996,7 @@ public final class OwnershipChecker {
             scanExpr(e.callee(), locals, outer, recursiveBinding, captures, false);
             for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.MemberExpr e) scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
+        else if (expr instanceof Ast.StaticMemberExpr e) scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.IndexExpr e) {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
@@ -978,6 +1023,11 @@ public final class OwnershipChecker {
             return findClass(name.name());
         }
         if (expr instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && scope.lookup(namespace.name()) == null) {
+            return findClass(namespace.name() + "." + member.member());
+        }
+        if (expr instanceof Ast.StaticMemberExpr member
                 && member.receiver() instanceof Ast.NameExpr namespace
                 && scope.lookup(namespace.name()) == null) {
             return findClass(namespace.name() + "." + member.member());
