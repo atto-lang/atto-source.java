@@ -685,6 +685,24 @@ Java_dev_oreslang_net_NativeSocketBridge_setSoTimeout(JNIEnv *env, jclass cls, j
     }
 }
 
+JNIEXPORT void JNICALL
+Java_dev_oreslang_net_NativeSocketBridge_setSendTimeout(
+        JNIEnv *env, jclass cls, jlong raw_fd, jint timeout_ms) {
+    (void)cls;
+    if (timeout_ms < 0) {
+        throw_with_message(env, "SO_SNDTIMEO cannot be negative");
+        return;
+    }
+    struct timeval value;
+    value.tv_sec = timeout_ms / 1000;
+    value.tv_usec = (timeout_ms % 1000) * 1000;
+    int fd = require_fd(env, raw_fd, "setsockopt(SO_SNDTIMEO)");
+    if (fd < 0) return;
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &value, sizeof(value)) < 0) {
+        throw_errno(env, "setsockopt(SO_SNDTIMEO)");
+    }
+}
+
 JNIEXPORT jint JNICALL
 Java_dev_oreslang_net_NativeSocketBridge_getSoTimeout(JNIEnv *env, jclass cls, jlong raw_fd) {
     (void)cls;
