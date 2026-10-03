@@ -9,6 +9,10 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.NativeNetBuiltin;
+import dev.oreslang.runtime.BuiltinCallable;
+import dev.oreslang.runtime.BuiltinValue;
+import dev.oreslang.net.OresNet;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresThread;
 import dev.oreslang.runtime.ActorRuntime;
@@ -366,6 +370,9 @@ public final class OresEvalRootNode extends RootNode {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
+                if (name.name().equals("native_net")) return new NativeNetBuiltin(context);
+                if (name.name().equals("net")) return OresNet.netPackage(context);
+                if (name.name().equals("http")) return OresNet.httpPackage(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Thread")) return new ThreadFacade(context);
@@ -595,6 +602,11 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name) {
+            if (receiver instanceof BuiltinValue builtin) {
+                Object value = builtin.member(name);
+                if (value instanceof BuiltinCallable callable) return (Invokable) callable::call;
+                return value;
+            }
             if (receiver instanceof StdioFacade stdio) {
                 return switch (name) {
                     case "print" -> (Invokable) stdio::print;
