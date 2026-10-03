@@ -2007,24 +2007,30 @@ public final class ActorRuntime implements AutoCloseable {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
             reserveActorSlot(kind);
 
-            ActorId id = ActorId.create();
-            ActorRef<M> ref = new ActorRef<>(id, kind);
+            ActorCell<M> cell = null;
             try {
-                ActorCell<M> cell = new ActorCell<>(
-                    ref,
-                    kind,
-                    effectivePolicy,
-                    behaviorFactory,
-                    trustedFactory,
-                    untrustedLimits,
-                    requestTransport,
-                    responseTransport);
+                ActorId id = ActorId.create();
+                ActorRef<M> ref = new ActorRef<>(id, kind);
+                cell = new ActorCell<>(
+                        ref,
+                        kind,
+                        effectivePolicy,
+                        behaviorFactory,
+                        trustedFactory,
+                        untrustedLimits,
+                        requestTransport,
+                        responseTransport);
                 actors.put(id, cell);
                 cell.armLifetimeLimit();
                 return ref;
             } catch (RuntimeException | Error failure) {
-                actorCount.decrementAndGet();
-                actorCountFor(kind).decrementAndGet();
+                if (cell != null) {
+                    actors.remove(cell.ref.id(), cell);
+                    if (cell.httpRequest != null) cell.httpRequest.cancelFromRuntime(failure);
+                    if (cell.httpResponse != null) cell.httpResponse.abortFromRuntime(failure);
+                    if (cell.memorySlice != null) cell.memorySlice.close();
+                }
+                releaseReservedActorSlot(kind);
                 throw failure;
             }
         }
@@ -2188,6 +2194,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
         actorCount.incrementAndGet();
         actorCountFor(kind).incrementAndGet();
+    }
+
+    private void releaseReservedActorSlot(ActorKind kind) {
+        int remaining = actorCount.decrementAndGet();
+        int domainRemaining = actorCountFor(kind).decrementAndGet();
+        if (remaining < 0 || domainRemaining < 0) {
+            if (remaining < 0) actorCount.incrementAndGet();
+            if (domainRemaining < 0) actorCountFor(kind).incrementAndGet();
+            throw new IllegalStateException("reserved actor slot accounting underflow");
+        }
     }
 
     private void unregisterActor(ActorCell<?> cell) {
