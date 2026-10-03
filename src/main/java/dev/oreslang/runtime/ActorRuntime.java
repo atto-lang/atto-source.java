@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -42,9 +43,10 @@ import java.util.function.UnaryOperator;
 /**
  * Host-side actor substrate used by the first interpreter.
  *
- * Oreslang follows the core Akka-style execution invariant: actors are
- * multiplexed over dispatcher threads, but one actor processes its mailbox
- * serially. Carrier-thread identity is never actor identity.
+ * Oreslang actors are multiplexed over dispatcher threads. Private actors and
+ * ordinary shared actors process serially by default. Shared actors may opt into
+ * compiler-checked concurrent turns whose entrypoint policy is SERIAL, PARALLEL,
+ * or EXCLUSIVE. Carrier-thread identity is never actor identity.
  *
  * PRIVATE and SHARED actors are deliberately bulkheaded onto different
  * dispatchers. Private actors also receive a confined logical memory slice;
@@ -111,6 +113,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public enum ActorKind { PRIVATE, SHARED }
+    public enum TurnMode { SERIAL, PARALLEL, EXCLUSIVE }
+
+    @FunctionalInterface
+    public interface TurnClassifier<M> {
+        TurnMode classify(M message);
+
+        static <M> TurnClassifier<M> serial() {
+            return ignored -> TurnMode.SERIAL;
+        }
+    }
 
     public record DispatcherConfig(
             int privateParallelism,
@@ -843,6 +855,34 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Compiler-facing shared actor path that permits multiple mailbox turns to
+     * execute concurrently. The classifier is evaluated for each admitted
+     * message. SERIAL turns share one serial gate, PARALLEL turns may overlap,
+     * and EXCLUSIVE turns form an actor-wide barrier.
+     */
+    public <M> ActorRef<M> spawnSharedConcurrent(
+            TurnClassifier<M> classifier,
+            BehaviorFactory<M> behaviorFactory) {
+        return spawnSharedConcurrent(defaultSpawnPolicy(), classifier, behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnSharedConcurrent(
+            IsolatePolicy policy,
+            TurnClassifier<M> classifier,
+            BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(classifier, "classifier");
+        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        policy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared concurrent actor spawn");
+        return spawnInternal(
+                ActorKind.SHARED,
+                policy,
+                behaviorFactory,
+                false,
+                classifier,
+                true);
+    }
+
+    /**
      * Explicit host-only escape hatch for context-aware shared actor factories
      * that intentionally capture host objects. Compiler lowering must never use
      * this path. Adversarial policies reject it.
@@ -1046,10 +1086,30 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
+        return spawnInternal(
+                kind,
+                policy,
+                behaviorFactory,
+                trustedFactory,
+                TurnClassifier.serial(),
+                false);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            TurnClassifier<M> turnClassifier,
+            boolean concurrentDispatch) {
         requireCallerRuntimeAffinity("spawn actors");
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
+        Objects.requireNonNull(turnClassifier);
+        if (concurrentDispatch && kind != ActorKind.SHARED) {
+            throw new IllegalArgumentException("concurrent mailbox turns are only supported for shared actors");
+        }
         requireWithinCeiling(policy);
         IsolatePolicy effectivePolicy = kind == ActorKind.PRIVATE
                 ? policy.withoutCapabilities(
@@ -1073,7 +1133,8 @@ public final class ActorRuntime implements AutoCloseable {
             ActorRef<M> ref = new ActorRef<>(id, kind);
             try {
                 ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
+                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory,
+                    turnClassifier, concurrentDispatch);
                 actors.put(id, cell);
                 return ref;
             } catch (RuntimeException | Error failure) {
@@ -1091,6 +1152,73 @@ public final class ActorRuntime implements AutoCloseable {
      * is rejected so a bounded dispatcher cannot be starved by callers waiting
      * on actors scheduled onto the same runtime.
      */
+    /**
+     * Asynchronous lowering target for source-level 'spawn actor_callable(...)'.
+     * Unlike invoke(), this is safe to use from an actor turn because it never
+     * waits for the child actor on the caller's dispatcher carrier.
+     */
+    public <M, R> CompletableFuture<R> invokeAsync(
+            ActorKind kind,
+            M message,
+            Invocation<M, R> invocation) {
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(invocation, "invocation");
+        requireCallerRuntimeAffinity("spawn actor callables");
+
+        IsolatePolicy policy = defaultSpawnPolicy();
+        CompletableFuture<R> completion = new CompletableFuture<>();
+        ActorRef<M> ref;
+        try {
+            ref = spawnInternal(
+                    kind,
+                    policy,
+                    factoryContext -> (delivered, turnContext) -> {
+                        try {
+                            @SuppressWarnings("unchecked")
+                            R frozen = (R) freeze(invocation.run(delivered, turnContext));
+                            completion.complete(frozen);
+                        } catch (VirtualMachineError fatal) {
+                            completion.completeExceptionally(fatal);
+                            throw fatal;
+                        } catch (ThreadDeath fatal) {
+                            completion.completeExceptionally(fatal);
+                            throw fatal;
+                        } catch (LinkageError fatal) {
+                            completion.completeExceptionally(fatal);
+                            throw fatal;
+                        } catch (Throwable failure) {
+                            completion.completeExceptionally(failure);
+                        } finally {
+                            turnContext.self().stop();
+                        }
+                    },
+                    true);
+            send(ref, message);
+        } catch (Throwable failure) {
+            completion.completeExceptionally(failure);
+            return completion;
+        }
+
+        long timeoutMillis;
+        try {
+            timeoutMillis = Math.max(1L, policy.maxWallTime().toMillis());
+        } catch (ArithmeticException overflow) {
+            timeoutMillis = Long.MAX_VALUE;
+        }
+
+        completion.orTimeout(timeoutMillis, TimeUnit.MILLISECONDS);
+        completion.whenComplete((ignored, failure) -> {
+            if (ref.isAlive()) {
+                try {
+                    stop(ref);
+                } catch (RuntimeException ignoredStopRace) {
+                    if (ref.isAlive() && failure == null) throw ignoredStopRace;
+                }
+            }
+        });
+        return completion;
+    }
+
     public <M, R> R invoke(
             ActorKind kind,
             M message,
@@ -2520,14 +2648,20 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
+        private final TurnClassifier<M> turnClassifier;
+        private final boolean concurrentDispatch;
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
+        private final AtomicInteger scheduledWorkers = new AtomicInteger();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final AtomicInteger queuedMessages = new AtomicInteger();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
+        private final ReentrantReadWriteLock executionGate = new ReentrantReadWriteLock(true);
+        private final ReentrantLock serialTurnGate = new ReentrantLock(true);
+        private final Object behaviorInitLock = new Object();
         private int activeTurns;
         private boolean finalized;
         private Behavior<M> behavior;
@@ -2537,12 +2671,16 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
-                boolean trustedFactory) {
+                boolean trustedFactory,
+                TurnClassifier<M> turnClassifier,
+                boolean concurrentDispatch) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
+            this.turnClassifier = turnClassifier;
+            this.concurrentDispatch = concurrentDispatch;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -2653,6 +2791,10 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void schedule() {
             if (stopped.get() || closed.get()) return;
+            if (concurrentDispatch) {
+                scheduleConcurrentWorkers();
+                return;
+            }
             if (!scheduled.compareAndSet(false, true)) return;
             try {
                 dispatcherFor(kind).execute(this::runBatch);
@@ -2660,6 +2802,132 @@ public final class ActorRuntime implements AutoCloseable {
                 scheduled.set(false);
                 stop();
                 if (!closed.get()) throw rejected;
+            }
+        }
+
+        private void scheduleConcurrentWorkers() {
+            if (kind != ActorKind.SHARED) {
+                throw new IllegalStateException("concurrent dispatcher reached non-shared actor");
+            }
+            int desired = Math.min(
+                    dispatcherConfig.sharedParallelism(),
+                    Math.max(1, queuedMessages.get()));
+            while (!stopped.get() && !closed.get()) {
+                int current = scheduledWorkers.get();
+                if (current >= desired) return;
+                if (!scheduledWorkers.compareAndSet(current, current + 1)) continue;
+                try {
+                    dispatcherFor(kind).execute(this::runConcurrentBatch);
+                } catch (RejectedExecutionException rejected) {
+                    scheduledWorkers.decrementAndGet();
+                    stop();
+                    if (!closed.get()) throw rejected;
+                }
+            }
+        }
+
+        private void runConcurrentBatch() {
+            ACTOR_CARRIER.set(Boolean.TRUE);
+            try {
+                turnExecutor.execute(this::runConcurrentBatchEntered);
+            } catch (Throwable failure) {
+                fail(failure);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                ACTOR_CARRIER.remove();
+                int remaining = scheduledWorkers.decrementAndGet();
+                if (remaining < 0) {
+                    scheduledWorkers.incrementAndGet();
+                    throw new IllegalStateException("actor concurrent worker accounting underflow for " + ref.id());
+                }
+                if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
+                    scheduleConcurrentWorkers();
+                }
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        private void runConcurrentBatchEntered() {
+            int processed = 0;
+            while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                MessageEnvelope envelope = mailbox.poll();
+                if (envelope == null) break;
+                releaseMailboxSlot();
+
+                M message = (M) envelope.value();
+                TurnMode mode = Objects.requireNonNull(
+                        turnClassifier.classify(message),
+                        "actor turn classifier returned null");
+
+                java.util.concurrent.locks.Lock actorGate =
+                        mode == TurnMode.EXCLUSIVE
+                                ? executionGate.writeLock()
+                                : executionGate.readLock();
+
+                actorGate.lock();
+                boolean serialLocked = false;
+                try {
+                    if (mode == TurnMode.SERIAL) {
+                        serialTurnGate.lock();
+                        serialLocked = true;
+                    }
+                    runConcurrentEnvelope(message, envelope);
+                } finally {
+                    if (serialLocked) serialTurnGate.unlock();
+                    actorGate.unlock();
+                }
+                processed++;
+            }
+        }
+
+        private ActorContext<M> actorContext() {
+            return new ActorContext<>() {
+                @Override public ActorRef<M> self() { return ref; }
+                @Override public ActorRuntime runtime() { return ActorRuntime.this; }
+                @Override public IsolatePolicy policy() { return policy; }
+                @Override public ActorKind kind() { return kind; }
+                @Override public Optional<ActorMemorySlice> privateMemory() {
+                    return Optional.ofNullable(memorySlice);
+                }
+            };
+        }
+
+        private Behavior<M> ensureBehavior(ActorContext<M> context) throws Exception {
+            Behavior<M> current = behavior;
+            if (current != null) return current;
+            synchronized (behaviorInitLock) {
+                if (behavior != null) return behavior;
+                Behavior<M> created = Objects.requireNonNull(
+                        behaviorFactory.create(context),
+                        "actor behaviorFactory returned null");
+                if (kind == ActorKind.PRIVATE && !trustedFactory) {
+                    validatePrivateBehaviorState(ref.id(), created);
+                }
+                behavior = created;
+                return created;
+            }
+        }
+
+        private void runConcurrentEnvelope(M message, MessageEnvelope envelope) {
+            currentActor.set(this);
+            CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
+                    ActorRuntime.this, ref.id(), kind, policy, executionDomain));
+            boolean turnActive = beginTurn();
+            try (envelope) {
+                if (!turnActive) return;
+                ActorContext<M> context = actorContext();
+                ensureBehavior(context).onMessage(message, context);
+            } catch (Throwable failure) {
+                fail(failure);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                if (turnActive) endTurn();
+                CURRENT_ACTOR_EXECUTION.remove();
+                currentActor.remove();
             }
         }
 
@@ -2687,25 +2955,8 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 if (!turnActive) return;
 
-                ActorContext<M> context = new ActorContext<>() {
-                    @Override public ActorRef<M> self() { return ref; }
-                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
-                    @Override public IsolatePolicy policy() { return policy; }
-                    @Override public ActorKind kind() { return kind; }
-                    @Override public Optional<ActorMemorySlice> privateMemory() {
-                        return Optional.ofNullable(memorySlice);
-                    }
-                };
-
-                if (behavior == null) {
-                    Behavior<M> created = Objects.requireNonNull(
-                            behaviorFactory.create(context),
-                            "actor behaviorFactory returned null");
-                    if (kind == ActorKind.PRIVATE && !trustedFactory) {
-                        validatePrivateBehaviorState(ref.id(), created);
-                    }
-                    behavior = created;
-                }
+                ActorContext<M> context = actorContext();
+                ensureBehavior(context);
 
                 int processed = 0;
                 while (processed < dispatcherConfig.throughput() && !stopped.get()) {
