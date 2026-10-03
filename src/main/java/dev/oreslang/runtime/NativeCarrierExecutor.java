@@ -172,6 +172,10 @@ public final class NativeCarrierExecutor {
     }
 
     public List<Runnable> shutdownNow() {
+        if (CURRENT_EXECUTOR.get() == this) {
+            throw new IllegalStateException(
+                    "native carrier executor cannot be synchronously shut down from one of its own carriers");
+        }
         if (!shutdown.compareAndSet(false, true)) return List.of();
         ArrayList<Runnable> abandoned = new ArrayList<>();
         queue.drainTo(abandoned);
