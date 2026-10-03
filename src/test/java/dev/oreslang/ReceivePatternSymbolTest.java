@@ -305,6 +305,8 @@ final class ReceivePatternSymbolTest {
     @Test
     void symbolNamesAreBoundedAndIdentifierShaped() {
         assertEquals(Ast.Symbol.MAX_NAME_LENGTH, OresSymbol.MAX_NAME_LENGTH);
+        assertTrue(OresSymbol.internedLimit() > 0);
+        assertTrue(OresSymbol.internedLimit() <= OresSymbol.MAX_INTERNED_SYMBOLS);
         assertThrows(IllegalArgumentException.class, () -> OresSymbol.of(""));
         assertThrows(IllegalArgumentException.class, () -> OresSymbol.of("not valid"));
         assertThrows(IllegalArgumentException.class,
