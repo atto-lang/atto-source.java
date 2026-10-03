@@ -230,10 +230,13 @@ public final class Parser {
             if (mods.isStatic) {
                 consume(FNC, "static class functions must be declared with 'static fnc'");
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-            } else if (check(FNC)) {
-                throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
+                methods.add(parseStaticFunction(annotations, mods));
+                continue;
             }
-            methods.add(parseMethod(annotations, mods));
+            if (check(FNC) || check(ROUTINE)) {
+                throw error(peek(), "instance methods omit 'fnc'/'routine'; use method syntax 'name(...) : ReturnType { ... }'");
+            }
+            methods.add(parseInstanceMethod(annotations, mods));
         }
         consume(END, "expected 'end' to close class " + name);
         return new Ast.ClassDecl(name, isAbstract, Ast.ActorKind.NONE, generics, parents, interfaces, fields, methods);
@@ -268,10 +271,13 @@ public final class Parser {
             if (mods.isAbstract) throw error(peek(), "actor methods cannot be abstract");
             if (mods.isStatic) {
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
-            } else {
-                match(FNC);
+                methods.add(parseStaticFunction(annotations, mods));
+                continue;
             }
-            methods.add(parseMethod(annotations, mods));
+            if (check(FNC) || check(ROUTINE)) {
+                throw error(peek(), "actor instance methods omit 'fnc'/'routine'; use method syntax 'name(...) : ReturnType { ... }'");
+            }
+            methods.add(parseInstanceMethod(annotations, mods));
         }
 
         consume(terminator, braceStyle
@@ -363,14 +369,26 @@ public final class Parser {
         return new Ast.FieldDecl(name, visibility, kind, type, initializer);
     }
 
-    private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
+    private Ast.MethodDecl parseStaticFunction(List<Ast.Annotation> annotations, Modifiers mods) {
+        String name = parseMethodName();
+        List<String> generics = parseGenericParameters();
+        consume(LPAREN, "expected '(' after static function name");
+        if (check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
+        List<Ast.Param> params = parseParametersUntil(RPAREN);
+        consume(RPAREN, "expected ')' after static function parameters");
+        Ast.TypeRef returnType = parseReturnType(annotations);
+        List<Ast.Stmt> body = parseBlock();
+        return new Ast.MethodDecl(name, mods.visibility, true, false, mods.async,
+                null, generics, params, returnType, annotations, body);
+    }
+
+    private Ast.MethodDecl parseInstanceMethod(List<Ast.Annotation> annotations, Modifiers mods) {
         String name = parseMethodName();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after method name");
 
         Ast.TypeRef receiverType = null;
         List<Ast.Param> params;
-        if (mods.isStatic && check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
         if (match(SELF)) {
             receiverType = parseTypeRef();
             consume(RPAREN, "expected ')' after explicit self receiver");
@@ -382,14 +400,30 @@ public final class Parser {
             consume(RPAREN, "expected ')' after method parameters");
         }
 
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        if (check(ARROW) || check(FAT_ARROW)) {
+            throw error(peek(), "instance methods do not use '->' or '=>'; write 'name(...) : ReturnType { ... }'");
+        }
+        consume(COLON, "expected ':' before instance method return type; write 'name(...) : ReturnType { ... }'");
+        Ast.TypeRef returnType = parseTypeRef();
+        validateAnnotatedReturnType(annotations, returnType);
+
         List<Ast.Stmt> body;
         if (mods.isAbstract) {
             consumeStatementTerminator("abstract method should end with ';'");
             body = List.of();
         } else body = parseBlock();
-        return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
+        return new Ast.MethodDecl(name, mods.visibility, false, mods.isAbstract, mods.async,
                 receiverType, generics, params, returnType, annotations, body);
+    }
+
+    private void validateAnnotatedReturnType(List<Ast.Annotation> annotations, Ast.TypeRef declared) {
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("Ret")) continue;
+            if (annotation.arguments().size() != 1) throw error(previous(), "@Ret requires exactly one type");
+            if (!sameType(annotation.arguments().getFirst(), declared)) {
+                throw error(previous(), "@Ret type and ':' method return type disagree");
+            }
+        }
     }
 
     private String parseMethodName() {
