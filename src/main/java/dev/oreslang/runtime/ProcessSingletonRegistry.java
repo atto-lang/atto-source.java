@@ -569,56 +569,59 @@ public final class ProcessSingletonRegistry {
                     return;
                 }
 
-                if (!request.begin()) continue;
-                if (request.reply.isDone()) {
-                    request.finish();
-                    continue;
-                }
-                Throwable failure = terminalFailure;
-                if (failure != null) {
-                    request.reply.completeExceptionally(failure);
-                    request.finish();
-                    continue;
-                }
-                if (expired(request.deadlineNanos)) {
-                    request.reply.completeExceptionally(
-                            new TimeoutException("singleton call expired in mailbox for " + diagnosticId));
-                    request.finish();
-                    continue;
-                }
-
-                accessLock.lock();
                 try {
-                    String previousCell = CURRENT_CELL.get();
-                    Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
-                    Request previousRequest = CURRENT_REQUEST.get();
-                    CURRENT_CELL.set(key);
-                    CURRENT_DEADLINE_NANOS.set(request.deadlineNanos);
-                    CURRENT_REQUEST.set(request);
-                    try {
-                        checkExecutionBudget();
-                        @SuppressWarnings("unchecked")
-                        List<Object> ownedArguments =
-                                (List<Object>) ActorRuntime.materializeFrozen(request.arguments);
-                        checkExecutionBudget();
-                        Object result = request.operation.apply(state, ownedArguments);
-                        checkExecutionBudget();
-                        if (!request.reply.isDone()) request.reply.complete(ActorRuntime.freeze(result));
-                    } catch (VirtualMachineError fatal) {
-                        request.reply.completeExceptionally(fatal);
-                        failTerminal(fatal);
-                        return;
-                    } catch (Throwable operationFailure) {
-                        request.reply.completeExceptionally(operationFailure);
-                    } finally {
+                    if (!request.begin()) continue;
+                    if (request.reply.isDone()) {
                         request.finish();
-                        restoreThreadLocal(CURRENT_CELL, previousCell);
-                        restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
-                        restoreThreadLocal(CURRENT_REQUEST, previousRequest);
+                        continue;
+                    }
+                    Throwable failure = terminalFailure;
+                    if (failure != null) {
+                        request.reply.completeExceptionally(failure);
+                        request.finish();
+                        continue;
+                    }
+                    if (expired(request.deadlineNanos)) {
+                        request.reply.completeExceptionally(
+                                new TimeoutException("singleton call expired in mailbox for " + diagnosticId));
+                        request.finish();
+                        continue;
+                    }
+
+                    accessLock.lock();
+                    try {
+                        String previousCell = CURRENT_CELL.get();
+                        Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
+                        Request previousRequest = CURRENT_REQUEST.get();
+                        CURRENT_CELL.set(key);
+                        CURRENT_DEADLINE_NANOS.set(request.deadlineNanos);
+                        CURRENT_REQUEST.set(request);
+                        try {
+                            checkExecutionBudget();
+                            @SuppressWarnings("unchecked")
+                            List<Object> ownedArguments =
+                                    (List<Object>) ActorRuntime.materializeFrozen(request.arguments);
+                            checkExecutionBudget();
+                            Object result = request.operation.apply(state, ownedArguments);
+                            checkExecutionBudget();
+                            if (!request.reply.isDone()) request.reply.complete(ActorRuntime.freeze(result));
+                        } catch (VirtualMachineError fatal) {
+                            request.reply.completeExceptionally(fatal);
+                            failTerminal(fatal);
+                            return;
+                        } catch (Throwable operationFailure) {
+                            request.reply.completeExceptionally(operationFailure);
+                        } finally {
+                            request.finish();
+                            restoreThreadLocal(CURRENT_CELL, previousCell);
+                            restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
+                            restoreThreadLocal(CURRENT_REQUEST, previousRequest);
+                        }
+                    } finally {
+                        accessLock.unlock();
                     }
                 } finally {
                     mailboxTurnPending.set(false);
-                    accessLock.unlock();
                 }
             }
         }
