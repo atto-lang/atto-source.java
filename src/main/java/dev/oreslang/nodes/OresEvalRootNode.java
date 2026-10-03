@@ -337,11 +337,16 @@ public final class OresEvalRootNode extends RootNode {
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
 
-            boolean stateLocked = receiver.klass.actorKind() != Ast.ActorKind.NONE
+            boolean actorReceiver = receiver.klass.actorKind() != Ast.ActorKind.NONE;
+            boolean stateLocked = actorReceiver
                     && method.actorMethodKind() != Ast.ActorMethodKind.PARALLEL;
             Ast.ActorMethodKind previousActorMethodKind = activeActorMethodKind.get();
+            Ast.ActorMethodKind effectiveActorMethodKind =
+                    actorReceiver && method.actorMethodKind() != Ast.ActorMethodKind.NONE
+                            ? method.actorMethodKind()
+                            : previousActorMethodKind;
             if (stateLocked) receiver.actorStateLock.lock();
-            activeActorMethodKind.set(method.actorMethodKind());
+            activeActorMethodKind.set(effectiveActorMethodKind);
             try {
                 Env env = new Env(null);
                 if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
