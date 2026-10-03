@@ -308,10 +308,13 @@ struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_
    - If two direct parent branches expose the same method name + arity, the
      subclass must provide a compatible override, including classic diamonds
      where both branches inherit one grandparent implementation.
+   - A resolving override must be an explicit public subclass method; private
+     methods and trait-composed methods do not resolve concrete-parent ambiguity.
    - A resolving override selects a direct branch with super.Parent.method(...).
      Unqualified super.method(...) is legal only with exactly one direct parent.
    - Inherited field-name collisions across parent branches are compile errors;
-     duplicated base state is never silently merged or selected by parent order.
+     subclasses also cannot shadow/redeclare inherited state fields. Duplicated
+     base state is never silently merged, replaced, or selected by parent order.
    - self is an immutable receiver borrow and cannot be rebound.
    - Parameters are immutable by default. Type "mut" name grants mutation of an
      owned parameter inside the callee, e.g. Bar mut b.
