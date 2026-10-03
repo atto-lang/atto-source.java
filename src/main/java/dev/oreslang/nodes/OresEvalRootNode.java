@@ -11,6 +11,10 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.math.ElectricalMath;
+import dev.oreslang.runtime.math.OresComplex;
+import dev.oreslang.runtime.math.OresMatrix;
+import dev.oreslang.runtime.math.OresVector;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -118,7 +122,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (imported.wildcard()) {
                     namespaceImports.put(imported.namespace(), imported);
                 } else {
-                    for (String name : imported.names()) namedImports.put(name, imported);
+                    for (String importedName : imported.names()) {
+                        namedImports.put(imported.localName(importedName), imported);
+                    }
                 }
             }
         }
@@ -342,7 +348,7 @@ public final class OresEvalRootNode extends RootNode {
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
-                if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Imaginary imaginary) return new OresComplex(0.0, imaginary.coefficient());
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -353,6 +359,28 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("matrix")) return (Invokable) args -> {
+                    requireOne(args, "matrix");
+                    if (!(args.getFirst() instanceof List<?> rows)) {
+                        throw new IllegalArgumentException("matrix expects a list of rows");
+                    }
+                    return OresMatrix.fromRows(rows);
+                };
+                if (name.name().equals("vector")) return (Invokable) args -> {
+                    requireOne(args, "vector");
+                    if (!(args.getFirst() instanceof List<?> values)) {
+                        throw new IllegalArgumentException("vector expects a list of numeric values");
+                    }
+                    return OresVector.fromValues(values);
+                };
+                if (name.name().equals("complex")) return (Invokable) args -> {
+                    if (args.size() != 2 || !(args.get(0) instanceof Number real) || !(args.get(1) instanceof Number imaginary)) {
+                        throw new IllegalArgumentException("complex(real, imag) expects two real numeric values");
+                    }
+                    return new OresComplex(real.doubleValue(), imaginary.doubleValue());
+                };
+                if (name.name().equals("math")) return MathFacade.INSTANCE;
+                if (name.name().equals("ee")) return ElectricalFacade.INSTANCE;
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -576,6 +604,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof OresComplex complex) return complexMember(complex, name);
+            if (receiver instanceof OresMatrix matrix) return matrixMember(matrix, name);
+            if (receiver instanceof OresVector vector) return vectorMember(vector, name);
+            if (receiver instanceof MathFacade) return mathMember(name);
+            if (receiver instanceof ElectricalFacade) return electricalMember(name);
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
@@ -606,6 +639,150 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object complexMember(OresComplex value, String name) {
+            return switch (name) {
+                case "real" -> value.real();
+                case "imag", "imaginary" -> value.imaginary();
+                case "abs" -> (Invokable) args -> { requireZero(args, "complex.abs"); return value.abs(); };
+                case "phase" -> (Invokable) args -> { requireZero(args, "complex.phase"); return value.phase(); };
+                case "conj", "conjugate" -> (Invokable) args -> { requireZero(args, "complex.conj"); return value.conjugate(); };
+                case "sqrt" -> (Invokable) args -> { requireZero(args, "complex.sqrt"); return value.sqrt(); };
+                case "exp" -> (Invokable) args -> { requireZero(args, "complex.exp"); return value.exp(); };
+                case "log" -> (Invokable) args -> { requireZero(args, "complex.log"); return value.log(); };
+                case "sin" -> (Invokable) args -> { requireZero(args, "complex.sin"); return value.sin(); };
+                case "cos" -> (Invokable) args -> { requireZero(args, "complex.cos"); return value.cos(); };
+                default -> throw new IllegalArgumentException("unknown complex member " + name);
+            };
+        }
+
+        private Object matrixMember(OresMatrix value, String name) {
+            return switch (name) {
+                case "rows" -> (long) value.rows();
+                case "cols" -> (long) value.cols();
+                case "transpose" -> (Invokable) args -> { requireZero(args, "Matrix.transpose"); return value.transpose(); };
+                case "hermitian" -> (Invokable) args -> { requireZero(args, "Matrix.hermitian"); return value.hermitian(); };
+                case "inverse" -> (Invokable) args -> { requireZero(args, "Matrix.inverse"); return value.inverse(); };
+                case "pinv" -> (Invokable) args -> { requireZero(args, "Matrix.pinv"); return value.pseudoInverse(); };
+                case "solve" -> (Invokable) args -> {
+                    requireOne(args, "Matrix.solve");
+                    return value.solve(requireMatrix(args.getFirst(), "Matrix.solve"));
+                };
+                case "determinant" -> (Invokable) args -> { requireZero(args, "Matrix.determinant"); return value.determinant(); };
+                case "trace" -> (Invokable) args -> { requireZero(args, "Matrix.trace"); return value.trace(); };
+                case "norm" -> (Invokable) args -> { requireZero(args, "Matrix.norm"); return value.norm(); };
+                case "condition" -> (Invokable) args -> { requireZero(args, "Matrix.condition"); return value.condition(); };
+                case "diagonal" -> (Invokable) args -> { requireZero(args, "Matrix.diagonal"); return value.diagonal(); };
+                case "get" -> (Invokable) args -> {
+                    if (args.size() != 2 || !(args.get(0) instanceof Number row) || !(args.get(1) instanceof Number col)) {
+                        throw new IllegalArgumentException("Matrix.get(row, col) expects two integer indexes");
+                    }
+                    return value.get(Math.toIntExact(row.longValue()), Math.toIntExact(col.longValue()));
+                };
+                default -> throw new IllegalArgumentException("unknown Matrix member " + name);
+            };
+        }
+
+        private Object vectorMember(OresVector value, String name) {
+            return switch (name) {
+                case "length" -> (long) value.length();
+                case "dot" -> (Invokable) args -> {
+                    requireOne(args, "Vector.dot");
+                    return value.dot(requireVector(args.getFirst(), "Vector.dot"));
+                };
+                case "norm" -> (Invokable) args -> { requireZero(args, "Vector.norm"); return value.norm(); };
+                case "outer" -> (Invokable) args -> {
+                    requireOne(args, "Vector.outer");
+                    return value.outer(requireVector(args.getFirst(), "Vector.outer"));
+                };
+                case "get" -> (Invokable) args -> {
+                    if (args.size() != 1 || !(args.getFirst() instanceof Number index)) {
+                        throw new IllegalArgumentException("Vector.get(index) expects one integer index");
+                    }
+                    return value.get(Math.toIntExact(index.longValue()));
+                };
+                default -> throw new IllegalArgumentException("unknown Vector member " + name);
+            };
+        }
+
+        private Object mathMember(String name) {
+            return switch (name) {
+                case "pi" -> Math.PI;
+                case "e" -> Math.E;
+                case "i" -> OresComplex.I;
+                case "identity" -> (Invokable) args -> {
+                    if (args.size() != 1 || !(args.getFirst() instanceof Number size)) {
+                        throw new IllegalArgumentException("math.identity(size) expects one integer size");
+                    }
+                    return OresMatrix.identity(Math.toIntExact(size.longValue()));
+                };
+                case "polar" -> (Invokable) args -> {
+                    double[] pair = requireTwoReals(args, "math.polar");
+                    return OresComplex.polar(pair[0], pair[1]);
+                };
+                case "abs" -> (Invokable) args -> { requireOne(args, "math.abs"); return OresComplex.of(args.getFirst()).abs(); };
+                case "phase" -> (Invokable) args -> { requireOne(args, "math.phase"); return OresComplex.of(args.getFirst()).phase(); };
+                case "conj" -> (Invokable) args -> { requireOne(args, "math.conj"); return OresComplex.of(args.getFirst()).conjugate(); };
+                case "sqrt" -> (Invokable) args -> { requireOne(args, "math.sqrt"); return OresComplex.of(args.getFirst()).sqrt(); };
+                case "exp" -> (Invokable) args -> { requireOne(args, "math.exp"); return OresComplex.of(args.getFirst()).exp(); };
+                case "log" -> (Invokable) args -> { requireOne(args, "math.log"); return OresComplex.of(args.getFirst()).log(); };
+                case "sin" -> (Invokable) args -> { requireOne(args, "math.sin"); return OresComplex.of(args.getFirst()).sin(); };
+                case "cos" -> (Invokable) args -> { requireOne(args, "math.cos"); return OresComplex.of(args.getFirst()).cos(); };
+                default -> throw new IllegalArgumentException("unknown math member " + name);
+            };
+        }
+
+        private Object electricalMember(String name) {
+            return switch (name) {
+                case "omega" -> (Invokable) args -> {
+                    requireOne(args, "ee.omega");
+                    return ElectricalMath.angularFrequency(requireReal(args.getFirst(), "ee.omega"));
+                };
+                case "phasor" -> (Invokable) args -> {
+                    double[] pair = requireTwoReals(args, "ee.phasor");
+                    return ElectricalMath.phasor(pair[0], pair[1]);
+                };
+                case "phasor_deg" -> (Invokable) args -> {
+                    double[] pair = requireTwoReals(args, "ee.phasor_deg");
+                    return ElectricalMath.phasorDegrees(pair[0], pair[1]);
+                };
+                case "z_r" -> (Invokable) args -> {
+                    requireOne(args, "ee.z_r");
+                    return ElectricalMath.resistance(requireReal(args.getFirst(), "ee.z_r"));
+                };
+                case "z_l" -> (Invokable) args -> {
+                    double[] pair = requireTwoReals(args, "ee.z_l");
+                    return ElectricalMath.inductiveImpedance(pair[0], pair[1]);
+                };
+                case "z_c" -> (Invokable) args -> {
+                    double[] pair = requireTwoReals(args, "ee.z_c");
+                    return ElectricalMath.capacitiveImpedance(pair[0], pair[1]);
+                };
+                case "admittance" -> (Invokable) args -> {
+                    requireOne(args, "ee.admittance");
+                    return ElectricalMath.admittance(args.getFirst());
+                };
+                case "parallel" -> (Invokable) args -> {
+                    if (args.size() != 2) throw new IllegalArgumentException("ee.parallel expects two impedances");
+                    return ElectricalMath.parallel(args.get(0), args.get(1));
+                };
+                case "db20" -> (Invokable) args -> { requireOne(args, "ee.db20"); return ElectricalMath.db20(requireReal(args.getFirst(), "ee.db20")); };
+                case "db10" -> (Invokable) args -> { requireOne(args, "ee.db10"); return ElectricalMath.db10(requireReal(args.getFirst(), "ee.db10")); };
+                case "from_db20" -> (Invokable) args -> { requireOne(args, "ee.from_db20"); return ElectricalMath.fromDb20(requireReal(args.getFirst(), "ee.from_db20")); };
+                case "from_db10" -> (Invokable) args -> { requireOne(args, "ee.from_db10"); return ElectricalMath.fromDb10(requireReal(args.getFirst(), "ee.from_db10")); };
+                default -> throw new IllegalArgumentException("unknown ee member " + name);
+            };
+        }
+
+        private double[] requireTwoReals(List<Object> args, String api) {
+            if (args.size() != 2) throw new IllegalArgumentException(api + " expects two real numeric values");
+            return new double[]{requireReal(args.get(0), api), requireReal(args.get(1), api)};
+        }
+
+        private double requireReal(Object value, String api) {
+            if (!(value instanceof Number number)) throw new IllegalArgumentException(api + " expects real numeric values");
+            return number.doubleValue();
         }
 
         private Object optionMember(OptionValue option, String name) {
@@ -767,7 +944,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object importedValue(String name) {
             Ast.ImportDecl direct = namedImports.get(name);
-            if (direct != null) return importedTarget(direct).exportValue(direct.kind(), name);
+            if (direct != null) {
+                String importedName = direct.importedName(name);
+                if (importedName == null) throw new IllegalStateException("malformed import alias for '" + name + "'");
+                return importedTarget(direct).exportValue(direct.kind(), importedName);
+            }
             Ast.ImportDecl namespace = namespaceImports.get(name);
             if (namespace != null) return new ImportedNamespace(importedTarget(namespace), namespace.kind());
             return Env.MISSING;
@@ -973,6 +1154,7 @@ public final class OresEvalRootNode extends RootNode {
             return switch (op) {
                 case "+" -> add(left, right); case "-" -> numeric(left, right, '-'); case "*" -> numeric(left, right, '*');
                 case "/" -> numeric(left, right, '/'); case "%" -> numeric(left, right, '%');
+                case "@" -> matmul(left, right);
                 case "==" -> Objects.equals(left, right); case "!=" -> !Objects.equals(left, right);
                 case "<" -> compare(left, right) < 0; case "<=" -> compare(left, right) <= 0;
                 case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
@@ -992,10 +1174,43 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object numeric(Object left, Object right, char op) {
-            if (left instanceof Complex || right instanceof Complex) {
-                Complex a = asComplex(left), b = asComplex(right);
+            if (left instanceof OresMatrix matrix) {
                 return switch (op) {
-                    case '+' -> a.add(b); case '-' -> a.sub(b); case '*' -> a.mul(b); case '/' -> a.div(b);
+                    case '+' -> matrix.add(requireMatrix(right, "matrix addition"));
+                    case '-' -> matrix.subtract(requireMatrix(right, "matrix subtraction"));
+                    case '*' -> isScalar(right) ? matrix.scale(right)
+                            : throw new IllegalArgumentException("matrix multiplication uses '@'; '*' is scalar scaling");
+                    case '/' -> isScalar(right) ? matrix.divide(right)
+                            : throw new IllegalArgumentException("matrix division requires a scalar divisor");
+                    default -> throw new IllegalArgumentException("operator " + op + " is not supported for matrices");
+                };
+            }
+            if (right instanceof OresMatrix matrix) {
+                if (op == '*' && isScalar(left)) return matrix.scale(left);
+                throw new IllegalArgumentException("operator " + op + " is not supported for scalar/matrix operands");
+            }
+            if (left instanceof OresVector vector) {
+                return switch (op) {
+                    case '+' -> vector.add(requireVector(right, "vector addition"));
+                    case '-' -> vector.subtract(requireVector(right, "vector subtraction"));
+                    case '*' -> isScalar(right) ? vector.scale(right)
+                            : throw new IllegalArgumentException("vector multiplication uses explicit dot/outer operations; '*' is scalar scaling");
+                    case '/' -> isScalar(right) ? vector.scale(OresComplex.of(right).reciprocal())
+                            : throw new IllegalArgumentException("vector division requires a scalar divisor");
+                    default -> throw new IllegalArgumentException("operator " + op + " is not supported for vectors");
+                };
+            }
+            if (right instanceof OresVector vector) {
+                if (op == '*' && isScalar(left)) return vector.scale(left);
+                throw new IllegalArgumentException("operator " + op + " is not supported for scalar/vector operands");
+            }
+            if (left instanceof OresComplex || right instanceof OresComplex) {
+                OresComplex a = asComplex(left), b = asComplex(right);
+                return switch (op) {
+                    case '+' -> a.add(b);
+                    case '-' -> a.subtract(b);
+                    case '*' -> a.multiply(b);
+                    case '/' -> a.divide(b);
                     default -> throw new IllegalArgumentException("operator " + op + " is not supported for complex numbers");
                 };
             }
@@ -1007,6 +1222,29 @@ public final class OresEvalRootNode extends RootNode {
             }
             double x = a.doubleValue(), y = b.doubleValue();
             return switch (op) { case '+' -> x + y; case '-' -> x - y; case '*' -> x * y; case '/' -> x / y; case '%' -> x % y; default -> throw new IllegalArgumentException("bad numeric operator"); };
+        }
+
+        private Object matmul(Object left, Object right) {
+            if (!(left instanceof OresMatrix matrix)) {
+                throw new IllegalArgumentException("'@' left operand must be a Matrix");
+            }
+            if (right instanceof OresMatrix other) return matrix.matmul(other);
+            if (right instanceof OresVector vector) return matrix.matmul(vector);
+            throw new IllegalArgumentException("'@' right operand must be a Matrix or Vector");
+        }
+
+        private boolean isScalar(Object value) {
+            return value instanceof Number || value instanceof OresComplex;
+        }
+
+        private OresMatrix requireMatrix(Object value, String operation) {
+            if (value instanceof OresMatrix matrix) return matrix;
+            throw new IllegalArgumentException(operation + " requires another Matrix");
+        }
+
+        private OresVector requireVector(Object value, String operation) {
+            if (value instanceof OresVector vector) return vector;
+            throw new IllegalArgumentException(operation + " requires another Vector");
         }
 
         private long integralLong(Object value) {
@@ -1025,7 +1263,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object negate(Object value) {
-            if (value instanceof Complex c) return new Complex(-c.real, -c.imaginary);
+            if (value instanceof OresComplex complex) return complex.negate();
             if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return -((Number) value).longValue();
             if (value instanceof Number number) return -number.doubleValue();
             throw new IllegalArgumentException("unary - requires a number");
@@ -1039,7 +1277,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean truth(Object value) { if (value instanceof Boolean b) return b; throw new IllegalArgumentException("condition must be bool"); }
         private boolean isIntegral(Number value) { return value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long; }
-        private Complex asComplex(Object value) { if (value instanceof Complex c) return c; if (value instanceof Number n) return new Complex(n.doubleValue(),0); throw new IllegalArgumentException("value is not numeric"); }
+        private OresComplex asComplex(Object value) { return OresComplex.of(value); }
         private Object shapeReturnedValue(Ast.TypeRef declared, Object value, String callable) {
             return shapeReturnedValue(declared, value, callable, new LinkedHashSet<>());
         }
@@ -1125,7 +1363,7 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (java.util.Set.of("complex64","complex128","complex").contains(declared.name())) {
-                if (!(value instanceof Number) && !(value instanceof Complex)) throw returnTypeMismatch(callable, declared, value);
+                if (!(value instanceof Number) && !(value instanceof OresComplex)) throw returnTypeMismatch(callable, declared, value);
                 return value;
             }
             if (declared.name().equals("void")) {
@@ -1162,7 +1400,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
-        private String display(Object value) { return value instanceof Complex c ? c.toString() : String.valueOf(value); }
+        private String display(Object value) { return value instanceof OresComplex complex ? complex.toString() : String.valueOf(value); }
     }
 
     @FunctionalInterface private interface Invokable { Object call(List<Object> arguments); }
@@ -1277,15 +1515,6 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) implements OresMutex.SharedState {
-        @Override public Iterable<?> sharedStateChildren(){return List.of();}
-        private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
-        private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
-        private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
-        private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
-        @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
-    }
-
     private static final class OresObject implements OresMutex.SharedState {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
@@ -1299,6 +1528,8 @@ public final class OresEvalRootNode extends RootNode {
         @Override public String toString(){return klass.name()+fields;}
     }
 
+    private enum MathFacade { INSTANCE }
+    private enum ElectricalFacade { INSTANCE }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
@@ -1322,7 +1553,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                    || value instanceof OresComplex || value instanceof OresMatrix || value instanceof OresVector
+                    || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
                 return true;
             }
 
