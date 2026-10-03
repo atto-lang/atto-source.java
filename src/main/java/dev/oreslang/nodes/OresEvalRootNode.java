@@ -603,7 +603,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
                 if (literal.value() instanceof Ast.Symbol symbol) {
-                    return OresSymbol.of(symbol.name(), context.isolatePolicy());
+                    return OresSymbol.process(symbol.name(), context.isolatePolicy());
                 }
                 return literal.value();
             }
@@ -612,6 +612,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("Symbol")) return new SymbolFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -801,13 +802,14 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("Symbol")) {
                     if (!created.type().arguments().isEmpty() || created.arguments().size() != 1) {
-                        throw new IllegalArgumentException("new Symbol(...) expects exactly one String key");
+                        throw new IllegalArgumentException("new Symbol(...) expects exactly one UUID String");
                     }
                     Object key = eval(created.arguments().getFirst(), env);
                     if (!(key instanceof String text)) {
                         throw new IllegalArgumentException("new Symbol(...) key must be a String");
                     }
-                    return OresSymbol.of(text, context.isolatePolicy());
+                    // Backward-compatible constructor syntax denotes a persistence-safe Symbol.
+                    return OresSymbol.stable(text, context.isolatePolicy());
                 }
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
@@ -895,6 +897,14 @@ public final class OresEvalRootNode extends RootNode {
                     case "descriptor" -> process.descriptor();
                     case "share_readonly" -> (Invokable) process::shareReadonly;
                     default -> throw new IllegalArgumentException("unknown process member " + name);
+                };
+            }
+            if (receiver instanceof SymbolFacade symbols) {
+                return switch (name) {
+                    case "local" -> (Invokable) symbols::local;
+                    case "process" -> (Invokable) symbols::process;
+                    case "stable" -> (Invokable) symbols::stable;
+                    default -> throw new IllegalArgumentException("unknown Symbol member " + name);
                 };
             }
             if (receiver instanceof ModuleFacade namespace) return moduleMember(namespace, name);
@@ -1305,9 +1315,15 @@ public final class OresEvalRootNode extends RootNode {
                 || value instanceof Number
                 || value instanceof Boolean
                 || value instanceof Character
-                || value instanceof Complex
-                || value instanceof OresSymbol) {
+                || value instanceof Complex) {
             return value;
+        }
+        if (value instanceof OresSymbol symbol) {
+            if (!symbol.processStable()) {
+                throw new IllegalArgumentException(
+                        "actor-local Symbol values cannot be stored in process-singleton state");
+            }
+            return symbol;
         }
         Object existing = copies.get(value);
         if (existing != null) return existing;
@@ -1576,6 +1592,23 @@ public final class OresEvalRootNode extends RootNode {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+    }
+    private record SymbolFacade(OresContext context) {
+        private String key(List<Object> args,String api){
+            requireOne(args,api);
+            Object key=args.getFirst();
+            if(!(key instanceof String text))throw new IllegalArgumentException(api+" expects one String key");
+            return text;
+        }
+        private Object local(List<Object> args){
+            return OresSymbol.local(key(args,"Symbol.local"),context.actors(),context.isolatePolicy());
+        }
+        private Object process(List<Object> args){
+            return OresSymbol.process(key(args,"Symbol.process"),context.isolatePolicy());
+        }
+        private Object stable(List<Object> args){
+            return OresSymbol.stable(key(args,"Symbol.stable"),context.isolatePolicy());
+        }
     }
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
 }
