@@ -21,7 +21,7 @@
 17. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
 18. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
 19. An untrusted actor has a hard lifetime ceiling of 300 seconds, a per-message execution-fuel budget, a bounded mailbox-return budget, and no ambient filesystem/network/FFI/process/thread authority.
-20. Large HTTP request/response bodies use owner-bound per-exchange stream capabilities rather than actor mailboxes or raw file-descriptor authority.
+20. Large HTTP request/response bodies use a linear, owner-bound HTTP transport lease rather than actor mailboxes or raw file-descriptor authority; one supervisor/actor controls the transport at a time and every transfer advances a generation token.
 21. Actor-owned native memory regions are zeroed and their FFM arenas are closed during actor teardown; logical reservations are released in the same teardown path.
 
 ## Deployment matrix
@@ -177,7 +177,23 @@ The default sandbox limits are:
 - isolated actor heap: **64 MiB**;
 - mailbox: **128 messages**.
 
-HTTP is granted as an **object capability to one accepted exchange**, not as ambient network access. A host may bind `HttpRequestTransport` / `HttpResponseTransport` to its HTTP parser, event loop, `SocketChannel`, or equivalent. The actor receives owner-bound `HttpRequestCapability` / `HttpResponseCapability` handles through its turn context. Request-body chunks are read from the host request stream and response-body chunks are written to the host response stream directly; they are not serialized through the actor mailbox. `PrivateMemoryBlock.readFrom(...)` and `writeTo(...)` can bind those streams directly to the actor's FFM-backed native region, avoiding an intermediate JVM heap byte array as well. The handles are not Sendable, cannot be transferred to another actor, and expose no general socket/file-descriptor operations. This also keeps the model valid for HTTP/2 or HTTP/3, where a raw connection fd would be the wrong abstraction.
+HTTP is granted as an **object capability to one accepted exchange**, not as ambient network access. A host binds its parser/event-loop/native socket adapter behind an `HttpTransportLease`. The lease is the Oreslang equivalent of Erlang/OTP's controlling process: ownership is linear, only the supervisor can hand an unowned lease to an actor, and a second actor cannot acquire it until the first owner releases it. Every ownership transition advances a generation, so a stale capability is rejected even if an OS file-descriptor number is later reused.
+
+The raw socket/file descriptor stays in the host/native transport registry. **Do not `dup()` a descriptor for same-process actor handoff**: that creates a second live kernel alias and defeats single-owner semantics. The actor receives only owner-bound `HttpRequestCapability` / `HttpResponseCapability` handles through its turn context. Every operation checks the current ActorId plus lease generation before touching the host transport. The lease itself and the request/response handles are non-Sendable and cannot cross an ordinary mailbox.
+
+The HTTP server handoff sequence is:
+
+1. accept/admit the connection or protocol stream in the supervisor;
+2. parse only enough metadata to route the request;
+3. quiesce the supervisor's I/O source (deregister readiness interest and finish/cancel in-flight reads/writes);
+4. construct the lease and atomically transfer it while spawning the destination actor;
+5. while actor-owned, the supervisor/event loop must not perform application I/O on that lease;
+6. actor request-body reads and response writes go directly through the transport, optionally via `PrivateMemoryBlock.readFrom(...)` / `writeTo(...)` to avoid mailbox and intermediate heap copies;
+7. actor teardown revokes the generation. Untrusted actors always close the transport. Trusted private/shared actors may use `RETURN_TO_SUPERVISOR` only when the HTTP adapter can prove the exchange is in a reusable protocol state.
+
+This is deliberately stricter than simply sending an fd integer. Numeric descriptors are process-global, reusable identifiers, not capabilities. A future native registry should address sockets as an opaque slot + generation and validate the actor owner on every native operation. For an out-of-process sandbox, ownership transfer is a different backend: Unix can use `SCM_RIGHTS` and Windows can use socket duplication for the target process, but the sender must stop I/O before transfer and close its local handle only after the receiver acknowledges ownership.
+
+Mailbox streaming remains a supported fallback for transformations, cross-machine actors, protocol fan-out, or cases where the supervisor intentionally retains socket ownership. It is not the default for a single isolated actor serving one admitted HTTP exchange. For HTTP/2 and HTTP/3, the transferable unit is normally a **protocol stream lease**, not the whole multiplexed connection fd; multiple request actors must not each believe they exclusively own the shared physical connection.
 
 An untrusted actor's language-managed native blocks are allocated from closeable cross-thread FFM arenas. Teardown zeroes each block, closes its arena deterministically, drains mailbox reservations, drops behavior roots, cancels/aborts attached HTTP streams, and releases the actor slice's accounting. JVM metadata/wrapper objects remain ordinary managed objects; Oreslang therefore promises deterministic release of actor-owned native regions and runtime quotas, not the impossible claim that every JVM bookkeeping object disappears synchronously.
 
