@@ -32,24 +32,24 @@ final class TreeShakerTest {
                 pub const bool use_a = false;
 
                 define module A
-                  pub fnc foo() => String {
+                  pub fnc foo(): String {
                     return "hi";
                   }
                 end
 
                 define module B
-                  pub fnc foo() => String {
+                  pub fnc foo(): String {
                     return "bye";
                   }
                 end
 
-                type F = typeof fnc() -> String;
+                type F = typeof fnc() => String;
 
-                pub fnc choose(bool t) => F {
+                pub fnc choose(bool t): F {
                   return t ? A.foo : B.foo;
                 }
 
-                pub routine main() => void {
+                pub routine main(): void {
                   val F selected = choose(use_a);
                   stdio.stdout.write(selected());
                   return;
@@ -77,20 +77,20 @@ final class TreeShakerTest {
                 pub const bool debug_backend = false;
 
                 define module DebugBackend
-                  pub routine run() => void {
+                  pub routine run(): void {
                     stdio.stdout.write("debug");
                     return;
                   }
                 end
 
                 define module ReleaseBackend
-                  pub routine run() => void {
+                  pub routine run(): void {
                     stdio.stdout.write("release");
                     return;
                   }
                 end
 
-                pub routine main() => void {
+                pub routine main(): void {
                   if debug_backend; do
                     DebugBackend.run();
                   else
@@ -107,8 +107,8 @@ final class TreeShakerTest {
     @Test
     void libraryBuildPreservesPublicApiButStillDropsPrivateDeadSymbols() {
         TreeShaker.Result result = OresCompiler.compileForBuild("""
-                pub fnc public_answer() => int { return 42; }
-                fnc hidden_answer() => int { return 7; }
+                pub fnc public_answer(): int { return 42; }
+                fnc hidden_answer(): int { return 7; }
                 """, BuildOptions.library(Map.of()));
 
         assertTrue(result.retained(Parser.ROOT_MODULE + ".public_answer"));
@@ -119,7 +119,7 @@ final class TreeShakerTest {
     void defineMustTargetAConstDeclaration() {
         assertThrows(IllegalArgumentException.class, () -> OresCompiler.compileForBuild("""
                 pub val bool use_a = false;
-                pub routine main() => void { return; }
+                pub routine main(): void { return; }
                 """, BuildOptions.executable(Map.of("use_a", "true"))));
     }
 
@@ -129,14 +129,14 @@ final class TreeShakerTest {
                 pub const bool use_a = true;
 
                 define module A
-                  pub fnc foo() => int { return 1; }
+                  pub fnc foo(): int { return 1; }
                 end
 
                 define module B
-                  pub fnc foo() => int { return "not an int"; }
+                  pub fnc foo(): int { return "not an int"; }
                 end
 
-                pub routine main() => void {
+                pub routine main(): void {
                   val chosen = use_a ? A.foo : B.foo;
                   chosen();
                   return;
