@@ -476,6 +476,30 @@ final class NativeNetworkingLanguageTest {
         return output.toString(StandardCharsets.UTF_8);
     }
 
+
+    @Test
+    void nativeNetRejectsOutOfBoundsGuestBufferRangesBeforeJni() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val bytes = [0, 0, 0, 0];
+                    native_net.read(0, bytes, 3, 2);
+                    return;
+                  }
+                end
+                """;
+        Exception error = assertThrows(Exception.class, () -> evaluateWithNetwork(program));
+        assertTrue(error.toString().contains("byte range is out of bounds"));
+    }
+
+    @Test
+    void nativeCloseImplementationNeverRetriesEintr() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("src/main/c/oresnet.c"));
+        assertTrue(source.contains("close(fd) < 0 && errno != EINTR"));
+        assertFalse(source.contains("if (errno == EINTR) continue;\n        throw_errno(env, \"close\")"));
+    }
+
     private static String evaluate(String program) throws Exception {
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.NETWORK);
