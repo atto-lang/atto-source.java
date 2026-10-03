@@ -311,12 +311,14 @@ public final class Ast {
         public ForStmt { body = List.copyOf(body); }
     }
 
-    public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
+    public sealed interface Expr permits LiteralExpr, NameExpr, SuperExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
             CallExpr, MemberExpr, IndexExpr, NewExpr, StructInitExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
     public record NameExpr(String name) implements Expr { }
+    /** Explicit direct-parent dispatch target used only by super.Parent.member(...). */
+    public record SuperExpr(String parentName) implements Expr { }
     public record BinaryExpr(String operator, Expr left, Expr right) implements Expr { }
     public record UnaryExpr(String operator, Expr operand) implements Expr { }
     public record AssignExpr(Expr target, Expr value) implements Expr { }
