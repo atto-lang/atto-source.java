@@ -10,7 +10,7 @@ mvn -q -DskipTests exec:java -Dexec.args="examples/circular_imports/a.ores"
 `a_value` from `a.ores`.
 
 The host loader parses and validates the complete reachable graph, links every
-code unit, then runs file-level `fnc init() => void` hooks. The A/B strongly
+code unit, then runs file-level `fnc init() : void` hooks. The A/B strongly
 connected component is therefore fully linked before either init hook executes.
 
 Expected output:
