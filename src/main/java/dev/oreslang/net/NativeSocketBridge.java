@@ -57,7 +57,7 @@ final class NativeSocketBridge {
     private static native String localAddress(long fd) throws IOException;
     private static native int remotePort(long fd) throws IOException;
     private static native int localPort(long fd) throws IOException;
-    private static native String[] resolveAll(String host) throws IOException;
+    static native String[] resolveAll(String host) throws IOException;
 
     private static native void setTcpNoDelay(long fd, boolean enabled) throws IOException;
     private static native boolean getTcpNoDelay(long fd) throws IOException;
