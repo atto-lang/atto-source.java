@@ -22,18 +22,24 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
  * Local process-runtime backend for Oreslang singleton modules.
  *
- * A singleton module has exactly one state cell and one serial mailbox when
- * all callers share this host runtime heap. A spawned Graal isolate has its own
- * heap and statics, so this backend must not be used there as a substitute for
- * the trusted host/process singleton coordinator. Importers never receive the state object; generated/runtime
- * proxies submit typed operations to the handle. Arguments and results cross
- * the boundary through {@link ActorRuntime#freeze(Object)} so writable aliases
- * cannot escape the owning actor.
+ * A singleton module has exactly one process-owned state cell when all trusted
+ * callers share this host runtime heap. Importers never receive a raw state
+ * pointer; generated/runtime handles mediate access. Uncontended trusted calls
+ * execute directly under the cell lock. Contended calls fall back to the
+ * bounded serial mailbox so actor dispatcher carriers do not pile up waiting
+ * on a hot singleton. Arguments and results still cross
+ * {@link ActorRuntime#freeze(Object)} / materialization boundaries so writable
+ * aliases cannot escape the synchronized singleton transaction.
+ *
+ * A spawned untrusted Graal isolate has its own heap and statics, so this
+ * backend must never be used there as a substitute for the trusted host/process
+ * singleton coordinator.
  *
  * Cells intentionally outlive individual ordinary Graal Contexts that share
  * this runtime heap. A spawned Graal isolate has its own heap/statics, so this
@@ -252,9 +258,21 @@ public final class ProcessSingletonRegistry {
                 return CompletableFuture.failedFuture(
                         new TimeoutException("singleton call inherited an expired parent deadline"));
             }
+            ErasedOperation erasedOperation =
+                    (state, args) -> operation.apply(cast(state), args);
+
+            // Fast path for trusted same-heap callers: the registry owns the
+            // only mutable state reference and the runtime lock serializes the
+            // whole transaction. If the singleton is busy, do not park an
+            // actor dispatcher carrier; fall back to the existing bounded
+            // mailbox instead.
+            if (cell.tryExecuteDirect(frozen, reply, deadline, erasedOperation)) {
+                return reply;
+            }
+
             Request request = new Request(
                     frozen,
-                    (state, args) -> operation.apply(cast(state), args),
+                    erasedOperation,
                     reply,
                     deadline);
 
@@ -411,8 +429,10 @@ public final class ProcessSingletonRegistry {
         private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY);
         private final AtomicInteger queuedRequests = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
+        private final ReentrantLock accessLock = new ReentrantLock();
         private final Duration initializationWallTime;
         private volatile Supplier<?> stateFactory;
+        private volatile Object state;
         private volatile Throwable terminalFailure;
         private volatile boolean initialized;
 
@@ -445,6 +465,56 @@ public final class ProcessSingletonRegistry {
             }
         }
 
+        private boolean tryExecuteDirect(
+                List<Object> frozenArguments,
+                ReplyFuture reply,
+                long deadlineNanos,
+                ErasedOperation operation) {
+            if (!initialized || terminalFailure != null || !accessLock.tryLock()) return false;
+            try {
+                Throwable failure = terminalFailure;
+                if (failure != null) {
+                    reply.completeExceptionally(failure);
+                    return true;
+                }
+                if (expired(deadlineNanos)) {
+                    reply.completeExceptionally(
+                            new TimeoutException("singleton call wall-time budget expired before direct execution for "
+                                    + diagnosticId));
+                    return true;
+                }
+
+                String previousCell = CURRENT_CELL.get();
+                Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
+                Request previousRequest = CURRENT_REQUEST.get();
+                CURRENT_CELL.set(key);
+                CURRENT_DEADLINE_NANOS.set(deadlineNanos);
+                CURRENT_REQUEST.remove();
+                try {
+                    checkExecutionBudget();
+                    @SuppressWarnings("unchecked")
+                    List<Object> ownedArguments =
+                            (List<Object>) ActorRuntime.materializeFrozen(frozenArguments);
+                    checkExecutionBudget();
+                    Object result = operation.apply(state, ownedArguments);
+                    checkExecutionBudget();
+                    if (!reply.isDone()) reply.complete(ActorRuntime.freeze(result));
+                } catch (VirtualMachineError fatal) {
+                    reply.completeExceptionally(fatal);
+                    failTerminal(fatal);
+                } catch (Throwable operationFailure) {
+                    reply.completeExceptionally(operationFailure);
+                } finally {
+                    restoreThreadLocal(CURRENT_CELL, previousCell);
+                    restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
+                    restoreThreadLocal(CURRENT_REQUEST, previousRequest);
+                }
+                return true;
+            } finally {
+                accessLock.unlock();
+            }
+        }
+
         private void ensureStarted() {
             if (!started.compareAndSet(false, true)) return;
             Thread.ofVirtual()
@@ -466,6 +536,7 @@ public final class ProcessSingletonRegistry {
                 state = Objects.requireNonNull(factory.get(),
                         "singleton state factory returned null for " + diagnosticId);
                 checkExecutionBudget();
+                this.state = state;
                 initialized = true;
             } catch (Throwable failure) {
                 failTerminal(failure);
@@ -504,32 +575,37 @@ public final class ProcessSingletonRegistry {
                     continue;
                 }
 
-                String previousCell = CURRENT_CELL.get();
-                Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
-                Request previousRequest = CURRENT_REQUEST.get();
-                CURRENT_CELL.set(key);
-                CURRENT_DEADLINE_NANOS.set(request.deadlineNanos);
-                CURRENT_REQUEST.set(request);
+                accessLock.lock();
                 try {
-                    checkExecutionBudget();
-                    @SuppressWarnings("unchecked")
-                    List<Object> ownedArguments =
-                            (List<Object>) ActorRuntime.materializeFrozen(request.arguments);
-                    checkExecutionBudget();
-                    Object result = request.operation.apply(state, ownedArguments);
-                    checkExecutionBudget();
-                    if (!request.reply.isDone()) request.reply.complete(ActorRuntime.freeze(result));
-                } catch (VirtualMachineError fatal) {
-                    request.reply.completeExceptionally(fatal);
-                    failTerminal(fatal);
-                    return;
-                } catch (Throwable operationFailure) {
-                    request.reply.completeExceptionally(operationFailure);
+                    String previousCell = CURRENT_CELL.get();
+                    Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
+                    Request previousRequest = CURRENT_REQUEST.get();
+                    CURRENT_CELL.set(key);
+                    CURRENT_DEADLINE_NANOS.set(request.deadlineNanos);
+                    CURRENT_REQUEST.set(request);
+                    try {
+                        checkExecutionBudget();
+                        @SuppressWarnings("unchecked")
+                        List<Object> ownedArguments =
+                                (List<Object>) ActorRuntime.materializeFrozen(request.arguments);
+                        checkExecutionBudget();
+                        Object result = request.operation.apply(state, ownedArguments);
+                        checkExecutionBudget();
+                        if (!request.reply.isDone()) request.reply.complete(ActorRuntime.freeze(result));
+                    } catch (VirtualMachineError fatal) {
+                        request.reply.completeExceptionally(fatal);
+                        failTerminal(fatal);
+                        return;
+                    } catch (Throwable operationFailure) {
+                        request.reply.completeExceptionally(operationFailure);
+                    } finally {
+                        request.finish();
+                        restoreThreadLocal(CURRENT_CELL, previousCell);
+                        restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
+                        restoreThreadLocal(CURRENT_REQUEST, previousRequest);
+                    }
                 } finally {
-                    request.finish();
-                    restoreThreadLocal(CURRENT_CELL, previousCell);
-                    restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
-                    restoreThreadLocal(CURRENT_REQUEST, previousRequest);
+                    accessLock.unlock();
                 }
             }
         }
