@@ -1080,6 +1080,9 @@ public final class OresNet {
 
     private static final class HttpClientValue extends NetworkValue {
         private static final int MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
+        private static final int MAX_HEADER_BYTES = 64 * 1024;
+        private static final int MAX_REDIRECTS = 8;
+        private static final int MAX_ADVERSARIAL_IO_TIMEOUT_MILLIS = 5_000;
         private final HttpVersion version;
         private final Redirect redirects;
         private final int connectTimeoutMillis;
@@ -1138,7 +1141,7 @@ public final class OresNet {
                 HttpResponseValue previous,
                 int redirectCount) {
             HttpResponseValue response = sendOnce(request, handler, previous);
-            if (redirects == Redirect.NEVER || redirectCount >= 5 || !isRedirect(response.statusCode)) return response;
+            if (redirects == Redirect.NEVER || redirectCount >= MAX_REDIRECTS || !isRedirect(response.statusCode)) return response;
 
             String location = response.headers.firstRaw("location");
             if (location == null) return response;
@@ -1192,23 +1195,39 @@ public final class OresNet {
                 throw new IllegalArgumentException("unsupported URI scheme: " + uri.scheme);
             }
 
+            if (request.expectContinue) {
+                throw new UnsupportedOperationException(
+                        "Expect: 100-continue requires interim-response parsing, which is not implemented yet");
+            }
+
             int connectTimeout = request.timeoutMillis > 0
                     ? request.timeoutMillis
                     : connectTimeoutMillis;
             NativeSocketHandle handle =
                     io(() -> NativeSocketBridge.connectHandle(uri.host, uri.port, connectTimeout));
-            if (request.timeoutMillis > 0) {
-                ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, request.timeoutMillis));
-            }
             try {
-                if (request.timeoutMillis > 0) {
-                    ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, request.timeoutMillis));
+                int ioTimeout = request.timeoutMillis;
+                if (ioTimeout <= 0 && adversarialExecution(context)) {
+                    long policyMillis = context.isolatePolicy().maxWallTime().toMillis();
+                    IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+                    if (actorPolicy != null) {
+                        policyMillis = Math.min(policyMillis, actorPolicy.maxWallTime().toMillis());
+                    }
+                    ioTimeout = (int) Math.max(
+                            1L,
+                            Math.min(
+                                    (long) MAX_ADVERSARIAL_IO_TIMEOUT_MILLIS,
+                                    Math.min((long) Integer.MAX_VALUE, policyMillis)));
+                }
+                if (ioTimeout > 0) {
+                    int boundedIoTimeout = ioTimeout;
+                    ioVoid(() -> NativeSocketBridge.setActorIoTimeout(handle, boundedIoTimeout));
                 }
 
                 byte[] wireRequest = encodeRequest(request, uri);
                 writeAll(handle, wireRequest);
                 byte[] wireResponse = readToEof(handle, MAX_RESPONSE_BYTES);
-                ParsedResponse parsed = parseResponse(wireResponse);
+                ParsedResponse parsed = parseResponse(wireResponse, request.method);
 
                 Object body = switch (handler.kind()) {
                     case STRING -> new String(parsed.body, StandardCharsets.UTF_8);
@@ -1246,7 +1265,8 @@ public final class OresNet {
                 }
             }
 
-            if (request.body.length > 0 || request.method.equals("POST") || request.method.equals("PUT")) {
+            if (request.body.length > 0 || request.method.equals("POST")
+                    || request.method.equals("PUT") || request.method.equals("PATCH")) {
                 head.append("Content-Length: ").append(request.body.length).append("\r\n");
                 if (!hasContentType) head.append("Content-Type: application/octet-stream\r\n");
             }
@@ -1531,9 +1551,13 @@ public final class OresNet {
             Map<String, List<String>> headers,
             byte[] body) { }
 
-    private static ParsedResponse parseResponse(byte[] wire) {
+    private static ParsedResponse parseResponse(byte[] wire, String requestMethod) {
         int headerEnd = indexOf(wire, new byte[] {'\r','\n','\r','\n'}, 0);
         if (headerEnd < 0) throw new IllegalStateException("malformed HTTP response: missing header terminator");
+        if (headerEnd > HttpClientValue.MAX_HEADER_BYTES) {
+            throw new IllegalStateException(
+                    "HTTP response headers exceed " + HttpClientValue.MAX_HEADER_BYTES + " bytes");
+        }
 
         String head = new String(wire, 0, headerEnd, StandardCharsets.ISO_8859_1);
         String[] lines = head.split("\\r\\n");
@@ -1542,7 +1566,18 @@ public final class OresNet {
         if (status.length < 2 || !status[0].startsWith("HTTP/")) {
             throw new IllegalStateException("malformed HTTP status line: " + lines[0]);
         }
+        if (status[1].length() != 3
+                || status[1].chars().anyMatch(ch -> ch < '0' || ch > '9')) {
+            throw new IllegalStateException("malformed HTTP status code: " + status[1]);
+        }
         int statusCode = Integer.parseInt(status[1]);
+        if (statusCode < 100 || statusCode > 599) {
+            throw new IllegalStateException("HTTP status code out of range: " + statusCode);
+        }
+        if (statusCode < 200) {
+            throw new UnsupportedOperationException(
+                    "informational HTTP responses require incremental response parsing");
+        }
 
         LinkedHashMap<String, List<String>> headers = new LinkedHashMap<>();
         for (int i = 1; i < lines.length; i++) {
@@ -1554,7 +1589,11 @@ public final class OresNet {
         }
 
         byte[] body = Arrays.copyOfRange(wire, headerEnd + 4, wire.length);
-        String transferEncoding = firstHeader(headers, "transfer-encoding");
+        List<String> transferEncodings = headers.getOrDefault("transfer-encoding", List.of());
+        if (transferEncodings.size() > 1) {
+            throw new IllegalStateException("multiple Transfer-Encoding response headers are unsupported");
+        }
+        String transferEncoding = transferEncodings.isEmpty() ? null : transferEncodings.getFirst();
         List<String> contentLengths = headers.getOrDefault("content-length", List.of());
         if (transferEncoding != null && !contentLengths.isEmpty()) {
             throw new IllegalStateException("ambiguous HTTP response framing: Transfer-Encoding with Content-Length");
@@ -1567,7 +1606,12 @@ public final class OresNet {
                 }
             }
         }
-        if (transferEncoding != null) {
+        boolean responseMayHaveBody = !requestMethod.equals("HEAD")
+                && statusCode != 204
+                && statusCode != 304;
+        if (!responseMayHaveBody) {
+            body = new byte[0];
+        } else if (transferEncoding != null) {
             String normalized = transferEncoding.trim().toLowerCase(Locale.ROOT);
             if (!normalized.equals("chunked")) {
                 throw new IllegalStateException("unsupported HTTP Transfer-Encoding: " + transferEncoding);
@@ -1604,9 +1648,40 @@ public final class OresNet {
             String sizeLine = new String(body, offset, lineEnd - offset, StandardCharsets.US_ASCII);
             int semicolon = sizeLine.indexOf(';');
             if (semicolon >= 0) sizeLine = sizeLine.substring(0, semicolon);
-            int size = Integer.parseInt(sizeLine.trim(), 16);
+            final int size;
+            try {
+                String normalizedSize = sizeLine.trim();
+                if (normalizedSize.isEmpty()) {
+                    throw new NumberFormatException("empty chunk size");
+                }
+                size = Integer.parseInt(normalizedSize, 16);
+            } catch (NumberFormatException error) {
+                throw new IllegalStateException("invalid chunk size", error);
+            }
             offset = lineEnd + 2;
-            if (size == 0) break;
+            if (size == 0) {
+                while (true) {
+                    int trailerLineEnd = indexOf(body, new byte[] {'\r','\n'}, offset);
+                    if (trailerLineEnd < 0) {
+                        throw new IllegalStateException("truncated chunk trailer section");
+                    }
+                    if (trailerLineEnd == offset) {
+                        offset += 2;
+                        if (offset != body.length) {
+                            throw new IllegalStateException("unexpected bytes after chunked response");
+                        }
+                        break;
+                    }
+                    String trailer = new String(
+                            body, offset, trailerLineEnd - offset, StandardCharsets.ISO_8859_1);
+                    int colon = trailer.indexOf(':');
+                    if (colon <= 0) {
+                        throw new IllegalStateException("malformed chunk trailer");
+                    }
+                    offset = trailerLineEnd + 2;
+                }
+                break;
+            }
             if (offset + size + 2 > body.length) throw new IllegalStateException("truncated chunked response");
             out.write(body, offset, size);
             offset += size;
