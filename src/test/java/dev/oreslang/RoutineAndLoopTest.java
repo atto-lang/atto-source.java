@@ -71,8 +71,8 @@ final class RoutineAndLoopTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module m
                   define class C as
-                    pub find() => int { return 0; }
-                    pub find(int value) => int { return value; }
+                    pub find() : int { return 0; }
+                    pub find(int value) : int { return value; }
                   end
                 end
                 """)));
@@ -80,8 +80,8 @@ final class RoutineAndLoopTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module m
                   define class C as
-                    pub find(int value) => int { return value; }
-                    pub find(String value) => int { return 1; }
+                    pub find(int value) : int { return value; }
+                    pub find(String value) : int { return 1; }
                   end
                 end
                 """)));
@@ -184,7 +184,7 @@ final class RoutineAndLoopTest {
         String output = run("""
                 define module collections
                   define class Bag as
-                    [Symbol.iterator]() => Array<int> {
+                    [Symbol.iterator]() : Array<int> {
                       return arr[4, 5];
                     }
                   end
