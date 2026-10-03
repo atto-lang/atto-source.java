@@ -5,6 +5,7 @@ import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.nodes.Node;
 import dev.oreslang.OresLanguage;
+import dev.oreslang.gpu.GpuRuntime;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -23,6 +24,7 @@ public final class OresContext implements AutoCloseable {
     private final BufferedReader input;
     private final PrintWriter output;
     private final ActorRuntime actors;
+    private final GpuRuntime gpu;
     private final RuntimeGarbageCollector garbageCollector;
     private final UUID contextId = UUID.randomUUID();
     private final AtomicLong schedulerSafepoints = new AtomicLong();
@@ -42,6 +44,7 @@ public final class OresContext implements AutoCloseable {
                 isolatePolicy,
                 ActorRuntime.DispatcherConfig.defaults(),
                 this::executeActorTurn);
+        this.gpu = new GpuRuntime();
         this.garbageCollector = new RuntimeGarbageCollector();
         this.actors.setActorExitHook(garbageCollector::retireActorDomain);
     }
@@ -55,6 +58,7 @@ public final class OresContext implements AutoCloseable {
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
     public ActorRuntime actors() { return actors; }
+    public GpuRuntime gpu() { return gpu; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
@@ -156,6 +160,8 @@ public final class OresContext implements AutoCloseable {
                 "language", "oreslang",
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
+                "gpu_available", gpu.available(),
+                "gpu_backend", gpu.backendName(),
                 "scheduler_safepoints", schedulerSafepoints.get());
     }
 
