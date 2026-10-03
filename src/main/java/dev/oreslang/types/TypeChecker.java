@@ -69,9 +69,10 @@ public final class TypeChecker {
                 importedValues.add(imported.namespace());
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
-                for (String name : imported.names()) {
-                    if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
+                for (String importedName : imported.names()) {
+                    String localName = imported.localName(importedName);
+                    if (!exposed.add(localName)) throw new IllegalArgumentException("duplicate imported name '" + localName + "'");
+                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(localName);
                 }
             }
         }
@@ -482,7 +483,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")
+                    || name.name().equals("math") || name.name().equals("ee")) {
+                return new Named(name.name(), List.of());
+            }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -555,6 +559,8 @@ public final class TypeChecker {
         if (expr instanceof Ast.BinaryExpr binary) {
             Type left = typeOf(binary.left(), env, generics, self);
             Type right = typeOf(binary.right(), env, generics, self);
+            Type linearAlgebra = linearAlgebraBinary(binary.operator(), left, right);
+            if (linearAlgebra != null) return linearAlgebra;
             return switch (binary.operator()) {
                 case "&&", "||", "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -579,6 +585,15 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr builtinName
+                    && (builtinName.name().equals("matrix")
+                    || builtinName.name().equals("vector")
+                    || builtinName.name().equals("complex"))) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException(builtinName.name() + " does not accept call-site type arguments");
+                }
+                return builtinNumericConstructor(builtinName.name(), call.arguments(), env, generics, self);
+            }
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
@@ -763,6 +778,8 @@ public final class TypeChecker {
             Type sumReceiver = deref(receiver);
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
+            Type mathMember = builtinMathMember(sumReceiver, member.member());
+            if (mathMember != null) return mathMember;
             if (sumReceiver instanceof Named sumNamed
                     && (sumNamed.name().equals("Option") || sumNamed.name().equals("Result"))) {
                 throw new IllegalArgumentException(
@@ -1173,6 +1190,10 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
+        if ((named.name().equals("Matrix") || named.name().equals("Vector"))
+                && named.arguments().size() == 1) {
+            return Types.isNumeric(named.arguments().getFirst());
+        }
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -1253,6 +1274,157 @@ public final class TypeChecker {
             return new Record(members);
         }
         return type;
+    }
+
+    private Type builtinNumericConstructor(
+            String name,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (name.equals("complex")) {
+            if (arguments.size() != 2) throw new IllegalArgumentException("complex(real, imag) expects exactly two values");
+            Type real = typeOf(arguments.get(0), env, generics, self);
+            Type imaginary = typeOf(arguments.get(1), env, generics, self);
+            if (!Types.isNumeric(real) || !Types.isNumeric(imaginary)
+                    || real == Primitive.COMPLEX || imaginary == Primitive.COMPLEX) {
+                throw new IllegalArgumentException("complex(real, imag) requires real numeric components");
+            }
+            return Primitive.COMPLEX;
+        }
+
+        if (arguments.size() != 1) {
+            throw new IllegalArgumentException(name + " literal lowering expects exactly one aggregate argument");
+        }
+        Type aggregate = typeOf(arguments.getFirst(), env, generics, self);
+        if (name.equals("vector")) {
+            if (!(aggregate instanceof ListType list) || !Types.isNumeric(list.element())) {
+                throw new IllegalArgumentException("vector[...] requires numeric elements");
+            }
+            return new Named("Vector", List.of(widenCollectionElement(list.element())));
+        }
+        if (!(aggregate instanceof ListType rows)
+                || !(rows.element() instanceof ListType row)
+                || !Types.isNumeric(row.element())) {
+            throw new IllegalArgumentException("matrix[[...], ...] requires numeric rows");
+        }
+        return new Named("Matrix", List.of(widenCollectionElement(row.element())));
+    }
+
+    private Type linearAlgebraBinary(String operator, Type left, Type right) {
+        Named leftNamed = left instanceof Named named ? named : null;
+        Named rightNamed = right instanceof Named named ? named : null;
+        boolean leftLinear = isLinearAlgebraType(leftNamed);
+        boolean rightLinear = isLinearAlgebraType(rightNamed);
+
+        if (operator.equals("@")) {
+            if (leftNamed != null && leftNamed.name().equals("Matrix")
+                    && rightNamed != null && rightNamed.arguments().size() == 1) {
+                Type element = Types.numericJoin(leftNamed.arguments().getFirst(), rightNamed.arguments().getFirst());
+                if (rightNamed.name().equals("Matrix")) return new Named("Matrix", List.of(element));
+                if (rightNamed.name().equals("Vector")) return new Named("Vector", List.of(element));
+            }
+            throw new IllegalArgumentException("'@' requires Matrix @ Matrix or Matrix @ Vector");
+        }
+
+        if (!leftLinear && !rightLinear) return null;
+
+        if ((operator.equals("+") || operator.equals("-"))
+                && leftNamed != null && rightNamed != null
+                && leftNamed.name().equals(rightNamed.name())
+                && isLinearAlgebraType(leftNamed) && isLinearAlgebraType(rightNamed)) {
+            return new Named(leftNamed.name(), List.of(
+                    Types.numericJoin(leftNamed.arguments().getFirst(), rightNamed.arguments().getFirst())));
+        }
+
+        if (operator.equals("*")) {
+            if (leftLinear && Types.isNumeric(right)) {
+                return new Named(leftNamed.name(), List.of(
+                        Types.numericJoin(leftNamed.arguments().getFirst(), right)));
+            }
+            if (rightLinear && Types.isNumeric(left)) {
+                return new Named(rightNamed.name(), List.of(
+                        Types.numericJoin(left, rightNamed.arguments().getFirst())));
+            }
+            if (leftLinear && rightLinear) {
+                throw new IllegalArgumentException("matrix/vector multiplication uses '@'; '*' is scalar scaling");
+            }
+        }
+
+        if (operator.equals("/") && leftLinear && Types.isNumeric(right)) {
+            return new Named(leftNamed.name(), List.of(
+                    Types.numericJoin(leftNamed.arguments().getFirst(), right)));
+        }
+
+        throw new IllegalArgumentException(
+                "operator '" + operator + "' is not defined for matrix/vector operands");
+    }
+
+    private boolean isLinearAlgebraType(Named type) {
+        return type != null
+                && (type.name().equals("Matrix") || type.name().equals("Vector"))
+                && type.arguments().size() == 1
+                && Types.isNumeric(type.arguments().getFirst());
+    }
+
+    private Type builtinMathMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)) return null;
+
+        if (named.name().equals("Matrix") && named.arguments().size() == 1) {
+            Type element = named.arguments().getFirst();
+            return switch (member) {
+                case "rows", "cols" -> Primitive.INT;
+                case "transpose", "hermitian", "inverse", "pinv" ->
+                        new Function(List.of(), named);
+                case "solve" -> new Function(List.of(named), named);
+                case "determinant", "trace" -> new Function(List.of(), element);
+                case "norm", "condition" -> new Function(List.of(), Primitive.FLOAT);
+                case "diagonal" -> new Function(List.of(), new ListType(element));
+                case "get" -> new Function(List.of(Primitive.INT, Primitive.INT), element);
+                default -> null;
+            };
+        }
+
+        if (named.name().equals("Vector") && named.arguments().size() == 1) {
+            Type element = named.arguments().getFirst();
+            return switch (member) {
+                case "length" -> Primitive.INT;
+                case "dot" -> new Function(List.of(named), Primitive.COMPLEX);
+                case "norm" -> new Function(List.of(), Primitive.FLOAT);
+                case "outer" -> new Function(List.of(named), new Named("Matrix", List.of(element)));
+                case "get" -> new Function(List.of(Primitive.INT), element);
+                default -> null;
+            };
+        }
+
+        if (named.name().equals("math")) {
+            return switch (member) {
+                case "pi", "e" -> Primitive.FLOAT;
+                case "i" -> Primitive.COMPLEX;
+                case "identity" -> new Function(List.of(Primitive.INT), new Named("Matrix", List.of(Primitive.FLOAT)));
+                case "polar" -> new Function(List.of(Primitive.FLOAT, Primitive.FLOAT), Primitive.COMPLEX);
+                case "abs", "phase" -> new Function(List.of(Primitive.COMPLEX), Primitive.FLOAT);
+                case "conj", "sqrt", "exp", "log", "sin", "cos" ->
+                        new Function(List.of(Primitive.COMPLEX), Primitive.COMPLEX);
+                default -> null;
+            };
+        }
+
+        if (named.name().equals("ee")) {
+            return switch (member) {
+                case "omega", "db20", "db10", "from_db20", "from_db10" ->
+                        new Function(List.of(Primitive.FLOAT), Primitive.FLOAT);
+                case "phasor", "phasor_deg", "z_l", "z_c" ->
+                        new Function(List.of(Primitive.FLOAT, Primitive.FLOAT), Primitive.COMPLEX);
+                case "z_r", "admittance" ->
+                        new Function(List.of(Primitive.FLOAT), Primitive.COMPLEX);
+                case "parallel" ->
+                        new Function(List.of(Primitive.COMPLEX, Primitive.COMPLEX), Primitive.COMPLEX);
+                default -> null;
+            };
+        }
+
+        return null;
     }
 
     private Type builtinOptionResultMember(Type receiver, String member) {
@@ -2070,6 +2242,16 @@ public final class TypeChecker {
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
+            }
+            case "Matrix", "Vector" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(ref.name() + " requires exactly one explicit numeric type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (!Types.isNumeric(element)) {
+                    throw new IllegalArgumentException(ref.name() + " element type must be numeric");
+                }
+                yield new Named(ref.name(), List.of(element));
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
