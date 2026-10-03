@@ -1373,5 +1373,115 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void productionDefaultsPartitionBaseWorkersAcrossThreeDomains() {
+        var config = ActorRuntime.DispatcherConfig.defaultsForProcessors(16);
+
+        assertEquals(
+                16,
+                config.privateParallelism()
+                        + config.sharedParallelism()
+                        + config.untrustedParallelism(),
+                "base actor carriers should partition, not multiply, the CPU budget");
+        assertTrue(config.sharedParallelism() >= 2,
+                "shared/root domain needs a spare carrier when root synchronously awaits a shared actor");
+        assertTrue(config.untrustedParallelism() < config.sharedParallelism());
+        assertTrue(config.maxCompensatingThreads() > 0);
+        assertTrue(config.maxMessageNanos() >= config.maxBatchNanos());
+    }
+
+    @Test
+    void rootProcessExecutesOnSharedCarrierPool() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            String threadName = runtime.executeRootTask(
+                    () -> Thread.currentThread().getName());
+            assertTrue(
+                    threadName.startsWith("ores-shared-actor-dispatcher-"),
+                    threadName);
+        }
+    }
+
+    @Test
+    void stuckTrustedActorGetsBoundedCompensationSoPeerStillRuns() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                64,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.MILLISECONDS.toNanos(40),
+                1,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch hogEntered = new CountDownLatch(1);
+            CountDownLatch releaseHog = new CountDownLatch(1);
+            CountDownLatch peerRan = new CountDownLatch(1);
+
+            var hog = runtime.<String>spawnPrivateTrusted(
+                    IsolatePolicy.developer(),
+                    ignored -> (message, turn) -> {
+                        hogEntered.countDown();
+                        while (releaseHog.getCount() != 0) {
+                            // Deliberately no Oreslang/runtime checkpoint and no
+                            // interrupt handling: model an uncooperative host stack.
+                            Thread.onSpinWait();
+                        }
+                    });
+            var peer = runtime.<String>spawnPrivateTrusted(
+                    IsolatePolicy.developer(),
+                    ignored -> (message, turn) -> peerRan.countDown());
+
+            hog.send("hog");
+            assertTrue(hogEntered.await(2, TimeUnit.SECONDS));
+            peer.send("peer");
+
+            assertTrue(
+                    peerRan.await(2, TimeUnit.SECONDS),
+                    "a stuck actor must not permanently consume the domain's only base carrier");
+            assertTrue(runtime.dispatcherStats(ActorRuntime.ActorKind.PRIVATE).overrunTurns() >= 1);
+            assertTrue(runtime.dispatcherStats(ActorRuntime.ActorKind.PRIVATE).largestPoolSize() >= 2);
+            assertInstanceOf(
+                    ActorRuntime.ActorTurnExceededException.class,
+                    hog.failure().orElseThrow());
+
+            releaseHog.countDown();
+            assertTrue(hog.awaitTermination(2, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void hostileUntrustedActorsCannotConsumeEveryActorIdentity() {
+        var config = new ActorRuntime.DispatcherConfig(
+                2,
+                2,
+                1,
+                64,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.MILLISECONDS.toNanos(250),
+                1,
+                16);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            int limit = config.maxUntrustedActors();
+            List<ActorRuntime.ActorRef<String>> sandboxes = new ArrayList<>();
+            for (int i = 0; i < limit; i++) {
+                sandboxes.add(runtime.<String>spawnUntrusted(
+                        ignored -> (message, turn) -> { }));
+            }
+
+            IllegalStateException rejected = assertThrows(
+                    IllegalStateException.class,
+                    () -> runtime.<String>spawnUntrusted(
+                            ignored -> (message, turn) -> { }));
+            assertTrue(rejected.getMessage().contains("untrusted actor limit"));
+
+            // Trusted actors still retain admission capacity under sandbox load.
+            assertDoesNotThrow(() ->
+                    runtime.<String>spawnPrivate(
+                            ignored -> (message, turn) -> { }));
+        }
+    }
+
 
 }
