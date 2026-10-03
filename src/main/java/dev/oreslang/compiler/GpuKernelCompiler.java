@@ -449,7 +449,9 @@ public final class GpuKernelCompiler {
         }
 
         List<GpuBatch> batches = emitBatchDispatchers(body);
-        boolean fp64 = containsCToken(body, "double");
+        boolean complex64 = containsCToken(body, "float2");
+        boolean complex128 = containsCToken(body, "double2");
+        boolean fp64 = containsCToken(body, "double") || complex128;
         LinkedHashSet<String> requiredExtensions = new LinkedHashSet<>();
         if (fp64) requiredExtensions.add("cl_khr_fp64");
 
@@ -461,7 +463,10 @@ public final class GpuKernelCompiler {
         if (fp64) sourceBuilder.append("#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n");
         sourceBuilder.append("#define ORES_GPU_ERR_BOUNDS 1\n");
         sourceBuilder.append("#define ORES_GPU_ERR_SHAPE 2\n");
-        sourceBuilder.append('\n').append(body);
+        sourceBuilder.append('\n');
+        if (complex64) appendComplexHelpers(sourceBuilder, "float2", "float", "f32");
+        if (complex128) appendComplexHelpers(sourceBuilder, "double2", "double", "f64");
+        sourceBuilder.append(body);
 
         String source = sourceBuilder.toString();
         String manifest = canonicalManifest(BACKEND, metadata, batches, requiredExtensions);
@@ -1147,9 +1152,10 @@ public final class GpuKernelCompiler {
             throw new IllegalArgumentException(
                     "GpuMatrix @ output and inputs must use one exact device element type");
         }
-        if (!isFloating(element)) {
+        if (!isFloating(element) && !isComplex(element)) {
             throw new IllegalArgumentException(
-                    "GpuMatrix @ currently lowers f32/f64 matrices; integer matrix multiply is rejected until exact overflow semantics are specified");
+                    "GpuMatrix @ currently lowers f32/f64/complex64/complex128 matrices; "
+                            + "integer matrix multiply is rejected until exact overflow semantics are specified");
         }
         return new MatrixMatmul(output.name(), left.name(), right.name(), element);
     }
@@ -1192,9 +1198,16 @@ public final class GpuKernelCompiler {
         out.append(indent).append(scalar).append(" __ores_mat_acc = (").append(scalar).append(")0;\n");
         out.append(indent).append("for (ulong __ores_mat_k = 0; __ores_mat_k < ").append(leftCols)
                 .append("; ++__ores_mat_k) {\n");
-        out.append(indent).append("  __ores_mat_acc += ")
-                .append(left).append("[__ores_mat_row * ").append(leftCols).append(" + __ores_mat_k] * ")
-                .append(right).append("[__ores_mat_k * ").append(rightCols).append(" + __ores_mat_col];\n");
+        String leftElement = left + "[__ores_mat_row * " + leftCols + " + __ores_mat_k]";
+        String rightElement = right + "[__ores_mat_k * " + rightCols + " + __ores_mat_col]";
+        if (isComplex(matmul.elementType())) {
+            out.append(indent).append("  __ores_mat_acc += ")
+                    .append(complexHelperName(matmul.elementType(), "mul")).append("(")
+                    .append(leftElement).append(", ").append(rightElement).append(");\n");
+        } else {
+            out.append(indent).append("  __ores_mat_acc += ")
+                    .append(leftElement).append(" * ").append(rightElement).append(";\n");
+        }
         out.append(indent).append("}\n");
         out.append(indent).append(output).append("[__ores_mat_gid] = __ores_mat_acc;\n");
     }
@@ -1240,6 +1253,22 @@ public final class GpuKernelCompiler {
             String left = renderExprForType(module, binary.left(), leftType, resultType, env);
             String right = renderExprForType(module, binary.right(), rightType, resultType, env);
             String op = binary.operator().equals("|") ? "||" : binary.operator().equals(",") ? "&&" : binary.operator();
+
+            if (isComplex(leftType) || isComplex(rightType)) {
+                if (!sameType(module, leftType, rightType)) {
+                    throw new IllegalArgumentException("GPU complex arithmetic requires one exact complex width");
+                }
+                return switch (op) {
+                    case "+" -> "(" + left + " + " + right + ")";
+                    case "-" -> "(" + left + " - " + right + ")";
+                    case "*" -> complexHelperName(leftType, "mul") + "(" + left + ", " + right + ")";
+                    case "/" -> complexHelperName(leftType, "div") + "(" + left + ", " + right + ")";
+                    case "==" -> "((" + left + ").x == (" + right + ").x && (" + left + ").y == (" + right + ").y)";
+                    case "!=" -> "((" + left + ").x != (" + right + ").x || (" + left + ").y != (" + right + ").y)";
+                    default -> throw new IllegalArgumentException(
+                            "GPU complex operator '" + op + "' is not defined; use +, -, *, /, ==, or !=");
+                };
+            }
 
             if ((op.equals("/") || op.equals("%")) && isIntegerScalar(resultType)) {
                 throw new IllegalArgumentException(
@@ -1464,9 +1493,10 @@ public final class GpuKernelCompiler {
                             "GpuMatrix @ requires one exact device element type; got "
                                     + oresType(leftElement) + " and " + oresType(rightElement));
                 }
-                if (!isFloating(leftElement)) {
+                if (!isFloating(leftElement) && !isComplex(leftElement)) {
                     throw new IllegalArgumentException(
-                            "GpuMatrix @ currently lowers f32/f64 matrices; integer matrix multiply is rejected until exact overflow semantics are specified");
+                            "GpuMatrix @ currently lowers f32/f64/complex64/complex128 matrices; "
+                                    + "integer matrix multiply is rejected until exact overflow semantics are specified");
                 }
                 return left;
             }
@@ -1864,6 +1894,35 @@ public final class GpuKernelCompiler {
         return name.equals("f32") || name.equals("f64") || name.equals("float");
     }
 
+    private boolean isComplex(Ast.TypeRef type) {
+        String name = resolveAlias(type, null).name();
+        return name.equals("complex64") || name.equals("complex128") || name.equals("complex");
+    }
+
+    private String complexHelperName(Ast.TypeRef type, String operation) {
+        String name = resolveAlias(type, null).name();
+        String width = name.equals("complex64") ? "f32" : "f64";
+        return "ores_complex_" + operation + "_" + width;
+    }
+
+    private static void appendComplexHelpers(
+            StringBuilder out,
+            String vectorType,
+            String scalarType,
+            String suffix) {
+        out.append("static inline ").append(vectorType).append(" ores_complex_mul_").append(suffix)
+                .append("(").append(vectorType).append(" a, ").append(vectorType).append(" b) {\n")
+                .append("  return (").append(vectorType).append(")(a.x * b.x - a.y * b.y, ")
+                .append("a.x * b.y + a.y * b.x);\n")
+                .append("}\n");
+        out.append("static inline ").append(vectorType).append(" ores_complex_div_").append(suffix)
+                .append("(").append(vectorType).append(" a, ").append(vectorType).append(" b) {\n")
+                .append("  ").append(scalarType).append(" d = b.x * b.x + b.y * b.y;\n")
+                .append("  return (").append(vectorType).append(")((a.x * b.x + a.y * b.y) / d, ")
+                .append("(a.y * b.x - a.x * b.y) / d);\n")
+                .append("}\n\n");
+    }
+
     private String cScalar(Ast.TypeRef original) {
         Ast.TypeRef type = resolveAlias(original, null);
         if (type.isTupleType() || isBuffer(type)) {
@@ -1881,6 +1940,8 @@ public final class GpuKernelCompiler {
             case "u64", "uint" -> "ulong";
             case "f32" -> "float";
             case "f64", "float" -> "double";
+            case "complex64" -> "float2";
+            case "complex128", "complex" -> "double2";
             default -> throw new IllegalArgumentException("type has no OpenCL C scalar lowering: " + oresType(type));
         };
     }
