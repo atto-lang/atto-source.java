@@ -17,13 +17,13 @@ final class ParserTest {
     void supportsMultipleModulesAndComplexNumbers() {
         String source = """
                 define module math
-                  fnc z() => complex {
+                  fnc z() : complex {
                     return 3 + 4i;
                   }
                 end
 
                 define module app
-                  pub fnc main() => void {
+                  pub fnc main() : void {
                     const answer = 40 + 2;
                     [const first, let second] = [1, 2];
                     stdio.println("oreslang");
@@ -41,7 +41,7 @@ final class ParserTest {
     void parsesIfDoFiWithCommaAndPipeConditions() {
         String source = """
                 define module app
-                  fnc choose(bool a, bool b) => int {
+                  fnc choose(bool a, bool b) : int {
                     if a, b | false; do
                       return 1;
                     else
@@ -78,7 +78,7 @@ final class ParserTest {
 
     @Test
     void lexerRecognizesLambdaAndFatReturnArrows() {
-        var tokens = new Lexer("(int x) -> x + 1; fnc f() => int { return 1; }").scan();
+        var tokens = new Lexer("(int x) -> x + 1; fnc f() : int { return 1; }").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
@@ -109,7 +109,7 @@ final class ParserTest {
     @Test
     void actorFncDefaultsSharedAndIsoactorIsPrivate() {
         Ast.Program sharedProgram = Parser.parse("""
-                pub actor fnc worker(int value) => int {
+                pub actor fnc worker(int value) : int {
                   return value;
                 }
                 """);
@@ -117,7 +117,7 @@ final class ParserTest {
         assertEquals(Ast.ActorKind.SHARED, sharedActor.actorKind());
 
         Ast.Program explicitSharedProgram = Parser.parse("""
-                pub shared actor fnc worker(int value) => int {
+                pub shared actor fnc worker(int value) : int {
                   return value;
                 }
                 """);
@@ -125,7 +125,7 @@ final class ParserTest {
         assertEquals(Ast.ActorKind.SHARED, explicitShared.actorKind());
 
         Ast.Program privateProgram = Parser.parse("""
-                pub isoactor routine worker(int value) => int {
+                pub isoactor routine worker(int value) : int {
                   return value;
                 }
                 """);
@@ -137,7 +137,7 @@ final class ParserTest {
     @Test
     void sharedWithoutActorIsRejected() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                shared fnc nope() => void {
+                shared fnc nope() : void {
                   return;
                 }
                 """));
@@ -146,11 +146,11 @@ final class ParserTest {
     @Test
     void actorCallablesMayBeCalledButActorClassesCannotBeConstructedOrdinarily() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                pub actor fnc worker(int value) => int {
+                pub actor fnc worker(int value) : int {
                   return value;
                 }
 
-                pub fnc good() => int {
+                pub fnc good() : int {
                   return worker(1);
                 }
                 """)));
@@ -164,7 +164,7 @@ final class ParserTest {
                   }
                 }
 
-                pub fnc bad() => Account {
+                pub fnc bad() : Account {
                   return new Account();
                 }
                 """)));
@@ -179,7 +179,7 @@ final class ParserTest {
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                pub private actor fnc worker() => void {
+                pub private actor fnc worker() : void {
                   return;
                 }
                 """));
@@ -188,7 +188,7 @@ final class ParserTest {
     @Test
     void actorFunctionCannotBeProgramMain() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                pub actor fnc main() => void {
+                pub actor fnc main() : void {
                   return;
                 }
                 """)));
@@ -268,7 +268,7 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    fnc inspect(&Account account) => int {
+                    fnc inspect(&Account account) : int {
                       return 1;
                     }
 
@@ -321,7 +321,7 @@ final class ParserTest {
     void parsesReusableUnderscoreDestructureDiscards() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define module app
-                  pub fnc main() => void {
+                  pub fnc main() : void {
                     [const foo, _, let bar] = (1, 2, 3);
                     [_, _, const tail] = (4, 5, 6);
                     [const z, _, let y] = (7, 8, 9);
@@ -350,7 +350,7 @@ final class ParserTest {
     void reservedWordsMayNameMembersButRemainReservedLexically() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define module app
-                  fnc main() => void {
+                  fnc main() : void {
                     val mutex = SharedMutex.new(arr[1, 2, 3]);
                     return;
                   }
@@ -359,7 +359,7 @@ final class ParserTest {
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define module app
-                  fnc main() => void {
+                  fnc main() : void {
                     val new = 1;
                     return;
                   }
@@ -376,11 +376,11 @@ final class ParserTest {
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
-                  fnc stop() => int { return 1; }
-                  fnc do() => int { return 2; }
-                  routine done() => int { return 3; }
+                  fnc stop() : int { return 1; }
+                  fnc do() : int { return 2; }
+                  routine done() : int { return 3; }
 
-                  fnc total() => int {
+                  fnc total() : int {
                     return stop() + do() + done();
                   }
                 end
@@ -390,7 +390,7 @@ final class ParserTest {
                 import fnc {stop, do, done} from './flow';
 
                 define module app
-                  fnc main() => void { return; }
+                  fnc main() : void { return; }
                 end
                 """));
 
@@ -402,9 +402,9 @@ final class ParserTest {
                 end
 
                 define interface FlowApi
-                  fnc stop() => int;
-                  fnc do() => int;
-                  fnc done() => int;
+                  fnc stop() : int;
+                  fnc do() : int;
+                  fnc done() : int;
                 end
                 """));
     }
@@ -414,7 +414,7 @@ final class ParserTest {
         for (String keyword : List.of("stop", "do", "done")) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                     define module app
-                      fnc main() => void {
+                      fnc main() : void {
                         val %s = 1;
                         return;
                       }
@@ -423,7 +423,7 @@ final class ParserTest {
 
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                     define module app
-                      fnc take(int %s) => void { return; }
+                      fnc take(int %s) : void { return; }
                     end
                     """.formatted(keyword)));
 
@@ -434,8 +434,8 @@ final class ParserTest {
 
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                     define module app
-                      fnc %s() => int { return 1; }
-                      fnc main() => void {
+                      fnc %s() : int { return 1; }
+                      fnc main() : void {
                         val callback = %s;
                         return;
                       }
@@ -447,7 +447,7 @@ final class ParserTest {
                       pub %s() : int { return 1; }
                     end
                     define module app
-                      fnc main() => void {
+                      fnc main() : void {
                         val flow = new Flow();
                         val callback = flow.%s;
                         return;
@@ -498,7 +498,7 @@ final class ParserTest {
 
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 shared actor Counter {
-                  pub fnc read() => int {
+                  pub fnc read() : int {
                     return 1;
                   }
                 }
@@ -510,7 +510,7 @@ final class ParserTest {
     void staticClassFncKeepsFunctionReturnSyntax() {
         assertDoesNotThrow(() -> Parser.parse("""
                 define class Counter as
-                  pub static fnc twice(int value) => int {
+                  pub static fnc twice(int value) : int {
                     return value * 2;
                   }
 
