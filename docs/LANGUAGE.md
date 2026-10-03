@@ -8,13 +8,13 @@ A source file may contain multiple named modules. A module is a namespace: expor
 
 ```ores
 define module math
-  pub fnc add(int a, int b) => int {
+  pub fnc add(int a, int b) : int {
     return a + b;
   }
 end
 
 define module app
-  pub fnc main() => void {
+  pub fnc main() : void {
     val answer = math.add(40, 2);
     stdio.println(answer);
     return;
@@ -61,7 +61,7 @@ The loader uses a staged lifecycle:
 A file init hook has the exact shape:
 
 ```ores
-fnc init() => void {
+fnc init() : void {
   // side effects are allowed here
   return;
 }
@@ -86,14 +86,14 @@ Interfaces can describe the structural public shape required of a module. A modu
 ```ores
 define module contracts
   define interface MathApi
-    fnc add(int a, int b) => int;
+    fnc add(int a, int b) : int;
     String name;
   end
 end
 
 @AdheresTo(contracts.MathApi)
 define module math
-  pub fnc add(int a, int b) => int { return a + b; }
+  pub fnc add(int a, int b) : int { return a + b; }
   pub val String name = "math";
 end
 ```
@@ -105,7 +105,7 @@ Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(
 Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
 
 ```ores
-fnc add(int a, int b) => int {
+fnc add(int a, int b) : int {
   return a + b;
 }
 
@@ -122,15 +122,15 @@ Return types may be unions, homogeneous arrays, finite tuple types, or structura
 ```ores
 type intOrBoolOrString = bool | int | string;
 
-fnc mixed() => Array<type intOrBoolOrString> {
+fnc mixed() : Array<type intOrBoolOrString> {
   return [3, true, "yes"];
 }
 
-fnc fixed() => [int, bool, string] {
+fnc fixed() : [int, bool, string] {
   return [3, true, "yes"];
 }
 
-fnc named() => {foo: int, bar: string} {
+fnc named() : {foo: int, bar: string} {
   return obj{foo: 5, bar: "x"};
 }
 ```
@@ -180,7 +180,7 @@ Sequence destructuring requires a returned tuple or array/list. Finite tuples ar
 
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
 
-Methods omit `fnc`. Instance methods always have an implicit receiver named `self`, and their return type is declared with `: ReturnType`. Instance method declarations never use `->` or `=>`.
+Methods omit `fnc`. Instance methods always have an implicit receiver named `self`, and their return type is declared with `: ReturnType`. Instance method declarations never use `->` or `:`.
 
 ```ores
 define class Box<T> as
@@ -268,7 +268,7 @@ Tuples preserve per-position static types. Parenthesized tuple literals and list
 val pair = (1, "one");
 [const number, let label] = pair;
 
-fnc result() => [int, bool, string] {
+fnc result() : [int, bool, string] {
   return [3, true, "yes"];
 }
 
@@ -298,7 +298,7 @@ Oreslang does **not** have ambient nullable references. A bare `null` value is a
 Optionality is explicit, using Rust-style `Some(value)` and `None`:
 
 ```ores
-fnc lookup(bool found) => Option<int> {
+fnc lookup(bool found) : Option<int> {
   if found; do
     return Some(42);
   else
@@ -431,7 +431,7 @@ Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Ever
 There are two actor execution domains:
 
 ```ores
-pub actor fnc worker(int value) => int {
+pub actor fnc worker(int value) : int {
   return value;
 }
 
@@ -516,7 +516,7 @@ define module x
   end
 end
 
-pub routine main() => void {
+pub routine main() : void {
   val y = new x.y();
   stdio.stdout.write(y)
 }
@@ -531,7 +531,7 @@ Qualified names such as `x.y` retain their module namespace.
 `routine` is the non-recursive procedural form:
 
 ```ores
-pub routine main() => void {
+pub routine main() : void {
   run_app();
 }
 ```
@@ -553,7 +553,7 @@ Semicolons are strongly recommended. They remain the canonical formatter output.
 They may be omitted only where the parser has an unambiguous structural boundary, such as the final expression immediately before `}`, `fi`, or `end`. Oreslang does not use broad JavaScript-style automatic semicolon insertion.
 
 ```ores
-pub routine main() => void {
+pub routine main() : void {
   stdio.stdout.write("done")
 }
 ```
@@ -567,7 +567,7 @@ pub interface Brand {
   markerBrand: 'marking/branding'
 }
 
-fnc consume(@Structural Brand value) => String {
+fnc consume(@Structural Brand value) : String {
   return value.markerBrand;
 }
 ```
@@ -610,7 +610,7 @@ Two methods with the same name and same arity are a compile-time error even when
 The ternary operator is right-associative and lazy in its selected branch:
 
 ```ores
-fnc find(bool found) => Option<int> {
+fnc find(bool found) : Option<int> {
   return found ? Some(42) : None;
 }
 ```
@@ -720,16 +720,16 @@ pub interface Foo extends Bar {
   markerBrand: 'marking/branding'
 }
 
-fnc a(@Structural Foo y) => void {
+fnc a(@Structural Foo y) : void {
   return;
 }
 
-fnc b(y structural Foo) => void {
+fnc b(y structural Foo) : void {
   return;
 }
 
 @AllowStructural(y)
-fnc c(y Foo) => void {
+fnc c(y Foo) : void {
   return;
 }
 ```
@@ -792,7 +792,7 @@ namespace payments;
 
 import fnc {authorize} from "./auth.ores";
 
-pub fnc charge() => void {
+pub fnc charge() : void {
   return;
 }
 ```
@@ -832,7 +832,7 @@ Class-level functions are not methods. They are declared with the explicit `stat
 
 ```ores
 define class Counter as
-  pub static fnc twice(int value) => int {
+  pub static fnc twice(int value) : int {
     return value * 2;
   }
 end
@@ -867,7 +867,7 @@ type Predicate = typeof fnc(bool value) -> bool;
 The shorter inline function type is also valid:
 
 ```ores
-fnc sink() => ((bool foo) -> void) {
+fnc sink() : ((bool foo) -> void) {
   return |foo| -> {
     stdio.println(foo);
     return;
@@ -880,13 +880,13 @@ Parameter names inside function types are documentation-only; structural functio
 The canonical lambda syntax is pipe-delimited and block-only:
 
 ```ores
-fnc find(bool found) => F {
+fnc find(bool found) : F {
   return || -> {
     return found ? 5 : 6;
   };
 }
 
-fnc callback() => ((bool foo) -> void) {
+fnc callback() : ((bool foo) -> void) {
   return |foo| -> {
     stdio.println(foo);
     return;
@@ -906,7 +906,7 @@ This means higher-order functions and functors do not introduce a second return 
 Closures are lexical. A lambda resolves free variables from the scope where the lambda is created, not from the scope where it is called.
 
 ```ores
-fnc makeCounter() => (() -> int) {
+fnc makeCounter() : (() -> int) {
   let int count = 0;
 
   return || -> {
@@ -933,7 +933,7 @@ This makes returned closures safe without retaining raw stack references.
 Parameters are immutable by default.
 
 ```ores
-fnc bad(Bar b) => void {
+fnc bad(Bar b) : void {
   b.foo = "foobar"; // compile-time error
   return;
 }
@@ -942,7 +942,7 @@ fnc bad(Bar b) => void {
 An owned parameter may explicitly opt into mutation by putting `mut` between the type and parameter name:
 
 ```ores
-fnc change(Bar mut b) => Bar {
+fnc change(Bar mut b) : Bar {
   b.foo = "foobar";
   return b;
 }
@@ -970,11 +970,11 @@ Class instances, arrays/lists, object records, and closures are move-only by def
 A by-value binding, argument, or return consumes a non-`Copy` value:
 
 ```ores
-fnc consume(Bar value) => void {
+fnc consume(Bar value) : void {
   return;
 }
 
-fnc example() => void {
+fnc example() : void {
   let Bar b = new Bar();
   consume(b);
   // b.foo; // compile-time error: use of moved value
@@ -985,7 +985,7 @@ fnc example() => void {
 Shared immutable borrowing uses `&T`:
 
 ```ores
-fnc inspect(&Bar value) => void {
+fnc inspect(&Bar value) : void {
   stdio.println(value.foo);
   return;
 }
@@ -994,12 +994,12 @@ fnc inspect(&Bar value) => void {
 Exclusive mutable borrowing uses `&mut T`:
 
 ```ores
-fnc change(&mut Bar value) => void {
+fnc change(&mut Bar value) : void {
   value.foo = "changed";
   return;
 }
 
-fnc example() => void {
+fnc example() : void {
   let Bar b = new Bar();
   change(&mut b);
   stdio.println(b.foo); // owner is usable again after the call
