@@ -182,7 +182,9 @@ val Symbol durable = Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
 
 `Symbol.local(key)` creates an actor-local **LOCAL** symbol. It is canonical only inside the owning actor, is reclaimed when that actor is finalized, is not Sendable, cannot be serialized to the wire, and may be constructed only while an actor turn is executing.
 
-PROCESS and STABLE symbols are Copy/Sendable immutable values for trusted actors. Their wire representation is `(scope, key)`, never an internal numeric handle; a receiver re-interns the key in its own process registry. Symbol IDs are implementation details used only for fast local equality/hash paths.
+PROCESS and STABLE symbols are Copy/Sendable immutable values for trusted actors. Their wire representation is `(scope, key)`, never an internal numeric handle. Ordinary wire decoding is **lookup-only**: an unknown wire key is rejected rather than silently creating a permanent registry entry. Authenticated/trusted protocol dictionaries may explicitly admit an unknown key with the trusted wire-admission API before normal decode. This prevents attacker-controlled strings or UUIDs from turning into immortal process identities. Symbol IDs are implementation details used only for fast local equality/hash paths.
+
+The `:name` source form is identifier-only and limited to 128 characters. Only the compiler/runtime literal path may consume the reserved literal capacity; arbitrary runtime strings cannot claim that reserve.
 
 Symbols are deliberately unavailable to adversarial/untrusted execution domains. Static capability admission rejects symbol literals/types/factories under an adversarial policy, and runtime construction, decode, plus nested actor-message transport repeat that check as defense in depth. Untrusted code must use ordinary strings/UUIDs or another explicitly scoped data representation instead of sharing the trusted process symbol table.
 
