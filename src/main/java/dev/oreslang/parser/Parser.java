@@ -156,9 +156,9 @@ public final class Parser {
             throw error(previous(), "expected class or interface after 'define'");
         }
 
-        Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
+        Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers, true);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
+        throw error(peek(), "expected static function/routine, class, interface, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers, boolean insideModule) {
