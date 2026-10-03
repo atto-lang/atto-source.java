@@ -32,7 +32,7 @@ end
 
 define module app
   pub fnc main() : void {
-    let answer = math.add(40, 2);
+    let answer = math::add(40, 2);
     answer = answer + 1;
     val complex z = 3 + 4i;
     val values = arr[answer, 2];
