@@ -115,7 +115,9 @@ Symbols are not ordinary heap strings. The runtime has three explicit domains:
 - **STABLE** — UUID-keyed, strongly rooted for process lifetime, intended for identities that must survive serialization/restart boundaries by key.
 - **LOCAL** — actor-cell-local registry, strongly rooted only until actor finalization. LOCAL symbols cannot cross mailboxes or enter shared memory.
 
-PROCESS and STABLE registries have hard cardinality limits. Dynamic PROCESS allocation has a lower cap than the total table so source/compiler literals retain reserved capacity. Numeric symbol handles come from separate monotonic domains and are never serialized; wire data carries scope plus key and is canonicalized on decode.
+PROCESS and STABLE registries have hard cardinality limits. Dynamic PROCESS allocation has a lower cap than the total table so source/compiler literals retain reserved capacity. Numeric symbol handles come from separate monotonic domains and are never serialized. Canonical PROCESS/STABLE hits use concurrent maps without a global monitor; only cache misses/capacity reservation serialize insertion.
+
+Wire data carries scope plus key. The ordinary decode path is lookup-only and cannot allocate a new immortal Symbol. Unknown keys are rejected. A separate explicitly trusted decode path may intern a new key after the caller has authenticated/validated its protocol dictionary. This mirrors the atom-table safety rule that arbitrary external strings must never become permanent identities by default.
 
 The symbol registry is a trusted-process facility. Both compile-time capability admission and runtime APIs reject adversarial policies. Actor transport recursively rejects Symbols before delivering to adversarial actors, even when a symbol is nested in a list/map/array/shared wrapper. Runtime construction also checks the *currently executing actor policy* in addition to any explicit policy argument so guest code cannot launder authority by passing a more permissive parent policy object.
 
