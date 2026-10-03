@@ -1107,10 +1107,21 @@ The operations are:
 
 `copy` intentionally differs by aggregate kind:
 
-- **struct** — copy behavior is compiler-derived from every stored field, including trait-composed fields. Nested structs/lists/tuples/records recurse automatically.
-- **class** — never implicitly copyable. The developer must provide a concrete, synchronous, non-generic, public instance `copy() => Self` method whose receiver is immutable.
-- **trait** — has no independent runtime identity; once composed, its stored fields follow the host struct/class rule.
+- **struct** — copy behavior is compiler-derived from every stored field, including trait-composed fields. Nested structs/lists/tuples/records recurse automatically. If a stored field is a class, that concrete class must itself satisfy the class copy contract; the struct does not need or permit a hand-written struct-level `copy()` merely to become copyable.
+- **class** — never implicitly copyable. Every concrete class that wants to participate in `copy(...)` must declare its **own** concrete, synchronous, non-generic, public instance `copy() => Self` method with an immutable receiver. An inherited method or trait-composed method does not satisfy the concrete class's identity-copy contract; subclasses opt in again explicitly so copying cannot silently slice or reuse base-class identity/state.
+- **trait** — has no independent runtime identity; once composed, its stored fields follow the host struct/class rule. A trait-provided method named `copy` does not make a host class copyable.
 - **interface** — is a contract, not concrete storage, so an interface-typed value does not by itself prove copyability.
+
+The four ownership operations are deliberately type-aware rather than aliases for pointer operations:
+
+| operation | struct value | class value |
+| --- | --- | --- |
+| `copy(x)` | compiler-derived recursive value copy; original remains usable | invokes the concrete class's own verified `copy() => Self`; original identity remains usable |
+| `take(x)` | transfers ownership of the whole value without copying | transfers ownership of the class identity/owning handle without cloning the object graph |
+| `borrow(x)` | temporary immutable view into the owned value; no copy | temporary immutable alias to the same class identity; no ownership transfer |
+| `share(x)` | detached deeply read-only snapshot derived recursively | detached deeply read-only snapshot through the same verified class-copy boundary, then recursively frozen |
+
+This distinction is semantic, not an optimization hint. Backends may elide physical moves/copies when uniqueness and escape analysis prove that doing so preserves these observable ownership rules.
 
 A class copy implementation is checked twice. Static ownership analysis prevents mutation through `self`, including nested projections such as `self.child.bump()` when `bump` requires a mutable receiver. At runtime, Oreslang also verifies that `copy()` did not mutate the source graph, returned the same concrete class, and retained no mutable object/list/set/map/array aliases from the source graph. Immutable wrappers are traversed so mutable aliases cannot be hidden inside `Option` or similar containers.
 
