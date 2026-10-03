@@ -18,6 +18,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Host-side multi-file loader.
@@ -48,6 +49,16 @@ public final class LinkedProgramRunner {
             ExecutionProfile executionProfile,
             OutputStream out,
             OutputStream err) throws IOException {
+        return run(entryFile, policy, executionProfile, Set.of(), out, err);
+    }
+
+    public static IncrementalCompiler.BuildResult run(
+            Path entryFile,
+            IsolatePolicy policy,
+            ExecutionProfile executionProfile,
+            Set<String> allowedHostClasses,
+            OutputStream out,
+            OutputStream err) throws IOException {
         Path entry = entryFile.toAbsolutePath().normalize();
         if (!Files.isRegularFile(entry)) throw new IllegalArgumentException("not a file: " + entry);
 
@@ -58,7 +69,7 @@ public final class LinkedProgramRunner {
         IncrementalCompiler.BuildResult build = compiler.compile(sources);
         String entryId = unitId(entry);
 
-        Context.Builder builder = policy.restrictedContextBuilder(executionProfile);
+        Context.Builder builder = policy.restrictedContextBuilder(executionProfile, allowedHostClasses);
         if (out != null) builder.out(out);
         if (err != null) builder.err(err);
 
