@@ -1575,6 +1575,10 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("MutexGuard<T> is lexical and cannot cross actor mailboxes");
         }
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
+            if (target.policy.adversarial()) {
+                throw new SecurityException(
+                        "adversarial actors cannot receive SharedMutex<T> or other live shared mutable state");
+            }
             if (target.kind != ActorKind.SHARED) {
                 throw new SecurityException("private actors cannot receive SharedMutex<T>");
             }
@@ -2019,9 +2023,10 @@ public final class ActorRuntime implements AutoCloseable {
             rejectTrustedSymbols(shared.value(), visiting, depth + 1);
             return;
         }
-        if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            sharedMutex.inspectForTransport(
-                    payload -> rejectTrustedSymbols(payload, visiting, depth + 1));
+        if (value instanceof OresMutex.Shared<?>) {
+            // Live shared-mutable capabilities are rejected wholesale for an
+            // adversarial target by requireMutexTransport(...). Do not inspect
+            // their payload here: the payload may change after inspection.
             return;
         }
         if (value instanceof OresMutex.SharedState aggregate) {
