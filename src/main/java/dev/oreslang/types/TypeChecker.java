@@ -906,6 +906,10 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.SpawnExpr spawned) {
+            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                throw new IllegalArgumentException(
+                        "untrusted actors cannot spawn child actors; use bounded async I/O/Futures instead");
+            }
             Ast.CallExpr call = spawned.call();
             Ast.FunctionDecl target;
             String label;
