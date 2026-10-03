@@ -38,6 +38,8 @@ final class GarbageCollectionRuntimeTest {
         assertFalse(second.hostGcHintIssued());
         assertEquals(2L, gc.descriptor().get("requests"));
         assertEquals(1L, gc.descriptor().get("suppressed_requests"));
+        assertEquals("lexical-drop", gc.descriptor().get("ownership_reclamation"));
+        assertEquals("explicit-lifecycle-only", gc.descriptor().get("pinned_root_reclamation"));
     }
 
     @Test
