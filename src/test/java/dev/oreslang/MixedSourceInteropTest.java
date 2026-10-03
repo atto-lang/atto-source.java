@@ -77,6 +77,92 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void doJavaIsAnExecutionIslandAndRewritesToAStatementCall() {
+        MixedSourceUnit unit = MixedSourceUnit.parse("/tmp/run-java.ores", "run-java.ores", """
+                pub fnc main() => void {
+                  do java {
+                    Ores.ping();
+                  }
+                  return;
+                }
+
+                pub fnc ping() => void {
+                  return;
+                }
+                """);
+
+        assertEquals(1, unit.foreignIslands().size());
+        assertEquals(MixedSourceUnit.IslandKind.EXECUTION, unit.foreignIslands().getFirst().kind());
+        assertEquals("OresJavaExec0", unit.javaBindings().getFirst().simpleName());
+        assertTrue(unit.oresSource().contains("OresJavaExec0.run();"));
+        assertTrue(unit.javaSources().getFirst().sourceText().contains("public static void run()"));
+        assertDoesNotThrow(() -> Parser.parse(unit.oresSource()));
+    }
+
+    @Test
+    void doJavaExecutesExactlyAtTheOresControlFlowPoint() throws Exception {
+        Path source = temp.resolve("do-java.ores");
+        Files.writeString(source, """
+                pub fnc signal() => void {
+                  stdio.println("java-ran");
+                  return;
+                }
+
+                pub fnc main() => void {
+                  do java {
+                    Ores.signal();
+                  }
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                source,
+                trustedMixedPolicy(),
+                ExecutionProfile.serverJit(),
+                Set.of(),
+                out,
+                new ByteArrayOutputStream());
+
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("java-ran"));
+    }
+
+    @Test
+    void doJavaDoesNotImplicitlyCaptureOresLocals() throws Exception {
+        Path source = temp.resolve("no-capture.ores");
+        Files.writeString(source, """
+                pub fnc main() => void {
+                  val value = 42;
+                  do java {
+                    System.out.println(value);
+                  }
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.validate(source));
+        assertTrue(failure.getMessage().contains("value"));
+    }
+
+    @Test
+    void doJavaIsStatementOnlyAndRejectsValueReturns() throws Exception {
+        Path source = temp.resolve("statement-only.ores");
+        Files.writeString(source, """
+                pub fnc main() => void {
+                  do java {
+                    return 42;
+                  }
+                  return;
+                }
+                """);
+
+        assertThrows(IllegalArgumentException.class, () -> LinkedProgramRunner.validate(source));
+    }
+
+    @Test
     void oresCallsJavaDeclaredInSameFile() throws Exception {
         Path source = temp.resolve("same-file.ores");
         Files.writeString(source, """
