@@ -112,17 +112,17 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     (void)cls;
     if (executor == NULL || thread_prefix == NULL) {
         throw_illegal_state(env, "native carrier executor/prefix cannot be null");
-        return;
+        return 0;
     }
     if (max_threads <= 0 || desired_threads <= 0 || desired_threads > max_threads) {
         throw_illegal_state(env, "invalid native carrier thread counts");
-        return;
+        return 0;
     }
 
     ores_carrier_pool *pool = (ores_carrier_pool *)calloc(1, sizeof(*pool));
     if (pool == NULL) {
         throw_illegal_state(env, "failed to allocate native carrier pool");
-        return;
+        return 0;
     }
     pool->max_threads = (int)max_threads;
     pool->desired_threads = (int)desired_threads;
@@ -132,33 +132,33 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     if ((*env)->GetJavaVM(env, &pool->jvm) != JNI_OK || pool->jvm == NULL) {
         free_pool(env, pool);
         throw_illegal_state(env, "JNI GetJavaVM failed");
-        return;
+        return 0;
     }
 
     pool->executor = (*env)->NewGlobalRef(env, executor);
     if (pool->executor == NULL) {
         free_pool(env, pool);
         throw_illegal_state(env, "failed to root native carrier executor");
-        return;
+        return 0;
     }
 
     jclass executor_class = (*env)->GetObjectClass(env, executor);
     if (executor_class == NULL) {
         free_pool(env, pool);
-        return;
+        return 0;
     }
     pool->carrier_loop = (*env)->GetMethodID(env, executor_class, "nativeCarrierLoop", "(I)V");
     (*env)->DeleteLocalRef(env, executor_class);
     if (pool->carrier_loop == NULL) {
         free_pool(env, pool);
         throw_illegal_state(env, "nativeCarrierLoop(int) JNI callback is missing");
-        return;
+        return 0;
     }
 
     const char *prefix = (*env)->GetStringUTFChars(env, thread_prefix, NULL);
     if (prefix == NULL) {
         free_pool(env, pool);
-        return;
+        return 0;
     }
 
     pool->threads = (pthread_t *)calloc((size_t)max_threads, sizeof(pthread_t));
@@ -167,7 +167,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
         free_pool(env, pool);
         throw_illegal_state(env, "failed to allocate native carrier slots");
-        return;
+        return 0;
     }
 
     int created = 0;
@@ -186,7 +186,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
             (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
             free_pool(env, pool);
             throw_illegal_state(env, "pthread_create failed for Oreslang carrier");
-            return;
+            return 0;
         }
         created++;
     }
@@ -405,8 +405,9 @@ static void *standalone_thread_main(void *raw) {
      * The Java callback requests release before returning. Mark termination and
      * release JNI roots while env is still valid, then detach from the VM.
      */
+    JavaVM *jvm = thread->jvm;
     standalone_mark_terminated(env, thread);
-    (*thread->jvm)->DetachCurrentThread(thread->jvm);
+    (*jvm)->DetachCurrentThread(jvm);
     return NULL;
 }
 
@@ -691,7 +692,7 @@ static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {
             THREAD_BASIC_INFO,
             (thread_info_t)&info,
             &count);
-    if (status != KERN_SUCCESS) return;
+    if (status != KERN_SUCCESS) return 0;
     uint64_t user = (uint64_t)info.user_time.seconds * 1000000000ULL
             + (uint64_t)info.user_time.microseconds * 1000ULL;
     uint64_t system = (uint64_t)info.system_time.seconds * 1000000000ULL
@@ -699,13 +700,13 @@ static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {
     return user + system;
 #elif defined(CLOCK_THREAD_CPUTIME_ID)
     clockid_t clock_id;
-    if (pthread_getcpuclockid(pthread, &clock_id) != 0) return;
+    if (pthread_getcpuclockid(pthread, &clock_id) != 0) return 0;
     struct timespec ts;
-    if (clock_gettime(clock_id, &ts) != 0) return;
+    if (clock_gettime(clock_id, &ts) != 0) return 0;
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 #else
     (void)pthread;
-    return;
+    return 0;
 #endif
 }
 
