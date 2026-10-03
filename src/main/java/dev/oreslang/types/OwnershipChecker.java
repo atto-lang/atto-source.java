@@ -348,6 +348,15 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("Symbol")
+                    && member.member().equals("iterator")
+                    && scope.lookup("Symbol") == null) {
+                return new ValueInfo(
+                        Ast.TypeRef.simple("Symbol"),
+                        ValueKind.COPY,
+                        null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
