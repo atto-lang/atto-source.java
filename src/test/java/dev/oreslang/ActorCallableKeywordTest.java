@@ -437,6 +437,53 @@ final class ActorCallableKeywordTest {
         assertTrue(nested.getMessage().contains("cannot return SharedMutex"));
     }
 
+    @Test
+    void actorClassSeparatesPublicMailboxApiFromPrivateHelpers() {
+        IllegalArgumentException publicHelper = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Worker {
+                          pub helper() => int { return 1; }
+                        }
+                        """)));
+        assertTrue(publicHelper.getMessage().contains("internal and must be private"));
+
+        IllegalArgumentException privateEntrypoint = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Worker {
+                          actor hidden() => int { return 1; }
+                        }
+                        """)));
+        assertTrue(privateEntrypoint.getMessage().contains("must be public"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                shared actor Worker {
+                  helper() => int { return 1; }
+                  pub actor read() => int { return self.helper(); }
+                }
+                """)));
+    }
+
+    @Test
+    void actorEntrypointsRejectAsyncUntilContinuationIsolationExists() {
+        IllegalArgumentException method = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Worker {
+                          pub async actor read() => int { return 1; }
+                        }
+                        """)));
+        assertTrue(method.getMessage().contains("cannot be async"));
+
+        IllegalArgumentException callable = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub async actor fnc work() => int { return 1; }
+                        """)));
+        assertTrue(callable.getMessage().contains("cannot be async"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "actor-callables.ores")
