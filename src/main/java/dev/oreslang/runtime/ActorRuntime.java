@@ -235,6 +235,13 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Lightweight scheduler telemetry suitable for ores-otel/JMX export. */
+    public record DispatcherStats(
+            int parallelism,
+            int activeThreads,
+            int queuedActorTurns,
+            long completedActorTurns) { }
+
     public record ActorId(UUID value) {
         public ActorId { Objects.requireNonNull(value); }
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
@@ -698,6 +705,22 @@ public final class ActorRuntime implements AutoCloseable {
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
     public int actorCount() { return actorCount.get(); }
+
+    /**
+     * Snapshot one carrier pool without exposing the executor itself. Queue
+     * depth + active threads are the minimum signals needed to detect sustained
+     * saturation/starvation from outside the runtime.
+     */
+    public DispatcherStats dispatcherStats(ActorKind kind) {
+        Objects.requireNonNull(kind, "kind");
+        ThreadPoolExecutor executor = (ThreadPoolExecutor) dispatcherFor(kind);
+        return new DispatcherStats(
+                executor.getMaximumPoolSize(),
+                executor.getActiveCount(),
+                executor.getQueue().size(),
+                executor.getCompletedTaskCount());
+    }
+
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
     public long sharedMemoryBytes() { return sharedMemoryBytes.get(); }
     public long actorMemoryBytes() { return privateMemoryBytes.get() + sharedMemoryBytes.get(); }
