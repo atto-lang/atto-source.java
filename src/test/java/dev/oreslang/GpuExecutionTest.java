@@ -744,6 +744,26 @@ final class GpuExecutionTest {
     }
 
     @Test
+    void overloadedGpuStaticFunctionsHaveDistinctArityQualifiedMetadata() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module app
+                  define class Ops as
+                    gpu static fnc add(i32 x) => i32 { return x; }
+                    gpu static fnc add(i32 x, i32 y) => i32 { return x + y; }
+                  end
+                end
+                """);
+
+        GpuKernelCompiler.GpuKernel one =
+                compilation.gpuProgram().requireKernel("app", "Ops.add", 1);
+        GpuKernelCompiler.GpuKernel two =
+                compilation.gpuProgram().requireKernel("app", "Ops.add", 2);
+        assertNotEquals(one.kernelSymbol(), two.kernelSymbol());
+        assertEquals(1, one.arity());
+        assertEquals(2, two.arity());
+    }
+
+    @Test
     void namedGpuFunctionDispatchesThroughInstalledBackendWithCompiledArtifact() throws Exception {
         AtomicReference<GpuRuntime.Invocation> observed = new AtomicReference<>();
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
