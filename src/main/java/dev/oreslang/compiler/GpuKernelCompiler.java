@@ -1596,10 +1596,14 @@ public final class GpuKernelCompiler {
     }
 
     private String helperParameterList(List<Ast.Param> parameters, String module) {
-        String params = parameterList(parameters, module);
-        return params.isEmpty()
-                ? "__global int* restrict __ores_error"
-                : params + ", __global int* restrict __ores_error";
+        ArrayList<String> parts = new ArrayList<>();
+        for (Ast.Param param : parameters) {
+            parts.add(cHelperParameter(param, module));
+            Ast.TypeRef type = resolveAlias(param.type(), module);
+            if (isBuffer(type)) parts.add("ulong " + bufferLengthName(param.name()));
+        }
+        parts.add("__global int* __ores_error");
+        return String.join(", ", parts);
     }
 
     private String argumentNames(List<Ast.Param> parameters, String module) {
@@ -1619,6 +1623,16 @@ public final class GpuKernelCompiler {
             Ast.TypeRef element = resolveAlias(type.arguments().getFirst(), module);
             return "__global " + (param.mutable() ? "" : "const ") + cScalar(element)
                     + "* restrict " + variableName(param.name());
+        }
+        return cScalar(type) + " " + variableName(param.name());
+    }
+
+    private String cHelperParameter(Ast.Param param, String module) {
+        Ast.TypeRef type = resolveAlias(param.type(), module);
+        if (isBuffer(type)) {
+            Ast.TypeRef element = resolveAlias(type.arguments().getFirst(), module);
+            return "__global " + (param.mutable() ? "" : "const ") + cScalar(element)
+                    + "* " + variableName(param.name());
         }
         return cScalar(type) + " " + variableName(param.name());
     }
