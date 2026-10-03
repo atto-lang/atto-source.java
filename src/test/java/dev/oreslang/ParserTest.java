@@ -55,7 +55,7 @@ final class ParserTest {
     void methodReceiverIsImplicitOrExplicitSelf() {
         String source = """
                 define module model
-                  define class x
+                  define class x as
                     @Ret<self>
                     find() {
                       return self;
@@ -353,6 +353,47 @@ final class ParserTest {
                     return;
                   }
                 end
+                """));
+    }
+
+    @Test
+    void classDeclarationsRequireAsDelimiter() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class CounterState as
+                  pub let int value = 10;
+                end
+                """));
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class CounterState
+                          pub let int value = 10;
+                        end
+                        """));
+
+        assertTrue(failure.getMessage().contains("expected 'as' after class header"));
+    }
+
+    @Test
+    void sharedAndUntrustedRemainContextualActorModifiers() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define module app
+                  fnc names() => void {
+                    val shared = 1;
+                    val untrusted = 2;
+                    stdio.println(shared + untrusted);
+                    return;
+                  }
+                end
+
+                shared actor SharedWorker {
+                  pub fnc ping() => void { return; }
+                }
+
+                untrusted actor SandboxWorker {
+                  pub fnc ping() => void { return; }
+                }
                 """));
     }
 
