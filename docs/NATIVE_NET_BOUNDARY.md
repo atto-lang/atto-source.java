@@ -34,6 +34,14 @@ runtime moves a linear owner+generation lease, while `liboresnet` keeps the
 kernel fd hidden. Same-process handoff must not use `dup()`, because duplicate
 descriptors would create multiple live authorities to the same socket.
 
+The guest-visible primitive type is `NativeSocketHandle`, a runtime capability
+object rather than an integer. The underlying 63-bit token never enters Oreslang
+as an `Int`. `NativeSocketHandle` is reserved by the type checker, cannot be
+redeclared as a class/interface/type alias, is rejected at actor-callable
+boundaries, and is not shared-safe. Runtime generic actor transport likewise
+rejects the opaque host object. An actor may only acquire socket authority via
+an explicit ownership-transfer primitive such as the HTTP transport lease.
+
 Java may marshal Truffle guest values into the privileged native ABI. Java must
 not implement networking or HTTP semantics and must not delegate to
 `java.net`, `java.net.http`, NIO sockets, or Java HTTP/TLS clients.
