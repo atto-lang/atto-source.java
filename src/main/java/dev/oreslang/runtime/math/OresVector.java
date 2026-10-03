@@ -1,12 +1,12 @@
 package dev.oreslang.runtime.math;
 
-import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.ImmutableGuestValue;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /** Immutable column vector backed by the same EJML kernels as OresMatrix. */
-public final class OresVector implements OresMutex.SharedState {
+public final class OresVector implements ImmutableGuestValue {
     private final OresMatrix value;
 
     private OresVector(OresMatrix value) {
