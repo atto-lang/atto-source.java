@@ -358,6 +358,7 @@ public final class CapabilityChecker {
             checkType(e.type(), policy);
             for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
         }
+        else if (expr instanceof Ast.SpawnExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
