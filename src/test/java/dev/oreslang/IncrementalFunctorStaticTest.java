@@ -173,7 +173,7 @@ final class IncrementalFunctorStaticTest {
 
                 pub routine main() : void {
                   val c = new model.Counter();
-                  stdio.stdout.write(model.Counter.twice(c.read()));
+                  stdio.stdout.write(model::Counter::twice(c.read()));
                 }
                 """);
         assertEquals("18", output);
