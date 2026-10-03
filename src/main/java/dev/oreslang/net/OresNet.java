@@ -251,11 +251,11 @@ public final class OresNet {
     }
 
     private static final class SocketValue extends NetworkValue {
-        private NativeSocketHandle handle;
-        private boolean connected;
-        private boolean inputShutdown;
-        private boolean outputShutdown;
-        private boolean closed;
+        private volatile NativeSocketHandle handle;
+        private volatile boolean connected;
+        private volatile boolean inputShutdown;
+        private volatile boolean outputShutdown;
+        private volatile boolean closed;
 
         private SocketValue(OresContext context, NativeSocketHandle handle, boolean connected) {
             super(context);
@@ -449,10 +449,10 @@ public final class OresNet {
         private void close() {
             if (closed) return;
             requireNetwork("Socket.close");
-            if (handle != null && handle.isOpen()) {
-                ioVoid(() -> NativeSocketBridge.close(handle));
+            NativeSocketHandle current = handle;
+            if (current != null && current.isOpen()) {
+                ioVoid(() -> NativeSocketBridge.close(current));
             }
-            handle = null;
             closed = true;
         }
     }
@@ -577,9 +577,9 @@ public final class OresNet {
     }
 
     private static final class ServerSocketValue extends NetworkValue {
-        private NativeSocketHandle handle;
-        private boolean bound;
-        private boolean closed;
+        private volatile NativeSocketHandle handle;
+        private volatile boolean bound;
+        private volatile boolean closed;
 
         private ServerSocketValue(OresContext context, NativeSocketHandle handle, boolean bound) {
             super(context);
@@ -698,10 +698,10 @@ public final class OresNet {
         private void close() {
             if (closed) return;
             requireNetwork("ServerSocket.close");
-            if (handle != null && handle.isOpen()) {
-                ioVoid(() -> NativeSocketBridge.close(handle));
+            NativeSocketHandle current = handle;
+            if (current != null && current.isOpen()) {
+                ioVoid(() -> NativeSocketBridge.close(current));
             }
-            handle = null;
             closed = true;
         }
     }
