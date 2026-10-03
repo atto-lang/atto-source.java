@@ -25,12 +25,24 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+    public enum ModuleStorage { ORDINARY, GLOBAL, SINGLETON }
+
+    public record ModuleDecl(
+            String name,
+            ModuleStorage storage,
+            List<Annotation> annotations,
+            List<Decl> declarations) {
         public ModuleDecl {
+            storage = storage == null ? ModuleStorage.ORDINARY : storage;
             annotations = List.copyOf(annotations);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, ModuleStorage.ORDINARY, annotations, declarations);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, ModuleStorage.ORDINARY, List.of(), declarations);
+        }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
@@ -215,7 +227,20 @@ public final class Ast {
             Visibility visibility,
             BindingKind bindingKind,
             TypeRef type,
-            Expr initializer) implements Decl { }
+            Expr initializer,
+            List<Annotation> annotations) implements Decl {
+        public FieldDecl {
+            annotations = List.copyOf(annotations);
+        }
+        public FieldDecl(
+                String name,
+                Visibility visibility,
+                BindingKind bindingKind,
+                TypeRef type,
+                Expr initializer) {
+            this(name, visibility, bindingKind, type, initializer, List.of());
+        }
+    }
 
     public record MethodDecl(
             String name,
