@@ -83,6 +83,14 @@ Each singleton call commits or rolls back only the state owned by that singleton
 
 A hot-reloaded generation with the same singleton field schema reuses the existing actor state while executing the new function bodies. Incompatible singleton field-schema changes are rejected until an explicit migration mechanism is provided; the runtime never silently treats old process state as a new layout. Replacing singleton code against live state requires `HOT_CODE_LOAD`; managed generations are process-monotonic and stale code cannot roll active singleton behavior backward.
 
+Singleton state is a **pinned process root by default**. Automatic/tracing GC and actor-local GC may reclaim ordinary unreachable values, and ownership-managed values may be dropped deterministically, but neither mechanism implicitly destroys a live singleton module. Trusted code must opt into singleton reclamation explicitly:
+
+```ores
+val bool collected = await process.collect_singleton(counter);
+```
+
+`process.collect_singleton(counter)` requires `PROCESS_SINGLETON` and accepts the singleton module namespace itself, not a string or raw pointer. It closes admission to that singleton, drains calls that were already admitted, performs runtime cleanup, removes the process registry root, and completes only after reclamation is safe. Stale handles stay invalid. A later access creates a fresh singleton instance and reruns that singleton's initialization. This is user-controlled GC as a memory-safe lifecycle operation, not an unsafe `free`.
+
 ## Initialization lifecycle
 
 Oreslang has one explicit lifecycle declaration:
