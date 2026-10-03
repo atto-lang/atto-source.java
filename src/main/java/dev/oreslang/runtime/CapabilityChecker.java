@@ -29,6 +29,7 @@ public final class CapabilityChecker {
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final Set<Object> typeExpansionStack =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private final Set<String> sourceSymbolLiterals = new java.util.LinkedHashSet<>();
 
     private CapabilityChecker(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
@@ -45,7 +46,15 @@ public final class CapabilityChecker {
     }
 
     public static void check(Ast.Program program, IsolatePolicy policy) {
-        new CapabilityChecker(program).checkProgram(program, policy);
+        CapabilityChecker checker = new CapabilityChecker(program);
+        checker.checkProgram(program, policy);
+
+        // Commit permanent source-literal identities only after the complete
+        // admission pass succeeds. Invalid/rejected code therefore cannot burn
+        // the process registry's compiler-literal reserve.
+        for (String literal : checker.sourceSymbolLiterals) {
+            OresSymbol.processLiteral(literal, policy);
+        }
     }
 
     private static <T> void index(
@@ -274,8 +283,9 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
-        if (expr instanceof Ast.LiteralExpr literal && literal.value() instanceof Ast.Symbol) {
+        if (expr instanceof Ast.LiteralExpr literal && literal.value() instanceof Ast.Symbol symbol) {
             requireTrustedSymbols(policy, "symbol literal");
+            sourceSymbolLiterals.add(symbol.name());
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
             require(policy, IsolatePolicy.Capability.STDOUT, "print");
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("SharedMutex")) {
