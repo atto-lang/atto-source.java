@@ -467,7 +467,7 @@ shared actor Account {
 
   // May overlap other parallel/shared turns. Direct access to mutable actor
   // fields is rejected; route it through a synchronized ordinary helper or an
-  // immutable Mutex/SharedMutex handle.
+  // stable SharedMutex handle.
   pub parallel actor balance_snapshot() => int {
     return self.read_balance();
   }
@@ -507,7 +507,7 @@ Additional invariants:
 - `isoactor` remains serialized and cannot declare `parallel actor` methods;
 - compiler-generated/context-aware actor factories are capture-controlled; mutable host state must enter through messages or explicit runtime-owned capabilities;
 - actor `self` and move-only state rooted at `self` cannot escape an actor turn by ordinary mutable alias;
-- a `parallel actor` method cannot directly read or mutate ordinary mutable actor fields; synchronized ordinary helpers, immutable lock handles, or an `exclusive actor` method are required;
+- a `parallel actor` method cannot directly read or mutate ordinary mutable actor fields; synchronized ordinary helpers, a stable `SharedMutex<T>` handle, or an `exclusive actor` method are required; `Mutex<T>` is actor-local and is not a cross-turn synchronization primitive;
 - synchronized cross-actor shared memory requires the host-granted `SHARED_MEMORY` capability.
 
 Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
