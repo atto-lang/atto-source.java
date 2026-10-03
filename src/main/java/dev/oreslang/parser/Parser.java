@@ -158,7 +158,7 @@ public final class Parser {
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers, true);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected static function/routine, class, interface, type, or binding declaration");
+        throw error(peek(), "expected function/routine, class, interface, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers, boolean insideModule) {
@@ -178,18 +178,12 @@ public final class Parser {
         }
         if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
         if (match(FNC)) {
-            if (insideModule && !modifiers.isStatic) {
-                throw error(previous(), "module functions are static; declare 'static fnc'");
-            }
             if (!insideModule && modifiers.isStatic) {
                 throw error(previous(), "'static fnc' is valid inside modules/classes, not at file scope");
             }
             return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, Ast.ActorKind.NONE, insideModule);
         }
         if (match(ROUTINE)) {
-            if (insideModule && !modifiers.isStatic) {
-                throw error(previous(), "module routines are static; declare 'static routine'");
-            }
             if (!insideModule && modifiers.isStatic) {
                 throw error(previous(), "'static routine' is valid inside modules/classes, not at file scope");
             }
