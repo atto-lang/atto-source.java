@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <jni.h>
@@ -6,6 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <sched.h>
+#include <stdatomic.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/thread_info.h>
+#include <mach/thread_act.h>
+#endif
 
 typedef struct ores_carrier_pool ores_carrier_pool;
 
@@ -266,12 +275,95 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadId(
 /* Privileged standalone OresThread support.                                 */
 /* ------------------------------------------------------------------------- */
 
-typedef struct {
+typedef struct ores_standalone_thread ores_standalone_thread;
+
+struct ores_standalone_thread {
+    uint64_t handle;
     JavaVM *jvm;
     jobject thread_object;
     jmethodID run_method;
     char *name;
-} ores_standalone_thread;
+    pthread_t pthread;
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    int interrupt_requested;
+    int attach_ready;
+    int attach_ok;
+    int terminated;
+    int release_requested;
+    ores_standalone_thread *next;
+};
+
+static pthread_mutex_t standalone_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
+static ores_standalone_thread *standalone_registry = NULL;
+static _Atomic uint64_t standalone_next_handle = 1;
+
+static ores_standalone_thread *standalone_find_locked(uint64_t handle) {
+    for (ores_standalone_thread *it = standalone_registry; it != NULL; it = it->next) {
+        if (it->handle == handle) return it;
+    }
+    return NULL;
+}
+
+static void standalone_register_locked(ores_standalone_thread *thread) {
+    thread->next = standalone_registry;
+    standalone_registry = thread;
+}
+
+static void standalone_remove_locked(ores_standalone_thread *thread) {
+    ores_standalone_thread **cursor = &standalone_registry;
+    while (*cursor != NULL) {
+        if (*cursor == thread) {
+            *cursor = thread->next;
+            thread->next = NULL;
+            return;
+        }
+        cursor = &(*cursor)->next;
+    }
+}
+
+static void set_native_thread_name(pthread_t target, const char *name) {
+    if (name == NULL) return;
+#if defined(__APPLE__)
+    if (pthread_equal(pthread_self(), target)) {
+        char truncated[64];
+        snprintf(truncated, sizeof(truncated), "%s", name);
+        (void)pthread_setname_np(truncated);
+    }
+#elif defined(__linux__)
+    char truncated[16];
+    snprintf(truncated, sizeof(truncated), "%s", name);
+    (void)pthread_setname_np(target, truncated);
+#else
+    (void)target;
+#endif
+}
+
+static void free_standalone_thread(JNIEnv *env, ores_standalone_thread *thread) {
+    if (thread == NULL) return;
+    if (thread->thread_object != NULL && env != NULL) {
+        (*env)->DeleteGlobalRef(env, thread->thread_object);
+    }
+    free(thread->name);
+    pthread_cond_destroy(&thread->condition);
+    pthread_mutex_destroy(&thread->mutex);
+    free(thread);
+}
+
+static void standalone_mark_terminated(JNIEnv *env, ores_standalone_thread *thread) {
+    int destroy = 0;
+    pthread_mutex_lock(&standalone_registry_mutex);
+    pthread_mutex_lock(&thread->mutex);
+    thread->terminated = 1;
+    pthread_cond_broadcast(&thread->condition);
+    if (thread->release_requested) {
+        standalone_remove_locked(thread);
+        destroy = 1;
+    }
+    pthread_mutex_unlock(&thread->mutex);
+    pthread_mutex_unlock(&standalone_registry_mutex);
+    if (destroy) free_standalone_thread(env, thread);
+}
 
 static void *standalone_thread_main(void *raw) {
     ores_standalone_thread *thread = (ores_standalone_thread *)raw;
@@ -282,98 +374,367 @@ static void *standalone_thread_main(void *raw) {
     attach.name = thread->name;
     attach.group = NULL;
 
-    // Explicit OresThread instances are platform threads, not actor carriers,
-    // so attach as a normal (non-daemon) JVM thread.
     jint status = (*thread->jvm)->AttachCurrentThread(
             thread->jvm, (void **)&env, &attach);
-    if (status == JNI_OK && env != NULL) {
-        (*env)->CallVoidMethod(env, thread->thread_object, thread->run_method);
-        if ((*env)->ExceptionCheck(env)) {
-            (*env)->ExceptionDescribe(env);
-            (*env)->ExceptionClear(env);
-        }
-        (*env)->DeleteGlobalRef(env, thread->thread_object);
-        (*thread->jvm)->DetachCurrentThread(thread->jvm);
+
+    pthread_mutex_lock(&thread->mutex);
+    thread->attach_ok = (status == JNI_OK && env != NULL);
+    thread->attach_ready = 1;
+    pthread_cond_broadcast(&thread->condition);
+    pthread_mutex_unlock(&thread->mutex);
+
+    if (status != JNI_OK || env == NULL) {
+        return NULL;
     }
 
-    free(thread->name);
-    free(thread);
+    set_native_thread_name(thread->pthread, thread->name);
+    (*env)->CallVoidMethod(env, thread->thread_object, thread->run_method);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+
+    (*thread->jvm)->DetachCurrentThread(thread->jvm);
+    /*
+     * The Java callback requests release before returning. Marking termination
+     * afterwards prevents freeing the control block while this C frame still
+     * references it.
+     */
+    standalone_mark_terminated(env, thread);
     return NULL;
 }
 
-JNIEXPORT void JNICALL
+JNIEXPORT jlong JNICALL
 Java_dev_oreslang_runtime_OresThread_nativeStart(
-        JNIEnv *env, jclass cls, jobject thread_object, jstring name) {
+        JNIEnv *env,
+        jclass cls,
+        jobject thread_object,
+        jstring name,
+        jlong stack_bytes) {
     (void)cls;
     if (thread_object == NULL || name == NULL) {
         throw_illegal_state(env, "OresThread native start requires a thread object and name");
-        return;
+        return 0;
+    }
+    if (stack_bytes < 262144) {
+        throw_illegal_state(env, "OresThread stack size must be at least 262144 bytes");
+        return 0;
     }
 
     ores_standalone_thread *thread =
             (ores_standalone_thread *)calloc(1, sizeof(*thread));
     if (thread == NULL) {
         throw_illegal_state(env, "failed to allocate OresThread native state");
-        return;
+        return 0;
     }
+    pthread_mutex_init(&thread->mutex, NULL);
+    pthread_cond_init(&thread->condition, NULL);
+    thread->handle = atomic_fetch_add(&standalone_next_handle, 1);
+    if (thread->handle == 0) thread->handle = atomic_fetch_add(&standalone_next_handle, 1);
 
     if ((*env)->GetJavaVM(env, &thread->jvm) != JNI_OK || thread->jvm == NULL) {
-        free(thread);
+        free_standalone_thread(env, thread);
         throw_illegal_state(env, "JNI GetJavaVM failed for OresThread");
-        return;
+        return 0;
     }
 
     thread->thread_object = (*env)->NewGlobalRef(env, thread_object);
     if (thread->thread_object == NULL) {
-        free(thread);
+        free_standalone_thread(env, thread);
         throw_illegal_state(env, "failed to root OresThread while native pthread is running");
-        return;
+        return 0;
     }
 
     jclass thread_class = (*env)->GetObjectClass(env, thread_object);
     if (thread_class == NULL) {
-        (*env)->DeleteGlobalRef(env, thread->thread_object);
-        free(thread);
-        return;
+        free_standalone_thread(env, thread);
+        return 0;
     }
     thread->run_method = (*env)->GetMethodID(env, thread_class, "nativeRun", "()V");
+    jfieldID handle_field = (*env)->GetFieldID(env, thread_class, "nativeHandle", "J");
     (*env)->DeleteLocalRef(env, thread_class);
-    if (thread->run_method == NULL) {
-        (*env)->DeleteGlobalRef(env, thread->thread_object);
-        free(thread);
-        throw_illegal_state(env, "OresThread.nativeRun() JNI callback is missing");
-        return;
+    if (thread->run_method == NULL || handle_field == NULL) {
+        free_standalone_thread(env, thread);
+        throw_illegal_state(env, "OresThread JNI callback/control field is missing");
+        return 0;
     }
 
     const char *raw_name = (*env)->GetStringUTFChars(env, name, NULL);
     if (raw_name == NULL) {
-        (*env)->DeleteGlobalRef(env, thread->thread_object);
-        free(thread);
-        return;
+        free_standalone_thread(env, thread);
+        return 0;
     }
     thread->name = strdup(raw_name);
     (*env)->ReleaseStringUTFChars(env, name, raw_name);
     if (thread->name == NULL) {
-        (*env)->DeleteGlobalRef(env, thread->thread_object);
-        free(thread);
+        free_standalone_thread(env, thread);
         throw_illegal_state(env, "failed to copy OresThread name");
-        return;
+        return 0;
     }
 
-    pthread_t native_thread;
-    int create_status = pthread_create(
-            &native_thread, NULL, standalone_thread_main, thread);
-    if (create_status != 0) {
-        (*env)->DeleteGlobalRef(env, thread->thread_object);
-        free(thread->name);
-        free(thread);
-        throw_illegal_state(env, "pthread_create failed for OresThread");
-        return;
+    pthread_mutex_lock(&standalone_registry_mutex);
+    standalone_register_locked(thread);
+    pthread_mutex_unlock(&standalone_registry_mutex);
+
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0) {
+        pthread_mutex_lock(&standalone_registry_mutex);
+        standalone_remove_locked(thread);
+        pthread_mutex_unlock(&standalone_registry_mutex);
+        free_standalone_thread(env, thread);
+        throw_illegal_state(env, "pthread_attr_init failed for OresThread");
+        return 0;
     }
-    // Completion/join is tracked by the Java peer's CompletableFuture. Detach
-    // the pthread so native resources are reclaimed even if user code never
-    // calls join().
-    pthread_detach(native_thread);
+    if (pthread_attr_setstacksize(&attr, (size_t)stack_bytes) != 0) {
+        pthread_attr_destroy(&attr);
+        pthread_mutex_lock(&standalone_registry_mutex);
+        standalone_remove_locked(thread);
+        pthread_mutex_unlock(&standalone_registry_mutex);
+        free_standalone_thread(env, thread);
+        throw_illegal_state(env, "invalid OresThread native stack size");
+        return 0;
+    }
+
+    int create_status = pthread_create(
+            &thread->pthread, &attr, standalone_thread_main, thread);
+    pthread_attr_destroy(&attr);
+    if (create_status != 0) {
+        pthread_mutex_lock(&standalone_registry_mutex);
+        standalone_remove_locked(thread);
+        pthread_mutex_unlock(&standalone_registry_mutex);
+        free_standalone_thread(env, thread);
+        throw_illegal_state(env, "pthread_create failed for OresThread");
+        return 0;
+    }
+
+    /*
+     * Do not publish a half-started thread. Wait until the pthread has attached
+     * to the VM; otherwise an attachment failure silently consumes a platform
+     * thread permit and leaves join() waiting forever.
+     */
+    pthread_mutex_lock(&thread->mutex);
+    while (!thread->attach_ready) {
+        pthread_cond_wait(&thread->condition, &thread->mutex);
+    }
+    int attach_ok = thread->attach_ok;
+    pthread_mutex_unlock(&thread->mutex);
+
+    if (!attach_ok) {
+        pthread_join(thread->pthread, NULL);
+        pthread_mutex_lock(&standalone_registry_mutex);
+        standalone_remove_locked(thread);
+        pthread_mutex_unlock(&standalone_registry_mutex);
+        free_standalone_thread(env, thread);
+        throw_illegal_state(env, "AttachCurrentThread failed for OresThread");
+        return 0;
+    }
+
+    /*
+     * Publish the handle directly into the Java peer before returning from JNI.
+     * The target may run and terminate immediately after attachment, so relying
+     * only on the Java assignment from this method's return value is racy.
+     */
+    (*env)->SetLongField(env, thread_object, handle_field, (jlong)thread->handle);
+    return (jlong)thread->handle;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeInterrupt(
+        JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
+    (void)cls;
+    pthread_mutex_lock(&standalone_registry_mutex);
+    ores_standalone_thread *thread = standalone_find_locked((uint64_t)handle);
+    if (thread != NULL) {
+        pthread_mutex_lock(&thread->mutex);
+        if (!thread->terminated) {
+            thread->interrupt_requested = 1;
+            pthread_cond_broadcast(&thread->condition);
+        }
+        pthread_mutex_unlock(&thread->mutex);
+    }
+    pthread_mutex_unlock(&standalone_registry_mutex);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeIsInterrupted(
+        JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
+    (void)cls;
+    int interrupted = 0;
+    pthread_mutex_lock(&standalone_registry_mutex);
+    ores_standalone_thread *thread = standalone_find_locked((uint64_t)handle);
+    if (thread != NULL) {
+        pthread_mutex_lock(&thread->mutex);
+        interrupted = thread->interrupt_requested;
+        pthread_mutex_unlock(&thread->mutex);
+    }
+    pthread_mutex_unlock(&standalone_registry_mutex);
+    return interrupted ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeClearInterrupt(
+        JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
+    (void)cls;
+    int interrupted = 0;
+    pthread_mutex_lock(&standalone_registry_mutex);
+    ores_standalone_thread *thread = standalone_find_locked((uint64_t)handle);
+    if (thread != NULL) {
+        pthread_mutex_lock(&thread->mutex);
+        interrupted = thread->interrupt_requested;
+        thread->interrupt_requested = 0;
+        pthread_mutex_unlock(&thread->mutex);
+    }
+    pthread_mutex_unlock(&standalone_registry_mutex);
+    return interrupted ? JNI_TRUE : JNI_FALSE;
+}
+
+static struct timespec add_millis(struct timespec base, uint64_t millis) {
+    uint64_t seconds = millis / 1000;
+    uint64_t nanos = (millis % 1000) * 1000000ULL;
+    base.tv_sec += (time_t)seconds;
+    base.tv_nsec += (long)nanos;
+    if (base.tv_nsec >= 1000000000L) {
+        base.tv_sec += 1;
+        base.tv_nsec -= 1000000000L;
+    }
+    return base;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeSleep(
+        JNIEnv *env, jclass cls, jlong handle, jlong millis) {
+    (void)env;
+    (void)cls;
+    if (millis < 0) return JNI_FALSE;
+
+    pthread_mutex_lock(&standalone_registry_mutex);
+    ores_standalone_thread *thread = standalone_find_locked((uint64_t)handle);
+    if (thread == NULL) {
+        pthread_mutex_unlock(&standalone_registry_mutex);
+        return JNI_FALSE;
+    }
+    pthread_mutex_lock(&thread->mutex);
+    pthread_mutex_unlock(&standalone_registry_mutex);
+
+    if (thread->interrupt_requested) {
+        thread->interrupt_requested = 0;
+        pthread_mutex_unlock(&thread->mutex);
+        return JNI_TRUE;
+    }
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline = add_millis(deadline, (uint64_t)millis);
+    while (!thread->interrupt_requested && !thread->terminated) {
+        int rc = pthread_cond_timedwait(&thread->condition, &thread->mutex, &deadline);
+        if (rc != 0) break;
+    }
+    int interrupted = thread->interrupt_requested;
+    if (interrupted) thread->interrupt_requested = 0;
+    pthread_mutex_unlock(&thread->mutex);
+    return interrupted ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeYield(
+        JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    (void)sched_yield();
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeSetName(
+        JNIEnv *env, jclass cls, jlong handle, jstring name) {
+    (void)cls;
+    if (name == NULL) return;
+    const char *raw = (*env)->GetStringUTFChars(env, name, NULL);
+    if (raw == NULL) return;
+    char *copy = strdup(raw);
+    (*env)->ReleaseStringUTFChars(env, name, raw);
+    if (copy == NULL) return;
+
+    pthread_mutex_lock(&standalone_registry_mutex);
+    ores_standalone_thread *thread = standalone_find_locked((uint64_t)handle);
+    if (thread != NULL) {
+        pthread_mutex_lock(&thread->mutex);
+        char *old = thread->name;
+        thread->name = copy;
+        copy = NULL;
+        if (!thread->terminated) set_native_thread_name(thread->pthread, thread->name);
+        pthread_mutex_unlock(&thread->mutex);
+        free(old);
+    }
+    pthread_mutex_unlock(&standalone_registry_mutex);
+    free(copy);
+}
+
+static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {
+#if defined(__APPLE__)
+    mach_port_t mach_thread = pthread_mach_thread_np(pthread);
+    thread_basic_info_data_t info;
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    kern_return_t status = thread_info(
+            mach_thread,
+            THREAD_BASIC_INFO,
+            (thread_info_t)&info,
+            &count);
+    if (status != KERN_SUCCESS) return 0;
+    uint64_t user = (uint64_t)info.user_time.seconds * 1000000000ULL
+            + (uint64_t)info.user_time.microseconds * 1000ULL;
+    uint64_t system = (uint64_t)info.system_time.seconds * 1000000000ULL
+            + (uint64_t)info.system_time.microseconds * 1000ULL;
+    return user + system;
+#elif defined(CLOCK_THREAD_CPUTIME_ID)
+    clockid_t clock_id;
+    if (pthread_getcpuclockid(pthread, &clock_id) != 0) return 0;
+    struct timespec ts;
+    if (clock_gettime(clock_id, &ts) != 0) return 0;
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+#else
+    (void)pthread;
+    return 0;
+#endif
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeCpuTimeNanos(
+        JNIEnv *env, jclass cls, jlong handle) {
+    (void)env;
+    (void)cls;
+    uint64_t nanos = 0;
+    pthread_mutex_lock(&standalone_registry_mutex);
+    ores_standalone_thread *thread = standalone_find_locked((uint64_t)handle);
+    if (thread != NULL) {
+        pthread_mutex_lock(&thread->mutex);
+        if (!thread->terminated) nanos = pthread_cpu_time_nanos(thread->pthread);
+        pthread_mutex_unlock(&thread->mutex);
+    }
+    pthread_mutex_unlock(&standalone_registry_mutex);
+    return (jlong)nanos;
+}
+
+JNIEXPORT void JNICALL
+Java_dev_oreslang_runtime_OresThread_nativeRelease(
+        JNIEnv *env, jclass cls, jlong handle) {
+    (void)cls;
+    ores_standalone_thread *destroy = NULL;
+    pthread_mutex_lock(&standalone_registry_mutex);
+    ores_standalone_thread *thread = standalone_find_locked((uint64_t)handle);
+    if (thread != NULL) {
+        pthread_mutex_lock(&thread->mutex);
+        thread->release_requested = 1;
+        if (thread->terminated) {
+            standalone_remove_locked(thread);
+            destroy = thread;
+        }
+        pthread_mutex_unlock(&thread->mutex);
+    }
+    pthread_mutex_unlock(&standalone_registry_mutex);
+    if (destroy != NULL) free_standalone_thread(env, destroy);
 }
 
 JNIEXPORT jlong JNICALL
