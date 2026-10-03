@@ -78,13 +78,13 @@ final class ActorCallableKeywordTest {
                 }
 
                 pub routine main() => void {
-                  stdio.stdout.write(add_one(41));
+                  stdio.stdout.write(await spawn add_one(41));
                   stdio.stdout.write(":");
-                  shared_emit("shared");
+                  await spawn shared_emit("shared");
                   stdio.stdout.write(":");
-                  stdio.stdout.write(double_it(21));
+                  stdio.stdout.write(await spawn double_it(21));
                   stdio.stdout.write(":");
-                  private_emit("private");
+                  await spawn private_emit("private");
                   return;
                 }
                 """);
@@ -165,7 +165,109 @@ final class ActorCallableKeywordTest {
                         }
                         """)));
 
-        assertTrue(failure.getMessage().contains("mailbox-oriented actor composition"));
+        assertTrue(failure.getMessage().contains("must be invoked with 'spawn"));
+    }
+
+    @Test
+    void actorClassEntrypointsOmitFncAndRequireSpawn() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                shared actor Counter {
+                  let int value = 0;
+
+                  increment() => int {
+                    self.value = self.value + 1;
+                    return self.value;
+                  }
+
+                  pub parallel actor add() => int {
+                    return self.increment();
+                  }
+
+                  pub exclusive actor reset() => void {
+                    self.value = 0;
+                    return;
+                  }
+                }
+
+                pub routine main() => void {
+                  val counter = spawn Counter();
+                  val first = spawn counter.add();
+                  val second = spawn counter.add();
+                  stdio.stdout.write(await first);
+                  stdio.stdout.write(await second);
+                  await spawn counter.reset();
+                  return;
+                }
+                """));
+
+        Ast.ClassDecl counter = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorMethodKind.NONE, counter.methods().get(0).actorMethodKind());
+        assertEquals(Ast.ActorMethodKind.PARALLEL, counter.methods().get(1).actorMethodKind());
+        assertEquals(Ast.ActorMethodKind.EXCLUSIVE, counter.methods().get(2).actorMethodKind());
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared actor Broken {
+                  pub fnc bad() => void { return; }
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                isoactor Broken {
+                  pub parallel actor bad() => void { return; }
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                shared actor Broken {
+                  let int value = 0;
+                  pub parallel actor bad() => void {
+                    self.value = self.value + 1;
+                    return;
+                  }
+                }
+                """)));
+    }
+
+    @Test
+    void actorClassSpawnRunsPersistentSharedActor() throws Exception {
+        String output = run("""
+                shared actor Counter {
+                  let int value = 0;
+
+                  increment() => int {
+                    self.value = self.value + 1;
+                    return self.value;
+                  }
+
+                  pub parallel actor add() => int {
+                    return self.increment();
+                  }
+
+                  pub exclusive actor reset() => void {
+                    self.value = 0;
+                    return;
+                  }
+
+                  pub actor read() => int {
+                    return self.value;
+                  }
+                }
+
+                pub routine main() => void {
+                  val counter = spawn Counter();
+                  val first = spawn counter.add();
+                  val second = spawn counter.add();
+                  await first;
+                  await second;
+                  stdio.stdout.write(await spawn counter.read());
+                  await spawn counter.reset();
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(await spawn counter.read());
+                  return;
+                }
+                """);
+
+        assertEquals("2:0", output);
     }
 
     private static String run(String program) throws Exception {
