@@ -1,5 +1,6 @@
 package dev.oreslang.gpu;
 
+import dev.oreslang.compiler.OresCompiler;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -63,6 +64,92 @@ final class GpuRuntimeTest {
                 () -> new GpuRuntime().dispatch(
                         "test.consume", GpuRuntime.CallableKind.FNC, List.of(array)));
         assertTrue(failure.getMessage().contains("belongs to backend 'first'"));
+    }
+
+    @Test
+    void compiledDispatchRejectsMutableHostBuffersWithoutCopyBackContract() {
+        GpuRuntime.installBackend(new TransferBackend("mutable-host"));
+        var compilation = OresCompiler.compile("""
+                define module app
+                  gpu fnc fill(Array<i32> mut out) => void {
+                    for (let i64 i = 0; i < 1; i = i + 1) {
+                      out[i] = 1;
+                    }
+                    return;
+                  }
+                end
+                """);
+        var kernel = compilation.gpuProgram().requireKernel("app", "fill");
+
+        GpuRuntime.GpuTransferException failure = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> new GpuRuntime().dispatch(
+                        "app.fill",
+                        GpuRuntime.CallableKind.FNC,
+                        List.of(new ArrayList<>(List.of(0L))),
+                        compilation.gpuProgram(),
+                        kernel));
+        assertTrue(failure.getMessage().contains("copy-back semantics are not implicit"));
+        assertTrue(failure.getMessage().contains("GpuArray"));
+    }
+
+    @Test
+    void compiledDispatchEnforcesRestrictNoAliasForResidentBuffers() {
+        GpuRuntime.Backend backend = new TransferBackend("alias");
+        GpuRuntime.installBackend(backend);
+        GpuRuntime runtime = new GpuRuntime();
+        GpuRuntime.ArrayHandle array = runtime.uploadArray(List.of(1L, 2L));
+
+        var compilation = OresCompiler.compile("""
+                define module app
+                  gpu fnc combine(GpuArray<i32> a, GpuArray<i32> b) => i32 {
+                    return a[0] + b[0];
+                  }
+                end
+                """);
+        var kernel = compilation.gpuProgram().requireKernel("app", "combine");
+
+        GpuRuntime.GpuTransferException failure = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> runtime.dispatch(
+                        "app.combine",
+                        GpuRuntime.CallableKind.FNC,
+                        List.of(array, array),
+                        compilation.gpuProgram(),
+                        kernel));
+        assertTrue(failure.getMessage().contains("restrict/no-alias"));
+    }
+
+    @Test
+    void compiledDispatchCarriesExactKernelAndArtifactToBackend() {
+        final GpuRuntime.Invocation[] seen = new GpuRuntime.Invocation[1];
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "compiled"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) {
+                seen[0] = invocation;
+                return 9L;
+            }
+        });
+
+        var compilation = OresCompiler.compile("""
+                define module app
+                  gpu fnc id(i32 x) => i32 {
+                    return x;
+                  }
+                end
+                """);
+        var kernel = compilation.gpuProgram().requireKernel("app", "id");
+
+        assertEquals(9L, new GpuRuntime().dispatch(
+                "app.id",
+                GpuRuntime.CallableKind.FNC,
+                List.of(9L),
+                compilation.gpuProgram(),
+                kernel));
+        assertNotNull(seen[0]);
+        assertSame(kernel, seen[0].kernel());
+        assertSame(compilation.gpuProgram(), seen[0].program());
+        assertEquals("app", seen[0].kernel().module());
     }
 
     @Test
