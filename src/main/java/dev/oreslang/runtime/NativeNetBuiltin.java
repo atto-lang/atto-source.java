@@ -41,19 +41,26 @@ public final class NativeNetBuiltin implements BuiltinValue {
             case "read" -> (BuiltinCallable) args -> {
                 require(args, 4, name); admit(name);
                 List<Object> target = byteList(args.get(1), name);
+                int offset = integer(args, 2);
+                int length = integer(args, 3);
+                validateRange(target.size(), offset, length, name);
                 byte[] bytes = toBytes(target);
                 int count = yieldIo(() -> NativeSocketBridge.read(
-                        integer64(args, 0), bytes, integer(args, 2), integer(args, 3)));
+                        integer64(args, 0), bytes, offset, length));
                 if (count > 0) {
-                    for (int i = 0; i < bytes.length; i++) target.set(i, (long) (bytes[i] & 0xff));
+                    for (int i = offset; i < offset + count; i++) target.set(i, (long) (bytes[i] & 0xff));
                 }
                 return (long) count;
             };
             case "write" -> (BuiltinCallable) args -> {
                 require(args, 4, name); admit(name);
-                byte[] bytes = toBytes(byteList(args.get(1), name));
+                List<Object> source = byteList(args.get(1), name);
+                int offset = integer(args, 2);
+                int length = integer(args, 3);
+                validateRange(source.size(), offset, length, name);
+                byte[] bytes = toBytes(source);
                 return (long) yieldIo(() -> NativeSocketBridge.write(
-                        integer64(args, 0), bytes, integer(args, 2), integer(args, 3)));
+                        integer64(args, 0), bytes, offset, length));
             };
             case "close" -> (BuiltinCallable) args -> {
                 require(args, 1, name); admit(name);
@@ -106,6 +113,12 @@ public final class NativeNetBuiltin implements BuiltinValue {
     private static List<Object> byteList(Object value, String operation) {
         if (value instanceof List<?> list) return (List<Object>) list;
         throw new IllegalArgumentException("native_net." + operation + " expects a byte array");
+    }
+
+    private static void validateRange(int size, int offset, int length, String operation) {
+        if (offset < 0 || length < 0 || offset > size || length > size - offset) {
+            throw new IllegalArgumentException("native_net." + operation + " byte range is out of bounds");
+        }
     }
 
     private static byte[] toBytes(List<Object> values) {
