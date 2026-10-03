@@ -10,6 +10,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresSymbol;
 import dev.oreslang.runtime.ActorRuntime;
 
 import java.nio.file.Path;
@@ -343,6 +344,9 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Symbol symbol) {
+                    return OresSymbol.processLiteral(symbol.name(), context.isolatePolicy());
+                }
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -351,6 +355,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("Symbol")) return new SymbolFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
@@ -485,6 +490,18 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("Symbol")) {
+                    if (!created.type().arguments().isEmpty() || created.arguments().size() != 1) {
+                        throw new IllegalArgumentException(
+                                "new Symbol(...) expects exactly one UUID String");
+                    }
+                    Object key = eval(created.arguments().getFirst(), env);
+                    if (!(key instanceof String text)) {
+                        throw new IllegalArgumentException(
+                                "new Symbol(...) key must be a String");
+                    }
+                    return OresSymbol.stable(text, context.isolatePolicy());
+                }
                 Ast.ClassDecl klass = findClass(created.type().name());
                 Evaluator owner = this;
                 if (klass == null) {
@@ -570,6 +587,14 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof SymbolFacade symbols) {
+                return switch (name) {
+                    case "local" -> (Invokable) symbols::local;
+                    case "process" -> (Invokable) symbols::process;
+                    case "stable" -> (Invokable) symbols::stable;
+                    default -> throw new IllegalArgumentException("unknown Symbol member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -1404,6 +1429,23 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ActorFacade(OresContext context) {
         private Map<String,Object> gc(List<Object> args){requireZero(args,"actor.gc");return context.garbageCollector().collectCurrentActor().asMap();}
+    }
+    private record SymbolFacade(OresContext context) {
+        private String key(List<Object> args,String api){
+            requireOne(args,api);
+            Object key=args.getFirst();
+            if(!(key instanceof String text))throw new IllegalArgumentException(api+" expects one String key");
+            return text;
+        }
+        private Object local(List<Object> args){
+            return OresSymbol.local(key(args,"Symbol.local"),context.actors(),context.isolatePolicy());
+        }
+        private Object process(List<Object> args){
+            return OresSymbol.process(key(args,"Symbol.process"),context.isolatePolicy());
+        }
+        private Object stable(List<Object> args){
+            return OresSymbol.stable(key(args,"Symbol.stable"),context.isolatePolicy());
+        }
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
