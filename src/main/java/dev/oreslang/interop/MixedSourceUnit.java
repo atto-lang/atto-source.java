@@ -262,6 +262,8 @@ public final class MixedSourceUnit {
     private static List<Island> findIslands(String source, String keyword) {
         List<Island> islands = new ArrayList<>();
         int i = 0;
+        boolean awaitingConditionalDo = false;
+
         while (i < source.length()) {
             char c = source.charAt(i);
             if (c == '/' && i + 1 < source.length() && source.charAt(i + 1) == '/') {
@@ -282,25 +284,52 @@ public final class MixedSourceUnit {
             while (i < source.length() && Character.isJavaIdentifierPart(source.charAt(i))) i++;
             String word = source.substring(start, i);
 
+            if (keyword.equals("java") && (word.equals("if") || word.equals("elseif"))) {
+                awaitingConditionalDo = true;
+                continue;
+            }
+            if (keyword.equals("java") && word.equals("fi")) {
+                awaitingConditionalDo = false;
+                continue;
+            }
+
             if (keyword.equals("java") && word.equals("do")) {
-                int javaStart = skipWhitespaceAndComments(source, i);
-                int javaEnd = identifierEnd(source, javaStart);
-                if (javaEnd > javaStart && source.substring(javaStart, javaEnd).equals("java")) {
-                    int open = skipWhitespaceAndComments(source, javaEnd);
-                    if (open < source.length() && source.charAt(open) == '{') {
-                        int close = matchingBrace(source, open);
-                        int blockEnd = consumeOptionalStatementSemicolon(source, close + 1);
-                        islands.add(new Island(
-                                keyword,
-                                IslandKind.EXECUTION,
-                                start,
-                                open + 1,
-                                close,
-                                blockEnd,
-                                source.substring(open + 1, close)));
-                        i = blockEnd;
-                        continue;
-                    }
+                int next = skipWhitespaceAndComments(source, i);
+                int nextEnd = identifierEnd(source, next);
+                boolean followedByJava = nextEnd > next
+                        && source.substring(next, nextEnd).equals("java")
+                        && nextEnd < source.length()
+                        && source.charAt(skipWhitespaceAndComments(source, nextEnd)) == '{';
+
+                if (awaitingConditionalDo && followedByJava) {
+                    throw new IllegalArgumentException(
+                            "ambiguous 'do java { ... }' immediately after an if/elseif header; "
+                                    + "write the conditional delimiter separately, e.g. "
+                                    + "'if condition; do\n  do java { ... }\nfi'");
+                }
+
+                // 'do' is a callable-only reserved name too. A do(...) token in
+                // the condition is not the conditional delimiter.
+                int afterDo = skipWhitespaceAndComments(source, i);
+                if (awaitingConditionalDo
+                        && (afterDo >= source.length() || source.charAt(afterDo) != '(')) {
+                    awaitingConditionalDo = false;
+                }
+
+                if (followedByJava) {
+                    int open = skipWhitespaceAndComments(source, nextEnd);
+                    int close = matchingBrace(source, open);
+                    int blockEnd = consumeOptionalStatementSemicolon(source, close + 1);
+                    islands.add(new Island(
+                            keyword,
+                            IslandKind.EXECUTION,
+                            start,
+                            open + 1,
+                            close,
+                            blockEnd,
+                            source.substring(open + 1, close)));
+                    i = blockEnd;
+                    continue;
                 }
             }
 
