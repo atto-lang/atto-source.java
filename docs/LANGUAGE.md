@@ -426,35 +426,89 @@ The exception does not turn the keywords back into general identifiers. For exam
 
 ## Actors
 
-Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
+Oreslang uses an actor dispatcher model: an actor is **not** a thread. Actors are multiplexed over bounded dispatcher pools, so carrier-thread identity may change between turns. Every actor has one logical mailbox/execution domain, but a **shared actor may deliberately admit more than one turn at once** when an entrypoint is declared `parallel actor`.
 
-There are two actor execution domains:
+There are two memory domains:
+
+- `actor` / `shared actor`: shared-address-space actors with compiler-enforced actor ownership;
+- `isoactor`: confined/private actors whose mutable state belongs to one isolated actor domain.
+
+Top-level actor callables are crossed explicitly with `spawn`:
 
 ```ores
 pub actor fnc worker(int value) => int {
   return value;
 }
 
-shared actor Account {
-  let int balance = 100;
-
-  pub fnc withdraw(int amount) => void {
-    self.balance = self.balance - amount;
-    return;
-  }
+pub routine main() => void {
+  val future = spawn worker(41);
+  stdio.stdout.write(await future);
+  return;
 }
 ```
 
-- an unqualified `actor` is **private**;
-- `shared actor` is a **shared-memory-capable** actor;
-- private and shared actors are scheduled on **different dispatcher pools** for bulkheading;
-- compiler-generated/context-aware actor factories are capture-free for **both** actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
-- trusted host embedding has separately named supervisor-only construction escape hatches, and adversarial policies reject them;
-- both kinds still process their own mailbox serially;
-- actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
-- no lock is required around ordinary actor-owned fields, including fields of a shared actor;
-- actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
-- synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
+Actor classes use ordinary method syntax: **instance methods never use `fnc`**. The `actor` keyword marks a mailbox entrypoint:
+
+```ores
+shared actor Account {
+  let int balance = 100;
+
+  // Ordinary internal method. It is not exposed through ActorRef.
+  withdraw_locked(int amount) => void {
+    self.balance = self.balance - amount;
+    return;
+  }
+
+  // Serialized actor entrypoint.
+  pub actor withdraw(int amount) => void {
+    self.withdraw_locked(amount);
+    return;
+  }
+
+  // May overlap other parallel/shared turns. Direct access to mutable actor
+  // fields is rejected; route it through a synchronized ordinary helper or an
+  // immutable Mutex/SharedMutex handle.
+  pub parallel actor balance_snapshot() => int {
+    return self.read_balance();
+  }
+
+  read_balance() => int {
+    return self.balance;
+  }
+
+  // Waits for existing parallel turns and excludes every other actor turn.
+  pub exclusive actor reset() => void {
+    self.balance = 0;
+    return;
+  }
+}
+
+pub routine main() => void {
+  val account = spawn Account();
+  await spawn account.withdraw(10);
+  val balance = await spawn account.balance_snapshot();
+  await spawn account.reset();
+  return;
+}
+```
+
+The execution modes are:
+
+- `actor method(...)`: **SERIAL**. Calls in this serialization domain do not overlap one another.
+- `parallel actor method(...)`: **PARALLEL**. Multiple shared-actor turns may execute concurrently.
+- `exclusive actor method(...)`: **EXCLUSIVE**. The method acquires an actor-wide barrier after active parallel turns drain.
+- an ordinary method has no `actor` marker and is callable only from code that already has the raw actor receiver. The runtime serializes ordinary actor-state helpers on the actor's state lock, which is the standard safe path from a parallel entrypoint.
+
+Outside code never receives the raw actor instance. `spawn Account()` returns an `ActorRef<Account>`; consequently `account.withdraw(10)` is not a legal direct call, while `spawn account.withdraw(10)` is. The same rule applies to top-level `actor fnc` / `actor routine` and `isoactor fnc` / `isoactor routine`: actor-marked work enters through `spawn`.
+
+Additional invariants:
+
+- private and shared actors use **different dispatcher pools** for bulkheading;
+- `isoactor` remains serialized and cannot declare `parallel actor` methods;
+- compiler-generated/context-aware actor factories are capture-controlled; mutable host state must enter through messages or explicit runtime-owned capabilities;
+- actor `self` and move-only state rooted at `self` cannot escape an actor turn by ordinary mutable alias;
+- a `parallel actor` method cannot directly read or mutate ordinary mutable actor fields; synchronized ordinary helpers, immutable lock handles, or an `exclusive actor` method are required;
+- synchronized cross-actor shared memory requires the host-granted `SHARED_MEMORY` capability.
 
 Private actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
@@ -467,22 +521,13 @@ This prevents many private actors from multiplying the parent's memory ceiling. 
 
 The JVM backend's slice is a language/runtime ownership and accounting boundary, not a separate Java GC heap. The slice follows the actor id across dispatcher workers; it is not thread-local state. When physical heap separation is required for adversarial tenant code, the same private-actor semantics must be backed by a cross-thread-capable private region or a separate Graal polyglot/native isolate.
 
-Shared actors may additionally receive:
+Shared actors may additionally receive deeply immutable `Shared<T>` values and explicit synchronized shared cells. `SyncCell<T>` stores frozen state and serializes replacement updates under a lock. Private actor turns cannot create, inspect, mutate, or close such shared state.
 
-1. deeply immutable `Shared<T>` values; and
-2. explicit synchronized shared cells.
+Actor message graphs are cyclicity-checked and bounded by nesting depth, node count, and logical byte quotas before admission. Mutable host objects remain invalid actor messages. A `SharedMutex<T>` is transactionally bound to its destination runtime before mailbox visibility and rolled back if admission fails.
 
-The runtime primitive for the second case is `SyncCell<T>`. A cell stores only frozen state and serializes replacement updates under a lock. Shared-cell state is quota-accounted against the same parent actor-memory ceiling as private actor slices. Private actor turns cannot create, inspect, mutate, or close a `SyncCell<T>`. This is the intended lowering target for a future `sync` language construct; `sync` is **not** an implicit lock around actor methods.
+The central shared-actor invariant is therefore:
 
-Actor message graphs are cyclicity-checked and bounded by nesting depth, node count, and logical byte quotas before admission so malicious container graphs cannot turn actor transport into unbounded recursion, CPU, or memory use.
-
-This preserves the central invariant:
-
-> Actor state is mutated through mailbox ownership. Shared mutable state outside an actor is exceptional and must use an explicit synchronization abstraction.
-
-Arbitrary mutable host objects remain invalid actor messages. Actor kind is part of the public ABI, so changing a normal callable/class into a private or shared actor invalidates dependent compiled units.
-
-Shared writable handles use transactional publication. A `SharedMutex<T>` is reserved to the destination runtime before mailbox visibility, committed only after queue admission, and unbound again when first publication fails. This prevents failed sends from accidentally claiming a writable capability for the wrong runtime.
+> The actor boundary controls **how code enters actor state**; SERIAL/PARALLEL/EXCLUSIVE policy plus compiler-checked synchronization controls **how much work may execute inside that domain concurrently**.
 
 ## Isolates
 
