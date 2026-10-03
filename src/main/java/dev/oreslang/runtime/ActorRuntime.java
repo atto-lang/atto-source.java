@@ -31,6 +31,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -824,6 +825,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ThreadPoolExecutor untrustedDispatcher;
         private final ScheduledThreadPoolExecutor untrustedWatchdog;
         private final ScheduledThreadPoolExecutor messageWatchdog;
+        private final Semaphore rootSlots;
         private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
         private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
         private final AtomicInteger untrustedCompensatingThreads = new AtomicInteger();
@@ -862,6 +864,9 @@ public final class ActorRuntime implements AutoCloseable {
                     namedFactory(prefix + "untrusted-watchdog-"));
             this.messageWatchdog = newUntrustedWatchdog(
                     namedFactory(prefix + "actor-turn-watchdog-"));
+            this.rootSlots = new Semaphore(
+                    Math.max(1, config.sharedParallelism() - 1),
+                    true);
         }
 
         private synchronized void reserveActor(ActorKind kind) {
@@ -1081,6 +1086,18 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(task, "task");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
 
+        try {
+            dispatcherGroup.rootSlots.acquire();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException(
+                    "interrupted while waiting for a shared/root execution lane");
+        }
+        if (closed.get()) {
+            dispatcherGroup.rootSlots.release();
+            throw new IllegalStateException("actor runtime is closed");
+        }
+
         CompletableFuture<T> completion = new CompletableFuture<>();
         Runnable carrierTask = () -> {
             ACTOR_CARRIER.set(Boolean.TRUE);
@@ -1104,6 +1121,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // Never leak an actor/root control interrupt into a pooled carrier.
                 Thread.interrupted();
                 ACTOR_CARRIER.remove();
+                dispatcherGroup.rootSlots.release();
             }
         };
 
@@ -1111,6 +1129,7 @@ public final class ActorRuntime implements AutoCloseable {
             sharedDispatcher.execute(carrierTask);
         } catch (RejectedExecutionException rejected) {
             sharedRejectedTurns.incrementAndGet();
+            dispatcherGroup.rootSlots.release();
             throw rejected;
         }
 
