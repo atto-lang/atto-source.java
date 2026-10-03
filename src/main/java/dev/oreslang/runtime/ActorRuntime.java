@@ -2478,6 +2478,7 @@ public final class ActorRuntime implements AutoCloseable {
             reserveActorSlot(kind);
 
             ActorCell<M> cell = null;
+            ActorId transferredActorId = null;
             HttpTransportLease transportLease = suppliedTransportLease;
             try {
                 ActorId id = ActorId.create();
@@ -2488,6 +2489,7 @@ public final class ActorRuntime implements AutoCloseable {
                         transportLease = new HttpTransportLease();
                     }
                     transportLease.transferToActor(id);
+                    transferredActorId = id;
                 } else if (transportLease != null) {
                     throw new IllegalArgumentException(
                             "HTTP transport lease requires an untrusted actor with request/response transport");
@@ -2514,6 +2516,8 @@ public final class ActorRuntime implements AutoCloseable {
                         cell.httpTransportLease.revokeFromActor(cell.ref.id());
                     }
                     if (cell.memorySlice != null) cell.memorySlice.close();
+                } else if (transportLease != null && transferredActorId != null) {
+                    transportLease.revokeFromActor(transferredActorId);
                 }
                 releaseReservedActorSlot(kind);
                 throw failure;
