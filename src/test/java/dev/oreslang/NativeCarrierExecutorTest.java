@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -103,6 +104,30 @@ final class NativeCarrierExecutorTest {
             assertEquals(actors, actorIds.size());
             assertEquals(1, nativeThreads.size(),
                     "actor identity must not imply one pthread per actor");
+        }
+    }
+    @Test
+    void nativeCarrierExposesBoundedStackAndCpuClock() throws Exception {
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-accounting-");
+        try {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicLong cpuNanos = new AtomicLong();
+            executor.execute(() -> {
+                long before = NativeCarrierExecutor.currentCarrierCpuTimeNanos();
+                long value = 0;
+                for (int i = 0; i < 1_000_000; i++) value += i;
+                if (value == Long.MIN_VALUE) fail("unreachable");
+                long after = NativeCarrierExecutor.currentCarrierCpuTimeNanos();
+                cpuNanos.set(Math.max(0L, after - before));
+                done.countDown();
+            });
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+            assertTrue(executor.getNativeStackBytes() >= 256L * 1024L);
+            assertTrue(cpuNanos.get() > 0L,
+                    "native carrier CPU clock should charge actual carrier execution");
+        } finally {
+            executor.shutdownNow();
         }
     }
 }
