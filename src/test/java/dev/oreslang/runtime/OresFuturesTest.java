@@ -58,6 +58,12 @@ final class OresFuturesTest {
         assertThrows(
                 UnsupportedOperationException.class,
                 () -> future.completeExceptionally(new IllegalStateException("forged")));
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> future.completeOnTimeout(99, 1, java.util.concurrent.TimeUnit.MILLISECONDS));
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> future.orTimeout(1, java.util.concurrent.TimeUnit.MILLISECONDS));
         assertFalse(future.isDone());
     }
 
