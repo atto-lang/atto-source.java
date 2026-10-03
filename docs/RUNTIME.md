@@ -34,6 +34,75 @@
 
 iOS is treated as AOT-only by the execution-profile validator. Android may use AOT or another profile where platform policy allows it.
 
+## Secure JIT hot-load execution domains
+
+Hot loading is a control-plane operation, not a guest capability. The trusted
+supervisor owns `HOT_CODE_LOAD`; a staged guest generation receives a separate
+policy with loader authority removed.
+
+The runtime exposes four generation domains:
+
+| Domain | Host/runtime shape | Guest compilation | Security boundary |
+| --- | --- | --- | --- |
+| `TRUSTED_JIT` | shared JVM/Graal Engine | Truffle/Graal JIT | Ores ownership + capability model |
+| `ISOLATED_JIT` | spawned Graal isolate | Truffle/Graal JIT | isolate sandbox + Ores capabilities |
+| `UNTRUSTED_JIT` | spawned Graal UNTRUSTED isolate | Truffle/Graal JIT | deny-by-default isolate + quotas + Ores capabilities |
+| `AOT_INTERPRETED` | stable Native Image/AOT host | source/IR interpreted by shipped runtime | deployment/process boundary |
+
+The intended server architecture is therefore asymmetric: keep the small
+supervisor, watchdog, process broker, and ingress/control plane AOT where that
+reduces attack surface and startup variance; keep reloadable application/actor
+code JIT so it can be versioned, optimized at runtime, and replaced without
+restarting the supervisor.
+
+### Two-phase activation
+
+Loading a generation never routes new work to it. The sequence is:
+
+```text
+validate source/IR
+  -> capability admission
+  -> create fresh context/isolate
+  -> STAGED
+  -> start/init/readiness
+  -> STARTED
+  -> atomic activate
+  -> ACTIVE
+
+previous ACTIVE
+  -> DRAINING
+  -> close after final actor/request generation lease is released
+```
+
+A startup failure never displaces the healthy active generation.
+
+Actors and requests that must remain on the code they started with pin the
+active generation through a `GenerationLease`. New work uses the newly active
+generation after the atomic switch; old work drains against its pinned context.
+This prevents a hot reload from replacing code in the middle of one actor turn
+or request.
+
+### Loader authority versus guest authority
+
+`HotReloadManager` accepts separate supervisor and guest policies. The
+supervisor must hold `HOT_CODE_LOAD`. The guest policy always has
+`HOT_CODE_LOAD` removed before a context is built.
+
+`ISOLATED_JIT` additionally strips native/FFI, reflection, arbitrary
+polyglot, and guest-thread escape hatches and forces the adversarial
+spawned-isolate path.
+
+`UNTRUSTED_JIT` is stricter still: ambient capabilities are empty, heap/time/
+mailbox ceilings are intersected with the `UntrustedActor` ceiling, source and
+code-unit identifiers are bounded before context creation, and the number of
+simultaneously live generations is capped. Narrow HTTP request/response and
+send-only `Recipient` handles remain object capabilities, not ambient network
+authority.
+
+The JIT itself is never treated as the sandbox. Isolation, capabilities,
+ownership/sendability, resource limits, and OS/process containment remain the
+security boundaries.
+
 ## Why hot reload is source/IR based
 
 Native Image is fundamentally closed-world for Java classes. Oreslang therefore does not make hot reload depend on dynamically linking new Java/native code. The runtime/interpreter is part of the shipped artifact; newly downloaded Oreslang source (and later a stable serialized Ores IR) is treated as untrusted data, validated, then executed in a new generation.
