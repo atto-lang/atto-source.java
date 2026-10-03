@@ -337,6 +337,10 @@ public final class OwnershipChecker {
             if (consuming && state.kind == ValueKind.MUT_BORROW) move(state, name.name());
             return new ValueInfo(state.type, state.kind, state.borrowSource);
         }
+        if (expr instanceof Ast.SuperExpr) {
+            // super.Parent is a non-owning dispatch namespace over the existing self receiver.
+            return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.COPY, null);
+        }
         if (expr instanceof Ast.UnaryExpr unary) {
             if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
                 boolean mutable = unary.operator().equals("&mut");
@@ -518,6 +522,10 @@ public final class OwnershipChecker {
     }
 
     private void ensureMutableReceiver(Ast.Expr receiver, Scope scope, String what) {
+        if (receiver instanceof Ast.SuperExpr) {
+            ensureMutableReceiver(new Ast.NameExpr("self"), scope, what);
+            return;
+        }
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = requireState(scope, name.name());
             requireUsable(state, name.name(), true);
@@ -689,6 +697,20 @@ public final class OwnershipChecker {
         if (receiver instanceof Ast.NameExpr name) {
             VarState state = scope.lookup(name.name());
             if (state != null) type = state.type;
+        } else if (receiver instanceof Ast.SuperExpr parentDispatch) {
+            VarState selfState = scope.lookup("self");
+            if (selfState == null) return null;
+            Ast.TypeRef selfType = resolveOwnershipAlias(selfState.type, new LinkedHashSet<>());
+            if (selfType.isBorrow()) selfType = resolveOwnershipAlias(selfType.borrowedTarget(), new LinkedHashSet<>());
+            Ast.ClassDecl child = findClass(selfType.name());
+            if (child == null) return null;
+            List<Ast.TypeRef> matches = child.parents().stream()
+                    .filter(parent -> parent.name().equals(parentDispatch.parentName())
+                            || parent.name().endsWith("." + parentDispatch.parentName()))
+                    .toList();
+            if (matches.size() != 1) return null;
+            Ast.TypeRef parentType = resolveOwnershipAlias(matches.getFirst(), new LinkedHashSet<>());
+            return findClass(parentType.name());
         } else if (receiver instanceof Ast.NewExpr created) type = created.type();
         else if (receiver instanceof Ast.StructInitExpr created) type = created.type();
         if (type == null) return null;
