@@ -888,7 +888,7 @@ public final class Parser {
 
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseUnary();
-        while (match(STAR, SLASH, PERCENT)) {
+        while (match(STAR, SLASH, PERCENT, AT)) {
             String op = previous().lexeme();
             expr = new Ast.BinaryExpr(op, expr, parseUnary());
         }
