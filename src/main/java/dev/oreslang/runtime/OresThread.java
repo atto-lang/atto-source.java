@@ -74,7 +74,7 @@ public final class OresThread {
         }
         slotHeld.set(true);
         try {
-            nativeHandle = nativeStart(this, name, configuredStackBytes());
+            nativeStart(this, name, configuredStackBytes());
         } catch (Throwable startFailure) {
             if (slotHeld.compareAndSet(true, false)) PLATFORM_THREAD_SLOTS.release();
             failure = startFailure;
@@ -245,7 +245,7 @@ public final class OresThread {
         return name;
     }
 
-    private static native long nativeStart(OresThread thread, String name, long stackBytes);
+    private static native void nativeStart(OresThread thread, String name, long stackBytes);
     private static native void nativeInterrupt(long handle);
     private static native boolean nativeIsInterrupted(long handle);
     private static native boolean nativeClearInterrupt(long handle);
