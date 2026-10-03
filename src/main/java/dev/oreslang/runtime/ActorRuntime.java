@@ -612,7 +612,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "OutboundHttpTransport returned null");
                 upstreamRef.set(stage.toCompletableFuture());
             } catch (Throwable failure) {
-                result.completeExceptionally(failure);
+                result.failFromRuntime(failure);
                 release.run();
                 return result;
             }
@@ -620,13 +620,13 @@ public final class ActorRuntime implements AutoCloseable {
             stage.whenComplete((response, failure) -> {
                 try {
                     if (failure != null) {
-                        result.completeExceptionally(OresFuture.unwrap(failure));
+                        result.failFromRuntime(OresFuture.unwrap(failure));
                     } else {
                         validateOutboundResponse(response);
-                        result.complete(response);
+                        result.completeFromRuntime(response);
                     }
                 } catch (Throwable validationFailure) {
-                    result.completeExceptionally(validationFailure);
+                    result.failFromRuntime(validationFailure);
                 } finally {
                     release.run();
                 }
