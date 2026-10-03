@@ -421,7 +421,7 @@ final class NativeNetworkingLanguageTest {
         assertFalse(source.contains("java.net."));
         assertFalse(source.contains("java.net.http"));
         // Architectural end-state: HTTP wire parsing/serialization and URI
-        // redirect resolution belong below JNI in liboresnet, not in Java.
+        // redirect resolution belong in Oreslang stdlib source, not in Java.
         assertFalse(source.contains("parseResponse(byte[] wire)"),
                 "HTTP response parser must move to native liboresnet");
         assertFalse(source.contains("decodeChunked(byte[] body)"),
@@ -443,7 +443,7 @@ final class NativeNetworkingLanguageTest {
                   }
                 end
                 """;
-        Exception error = assertThrows(Exception.class, () -> evaluate(denied));
+        Exception error = assertThrows(Exception.class, () -> evaluateWithoutNetwork(denied));
         assertTrue(error.toString().contains("NETWORK"));
     }
 
@@ -458,6 +458,22 @@ final class NativeNetworkingLanguageTest {
         assertFalse(http.contains("java:"));
         assertFalse(http.contains("java.net"));
         assertFalse(http.contains("java.net.http"));
+    }
+
+    private static String evaluateWithoutNetwork(String program) throws Exception {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withoutCapabilities(IsolatePolicy.Capability.NETWORK);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "native-net-denied-test.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = policy.restrictedContextBuilder(ExecutionProfile.serverJit())
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     private static String evaluate(String program) throws Exception {
