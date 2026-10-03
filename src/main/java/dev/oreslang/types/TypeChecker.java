@@ -211,6 +211,11 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        if (fn.actorKind() != Ast.ActorKind.NONE && fn.async()) {
+            throw new IllegalArgumentException(
+                    "actor callable '" + fn.name()
+                            + "' cannot be async until actor-aware continuation lowering preserves execution-domain ownership");
+        }
         if (module.equals(Parser.ROOT_MODULE) && fn.name().equals("init")) {
             Ast.TypeRef initReturn = fn.returnType();
             if (fn.kind() != Ast.CallableKind.FNC
@@ -326,6 +331,11 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (klass.actorKind() != Ast.ActorKind.NONE && method.async()) {
+                throw new IllegalArgumentException(
+                        "actor method '" + klass.name() + "." + method.name()
+                                + "' cannot be async until actor-aware continuation lowering preserves execution-domain ownership");
+            }
             if (method.actorMethodKind() != Ast.ActorMethodKind.NONE && klass.actorKind() == Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException("actor entrypoint '" + klass.name() + "." + method.name()
                         + "' may only be declared on an actor class");
