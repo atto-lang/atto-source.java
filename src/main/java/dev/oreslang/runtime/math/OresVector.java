@@ -54,6 +54,18 @@ public final class OresVector implements ImmutableGuestValue {
 
     public OresMatrix outer(OresVector other) {
         List<List<?>> rows = new ArrayList<>(length());
+        if (!isComplex() && !other.isComplex()) {
+            for (int i = 0; i < length(); i++) {
+                List<Object> row = new ArrayList<>(other.length());
+                double left = ((Number) get(i)).doubleValue();
+                for (int j = 0; j < other.length(); j++) {
+                    row.add(left * ((Number) other.get(j)).doubleValue());
+                }
+                rows.add(row);
+            }
+            return OresMatrix.fromRows(rows);
+        }
+
         for (int i = 0; i < length(); i++) {
             List<Object> row = new ArrayList<>(other.length());
             OresComplex left = OresComplex.of(get(i));
