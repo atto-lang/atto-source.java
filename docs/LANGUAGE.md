@@ -449,6 +449,8 @@ pub routine main() => void {
 
 Actor classes use ordinary method syntax: **instance methods never use `fnc`**. The `actor` keyword marks a mailbox entrypoint:
 
+Ordinary methods on an actor class are **private internal helpers**. Public instance API must be an explicit `pub actor`, `pub parallel actor`, or `pub exclusive actor` entrypoint. Actor entrypoints are currently synchronous: `async` is rejected until continuation lowering can prove that resumed code remains in the same actor execution domain.
+
 ```ores
 shared actor Account {
   let int balance = 100;
