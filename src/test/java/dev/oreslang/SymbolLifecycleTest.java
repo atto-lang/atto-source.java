@@ -186,6 +186,31 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void capabilityAdmissionPreRegistersAllSourceLiteralsBeforeExecution() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define module protocol
+                  pub fnc never_called() => Symbol {
+                    return :wire_ready_before_execution;
+                  }
+                end
+                """));
+
+        OresSymbol.Wire wire = new OresSymbol.Wire(
+                OresSymbol.Scope.PROCESS,
+                "wire_ready_before_execution");
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.fromWire(wire, IsolatePolicy.developer()));
+
+        CapabilityChecker.check(program, IsolatePolicy.developer());
+
+        OresSymbol decoded = OresSymbol.fromWire(wire, IsolatePolicy.developer());
+        assertSame(
+                OresSymbol.process("wire_ready_before_execution"),
+                decoded);
+    }
+
+    @Test
     void compilerLiteralAndDynamicProcessFactoryShareCanonicalIdentity() {
         OresSymbol dynamicFirst = OresSymbol.process("literal-shared-key");
         OresSymbol literalAfter = OresSymbol.processLiteral(
