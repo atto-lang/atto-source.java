@@ -940,7 +940,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicInteger sharedActorCount = new AtomicInteger();
     private final AtomicInteger untrustedActorCount = new AtomicInteger();
     private final AtomicInteger activeRootTasks = new AtomicInteger();
-    private final Set<Thread> activeRootCarriers = ConcurrentHashMap.newKeySet();
+    private final Set<RootTask<?>> rootTasks = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1104,19 +1104,73 @@ public final class ActorRuntime implements AutoCloseable {
             throw new CancellationException(
                     "interrupted while waiting for a shared/root execution lane");
         }
+
+        RootTask<T> rootTask;
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) {
                 dispatcherGroup.rootSlots.release();
                 throw new IllegalStateException("actor runtime is closed");
             }
             activeRootTasks.incrementAndGet();
+            rootTask = new RootTask<>(task);
+            rootTasks.add(rootTask);
         }
 
-        CompletableFuture<T> completion = new CompletableFuture<>();
-        Runnable carrierTask = () -> {
+        try {
+            sharedDispatcher.execute(rootTask);
+        } catch (RejectedExecutionException rejected) {
+            sharedRejectedTurns.incrementAndGet();
+            rootTask.cancelBeforeStart(rejected);
+            throw rejected;
+        }
+
+        try {
+            return rootTask.completion.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("root/main process execution interrupted");
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new RuntimeException(cause);
+        }
+    }
+
+    private void releaseRootTask(RootTask<?> rootTask) {
+        if (!rootTasks.remove(rootTask)) return;
+        dispatcherGroup.rootSlots.release();
+        synchronized (runtimeLifecycleLock) {
+            int remaining = activeRootTasks.decrementAndGet();
+            if (remaining < 0) {
+                activeRootTasks.incrementAndGet();
+                throw new IllegalStateException("root task lifecycle accounting underflow");
+            }
+            runtimeLifecycleLock.notifyAll();
+        }
+    }
+
+    private final class RootTask<T> implements Runnable {
+        private static final int QUEUED = 0;
+        private static final int RUNNING = 1;
+        private static final int FINISHED = 2;
+
+        private final Supplier<T> task;
+        private final CompletableFuture<T> completion = new CompletableFuture<>();
+        private final AtomicInteger phase = new AtomicInteger(QUEUED);
+        private volatile Thread carrier;
+
+        private RootTask(Supplier<T> task) {
+            this.task = task;
+        }
+
+        @Override
+        public void run() {
+            if (!phase.compareAndSet(QUEUED, RUNNING)) return;
+            carrier = Thread.currentThread();
             ACTOR_CARRIER.set(Boolean.TRUE);
-            CURRENT_ROOT_RUNTIME.set(this);
-            activeRootCarriers.add(Thread.currentThread());
+            CURRENT_ROOT_RUNTIME.set(ActorRuntime.this);
+            if (closed.get()) carrier.interrupt();
             try {
                 turnExecutor.execute(() -> {
                     try {
@@ -1134,47 +1188,34 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                // Never leak an actor/root control interrupt into a pooled carrier.
                 Thread.interrupted();
-                activeRootCarriers.remove(Thread.currentThread());
+                carrier = null;
                 CURRENT_ROOT_RUNTIME.remove();
                 ACTOR_CARRIER.remove();
-                dispatcherGroup.rootSlots.release();
-                synchronized (runtimeLifecycleLock) {
-                    int remaining = activeRootTasks.decrementAndGet();
-                    if (remaining < 0) {
-                        activeRootTasks.incrementAndGet();
-                        throw new IllegalStateException(
-                                "root task lifecycle accounting underflow");
-                    }
-                    runtimeLifecycleLock.notifyAll();
-                }
+                phase.set(FINISHED);
+                releaseRootTask(this);
             }
-        };
-
-        try {
-            sharedDispatcher.execute(carrierTask);
-        } catch (RejectedExecutionException rejected) {
-            sharedRejectedTurns.incrementAndGet();
-            dispatcherGroup.rootSlots.release();
-            synchronized (runtimeLifecycleLock) {
-                int remaining = activeRootTasks.decrementAndGet();
-                if (remaining < 0) activeRootTasks.incrementAndGet();
-                runtimeLifecycleLock.notifyAll();
-            }
-            throw rejected;
         }
 
-        try {
-            return completion.get();
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new CancellationException("root/main process execution interrupted");
-        } catch (ExecutionException failed) {
-            Throwable cause = failed.getCause();
-            if (cause instanceof RuntimeException runtime) throw runtime;
-            if (cause instanceof Error error) throw error;
-            throw new RuntimeException(cause);
+        private void cancelBeforeStart(Throwable failure) {
+            if (!phase.compareAndSet(QUEUED, FINISHED)) return;
+            sharedDispatcher.remove(this);
+            completion.completeExceptionally(failure);
+            releaseRootTask(this);
+        }
+
+        private void cancelFromRuntimeClose() {
+            if (phase.compareAndSet(QUEUED, FINISHED)) {
+                sharedDispatcher.remove(this);
+                completion.completeExceptionally(
+                        new CancellationException("root/main execution cancelled by runtime close"));
+                releaseRootTask(this);
+                return;
+            }
+            if (phase.get() == RUNNING) {
+                Thread running = carrier;
+                if (running != null) running.interrupt();
+            }
         }
     }
 
@@ -3751,8 +3792,8 @@ public final class ActorRuntime implements AutoCloseable {
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stopFromRuntimeClose();
-        for (Thread rootCarrier : List.copyOf(activeRootCarriers)) {
-            rootCarrier.interrupt();
+        for (RootTask<?> rootTask : List.copyOf(rootTasks)) {
+            rootTask.cancelFromRuntimeClose();
         }
 
         if (firstClose && ownsDispatcherGroup) {
