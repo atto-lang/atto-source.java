@@ -586,6 +586,22 @@ public final class Parser {
             consumeStatementTerminator("panic statement should end with ';'");
             return new Ast.PanicStmt(value);
         }
+        if (match(THROW)) {
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(peek(), "throw requires a value");
+            }
+            Ast.Expr value = parseExpression();
+            consumeStatementTerminator("throw statement should end with ';'");
+            return new Ast.ThrowStmt(value);
+        }
+        if (match(RAISE)) {
+            consumeStatementTerminator("raise statement should end with ';'");
+            return new Ast.RaiseStmt();
+        }
+        if (match(STOP)) {
+            consumeStatementTerminator("stop statement should end with ';'");
+            return new Ast.StopStmt();
+        }
         if (match(BREAK)) {
             consumeStatementTerminator("break statement should end with ';'");
             return new Ast.BreakStmt();
@@ -820,7 +836,7 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
-                String member = consume(IDENT, "expected member name after '.'").lexeme();
+                String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
@@ -829,6 +845,22 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private String consumeMemberName() {
+        Token token = peek();
+        if (isMemberNameToken(token.type())) {
+            advance();
+            return token.lexeme();
+        }
+        throw error(token, "expected member name after '.'");
+    }
+
+    private static boolean isMemberNameToken(Token.Type type) {
+        // Reserved words remain illegal declaration identifiers. `stop` is the
+        // one contextual selector exception because Actor/ActorTask expose
+        // .stop() while `stop;` is also a control-flow keyword.
+        return type == IDENT || type == STOP;
     }
 
     private Ast.Expr parsePrimary() {
@@ -844,6 +876,10 @@ public final class Parser {
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
+        if (check(ACTOR) && checkNext(DOT)) {
+            advance();
+            return new Ast.NameExpr("actor");
+        }
         if (match(ACTOR)) {
             Ast.ActorMode mode = match(ISOLATE) ? Ast.ActorMode.ISOLATE : Ast.ActorMode.SHARED;
             Ast.LambdaExpr behavior;
@@ -996,7 +1032,7 @@ public final class Parser {
 
     private boolean isReservedIdentifierKeyword(Token.Type type) {
         return type == AS || type == IS || type == OF
-                || type == ACTOR || type == ISOLATE || type == RECOVER || type == PANIC;
+                || type == ACTOR || type == ISOLATE || type == RECOVER || type == PANIC || type == THROW || type == RAISE || type == STOP;
     }
 
     private boolean check(Token.Type type) { return peek().type() == type; }

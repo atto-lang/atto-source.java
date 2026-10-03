@@ -27,7 +27,10 @@ import java.util.function.Supplier;
  * Frozen values rather than sharing Java object references.
  */
 public final class ActorRuntime implements AutoCloseable {
+    private static final ThreadLocal<ActorExecution> CURRENT_ACTOR = new ThreadLocal<>();
+
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final Map<ActorId, Set<ActorId>> children = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final IsolatePolicy policyCeiling;
 
@@ -45,6 +48,27 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
 
+    private record ActorExecution(ActorRuntime runtime, ActorId actorId) { }
+
+    public static boolean inActorExecution() {
+        return CURRENT_ACTOR.get() != null;
+    }
+
+    public static ActorId currentActorIdOrNull() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        return current == null ? null : current.actorId();
+    }
+
+    public boolean isCurrentExecutionActor() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        return current != null && current.runtime() == this;
+    }
+
+    public ActorId currentActorId() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        return current != null && current.runtime() == this ? current.actorId() : null;
+    }
+
     public record Shared<T>(T value) { }
 
     /**
@@ -53,6 +77,26 @@ public final class ActorRuntime implements AutoCloseable {
      * compiler from capturing mutable/borrowed outer state.
      */
     public enum ActorKind { SHARED, ISOLATE }
+
+    /**
+     * Internal non-failure control transfer used by the Oreslang `stop;`
+     * statement. It is deliberately stackless: the actor is terminating
+     * normally, not reporting an error.
+     */
+    public static final class StopActorSignal extends RuntimeException {
+        private final List<CompletableFuture<Void>> descendantTerminations;
+
+        private StopActorSignal(List<CompletableFuture<Void>> descendantTerminations) {
+            super(null, null, false, false);
+            this.descendantTerminations = List.copyOf(descendantTerminations);
+        }
+
+        private void awaitDescendants() {
+            for (CompletableFuture<Void> terminated : descendantTerminations) {
+                terminated.join();
+            }
+        }
+    }
 
     @FunctionalInterface
     public interface Behavior<M> {
@@ -68,22 +112,35 @@ public final class ActorRuntime implements AutoCloseable {
     public final class ActorRef<M> {
         private final ActorId id;
         private final ActorKind kind;
+        private final ActorId parentId;
         private final AtomicBoolean alive = new AtomicBoolean(true);
         private final AtomicBoolean accepting = new AtomicBoolean(true);
         private final AtomicReference<Throwable> failure = new AtomicReference<>();
         private final CompletableFuture<Void> terminated = new CompletableFuture<>();
         private volatile Thread runner;
 
-        private ActorRef(ActorId id, ActorKind kind) {
+        private ActorRef(ActorId id, ActorKind kind, ActorId parentId) {
             this.id = id;
             this.kind = kind;
+            this.parentId = parentId;
         }
 
         public ActorId id() { return id; }
         public ActorKind kind() { return kind; }
+        public ActorId parentId() { return parentId; }
         public boolean isAlive() { return alive.get(); }
         public boolean failed() { return failure.get() != null; }
-        public Throwable failure() { return failure.get(); }
+        public Throwable failure() {
+            Throwable current = failure.get();
+            if (current instanceof OresTrace.TracedRuntimeException traced) {
+                return traced.failure();
+            }
+            return current;
+        }
+        public String failureTrace() {
+            Throwable current = failure.get();
+            return current == null ? "" : OresTrace.format(current);
+        }
 
         public void send(M message) {
             ActorRuntime.this.send(this, message);
@@ -134,12 +191,30 @@ public final class ActorRuntime implements AutoCloseable {
             Supplier<? extends Behavior<M>> behaviorFactory) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         requireWithinCeiling(policy);
+
+        ActorId parentId = currentActorId();
+        if (parentId != null) {
+            ActorCell<?> parent = actors.get(parentId);
+            if (parent == null || parent.stopRequested.get() || !parent.ref.accepting.get()) {
+                throw new IllegalStateException("stopping actor cannot spawn child actors");
+            }
+        }
+
         ActorId id = ActorId.create();
-        ActorRef<M> ref = new ActorRef<>(id, java.util.Objects.requireNonNull(kind));
+        ActorRef<M> ref = new ActorRef<>(id, java.util.Objects.requireNonNull(kind), parentId);
         ActorCell<M> cell = new ActorCell<>(ref, policy, behaviorFactory);
         actors.put(id, cell);
-        cell.start();
-        return ref;
+        if (parentId != null) {
+            children.computeIfAbsent(parentId, ignored -> ConcurrentHashMap.newKeySet()).add(id);
+        }
+        try {
+            cell.start();
+            return ref;
+        } catch (RuntimeException | Error startupFailure) {
+            actors.remove(id, cell);
+            unlinkChild(ref);
+            throw startupFailure;
+        }
     }
 
     private void requireWithinCeiling(IsolatePolicy child) {
@@ -168,13 +243,73 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell == null || !ref.isAlive()) throw new IllegalStateException("actor is not alive " + ref.id());
         Object frozen = freeze(message);
-        cell.enqueue(frozen);
+        OresTrace.Snapshot trace = OresTrace.captureBoundary(
+                "actor-send",
+                ref.kind().name().toLowerCase() + ":" + ref.id().value());
+        cell.enqueue(new MessageEnvelope(frozen, trace));
     }
 
     @SuppressWarnings("unchecked")
     public <M> void stop(ActorRef<M> ref) {
         ActorCell<M> cell = (ActorCell<M>) actors.get(ref.id());
         if (cell != null) cell.stop();
+    }
+
+    /**
+     * Implements the source-level `stop;` statement. The current actor stops
+     * accepting immediately; all descendants receive recursive graceful/FIFO
+     * stop requests. The caller then unwinds its own finally/defer frames and
+     * terminates through StopActorSignal.
+     */
+    public StopActorSignal beginCurrentActorTreeStop() {
+        ActorExecution current = CURRENT_ACTOR.get();
+        if (current == null || current.runtime() != this) {
+            throw new IllegalStateException("stop requires an active actor execution");
+        }
+        ActorCell<?> self = actors.get(current.actorId());
+        if (self == null) {
+            throw new IllegalStateException("current actor is no longer registered");
+        }
+
+        self.beginImmediateStop();
+        ArrayList<CompletableFuture<Void>> terminations = new ArrayList<>();
+        stopDescendantsGracefully(
+                current.actorId(),
+                new java.util.HashSet<>(),
+                terminations);
+        return new StopActorSignal(terminations);
+    }
+
+    private void stopDescendantsGracefully(
+            ActorId parentId,
+            Set<ActorId> visited,
+            List<CompletableFuture<Void>> terminations) {
+        if (!visited.add(parentId)) return;
+        Set<ActorId> snapshot = children.get(parentId);
+        if (snapshot == null || snapshot.isEmpty()) return;
+        for (ActorId childId : List.copyOf(snapshot)) {
+            ActorCell<?> child = actors.get(childId);
+            if (child == null) continue;
+
+            // Mark the child stopping before traversing its children. spawn()
+            // checks this flag, so the descendant set becomes stable while we
+            // snapshot the rest of the tree.
+            child.stop();
+            terminations.add(child.ref.terminated);
+            stopDescendantsGracefully(childId, visited, terminations);
+        }
+    }
+
+    private void unlinkChild(ActorRef<?> ref) {
+        ActorId parentId = ref.parentId();
+        if (parentId != null) {
+            Set<ActorId> siblings = children.get(parentId);
+            if (siblings != null) {
+                siblings.remove(ref.id());
+                if (siblings.isEmpty()) children.remove(parentId, siblings);
+            }
+        }
+        children.remove(ref.id());
     }
 
     /**
@@ -240,6 +375,8 @@ public final class ActorRuntime implements AutoCloseable {
         Object freezeForSend();
     }
 
+    private record MessageEnvelope(Object message, OresTrace.Snapshot trace) { }
+
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
@@ -272,6 +409,7 @@ public final class ActorRuntime implements AutoCloseable {
         @SuppressWarnings("unchecked")
         private void run() {
             ref.runner = Thread.currentThread();
+            CURRENT_ACTOR.set(new ActorExecution(ActorRuntime.this, ref.id()));
             try {
                 final Behavior<M> behavior = behaviorFactory.get();
                 final ActorContext<M> context = new ActorContext<>() {
@@ -281,11 +419,19 @@ public final class ActorRuntime implements AutoCloseable {
                 };
 
                 while (true) {
-                    Object message = mailbox.take();
-                    if (message == STOP) return;
-                    behavior.onMessage((M) message, context);
+                    Object queued = mailbox.take();
+                    if (queued == STOP) return;
+                    MessageEnvelope envelope = (MessageEnvelope) queued;
+                    try (OresTrace.Scope ignored = OresTrace.install(envelope.trace())) {
+                        behavior.onMessage((M) envelope.message(), context);
+                    }
                     if (stopRequested.get() && mailbox.isEmpty()) return;
                 }
+            } catch (StopActorSignal stopped) {
+                // The signal carries the exact descendant termination futures
+                // captured while recursively stopping the tree, so unlink races
+                // cannot make parent.join() return early.
+                stopped.awaitDescendants();
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
             } catch (CancellationException cancellation) {
@@ -294,13 +440,18 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             } catch (Throwable failure) {
                 // Fail-stop by actor: never escape onto the spawning/main thread.
-                // Supervisors may observe failure through the ActorRef and choose
-                // an explicit restart/escalation policy.
-                ref.failure.compareAndSet(null, failure);
+                // Preserve the logical Ores trace rather than the carrier-thread
+                // stack so diagnostics survive actor/thread boundaries.
+                Throwable recorded = failure instanceof RuntimeException runtimeFailure
+                        ? OresTrace.attach(runtimeFailure)
+                        : failure;
+                ref.failure.compareAndSet(null, recorded);
             } finally {
                 ref.accepting.set(false);
                 ref.alive.set(false);
                 actors.remove(ref.id(), this);
+                unlinkChild(ref);
+                CURRENT_ACTOR.remove();
                 ref.terminated.complete(null);
             }
         }
@@ -312,6 +463,12 @@ public final class ActorRuntime implements AutoCloseable {
             if (!mailbox.offer(frozen)) {
                 throw new IllegalStateException("actor mailbox limit exceeded for " + ref.id());
             }
+        }
+
+        private synchronized void beginImmediateStop() {
+            if (!ref.isAlive()) return;
+            ref.accepting.set(false);
+            stopRequested.set(true);
         }
 
         private synchronized void stop() {

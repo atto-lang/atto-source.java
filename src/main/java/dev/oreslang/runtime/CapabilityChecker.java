@@ -34,6 +34,7 @@ public final class CapabilityChecker {
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.RecoverStmt s) checkExpr(s.handler(), policy);
             else if (stmt instanceof Ast.PanicStmt s) checkExpr(s.value(), policy);
+            else if (stmt instanceof Ast.ThrowStmt s) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
                     checkExpr(b.condition(), policy);

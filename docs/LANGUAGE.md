@@ -275,7 +275,7 @@ worker.join();
 An actor behavior accepts exactly one mailbox message parameter and returns `void`. Inside
 the behavior, `self` is the current `Actor<T>` handle, so an actor can send to or stop itself
 without recursively capturing the outer binding. Actor handles expose `send(message)`,
-`stop()`, `join()`, `alive`, `failed`, and `kind`.
+`stop()`, `join()`, `alive`, `failed`, `failure_trace`, and `kind`.
 
 ```ores
 val counter = actor |int n| -> {
@@ -314,7 +314,7 @@ pub routine main() => void {
 An `actor fnc` or `actor routine` body must declare `void`. Calling it immediately
 creates a new actor, transfers/freezes its launch arguments across the actor boundary, schedules
 the body once, and returns an `ActorTask` handle. `ActorTask` exposes `stop()`, `join()`,
-`alive`, `failed`, and `kind`, but deliberately has no `send()`: persistent mailboxes use
+`alive`, `failed`, `failure_trace`, and `kind`, but deliberately has no `send()`: persistent mailboxes use
 the explicit actor-expression form instead. `main` remains the root/process entrypoint and
 cannot itself be declared `actor`. `async actor` is rejected because actor already defines
 the execution boundary.
@@ -323,6 +323,50 @@ Actor failure is fail-stop and isolated from the caller: an uncaught panic/excep
 that actor without unwinding the spawning function, killing sibling actors, or terminating the
 main process. `join()` waits for termination but deliberately does not rethrow actor failure;
 supervisors can inspect `failed` and choose an explicit restart/escalation policy.
+
+### `stop`
+
+`stop;` is a first-class actor control statement:
+
+```ores
+val worker = actor |Message msg| -> {
+  if should_finish(msg); do
+    stop;
+  fi
+  handle(msg);
+};
+```
+
+`stop;` requires actor context. It is always valid directly in an actor body. Reusable
+ordinary code can guard it with the actor-runtime predicate:
+
+```ores
+fnc maybe_stop() => void {
+  if actor.in_actor(); do
+    stop;
+  fi
+}
+```
+
+`actor.inActor()` is accepted as an alias; `actor.in_actor()` is the canonical
+snake_case spelling.
+
+When `stop;` executes, the current actor immediately stops accepting new messages.
+The runtime then recursively requests graceful FIFO shutdown of its child-actor tree,
+prevents stopping descendants from spawning new children, runs the current actor's
+`finally` and callable-level `defer` cleanup, bypasses `catch` and `recover`, waits
+for descendants to terminate, and exits without setting the actor's failure state.
+Already queued work on the current actor is abandoned; already accepted work in child
+actors drains before each child terminates.
+
+This is deliberately stronger than `self.stop()` / `ActorRef.stop()`, which remain
+the graceful FIFO **single-actor** shutdown API.
+
+An unguarded `stop;` in supervisor/root code is rejected statically; the runtime also
+checks actor context so a bad lowering or dynamic path cannot terminate the supervisor.
+Ordinary lambdas do not inherit actor-stop authority merely because they were created
+inside an actor; actor behavior lambdas do. Recovery/defer handlers registered on an
+actor frame execute in that same actor frame and may use `stop;`.
 
 A shared actor may take ownership of mutable/non-Copy captures. The outer binding becomes moved,
 so ordinary code cannot keep a writable alias. An `actor isolate` is stricter: the current
@@ -334,15 +378,50 @@ failure containment. `actor isolate` is also an explicit backend contract for st
 Graal/native-isolate memory separation; physical address-space separation is a host/backend
 mapping and is not faked by the interpreter.
 
-### `panic`
+### `throw`, `panic`, and `raise`
 
-`panic value;` starts exceptional unwind. A panic may carry any ordinary Oreslang value:
+Oreslang deliberately gives these three operations different jobs.
+
+`throw value;` is the lexical/catchable error path. It is handled by the nearest
+`try/catch` and **bypasses callable `recover` handlers** if it escapes the callable.
 
 ```ores
+try {
+  throw "bad request";
+} catch (err) {
+  log(err);
+}
+```
+
+`panic value;` is the failure/recovery path. It **bypasses lexical `catch`** and
+unwinds through callable-scoped `recover` handlers. If it reaches an actor boundary
+unrecovered, only that actor dies.
+
+```ores
+recover |err| -> {
+  log(err);
+  return;
+};
+
 panic "database unavailable";
 ```
 
-If a panic reaches an actor boundary unrecovered, only that actor dies.
+`raise;` is re-propagation, not a third constructor. It is legal only while handling
+a failure in `catch` or `recover`, and it re-emits the exact current failure with its
+logical stack trace intact.
+
+```ores
+try {
+  throw "bad request";
+} catch (err) {
+  audit(err);
+  raise;
+}
+```
+
+Use `throw` when callers are expected to catch a program error, `panic` for
+recover/fail-stop semantics, and `raise;` when a handler wants to observe and preserve
+the current failure rather than manufacture a replacement.
 
 ### `recover`
 
@@ -366,22 +445,36 @@ registered recover handlers run in LIFO order. If a handler returns normally, th
 consumed and the handler's result becomes the callable result. For a `void` callable the
 handler returns `void`.
 
-A recover handler may re-panic:
+A recover handler can create a new panic with `panic value;`, or preserve the current
+panic with `raise;`. A new panic replaces the pending panic value for older recover
+handlers. `raise;` preserves the original failure identity and logical trace.
+
+Lexical `try/catch` does not intercept panics. Conversely, `throw` bypasses recover.
+Ordinary runtime failures are normalized with logical Ores traces and may still be caught
+or recovered according to the runtime-failure policy. Scheduler/runtime cancellation and
+actor-stop control are non-recoverable and cannot be swallowed by either `recover` or
+guest `catch`.
+
+## Logical stack traces
+
+Oreslang stack traces are logical language traces, not raw JVM carrier-thread stacks. They
+retain callable and execution-boundary frames across actor messages and are designed to be
+captured/restored across async tasks, virtual threads, CompletionStage callbacks, and event-loop
+dispatch. Actor frames include the actor id.
+
+Use `@NoStackTrace` on a hot callable when trace capture cost is not worth paying:
 
 ```ores
-recover |err| -> {
-  log(err);
-  panic err;
-};
+@NoStackTrace
+fnc hot_probe() => void {
+  sample();
+}
 ```
 
-Re-panicking continues unwind to the next older recover handler, then to the caller if no handler
-consumes it. This lets a caller's `try/catch` observe the re-panic. Conversely, a recover handler
-inside a callee runs before a higher-up caller `try/catch` sees the failure.
-
-A lexical `try/catch` inside the *same* callable still handles a failure before callable-level
-recovery, because the callable has not begun unwinding yet. Scheduler/runtime cancellation is
-non-recoverable and cannot be swallowed by either `recover` or guest `catch`.
+The host process can override annotation behavior with `ORES_STACK_TRACE=auto|full|off`.
+`auto` is the default and respects the annotation; `full` forces frames on; `off` disables
+logical trace capture process-wide. This is runtime configuration, separate from guest `env`
+access and its `ENVIRONMENT` capability.
 
 ## Exceptions and defer
 
@@ -571,7 +664,7 @@ let Fnc<int, int> fact = |int n| -> {
 
 ## Reserved keywords
 
-`of`, `is`, `as`, `actor`, `isolate`, `recover`, and `panic` are
+`of`, `is`, `as`, `actor`, `isolate`, `recover`, `panic`, `throw`, `raise`, and `stop` are
 **globally reserved** Oreslang keywords. The lexer never emits them as ordinary
 identifiers, so they cannot be used as variable, parameter, function, routine,
 module, class, interface, field, method, type-alias, generic, namespace,
@@ -711,6 +804,27 @@ In addition to `stdio.print` and `stdio.println`, the stream-shaped form is avai
 stdio.stdout.write(value);
 stdio.stdout.println(value);
 ```
+
+## Environment variables
+
+Guest code reads environment variables through the capability-gated `env` facade rather than
+through host/JVM APIs:
+
+```ores
+val db_url = env.get("DATABASE_URL");        // Option<String>
+val region = env.require("REGION");          // String or runtime error
+val debug = env.bool("DEBUG");               // Option<bool>
+val workers = env.int("WORKERS");            // Option<int>
+val present = env.has("DATABASE_URL");       // bool
+```
+
+`ENVIRONMENT` must be granted by the host/isolate policy. Without it, capability admission
+fails before guest execution, and the runtime facade checks again defensively. Oreslang does
+not expose an unrestricted host `System.getenv` escape hatch to guest code.
+
+Runtime configuration for the language implementation itself is separate from guest env access.
+For example, `ORES_STACK_TRACE=auto|full|off` is read by the host runtime and does not imply
+that guest code has the `ENVIRONMENT` capability.
 
 
 ## Execution profiles: JIT, AOT, and hybrid

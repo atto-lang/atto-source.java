@@ -9,6 +9,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresTrace;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -52,6 +53,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final ArrayDeque<RuntimeException> handledFailures = new ArrayDeque<>();
 
         private StartupPhase startupPhase = StartupPhase.LINKED;
 
@@ -159,12 +161,21 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object invokeFunctionBody(Ast.FunctionDecl fn, List<?> args) {
-            Env env = new Env(null);
-            for (int i = 0; i < fn.parameters().size(); i++) {
-                Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            try (OresTrace.Scope ignored = OresTrace.enter(
+                    fn.kind().name().toLowerCase(),
+                    fn.name(),
+                    hasNoStackTrace(fn.annotations()))) {
+                Env env = new Env(null);
+                for (int i = 0; i < fn.parameters().size(); i++) {
+                    Ast.Param param = fn.parameters().get(i);
+                    env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+                return executeCallableBody(fn.body(), env);
             }
-            return executeCallableBody(fn.body(), env);
+        }
+
+        private boolean hasNoStackTrace(List<Ast.Annotation> annotations) {
+            return annotations.stream().anyMatch(annotation -> annotation.name().equals("NoStackTrace"));
         }
 
         private boolean isActorCallable(Ast.FunctionDecl fn) {
@@ -178,13 +189,18 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
-            Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
-                Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            try (OresTrace.Scope ignored = OresTrace.enter(
+                    method.isStatic() ? "static-fnc" : "method",
+                    method.name(),
+                    hasNoStackTrace(method.annotations()))) {
+                Env env = new Env(null);
+                if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
+                for (int i = 0; i < method.parameters().size(); i++) {
+                    Ast.Param param = method.parameters().get(i);
+                    env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+                return executeCallableBody(method.body(), env);
             }
-            return executeCallableBody(method.body(), env);
         }
 
         private Object executeCallableBody(List<Ast.Stmt> body, Env env) {
@@ -197,15 +213,15 @@ public final class OresEvalRootNode extends RootNode {
             } catch (ReturnSignal signal) {
                 result = signal.value;
             } catch (RuntimeException failure) {
-                bodyFailure = failure;
+                bodyFailure = isNonRecoverable(failure) ? failure : OresTrace.attach(failure);
             }
 
             RuntimeException deferFailure = drainDeferred(frame);
             RuntimeException failure;
-            if (bodyFailure instanceof java.util.concurrent.CancellationException) {
+            if (bodyFailure != null && isNonRecoverable(bodyFailure)) {
                 failure = bodyFailure;
                 if (deferFailure != null && deferFailure != failure) failure.addSuppressed(deferFailure);
-            } else if (deferFailure instanceof java.util.concurrent.CancellationException) {
+            } else if (deferFailure != null && isNonRecoverable(deferFailure)) {
                 failure = deferFailure;
                 if (bodyFailure != null && bodyFailure != failure) failure.addSuppressed(bodyFailure);
             } else {
@@ -215,7 +231,7 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (failure != null) {
-                if (isNonRecoverable(failure)) throw failure;
+                if (isNonRecoverable(failure) || failure instanceof ThrowSignal) throw failure;
                 RecoveryResult recovered = recoverFailure(frame, failure);
                 if (recovered.recovered()) return recovered.value();
                 throw recovered.failure();
@@ -227,11 +243,15 @@ public final class OresEvalRootNode extends RootNode {
             RuntimeException current = failure;
             while (!frame.recoverers.isEmpty()) {
                 Invokable recoverer = frame.recoverers.pop();
+                handledFailures.push(current);
                 try {
                     return RecoveryResult.recovered(recoverer.call(List.of(failureValue(current))));
                 } catch (RuntimeException next) {
                     if (next != current) next.addSuppressed(current);
+                    if (isNonRecoverable(next) || next instanceof ThrowSignal) return RecoveryResult.unrecovered(next);
                     current = next;
+                } finally {
+                    handledFailures.pop();
                 }
             }
             return RecoveryResult.unrecovered(current);
@@ -239,11 +259,15 @@ public final class OresEvalRootNode extends RootNode {
 
         private boolean isNonRecoverable(RuntimeException failure) {
             return failure instanceof java.util.concurrent.CancellationException
-                    || failure instanceof SecurityException;
+                    || failure instanceof SecurityException
+                    || failure instanceof ActorRuntime.StopActorSignal;
         }
 
         private Object failureValue(RuntimeException failure) {
-            return failure instanceof PanicSignal panic ? panic.value : failure;
+            if (failure instanceof PanicSignal panic) return panic.value;
+            if (failure instanceof ThrowSignal thrown) return thrown.value;
+            if (failure instanceof OresTrace.TracedRuntimeException traced) return traced.failure();
+            return failure;
         }
 
         private RuntimeException drainDeferred(CallFrame frame) {
@@ -316,6 +340,18 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.PanicStmt panic) {
                 throw new PanicSignal(eval(panic.value(), env));
             }
+            if (stmt instanceof Ast.ThrowStmt thrown) {
+                throw new ThrowSignal(eval(thrown.value(), env));
+            }
+            if (stmt instanceof Ast.RaiseStmt) {
+                if (handledFailures.isEmpty()) {
+                    throw new IllegalStateException("'raise' requires an active catch or recover handler");
+                }
+                throw handledFailures.peek();
+            }
+            if (stmt instanceof Ast.StopStmt) {
+                throw context.actors().beginCurrentActorTreeStop();
+            }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
                     if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env, frame); return; }
@@ -333,12 +369,17 @@ public final class OresEvalRootNode extends RootNode {
                         throw signal;
                     } catch (BreakSignal | ContinueSignal signal) {
                         throw signal;
-                    } catch (java.util.concurrent.CancellationException cancellation) {
-                        throw cancellation;
                     } catch (RuntimeException failure) {
+                        if (isNonRecoverable(failure) || failure instanceof PanicSignal) throw failure;
+                        RuntimeException traced = OresTrace.attach(failure);
                         Env catchEnv = new Env(env);
-                        catchEnv.define(tried.errorName(), failureValue(failure), Ast.BindingKind.VAL);
-                        executeBlock(tried.catchBody(), catchEnv, frame);
+                        catchEnv.define(tried.errorName(), failureValue(traced), Ast.BindingKind.VAL);
+                        handledFailures.push(traced);
+                        try {
+                            executeBlock(tried.catchBody(), catchEnv, frame);
+                        } finally {
+                            handledFailures.pop();
+                        }
                     }
                 } catch (RuntimeException escaping) {
                     pending = escaping;
@@ -410,6 +451,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
+                if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -550,24 +593,28 @@ public final class OresEvalRootNode extends RootNode {
                         : ActorRuntime.ActorKind.SHARED;
 
                 return context.actors().spawn(kind, () -> (message, actorContext) -> {
-                    Env local = new Env(captured);
-                    local.define("self", actorContext.self(), Ast.BindingKind.VAL);
-                    local.define(messageParam.name(), message,
-                            messageParam.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-                    executeCallableBody(behavior.blockBody(), local);
+                    try (OresTrace.Scope ignored = OresTrace.enter("actor", "behavior", false)) {
+                        Env local = new Env(captured);
+                        local.define("self", actorContext.self(), Ast.BindingKind.VAL);
+                        local.define(messageParam.name(), message,
+                                messageParam.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        executeCallableBody(behavior.blockBody(), local);
+                    }
                 });
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 Env captured = env.snapshot();
                 return (Invokable) args -> {
                     if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
-                    Env local = new Env(captured);
-                    for (int i = 0; i < lambda.parameters().size(); i++) {
-                        Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                    try (OresTrace.Scope ignored = OresTrace.enter("lambda", "<lambda>", false)) {
+                        Env local = new Env(captured);
+                        for (int i = 0; i < lambda.parameters().size(); i++) {
+                            Ast.Param param = lambda.parameters().get(i);
+                            local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        }
+                        if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
+                        return executeCallableBody(lambda.blockBody(), local);
                     }
-                    if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    return executeCallableBody(lambda.blockBody(), local);
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
@@ -597,6 +644,60 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
+            if (receiver instanceof EnvFacade env) {
+                return switch (name) {
+                    case "get" -> (Invokable) args -> {
+                        requireOne(args, "env.get");
+                        String key = requireEnvKey(args.getFirst(), "env.get");
+                        String value = env.context().environment(key);
+                        return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
+                    };
+                    case "require" -> (Invokable) args -> {
+                        requireOne(args, "env.require");
+                        String key = requireEnvKey(args.getFirst(), "env.require");
+                        String value = env.context().environment(key);
+                        if (value == null) throw new IllegalStateException("required environment variable is not set: " + key);
+                        return value;
+                    };
+                    case "has" -> (Invokable) args -> {
+                        requireOne(args, "env.has");
+                        return env.context().environment(requireEnvKey(args.getFirst(), "env.has")) != null;
+                    };
+                    case "bool" -> (Invokable) args -> {
+                        requireOne(args, "env.bool");
+                        String value = env.context().environment(requireEnvKey(args.getFirst(), "env.bool"));
+                        if (value == null) return new OptionValue(false, null);
+                        String normalized = value.trim().toLowerCase(java.util.Locale.ROOT);
+                        if (normalized.equals("true") || normalized.equals("1") || normalized.equals("yes") || normalized.equals("on")) {
+                            return new OptionValue(true, true);
+                        }
+                        if (normalized.equals("false") || normalized.equals("0") || normalized.equals("no") || normalized.equals("off")) {
+                            return new OptionValue(true, false);
+                        }
+                        throw new IllegalArgumentException("environment value is not a boolean");
+                    };
+                    case "int" -> (Invokable) args -> {
+                        requireOne(args, "env.int");
+                        String value = env.context().environment(requireEnvKey(args.getFirst(), "env.int"));
+                        if (value == null) return new OptionValue(false, null);
+                        try {
+                            return new OptionValue(true, Long.parseLong(value.trim()));
+                        } catch (NumberFormatException malformed) {
+                            throw new IllegalArgumentException("environment value is not an integer", malformed);
+                        }
+                    };
+                    default -> throw new IllegalArgumentException("unknown env member " + name);
+                };
+            }
+            if (receiver instanceof ActorFacade actor) {
+                return switch (name) {
+                    case "inActor", "in_actor" -> (Invokable) args -> {
+                        requireZero(args, "actor." + name);
+                        return actor.context().actors().isCurrentExecutionActor();
+                    };
+                    default -> throw new IllegalArgumentException("unknown actor runtime member " + name);
+                };
+            }
             if (receiver instanceof ActorTaskValue task) {
                 ActorRuntime.ActorRef<?> actor = task.ref();
                 return switch (name) {
@@ -612,6 +713,7 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "alive" -> actor.isAlive();
                     case "failed" -> actor.failed();
+                    case "failure_trace", "failureTrace" -> actor.failureTrace();
                     case "kind" -> actor.kind().name().toLowerCase();
                     default -> throw new IllegalArgumentException("unknown ActorTask member " + name);
                 };
@@ -637,6 +739,7 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "alive" -> actor.isAlive();
                     case "failed" -> actor.failed();
+                    case "failure_trace", "failureTrace" -> actor.failureTrace();
                     case "kind" -> actor.kind().name().toLowerCase();
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
@@ -935,12 +1038,44 @@ public final class OresEvalRootNode extends RootNode {
         private ContinueSignal() { super(null, null, false, false); }
     }
 
-    private static final class PanicSignal extends RuntimeException {
+    private static final class PanicSignal extends RuntimeException implements OresTrace.Carrier {
         private final Object value;
+        private final OresTrace.Snapshot trace;
+
         private PanicSignal(Object value) {
-            super("panic: " + String.valueOf(value), null, true, false);
-            this.value = value;
+            this(value, OresTrace.snapshot());
         }
+
+        private PanicSignal(Object value, OresTrace.Snapshot trace) {
+            super(failureMessage("panic", value, trace), null, true, false);
+            this.value = value;
+            this.trace = trace;
+        }
+
+        @Override public OresTrace.Snapshot oresTrace() { return trace; }
+    }
+
+    private static final class ThrowSignal extends RuntimeException implements OresTrace.Carrier {
+        private final Object value;
+        private final OresTrace.Snapshot trace;
+
+        private ThrowSignal(Object value) {
+            this(value, OresTrace.snapshot());
+        }
+
+        private ThrowSignal(Object value, OresTrace.Snapshot trace) {
+            super(failureMessage("throw", value, trace), null, true, false);
+            this.value = value;
+            this.trace = trace;
+        }
+
+        @Override public OresTrace.Snapshot oresTrace() { return trace; }
+    }
+
+    private static String failureMessage(String kind, Object value, OresTrace.Snapshot trace) {
+        String rendered = OresTrace.format(trace);
+        String base = kind + ": " + String.valueOf(value);
+        return rendered.isEmpty() ? base : base + "\n" + rendered;
     }
 
     private record Complex(double real, double imaginary) {
@@ -977,6 +1112,14 @@ public final class OresEvalRootNode extends RootNode {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
         private Map<String,Object> descriptor(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.descriptor");return context.processDescriptor();}
         private Object shareReadonly(List<Object> args){context.requireCapability(IsolatePolicy.Capability.ACTOR_SHARE_READONLY,"process.share_readonly");requireOne(args,"process.share_readonly");return context.actors().shareReadonly(args.getFirst());}
+    }
+    private record ActorFacade(OresContext context) { }
+    private record EnvFacade(OresContext context) { }
+    private static String requireEnvKey(Object value, String api) {
+        if (!(value instanceof String key) || key.isBlank()) {
+            throw new IllegalArgumentException(api + " expects a non-empty string variable name");
+        }
+        return key;
     }
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}

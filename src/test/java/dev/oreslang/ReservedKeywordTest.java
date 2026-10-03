@@ -14,7 +14,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ReservedKeywordTest {
     private static final List<String> RESERVED = List.of(
-            "of", "is", "as", "actor", "isolate", "recover", "panic");
+            "of", "is", "as", "actor", "isolate", "recover", "panic", "throw", "raise", "stop");
 
     @Test
     void lexerAlwaysClassifiesOfIsAsAsKeywords() {
@@ -187,13 +187,27 @@ final class ReservedKeywordTest {
                     }
                     """.formatted(keyword)));
 
-            assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                    pub routine main() => void {
-                      val value = obj{ok: 1};
-                      stdio.println(value.%s);
-                    }
-                    """.formatted(keyword)));
+            if (!keyword.equals("stop")) {
+                assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                        pub routine main() => void {
+                          val value = obj{ok: 1};
+                          stdio.println(value.%s);
+                        }
+                        """.formatted(keyword)));
+            }
         }
+    }
+
+    @Test
+    void stopRemainsAvailableAsContextualActorMemberSelector() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    stop;
+                  };
+                  worker.stop();
+                }
+                """)));
     }
 
     private static void assertRejectedEverywhere(Function<String, String> source) {

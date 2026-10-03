@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.compiler.OresCompiler;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
@@ -50,6 +51,38 @@ final class IsolationHotReloadTest {
 
         assertDoesNotThrow(() -> CapabilityChecker.check(program,
                 IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.PROCESS_INFO)));
+    }
+
+    @Test
+    void environmentFacadeIsTypedAndCapabilityGated() throws Exception {
+        String program = """
+                pub routine main() => void {
+                  stdio.stdout.write(env.require("ORESLANG_TEST_ENV"));
+                  stdio.stdout.write(env.has("ORESLANG_TEST_ENV"));
+                  stdio.stdout.write(env.get("ORESLANG_MISSING_ENV"));
+                }
+                """;
+
+        assertThrows(SecurityException.class, () ->
+                OresCompiler.validateForIsolate(program, IsolatePolicy.developer()));
+
+        IsolatePolicy allowed = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.ENVIRONMENT);
+        assertDoesNotThrow(() -> OresCompiler.validateForIsolate(program, allowed));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "env.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = allowed.restrictedContextBuilder(ExecutionProfile.serverJit())
+                .environment("ORESLANG_TEST_ENV", "configured")
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertEquals("configuredtrueNone", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test

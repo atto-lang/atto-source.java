@@ -48,6 +48,14 @@ public final class OresContext implements AutoCloseable {
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
 
+    public String environment(String name) {
+        requireCapability(IsolatePolicy.Capability.ENVIRONMENT, "env.get");
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("environment variable name cannot be blank");
+        }
+        return env.getEnvironment().get(name);
+    }
+
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         isolatePolicy.require(capability, api);
     }

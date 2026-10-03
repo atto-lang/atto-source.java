@@ -180,7 +180,7 @@ public final class Ast {
     public enum ActorMode { SHARED, ISOLATE }
 
     public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
-            RecoverStmt, PanicStmt, BreakStmt, ContinueStmt, IfStmt, TryStmt, ForOfStmt, ForStmt { }
+            RecoverStmt, PanicStmt, ThrowStmt, RaiseStmt, StopStmt, BreakStmt, ContinueStmt, IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) { }
@@ -204,6 +204,9 @@ public final class Ast {
      */
     public record RecoverStmt(Expr handler) implements Stmt { }
     public record PanicStmt(Expr value) implements Stmt { }
+    public record ThrowStmt(Expr value) implements Stmt { }
+    public record RaiseStmt() implements Stmt { }
+    public record StopStmt() implements Stmt { }
     public record BreakStmt() implements Stmt { }
     public record ContinueStmt() implements Stmt { }
 

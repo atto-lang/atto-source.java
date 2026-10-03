@@ -90,13 +90,18 @@ final class ActorRecoverTest {
                   panic "boom";
                 }
 
-                pub routine main() => void {
-                  try {
-                    inner();
-                  } catch (err) {
+                fnc outer() => void {
+                  recover |err| -> {
                     stdio.stdout.write(":");
                     stdio.stdout.write(err);
-                  }
+                    return;
+                  };
+
+                  inner();
+                }
+
+                pub routine main() => void {
+                  outer();
                 }
                 """);
 
@@ -104,7 +109,7 @@ final class ActorRecoverTest {
     }
 
     @Test
-    void recoverMayRepanicToCallerCatch() throws Exception {
+    void recoverMayRepanicToCallerRecover() throws Exception {
         String output = run("""
                 fnc inner() => void {
                   recover |err| -> {
@@ -115,12 +120,16 @@ final class ActorRecoverTest {
                   panic "boom";
                 }
 
-                pub routine main() => void {
-                  try {
-                    inner();
-                  } catch (err) {
+                fnc outer() => void {
+                  recover |err| -> {
                     stdio.stdout.write(err);
-                  }
+                    return;
+                  };
+                  inner();
+                }
+
+                pub routine main() => void {
+                  outer();
                 }
                 """);
 
@@ -128,15 +137,15 @@ final class ActorRecoverTest {
     }
 
     @Test
-    void recoverValueMayBeObservedAndThenRepanicked() throws Exception {
+    void throwBypassesRecoverAndIsCaughtLexically() throws Exception {
         String output = run("""
                 fnc inner() => void {
                   recover |err| -> {
-                    stdio.stdout.write(err);
-                    panic err;
+                    stdio.stdout.write("R");
+                    return;
                   };
 
-                  panic "boom";
+                  throw "boom";
                 }
 
                 pub routine main() => void {
@@ -148,7 +157,7 @@ final class ActorRecoverTest {
                 }
                 """);
 
-        assertEquals("boomboom", output);
+        assertEquals("boom", output);
     }
 
     @Test
@@ -257,7 +266,7 @@ final class ActorRecoverTest {
     }
 
     @Test
-    void sameCallableTryCatchHandlesBeforeCallableRecover() throws Exception {
+    void panicBypassesCatchAndRunsCallableRecover() throws Exception {
         String output = run("""
                 fnc inner() => void {
                   recover |err| -> {
@@ -277,7 +286,80 @@ final class ActorRecoverTest {
                 }
                 """);
 
-        assertEquals("C", output);
+        assertEquals("R", output);
+    }
+
+    @Test
+    void raisePreservesCaughtThrowAndStillBypassesRecover() throws Exception {
+        String output = run("""
+                fnc inner() => void {
+                  throw "boom";
+                }
+
+                fnc middle() => void {
+                  recover |err| -> {
+                    stdio.stdout.write("R");
+                    return;
+                  };
+
+                  try {
+                    inner();
+                  } catch (err) {
+                    stdio.stdout.write("C");
+                    raise;
+                  }
+                }
+
+                pub routine main() => void {
+                  try {
+                    middle();
+                  } catch (err) {
+                    stdio.stdout.write(err);
+                  }
+                }
+                """);
+
+        assertEquals("Cboom", output);
+    }
+
+    @Test
+    void raiseFromRecoverContinuesTheSamePanic() throws Exception {
+        String output = run("""
+                fnc inner() => void {
+                  recover |err| -> {
+                    stdio.stdout.write("I");
+                    raise;
+                  };
+                  panic "boom";
+                }
+
+                fnc outer() => void {
+                  recover |err| -> {
+                    stdio.stdout.write("O");
+                    stdio.stdout.write(err);
+                    return;
+                  };
+                  inner();
+                }
+
+                pub routine main() => void {
+                  outer();
+                }
+                """);
+
+        assertEquals("IOboom", output);
+    }
+
+    @Test
+    void raiseIsRejectedWithoutActiveHandler() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub routine main() => void {
+                          raise;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("'raise' is only valid inside a catch or recover handler"));
     }
 
     @Test
@@ -695,6 +777,190 @@ final class ActorRecoverTest {
                           inner();
                         }
                         """, denyAll));
+    }
+
+    @Test
+    void actorInActorDistinguishesSupervisorFromActorExecution() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  stdio.stdout.write(actor.inActor());
+
+                  val worker = actor |String msg| -> {
+                    stdio.stdout.write(actor.in_actor());
+                    stop;
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                }
+                """);
+
+        assertEquals("falsetrue", output);
+    }
+
+    @Test
+    void guardedStopIsLegalInReusableCallable() throws Exception {
+        String output = run("""
+                fnc maybe_stop() => void {
+                  if actor.inActor(); do
+                    stop;
+                  fi
+
+                  stdio.stdout.write("S");
+                }
+
+                pub routine main() => void {
+                  maybe_stop();
+
+                  val worker = actor |String msg| -> {
+                    maybe_stop();
+                    stdio.stdout.write("B");
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failed);
+                }
+                """);
+
+        assertEquals("Sfalse", output);
+    }
+
+    @Test
+    void stopRecursivelyGracefullyDrainsChildActorsBeforeParentJoinReturns() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val parent = actor |String msg| -> {
+                    val child = actor |int value| -> {
+                      stdio.stdout.write(value);
+                    };
+
+                    child.send(1);
+                    child.send(2);
+                    stop;
+                  };
+
+                  parent.send("go");
+                  parent.join();
+                  stdio.stdout.write(parent.failed);
+                }
+                """);
+
+        assertEquals("12false", output);
+    }
+
+    @Test
+    void stopKeywordCleanlyTerminatesActorAndRunsDefersWithoutRecover() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    recover |err| -> {
+                      stdio.stdout.write("R");
+                      return;
+                    };
+                    defer || -> {
+                      stdio.stdout.write("D");
+                    };
+
+                    stdio.stdout.write("A");
+                    stop;
+                    stdio.stdout.write("B");
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failed);
+                  stdio.stdout.write(worker.alive);
+                }
+                """);
+
+        assertEquals("ADfalsefalse", output);
+    }
+
+    @Test
+    void stopBypassesCatchButRunsFinally() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    try {
+                      stdio.stdout.write("A");
+                      stop;
+                    } catch (err) {
+                      stdio.stdout.write("C");
+                    } finally {
+                      stdio.stdout.write("F");
+                    }
+
+                    stdio.stdout.write("B");
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failed);
+                }
+                """);
+
+        assertEquals("AFfalse", output);
+    }
+
+    @Test
+    void stopKeywordIsRejectedOutsideActorBodies() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        pub routine main() => void {
+                          stop;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().contains("'stop' requires actor context"));
+    }
+
+    @Test
+    void actorFailureTraceCarriesLogicalFramesAndActorId() throws Exception {
+        String output = run("""
+                fnc explode() => void {
+                  panic "boom";
+                }
+
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    explode();
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failure_trace);
+                }
+                """);
+
+        assertTrue(output.contains("Oreslang stack trace:"));
+        assertTrue(output.contains("explode"));
+        assertTrue(output.contains("[actor="));
+        assertTrue(output.contains("actor-send"));
+    }
+
+    @Test
+    void noStackTraceSuppressesOnlyAnnotatedLogicalFrame() throws Exception {
+        String output = run("""
+                @NoStackTrace
+                fnc hidden_hot_path() => void {
+                  panic "boom";
+                }
+
+                pub routine main() => void {
+                  val worker = actor |String msg| -> {
+                    hidden_hot_path();
+                  };
+
+                  worker.send("go");
+                  worker.join();
+                  stdio.stdout.write(worker.failure_trace);
+                }
+                """);
+
+        assertTrue(output.contains("Oreslang stack trace:"));
+        assertFalse(output.contains("hidden_hot_path"));
+        assertTrue(output.contains("[actor="));
     }
 
     @Test

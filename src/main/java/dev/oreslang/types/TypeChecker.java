@@ -165,6 +165,8 @@ public final class TypeChecker {
 
     private void validate(Ast.Program program) {
         validateLoopControl(program);
+        validateActorStop(program);
+        validateRaiseUsage(program);
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
@@ -223,6 +225,8 @@ public final class TypeChecker {
                 validateLoopControlExpr(recover.handler());
             } else if (stmt instanceof Ast.PanicStmt panic) {
                 validateLoopControlExpr(panic.value());
+            } else if (stmt instanceof Ast.ThrowStmt thrown) {
+                validateLoopControlExpr(thrown.value());
             } else if (stmt instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     validateLoopControlExpr(branch.condition());
@@ -285,6 +289,236 @@ public final class TypeChecker {
         }
     }
 
+    private void validateActorStop(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    validateActorStopBlock(fn.body(), isActorCallable(fn));
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        validateActorStopBlock(method.body(), false);
+                    }
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        if (field.initializer() != null) validateActorStopExpr(field.initializer(), false);
+                    }
+                } else if (decl instanceof Ast.FieldDecl field && field.initializer() != null) {
+                    validateActorStopExpr(field.initializer(), false);
+                }
+            }
+        }
+    }
+
+    private void validateActorStopBlock(List<Ast.Stmt> body, boolean actorContext) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.StopStmt) {
+                if (!actorContext) {
+                    throw new IllegalArgumentException(
+                            "'stop' requires actor context; use it inside an actor body or behind actor.inActor()/actor.in_actor()");
+                }
+                continue;
+            }
+            if (stmt instanceof Ast.BindingStmt binding) {
+                validateActorStopExpr(binding.initializer(), actorContext);
+            } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                validateActorStopExpr(destructure.initializer(), actorContext);
+            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
+                validateActorStopExpr(ret.value(), actorContext);
+            } else if (stmt instanceof Ast.ExprStmt expression) {
+                validateActorStopExpr(expression.expression(), actorContext);
+            } else if (stmt instanceof Ast.DeferStmt defer) {
+                validateActorStopHandler(defer.expression(), actorContext);
+            } else if (stmt instanceof Ast.RecoverStmt recover) {
+                validateActorStopHandler(recover.handler(), actorContext);
+            } else if (stmt instanceof Ast.PanicStmt panic) {
+                validateActorStopExpr(panic.value(), actorContext);
+            } else if (stmt instanceof Ast.ThrowStmt thrown) {
+                validateActorStopExpr(thrown.value(), actorContext);
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    validateActorStopExpr(branch.condition(), actorContext);
+                    boolean branchActorContext = actorContext || isActorContextPredicate(branch.condition());
+                    validateActorStopBlock(branch.body(), branchActorContext);
+                }
+                validateActorStopBlock(conditional.elseBody(), actorContext);
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                validateActorStopBlock(attempted.body(), actorContext);
+                validateActorStopBlock(attempted.catchBody(), actorContext);
+                validateActorStopBlock(attempted.finallyBody(), actorContext);
+            } else if (stmt instanceof Ast.ForOfStmt loop) {
+                validateActorStopExpr(loop.iterable(), actorContext);
+                validateActorStopBlock(loop.body(), actorContext);
+            } else if (stmt instanceof Ast.ForStmt loop) {
+                if (loop.initializer() != null) validateActorStopBlock(List.of(loop.initializer()), actorContext);
+                if (loop.condition() != null) validateActorStopExpr(loop.condition(), actorContext);
+                if (loop.update() != null) validateActorStopExpr(loop.update(), actorContext);
+                validateActorStopBlock(loop.body(), actorContext);
+            }
+        }
+    }
+
+    private boolean isActorContextPredicate(Ast.Expr expr) {
+        if (!(expr instanceof Ast.CallExpr call) || !call.arguments().isEmpty()) return false;
+        if (!(call.callee() instanceof Ast.MemberExpr member)) return false;
+        if (!(member.receiver() instanceof Ast.NameExpr name) || !name.name().equals("actor")) return false;
+        return member.member().equals("inActor") || member.member().equals("in_actor");
+    }
+
+    private void validateActorStopHandler(Ast.Expr expr, boolean actorContext) {
+        if (expr instanceof Ast.LambdaExpr lambda) {
+            // recover/defer handlers are registered on and execute within the
+            // same callable/actor frame, so they inherit actor-stop authority.
+            validateActorStopBlock(lambda.blockBody(), actorContext);
+            return;
+        }
+        validateActorStopExpr(expr, actorContext);
+    }
+
+    private void validateActorStopExpr(Ast.Expr expr, boolean actorContext) {
+        if (expr instanceof Ast.BinaryExpr e) {
+            validateActorStopExpr(e.left(), actorContext);
+            validateActorStopExpr(e.right(), actorContext);
+        } else if (expr instanceof Ast.UnaryExpr e) {
+            validateActorStopExpr(e.operand(), actorContext);
+        } else if (expr instanceof Ast.AssignExpr e) {
+            validateActorStopExpr(e.target(), actorContext);
+            validateActorStopExpr(e.value(), actorContext);
+        } else if (expr instanceof Ast.ConditionalExpr e) {
+            validateActorStopExpr(e.condition(), actorContext);
+            validateActorStopExpr(e.whenTrue(), actorContext);
+            validateActorStopExpr(e.whenFalse(), actorContext);
+        } else if (expr instanceof Ast.CallExpr e) {
+            validateActorStopExpr(e.callee(), actorContext);
+            for (Ast.Expr argument : e.arguments()) validateActorStopExpr(argument, actorContext);
+        } else if (expr instanceof Ast.MemberExpr e) {
+            validateActorStopExpr(e.receiver(), actorContext);
+        } else if (expr instanceof Ast.IndexExpr e) {
+            validateActorStopExpr(e.receiver(), actorContext);
+            validateActorStopExpr(e.index(), actorContext);
+        } else if (expr instanceof Ast.NewExpr e) {
+            for (Ast.Expr argument : e.arguments()) validateActorStopExpr(argument, actorContext);
+        } else if (expr instanceof Ast.AwaitExpr e) {
+            validateActorStopExpr(e.expression(), actorContext);
+        } else if (expr instanceof Ast.ListExpr e) {
+            for (Ast.Expr item : e.elements()) validateActorStopExpr(item, actorContext);
+        } else if (expr instanceof Ast.TupleExpr e) {
+            for (Ast.Expr item : e.elements()) validateActorStopExpr(item, actorContext);
+        } else if (expr instanceof Ast.ObjectExpr e) {
+            for (Ast.ObjectField field : e.fields()) validateActorStopExpr(field.value(), actorContext);
+        } else if (expr instanceof Ast.ActorExpr e) {
+            validateActorStopBlock(e.behavior().blockBody(), true);
+        } else if (expr instanceof Ast.LambdaExpr e) {
+            // Ordinary lambdas are independent callable values and may escape
+            // the actor; they do not inherit actor-stop authority.
+            validateActorStopBlock(e.blockBody(), false);
+        }
+    }
+
+    private void validateRaiseUsage(Ast.Program program) {
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn) {
+                    validateRaiseBlock(fn.body(), false);
+                } else if (decl instanceof Ast.ClassDecl klass) {
+                    for (Ast.MethodDecl method : klass.methods()) validateRaiseBlock(method.body(), false);
+                    for (Ast.FieldDecl field : klass.fields()) {
+                        if (field.initializer() != null) validateRaiseExpr(field.initializer(), false);
+                    }
+                } else if (decl instanceof Ast.FieldDecl field && field.initializer() != null) {
+                    validateRaiseExpr(field.initializer(), false);
+                }
+            }
+        }
+    }
+
+    private void validateRaiseBlock(List<Ast.Stmt> body, boolean handlingFailure) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.RaiseStmt) {
+                if (!handlingFailure) {
+                    throw new IllegalArgumentException(
+                            "'raise' is only valid inside a catch or recover handler");
+                }
+                continue;
+            }
+            if (stmt instanceof Ast.BindingStmt binding) {
+                validateRaiseExpr(binding.initializer(), handlingFailure);
+            } else if (stmt instanceof Ast.DestructureStmt destructure) {
+                validateRaiseExpr(destructure.initializer(), handlingFailure);
+            } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
+                validateRaiseExpr(ret.value(), handlingFailure);
+            } else if (stmt instanceof Ast.ExprStmt expression) {
+                validateRaiseExpr(expression.expression(), handlingFailure);
+            } else if (stmt instanceof Ast.DeferStmt defer) {
+                validateRaiseExpr(defer.expression(), false);
+            } else if (stmt instanceof Ast.RecoverStmt recover) {
+                if (recover.handler() instanceof Ast.LambdaExpr lambda) {
+                    validateRaiseBlock(lambda.blockBody(), true);
+                } else {
+                    validateRaiseExpr(recover.handler(), false);
+                }
+            } else if (stmt instanceof Ast.PanicStmt panic) {
+                validateRaiseExpr(panic.value(), handlingFailure);
+            } else if (stmt instanceof Ast.ThrowStmt thrown) {
+                validateRaiseExpr(thrown.value(), handlingFailure);
+            } else if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    validateRaiseExpr(branch.condition(), handlingFailure);
+                    validateRaiseBlock(branch.body(), handlingFailure);
+                }
+                validateRaiseBlock(conditional.elseBody(), handlingFailure);
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                validateRaiseBlock(attempted.body(), handlingFailure);
+                validateRaiseBlock(attempted.catchBody(), true);
+                validateRaiseBlock(attempted.finallyBody(), handlingFailure);
+            } else if (stmt instanceof Ast.ForOfStmt loop) {
+                validateRaiseExpr(loop.iterable(), handlingFailure);
+                validateRaiseBlock(loop.body(), handlingFailure);
+            } else if (stmt instanceof Ast.ForStmt loop) {
+                if (loop.initializer() != null) validateRaiseBlock(List.of(loop.initializer()), handlingFailure);
+                if (loop.condition() != null) validateRaiseExpr(loop.condition(), handlingFailure);
+                if (loop.update() != null) validateRaiseExpr(loop.update(), handlingFailure);
+                validateRaiseBlock(loop.body(), handlingFailure);
+            }
+        }
+    }
+
+    private void validateRaiseExpr(Ast.Expr expr, boolean handlingFailure) {
+        if (expr instanceof Ast.BinaryExpr e) {
+            validateRaiseExpr(e.left(), handlingFailure);
+            validateRaiseExpr(e.right(), handlingFailure);
+        } else if (expr instanceof Ast.UnaryExpr e) {
+            validateRaiseExpr(e.operand(), handlingFailure);
+        } else if (expr instanceof Ast.AssignExpr e) {
+            validateRaiseExpr(e.target(), handlingFailure);
+            validateRaiseExpr(e.value(), handlingFailure);
+        } else if (expr instanceof Ast.ConditionalExpr e) {
+            validateRaiseExpr(e.condition(), handlingFailure);
+            validateRaiseExpr(e.whenTrue(), handlingFailure);
+            validateRaiseExpr(e.whenFalse(), handlingFailure);
+        } else if (expr instanceof Ast.CallExpr e) {
+            validateRaiseExpr(e.callee(), handlingFailure);
+            for (Ast.Expr argument : e.arguments()) validateRaiseExpr(argument, handlingFailure);
+        } else if (expr instanceof Ast.MemberExpr e) {
+            validateRaiseExpr(e.receiver(), handlingFailure);
+        } else if (expr instanceof Ast.IndexExpr e) {
+            validateRaiseExpr(e.receiver(), handlingFailure);
+            validateRaiseExpr(e.index(), handlingFailure);
+        } else if (expr instanceof Ast.NewExpr e) {
+            for (Ast.Expr argument : e.arguments()) validateRaiseExpr(argument, handlingFailure);
+        } else if (expr instanceof Ast.AwaitExpr e) {
+            validateRaiseExpr(e.expression(), handlingFailure);
+        } else if (expr instanceof Ast.ListExpr e) {
+            for (Ast.Expr item : e.elements()) validateRaiseExpr(item, handlingFailure);
+        } else if (expr instanceof Ast.TupleExpr e) {
+            for (Ast.Expr item : e.elements()) validateRaiseExpr(item, handlingFailure);
+        } else if (expr instanceof Ast.ObjectExpr e) {
+            for (Ast.ObjectField field : e.fields()) validateRaiseExpr(field.value(), handlingFailure);
+        } else if (expr instanceof Ast.ActorExpr e) {
+            validateRaiseBlock(e.behavior().blockBody(), false);
+        } else if (expr instanceof Ast.LambdaExpr e) {
+            validateRaiseBlock(e.blockBody(), false);
+        }
+    }
+
     private void checkModuleAdherence(Ast.ModuleDecl module) {
         for (Ast.Annotation annotation : module.annotations()) {
             if (!annotation.name().equals("AdheresTo")) continue;
@@ -341,6 +575,7 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
+        validateCallableAnnotations(fn.annotations(), fn.kind().name().toLowerCase() + " " + fn.name());
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null);
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
@@ -418,6 +653,7 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            validateCallableAnnotations(method.annotations(), "method " + klass.name() + "." + method.name());
             Set<String> generics = new HashSet<>(classGenerics);
             for (String generic : method.genericParameters()) {
                 if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
@@ -453,6 +689,20 @@ public final class TypeChecker {
             Record actual = publicClassShape(klass, new LinkedHashSet<>());
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
+            }
+        }
+    }
+
+    private void validateCallableAnnotations(List<Ast.Annotation> annotations, String owner) {
+        boolean noStackTraceSeen = false;
+        for (Ast.Annotation annotation : annotations) {
+            if (!annotation.name().equals("NoStackTrace")) continue;
+            if (noStackTraceSeen) {
+                throw new IllegalArgumentException("duplicate @NoStackTrace on " + owner);
+            }
+            noStackTraceSeen = true;
+            if (!annotation.arguments().isEmpty()) {
+                throw new IllegalArgumentException("@NoStackTrace takes no arguments; use ORES_STACK_TRACE to override runtime policy");
             }
         }
     }
@@ -527,6 +777,11 @@ public final class TypeChecker {
             typeOf(panic.value(), env, generics, self);
             return;
         }
+        if (stmt instanceof Ast.ThrowStmt thrown) {
+            typeOf(thrown.value(), env, generics, self);
+            return;
+        }
+        if (stmt instanceof Ast.RaiseStmt || stmt instanceof Ast.StopStmt) return;
         if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 requireAssignable(typeOf(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
@@ -621,7 +876,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process")
+                    || name.name().equals("actor") || name.name().equals("env")) {
+                return new Named(name.name(), List.of());
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -766,6 +1024,28 @@ public final class TypeChecker {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) return Unknown.INSTANCE;
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("actor")) {
+                return switch (member.member()) {
+                    case "inActor", "in_actor" -> new Function(List.of(), Primitive.BOOL);
+                    default -> throw new IllegalArgumentException("unknown actor runtime member '" + member.member() + "'");
+                };
+            }
+            if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("env")) {
+                return switch (member.member()) {
+                    case "get" -> new Function(
+                            List.of(Primitive.STRING),
+                            new Named("Option", List.of(Primitive.STRING)));
+                    case "require" -> new Function(List.of(Primitive.STRING), Primitive.STRING);
+                    case "has" -> new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    case "bool" -> new Function(
+                            List.of(Primitive.STRING),
+                            new Named("Option", List.of(Primitive.BOOL)));
+                    case "int" -> new Function(
+                            List.of(Primitive.STRING),
+                            new Named("Option", List.of(Primitive.INT)));
+                    default -> throw new IllegalArgumentException("unknown env member '" + member.member() + "'");
+                };
+            }
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
             if (receiver instanceof ClassNamespace classNamespace) {
@@ -792,7 +1072,7 @@ public final class TypeChecker {
                         case "send" -> new Function(List.of(messageType), Primitive.VOID);
                         case "stop", "join" -> new Function(List.of(), Primitive.VOID);
                         case "alive", "failed" -> Primitive.BOOL;
-                        case "kind" -> Primitive.STRING;
+                        case "failure_trace", "failureTrace", "kind" -> Primitive.STRING;
                         default -> throw new IllegalArgumentException("unknown Actor member '" + member.member() + "'");
                     };
                 }
@@ -800,7 +1080,7 @@ public final class TypeChecker {
                     return switch (member.member()) {
                         case "stop", "join" -> new Function(List.of(), Primitive.VOID);
                         case "alive", "failed" -> Primitive.BOOL;
-                        case "kind" -> Primitive.STRING;
+                        case "failure_trace", "failureTrace", "kind" -> Primitive.STRING;
                         default -> throw new IllegalArgumentException("unknown ActorTask member '" + member.member() + "'");
                     };
                 }
@@ -1512,7 +1792,8 @@ public final class TypeChecker {
 
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
-            if (stmt instanceof Ast.ReturnStmt || stmt instanceof Ast.PanicStmt) return true;
+            if (stmt instanceof Ast.ReturnStmt || stmt instanceof Ast.PanicStmt || stmt instanceof Ast.ThrowStmt
+                    || stmt instanceof Ast.RaiseStmt || stmt instanceof Ast.StopStmt) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
                         && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
@@ -1575,6 +1856,7 @@ public final class TypeChecker {
         else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.RecoverStmt s) collectCalls(s.handler(), module, out);
         else if (stmt instanceof Ast.PanicStmt s) collectCalls(s.value(), module, out);
+        else if (stmt instanceof Ast.ThrowStmt s) collectCalls(s.value(), module, out);
         else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch b : s.branches()) {
                 collectCalls(b.condition(), module, out);

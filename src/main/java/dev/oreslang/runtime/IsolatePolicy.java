@@ -105,7 +105,9 @@ public record IsolatePolicy(
         Context.Builder builder = Context.newBuilder(OresLanguage.ID)
                 .allowHostAccess(hostAccess)
                 .allowPolyglotAccess(PolyglotAccess.NONE)
-                .allowEnvironmentAccess(EnvironmentAccess.NONE)
+                .allowEnvironmentAccess(allows(Capability.ENVIRONMENT)
+                        ? EnvironmentAccess.INHERIT
+                        : EnvironmentAccess.NONE)
                 .allowNativeAccess(false)
                 .allowCreateThread(false)
                 .allowIO(IOAccess.NONE)
