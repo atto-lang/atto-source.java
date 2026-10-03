@@ -83,7 +83,8 @@ public final class OresEvalRootNode extends RootNode {
                         ignored -> new HostClassFacade(className, context.lookupHostSymbol(className), true));
 
                 if (imported.kind() == Ast.ImportKind.CLASS) {
-                    putHostClass(imported.names().getFirst(), symbol);
+                    String sourceName = imported.names().getFirst();
+                    putHostClass(ImportRules.localName(imported, sourceName), symbol);
                 } else if (imported.kind() == Ast.ImportKind.FUNCTION && imported.wildcard()) {
                     putHostClass(imported.namespace(), new HostClassFacade(className, symbol.symbol(), false));
                 } else if (imported.kind() == Ast.ImportKind.FUNCTION) {
@@ -93,7 +94,8 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("Java host class '" + className
                                     + "' does not export invocable static member '" + name + "'");
                         }
-                        putHostFunction(name, args -> invokeHostMember(symbol.symbol(), name, args));
+                        putHostFunction(ImportRules.localName(imported, name),
+                                args -> invokeHostMember(symbol.symbol(), name, args));
                     }
                 } else if (imported.kind() == Ast.ImportKind.ALL) {
                     putHostClass(imported.namespace(), symbol);

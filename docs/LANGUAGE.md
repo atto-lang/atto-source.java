@@ -28,14 +28,16 @@ Imports are explicit about what kind of symbol is entering the compilation unit:
 import module foo from "../xyz";
 import module {foo, bar} from "../xyz";
 import class Widget from "../xyz";
+import class Widget as ApiWidget from "../xyz";
 import class {Widget, ErrorInfo} from "../xyz";
 import fnc add from "../xyz";
+import fnc add as apiAdd from "../xyz";
 import fnc {add, subtract} from "../xyz";
 import fnc * as funcs from "../xyz";
 import * as package from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. Oreslang deliberately does **not** support an unqualified `import * from ...`: an unbounded wildcard may not inject names directly into file scope. Imported bindings also may not collide with local declarations or core/builtin names.
+Wildcard imports always require a namespace alias. Oreslang deliberately does **not** support an unqualified `import * from ...`: an unbounded wildcard may not inject names directly into file scope. A single named module/class/function import may use `as` to choose its local binding; the source name still controls export resolution. Imported bindings also may not collide with local declarations or core/builtin names.
 
 For source-unit imports, the host build/bundling layer resolves paths. The incremental compiler validates resolved relative imports and verifies that each named module/class/function exists in the target unit, that functions are public, and that an unqualified selection is not ambiguous. Import syntax itself never grants filesystem access to a guest isolate.
 
@@ -43,12 +45,14 @@ Java host interop uses an explicit `java:` path so host classes cannot be confus
 
 ```ores
 import class Math from "java:java.lang.Math";
+import class ArrayList as JArrayList from "java:java.util.ArrayList";
+import fnc abs as jabs from "java:java.lang.Math";
 import fnc {abs, max} from "java:java.lang.Math";
 import fnc * as mathFns from "java:java.lang.Math";
 import * as JMath from "java:java.lang.Math";
 ```
 
-A Java class import selects exactly one class and its Ores name must match the Java simple class name. Java classes cannot be imported as Ores modules. Named `fnc` imports invoke static host methods; wildcard forms remain namespaced.
+A Java class import selects exactly one host class. The selected source name must match the Java simple class name, while an optional `as` alias chooses the Oreslang-local name (for example, `ArrayList as JArrayList`). Java classes cannot be imported as Ores modules. Named `fnc` imports invoke static host methods and may also be locally aliased; wildcard forms remain namespaced.
 
 Java import authority comes only from the embedder. The source must be admitted with the `FFI` capability **and** the fully qualified class must be present in the embedding Context's host-class allowlist. The default restricted Context has an empty allowlist, `HostAccess.NONE`, and host class loading disabled. The language resolves an admitted Java class through Truffle `Env.lookupHostSymbol`; guest code never uses `Class.forName` as a lookup bypass. The launcher equivalent is:
 

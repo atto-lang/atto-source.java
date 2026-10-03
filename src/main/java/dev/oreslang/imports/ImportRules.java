@@ -35,7 +35,23 @@ public final class ImportRules {
     }
 
     public static List<String> exposedBindings(Ast.ImportDecl imported) {
-        return imported.wildcard() ? List.of(imported.namespace()) : imported.names();
+        if (imported.wildcard()) return List.of(imported.namespace());
+        return imported.names().stream().map(name -> localName(imported, name)).toList();
+    }
+
+    /**
+     * Returns the local binding for one selected import name. For a named
+     * single-selection import, namespace carries the optional `as` alias;
+     * wildcard imports continue to use it as their required namespace.
+     */
+    public static String localName(Ast.ImportDecl imported, String sourceName) {
+        if (!imported.wildcard() && imported.namespace() != null) {
+            if (imported.names().size() != 1 || !imported.names().getFirst().equals(sourceName)) {
+                throw new IllegalArgumentException("named import alias does not match its selected source name");
+            }
+            return imported.namespace();
+        }
+        return sourceName;
     }
 
     /**
@@ -59,11 +75,16 @@ public final class ImportRules {
                 throw new IllegalArgumentException("wildcard imports cannot also contain named selections");
             }
         } else {
-            if (imported.namespace() != null) {
-                throw new IllegalArgumentException("named imports cannot also declare a namespace alias");
-            }
             if (imported.kind() == Ast.ImportKind.ALL || imported.names().isEmpty()) {
                 throw new IllegalArgumentException("named import must select at least one name");
+            }
+            if (imported.namespace() != null) {
+                if (imported.namespace().isBlank()) {
+                    throw new IllegalArgumentException("named import alias cannot be blank");
+                }
+                if (imported.names().size() != 1) {
+                    throw new IllegalArgumentException("named import aliases require exactly one selected name");
+                }
             }
         }
 

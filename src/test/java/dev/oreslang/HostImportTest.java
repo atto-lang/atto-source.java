@@ -35,6 +35,19 @@ final class HostImportTest {
                 import fnc main from "java:java.lang.Math";
                 pub fnc main() => void { return; }
                 """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                import class ArrayList as JArrayList from "java:java.util.ArrayList";
+                pub fnc main() => void {
+                  val values = new JArrayList();
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                import class {ArrayList, LinkedList} as JList from "java:java.util.ArrayList";
+                pub fnc main() => void { return; }
+                """));
     }
 
     @Test
@@ -88,6 +101,39 @@ final class HostImportTest {
                     pub fnc main() => int { return Math.max(40, 2); }
                     """);
             assertEquals(40L, namespaced.asLong());
+        }
+    }
+
+    @Test
+    void aliasesAndConstructsAllowlistedJavaClasses() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.FFI);
+
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.util.ArrayList")).build()) {
+            Value value = context.eval(OresLanguage.ID, """
+                    import class ArrayList as JArrayList from "java:java.util.ArrayList";
+                    pub fnc main() => int {
+                      val values = new JArrayList();
+                      values.add(19);
+                      values.add(23);
+                      return values.size();
+                    }
+                    """);
+            assertEquals(2L, value.asLong());
+        }
+    }
+
+    @Test
+    void aliasesNamedStaticJavaFunctionsWithoutChangingTheHostMemberName() {
+        IsolatePolicy policy = IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.FFI);
+
+        try (Context context = policy.restrictedContextBuilder(
+                ExecutionProfile.serverJit(), Set.of("java.lang.Math")).build()) {
+            Value value = context.eval(OresLanguage.ID, """
+                    import fnc abs as jabs from "java:java.lang.Math";
+                    pub fnc main() => int { return jabs(-42); }
+                    """);
+            assertEquals(42L, value.asLong());
         }
     }
 
