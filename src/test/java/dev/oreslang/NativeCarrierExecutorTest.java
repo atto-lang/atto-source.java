@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -158,5 +159,58 @@ final class NativeCarrierExecutorTest {
         }
     }
 
+
+    @Test
+    void carrierCpuClockAdvancesAndNativeStackIsBounded() throws Exception {
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-accounting-");
+        try {
+            CountDownLatch done = new CountDownLatch(1);
+            AtomicLong observedCpu = new AtomicLong();
+            executor.execute(() -> {
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(20);
+                long value = 0;
+                while (System.nanoTime() - deadline < 0) {
+                    value ^= System.nanoTime();
+                }
+                assertNotEquals(Long.MIN_VALUE, value);
+                observedCpu.set(NativeCarrierExecutor.currentCarrierCpuTimeNanos());
+                done.countDown();
+            });
+
+            assertTrue(done.await(2, TimeUnit.SECONDS));
+            assertTrue(observedCpu.get() > 0L);
+            assertTrue(executor.getNativeStackBytes() >= 256L * 1024);
+            assertTrue(executor.getNativeStackBytes() <= 64L * 1024 * 1024);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    void shutdownDoesNotWaitForeverForUncooperativeCarrier() throws Exception {
+        NativeCarrierExecutor executor = new NativeCarrierExecutor(
+                1, 1, 8, "ores-native-stuck-");
+        AtomicBoolean release = new AtomicBoolean();
+        CountDownLatch entered = new CountDownLatch(1);
+
+        executor.execute(() -> {
+            entered.countDown();
+            while (!release.get()) {
+                // Deliberately ignore Java interruption: native shutdown must
+                // retire the pool without blocking the caller on pthread_join().
+                Thread.onSpinWait();
+            }
+        });
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+        long started = System.nanoTime();
+        executor.shutdownNow();
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+        release.set(true);
+
+        assertTrue(elapsedMillis < 500,
+                "shutdownNow must hand carrier joins to the native reaper");
+    }
 
 }
