@@ -66,21 +66,21 @@ public final class GpuRuntime {
 
         Object invoke(Invocation invocation);
 
-        default Object uploadArray(List<?> values) {
+        default Object uploadArray(String elementAbiType, List<?> values) {
             throw new GpuCapabilityUnavailableException(
                     "GPU backend '" + name() + "' does not support GpuArray uploads");
         }
 
-        default List<?> downloadArray(Object backendToken, long length) {
+        default List<?> downloadArray(String elementAbiType, Object backendToken, long length) {
             throw new GpuCapabilityUnavailableException(
                     "GPU backend '" + name() + "' does not support GpuArray downloads");
         }
 
-        default Object openStream(Object arrayBackendToken, long length) {
+        default Object openStream(String elementAbiType, Object arrayBackendToken, long length) {
             return arrayBackendToken;
         }
 
-        default CollectedArray collectStream(Object streamBackendToken, long lengthHint) {
+        default CollectedArray collectStream(String elementAbiType, Object streamBackendToken, long lengthHint) {
             if (lengthHint < 0) {
                 throw new GpuCapabilityUnavailableException(
                         "GPU backend '" + name()
@@ -94,16 +94,19 @@ public final class GpuRuntime {
     public static final class ArrayHandle {
         private final Backend backend;
         private final Object backendToken;
+        private final String elementAbiType;
         private final long length;
 
-        private ArrayHandle(Backend backend, Object backendToken, long length) {
+        private ArrayHandle(Backend backend, Object backendToken, String elementAbiType, long length) {
             this.backend = Objects.requireNonNull(backend, "backend");
             this.backendToken = Objects.requireNonNull(backendToken, "backendToken");
+            this.elementAbiType = normalizeDeviceScalarType(elementAbiType);
             if (length < 0) throw new IllegalArgumentException("GpuArray length cannot be negative");
             this.length = length;
         }
 
         public String backendName() { return backend.name(); }
+        public String elementAbiType() { return elementAbiType; }
         public long length() { return length; }
 
         /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
@@ -114,11 +117,13 @@ public final class GpuRuntime {
     public static final class StreamHandle {
         private final Backend backend;
         private final Object backendToken;
+        private final String elementAbiType;
         private final long lengthHint;
 
-        private StreamHandle(Backend backend, Object backendToken, long lengthHint) {
+        private StreamHandle(Backend backend, Object backendToken, String elementAbiType, long lengthHint) {
             this.backend = Objects.requireNonNull(backend, "backend");
             this.backendToken = Objects.requireNonNull(backendToken, "backendToken");
+            this.elementAbiType = normalizeDeviceScalarType(elementAbiType);
             if (lengthHint < -1) {
                 throw new IllegalArgumentException("GpuStream length hint must be -1 or non-negative");
             }
@@ -126,6 +131,7 @@ public final class GpuRuntime {
         }
 
         public String backendName() { return backend.name(); }
+        public String elementAbiType() { return elementAbiType; }
         public long lengthHint() { return lengthHint; }
 
         /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
@@ -148,12 +154,14 @@ public final class GpuRuntime {
         PROCESS_BACKEND.set(null);
     }
 
-    public static ArrayHandle adoptArray(Backend backend, Object backendToken, long length) {
-        return new ArrayHandle(backend, backendToken, length);
+    public static ArrayHandle adoptArray(
+            Backend backend, Object backendToken, String elementAbiType, long length) {
+        return new ArrayHandle(backend, backendToken, elementAbiType, length);
     }
 
-    public static StreamHandle adoptStream(Backend backend, Object backendToken, long lengthHint) {
-        return new StreamHandle(backend, backendToken, lengthHint);
+    public static StreamHandle adoptStream(
+            Backend backend, Object backendToken, String elementAbiType, long lengthHint) {
+        return new StreamHandle(backend, backendToken, elementAbiType, lengthHint);
     }
 
     public boolean available() {
@@ -183,16 +191,21 @@ public final class GpuRuntime {
         return frozen;
     }
 
-    public ArrayHandle uploadArray(List<?> values) {
+    public ArrayHandle uploadArray(String elementAbiType, List<?> values) {
         Objects.requireNonNull(values, "values");
+        String exactType = normalizeDeviceScalarType(elementAbiType);
         Backend backend = requireBackend("GpuArray.from_cpu()");
         List<?> frozen = freezeArguments(values);
-        Object token = backendCall(backend, "uploadArray", () -> backend.uploadArray(frozen));
+        validateArrayElements(exactType, frozen);
+        Object token = backendCall(
+                backend,
+                "uploadArray(" + exactType + ")",
+                () -> backend.uploadArray(exactType, frozen));
         if (token == null) {
             throw new GpuExecutionException(
                     "GPU backend '" + backend.name() + "' returned null from uploadArray", null);
         }
-        return new ArrayHandle(backend, token, frozen.size());
+        return new ArrayHandle(backend, token, exactType, frozen.size());
     }
 
     public List<?> downloadArray(ArrayHandle array) {
@@ -202,7 +215,8 @@ public final class GpuRuntime {
                     "GpuArray length " + array.length + " cannot be materialized as a host Array/List");
         }
         List<?> downloaded = backendCall(array.backend, "downloadArray",
-                () -> array.backend.downloadArray(array.backendToken, array.length));
+                () -> array.backend.downloadArray(
+                        array.elementAbiType, array.backendToken, array.length));
         Object frozen = freezeValue(downloaded, false);
         if (!(frozen instanceof List<?> list)) {
             throw new GpuTransferException(
@@ -213,33 +227,125 @@ public final class GpuRuntime {
                     "GPU backend '" + array.backend.name() + "' returned " + list.size()
                             + " element(s) for GpuArray length " + array.length);
         }
-        return list;
+        // Device -> host is a copy boundary. Return a fresh mutable host Array/List so
+        // ordinary Oreslang indexed mutation semantics continue to work after download.
+        return new ArrayList<>(list);
     }
 
     public StreamHandle stream(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
         Object token = backendCall(array.backend, "openStream",
-                () -> array.backend.openStream(array.backendToken, array.length));
+                () -> array.backend.openStream(
+                        array.elementAbiType, array.backendToken, array.length));
         if (token == null) {
             throw new GpuExecutionException(
                     "GPU backend '" + array.backend.name() + "' returned null from openStream", null);
         }
-        return new StreamHandle(array.backend, token, array.length);
+        return new StreamHandle(array.backend, token, array.elementAbiType, array.length);
     }
 
     public ArrayHandle collect(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
         CollectedArray collected = backendCall(stream.backend, "collectStream",
-                () -> stream.backend.collectStream(stream.backendToken, stream.lengthHint));
+                () -> stream.backend.collectStream(
+                        stream.elementAbiType, stream.backendToken, stream.lengthHint));
         if (collected == null) {
             throw new GpuExecutionException(
                     "GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
         }
-        return new ArrayHandle(stream.backend, collected.backendToken(), collected.length());
+        return new ArrayHandle(
+                stream.backend,
+                collected.backendToken(),
+                stream.elementAbiType,
+                collected.length());
     }
 
     public List<?> downloadStream(StreamHandle stream) {
         return downloadArray(collect(stream));
+    }
+
+    private static String normalizeDeviceScalarType(String type) {
+        Objects.requireNonNull(type, "elementAbiType");
+        return switch (type.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "bool" -> "bool";
+            case "i8" -> "i8";
+            case "u8" -> "u8";
+            case "i16" -> "i16";
+            case "u16" -> "u16";
+            case "i32" -> "i32";
+            case "u32" -> "u32";
+            case "i64", "int" -> "i64";
+            case "u64", "uint" -> "u64";
+            case "f32" -> "f32";
+            case "f64", "float" -> "f64";
+            default -> throw new GpuTransferException(
+                    "unsupported exact GPU element ABI type '" + type + "'");
+        };
+    }
+
+    private static void validateArrayElements(String type, List<?> values) {
+        for (int i = 0; i < values.size(); i++) {
+            Object value = values.get(i);
+            if (!validElement(type, value)) {
+                throw new GpuTransferException(
+                        "GpuArray<" + type + "> element " + i
+                                + " cannot be represented exactly/safely from "
+                                + (value == null ? "null" : value.getClass().getSimpleName())
+                                + " value " + value);
+            }
+        }
+    }
+
+    private static boolean validElement(String type, Object value) {
+        if (type.equals("bool")) return value instanceof Boolean;
+        if (!(value instanceof Number number)) return false;
+
+        if (type.equals("f32") || type.equals("f64")) {
+            double d = number.doubleValue();
+            if (!Double.isFinite(d)) return false;
+            return !type.equals("f32") || Math.abs(d) <= Float.MAX_VALUE;
+        }
+
+        BigInteger integer;
+        if (value instanceof BigInteger big) {
+            integer = big;
+        } else if (value instanceof Byte || value instanceof Short
+                || value instanceof Integer || value instanceof Long) {
+            integer = BigInteger.valueOf(number.longValue());
+        } else if (value instanceof BigDecimal decimal) {
+            try {
+                integer = decimal.toBigIntegerExact();
+            } catch (ArithmeticException failure) {
+                return false;
+            }
+        } else {
+            double d = number.doubleValue();
+            if (!Double.isFinite(d) || d != Math.rint(d)) return false;
+            try {
+                integer = BigDecimal.valueOf(d).toBigIntegerExact();
+            } catch (ArithmeticException failure) {
+                return false;
+            }
+        }
+
+        return switch (type) {
+            case "i8" -> between(integer, BigInteger.valueOf(Byte.MIN_VALUE), BigInteger.valueOf(Byte.MAX_VALUE));
+            case "u8" -> between(integer, BigInteger.ZERO, BigInteger.valueOf(0xffL));
+            case "i16" -> between(integer, BigInteger.valueOf(Short.MIN_VALUE), BigInteger.valueOf(Short.MAX_VALUE));
+            case "u16" -> between(integer, BigInteger.ZERO, BigInteger.valueOf(0xffffL));
+            case "i32" -> between(integer, BigInteger.valueOf(Integer.MIN_VALUE), BigInteger.valueOf(Integer.MAX_VALUE));
+            case "u32" -> between(integer, BigInteger.ZERO, BigInteger.valueOf(0xffff_ffffL));
+            case "i64" -> between(integer, BigInteger.valueOf(Long.MIN_VALUE), BigInteger.valueOf(Long.MAX_VALUE));
+            case "u64" -> between(
+                    integer,
+                    BigInteger.ZERO,
+                    BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE));
+            default -> false;
+        };
+    }
+
+    private static boolean between(BigInteger value, BigInteger min, BigInteger max) {
+        return value.compareTo(min) >= 0 && value.compareTo(max) <= 0;
     }
 
     private Backend requireBackend(String operation) {
