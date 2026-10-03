@@ -5,6 +5,7 @@ import dev.oreslang.net.NativeSocketBridge;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Capability-gated OS networking primitives for the Oreslang stdlib.
@@ -34,9 +35,36 @@ public final class NativeNetBuiltin implements BuiltinValue {
         private boolean closed;
 
         private NativeSocketHandle(OresContext context, long token) {
-            this.context = context;
-            this.actorDomain = ActorRuntime.currentActorExecutionDomain();
+            this(context, token, ActorRuntime.currentActorExecutionDomain());
+        }
+
+        private NativeSocketHandle(OresContext context, long token, Object actorDomain) {
+            this.context = Objects.requireNonNull(context, "context");
+            this.actorDomain = actorDomain;
             this.token = token;
+        }
+
+        private synchronized DetachedNativeSocket detachForLease(ActorRuntime runtime) {
+            Objects.requireNonNull(runtime, "runtime");
+            if (context.actors() != runtime) {
+                throw new SecurityException(
+                        "native socket handle belongs to a different ActorRuntime/OresContext");
+            }
+            if (actorDomain != null) {
+                throw new SecurityException(
+                        "only a supervisor-owned native socket handle can be transferred to an actor lease");
+            }
+            if (ActorRuntime.inActorExecution() || ActorRuntime.inRootExecution()) {
+                throw new SecurityException(
+                        "guest/root execution cannot transfer native socket ownership; use the host supervisor");
+            }
+            if (closed) {
+                throw new IllegalStateException("native socket handle is already closed or transferred");
+            }
+            long detachedToken = token;
+            token = 0L;
+            closed = true;
+            return new DetachedNativeSocket(context, detachedToken);
         }
 
         private synchronized long requireToken(OresContext expectedContext, String operation) {
@@ -75,6 +103,36 @@ public final class NativeNetBuiltin implements BuiltinValue {
         public String toString() {
             return "NativeSocketHandle[opaque]";
         }
+    }
+
+    static record DetachedNativeSocket(OresContext context, long token) {
+        DetachedNativeSocket {
+            Objects.requireNonNull(context, "context");
+            if (token <= 0L) throw new IllegalArgumentException("native socket token must be positive");
+        }
+    }
+
+    static DetachedNativeSocket detachSupervisorSocket(
+            NativeSocketHandle handle,
+            ActorRuntime runtime) {
+        Objects.requireNonNull(handle, "handle");
+        return handle.detachForLease(runtime);
+    }
+
+    static NativeSocketHandle restoreSupervisorSocket(
+            DetachedNativeSocket detached,
+            ActorRuntime runtime) {
+        Objects.requireNonNull(detached, "detached");
+        Objects.requireNonNull(runtime, "runtime");
+        if (detached.context().actors() != runtime) {
+            throw new SecurityException(
+                    "detached native socket belongs to a different ActorRuntime/OresContext");
+        }
+        if (ActorRuntime.inActorExecution() || ActorRuntime.inRootExecution()) {
+            throw new SecurityException(
+                    "guest/root execution cannot reclaim native socket ownership; use the host supervisor");
+        }
+        return new NativeSocketHandle(detached.context(), detached.token(), null);
     }
 
     public NativeNetBuiltin(OresContext context) {
