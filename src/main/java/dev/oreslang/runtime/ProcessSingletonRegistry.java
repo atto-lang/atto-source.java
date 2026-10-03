@@ -22,7 +22,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 
 /**
@@ -260,21 +260,20 @@ public final class ProcessSingletonRegistry {
             }
             ErasedOperation erasedOperation =
                     (state, args) -> operation.apply(cast(state), args);
-
-            // Fast path for trusted same-heap callers: the registry owns the
-            // only mutable state reference and the runtime lock serializes the
-            // whole transaction. If the singleton is busy, do not park an
-            // actor dispatcher carrier; fall back to the existing bounded
-            // mailbox instead.
-            if (cell.tryExecuteDirect(frozen, reply, deadline, erasedOperation)) {
-                return reply;
-            }
-
             Request request = new Request(
                     frozen,
                     erasedOperation,
                     reply,
                     deadline);
+
+            // Fast path for trusted same-heap callers: acquire the runtime-owned
+            // permit without blocking the caller, then execute one isolated
+            // virtual-thread turn directly against the process-owned state.
+            // This skips mailbox enqueue/dequeue while preserving Future<T>
+            // semantics, cancellation, deadlines and actor dispatcher liveness.
+            if (cell.tryExecuteDirect(request)) {
+                return reply;
+            }
 
             terminal = cell.terminalFailure;
             if (terminal != null) {
@@ -430,7 +429,7 @@ public final class ProcessSingletonRegistry {
         private final AtomicInteger queuedRequests = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
         private final AtomicBoolean mailboxTurnPending = new AtomicBoolean();
-        private final ReentrantLock accessLock = new ReentrantLock();
+        private final Semaphore accessPermit = new Semaphore(1, true);
         private final Duration initializationWallTime;
         private volatile Supplier<?> stateFactory;
         private volatile Object state;
@@ -466,63 +465,85 @@ public final class ProcessSingletonRegistry {
             }
         }
 
-        private boolean tryExecuteDirect(
-                List<Object> frozenArguments,
-                ReplyFuture reply,
-                long deadlineNanos,
-                ErasedOperation operation) {
+        private boolean tryExecuteDirect(Request request) {
             if (!initialized
                     || terminalFailure != null
                     || queuedRequests.get() != 0
                     || !mailbox.isEmpty()
                     || mailboxTurnPending.get()
-                    || !accessLock.tryLock()) return false;
+                    || !accessPermit.tryAcquire()) return false;
+
+            // Recheck after acquiring the permit so an already-admitted
+            // mailbox turn cannot be overtaken by the direct fast path.
+            if (queuedRequests.get() != 0 || !mailbox.isEmpty() || mailboxTurnPending.get()) {
+                accessPermit.release();
+                return false;
+            }
+
             try {
-                // Recheck after acquiring the lock so an already-admitted
-                // mailbox turn cannot be overtaken by the direct fast path.
-                if (queuedRequests.get() != 0 || !mailbox.isEmpty() || mailboxTurnPending.get()) {
-                    return false;
+                Thread.ofVirtual()
+                        .name("ores-process-singleton-direct-" + diagnosticId
+                                + "-" + instanceId.toString().substring(0, 8))
+                        .start(() -> runDirect(request));
+                return true;
+            } catch (RuntimeException | Error startFailure) {
+                accessPermit.release();
+                request.failBeforeRun(startFailure);
+                return true;
+            }
+        }
+
+        private void runDirect(Request request) {
+            try {
+                if (!request.begin()) return;
+                if (request.reply.isDone()) {
+                    request.finish();
+                    return;
                 }
                 Throwable failure = terminalFailure;
                 if (failure != null) {
-                    reply.completeExceptionally(failure);
-                    return true;
+                    request.reply.completeExceptionally(failure);
+                    request.finish();
+                    return;
                 }
-                if (expired(deadlineNanos)) {
-                    reply.completeExceptionally(
+                if (expired(request.deadlineNanos)) {
+                    request.reply.completeExceptionally(
                             new TimeoutException("singleton call wall-time budget expired before direct execution for "
                                     + diagnosticId));
-                    return true;
+                    request.finish();
+                    return;
                 }
 
                 String previousCell = CURRENT_CELL.get();
                 Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
                 Request previousRequest = CURRENT_REQUEST.get();
                 CURRENT_CELL.set(key);
-                CURRENT_DEADLINE_NANOS.set(deadlineNanos);
-                CURRENT_REQUEST.remove();
+                CURRENT_DEADLINE_NANOS.set(request.deadlineNanos);
+                CURRENT_REQUEST.set(request);
                 try {
                     checkExecutionBudget();
                     @SuppressWarnings("unchecked")
                     List<Object> ownedArguments =
-                            (List<Object>) ActorRuntime.materializeFrozen(frozenArguments);
+                            (List<Object>) ActorRuntime.materializeFrozen(request.arguments);
                     checkExecutionBudget();
-                    Object result = operation.apply(state, ownedArguments);
+                    Object result = request.operation.apply(state, ownedArguments);
                     checkExecutionBudget();
-                    if (!reply.isDone()) reply.complete(ActorRuntime.freeze(result));
+                    if (!request.reply.isDone()) {
+                        request.reply.complete(ActorRuntime.freeze(result));
+                    }
                 } catch (VirtualMachineError fatal) {
-                    reply.completeExceptionally(fatal);
+                    request.reply.completeExceptionally(fatal);
                     failTerminal(fatal);
                 } catch (Throwable operationFailure) {
-                    reply.completeExceptionally(operationFailure);
+                    request.reply.completeExceptionally(operationFailure);
                 } finally {
+                    request.finish();
                     restoreThreadLocal(CURRENT_CELL, previousCell);
                     restoreThreadLocal(CURRENT_DEADLINE_NANOS, previousDeadline);
                     restoreThreadLocal(CURRENT_REQUEST, previousRequest);
                 }
-                return true;
             } finally {
-                accessLock.unlock();
+                accessPermit.release();
             }
         }
 
@@ -588,7 +609,7 @@ public final class ProcessSingletonRegistry {
                         continue;
                     }
 
-                    accessLock.lock();
+                    accessPermit.acquireUninterruptibly();
                     try {
                         String previousCell = CURRENT_CELL.get();
                         Long previousDeadline = CURRENT_DEADLINE_NANOS.get();
@@ -618,7 +639,7 @@ public final class ProcessSingletonRegistry {
                             restoreThreadLocal(CURRENT_REQUEST, previousRequest);
                         }
                     } finally {
-                        accessLock.unlock();
+                        accessPermit.release();
                     }
                 } finally {
                     mailboxTurnPending.set(false);
