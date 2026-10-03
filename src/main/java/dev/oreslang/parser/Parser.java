@@ -141,6 +141,9 @@ public final class Parser {
         Modifiers modifiers = parseModifiers();
 
         if (match(DEFINE)) {
+            if (modifiers.gpu) {
+                throw error(previous(), "'gpu' may only modify fnc or routine declarations");
+            }
             if (modifiers.shared) {
                 throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
             }
@@ -162,6 +165,12 @@ public final class Parser {
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+        if (modifiers.gpu && (check(ACTOR) || check(ISOACTOR))) {
+            throw error(peek(), "'gpu' cannot modify actor or isoactor declarations");
+        }
+        if (modifiers.gpu && !check(FNC) && !check(ROUTINE)) {
+            throw error(peek(), "'gpu' may only modify fnc or routine declarations");
+        }
         if (match(ACTOR, ISOACTOR)) {
             Token actorToken = previous();
             boolean isolated = actorToken.type() == ISOACTOR;
@@ -205,7 +214,7 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics, params,
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.gpu, modifiers.nonLexical, actorKind, generics, params,
                 returnType, annotations, body);
     }
 
@@ -221,6 +230,7 @@ public final class Parser {
         while (!check(END) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (mods.gpu) throw error(peek(), "'gpu' is currently valid only on top-level/module fnc or routine declarations");
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
@@ -253,6 +263,7 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
+            if (mods.gpu) throw error(peek(), "'gpu' cannot modify actor members");
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
             if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
 
@@ -290,7 +301,8 @@ public final class Parser {
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
             parseAnnotations();
-            parseModifiers();
+            Modifiers memberModifiers = parseModifiers();
+            if (memberModifiers.gpu) throw error(peek(), "'gpu' is not valid on interface members; GPU execution is an implementation effect");
 
             if (match(FNC)) {
                 String memberName = consumeCallableName("expected interface function name");
@@ -433,12 +445,14 @@ public final class Parser {
     private Modifiers parseModifiers() {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
+        boolean gpu = false;
         boolean nonLexical = false;
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean shared = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
+        boolean gpuSeen = false;
         boolean nonLexicalSeen = false;
         boolean staticSeen = false;
         boolean abstractSeen = false;
@@ -457,6 +471,10 @@ public final class Parser {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
                 async = true;
+            } else if (match(GPU)) {
+                if (gpuSeen) throw error(previous(), "duplicate 'gpu' modifier");
+                gpuSeen = true;
+                gpu = true;
             } else if (match(NLEX)) {
                 if (nonLexicalSeen) throw error(previous(), "duplicate 'nlex' modifier");
                 nonLexicalSeen = true;
@@ -477,7 +495,7 @@ public final class Parser {
                 break;
             }
         }
-        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared);
+        return new Modifiers(visibility, async, gpu, nonLexical, isStatic, isAbstract, shared);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -1401,5 +1419,5 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
+    private record Modifiers(Ast.Visibility visibility, boolean async, boolean gpu, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
 }
