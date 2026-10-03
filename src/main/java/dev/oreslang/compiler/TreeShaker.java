@@ -394,12 +394,16 @@ public final class TreeShaker {
             }
             if (statement instanceof Ast.ForStmt loop) {
                 LinkedHashMap<String, Object> loopLocals = new LinkedHashMap<>(locals);
-                List<Ast.Stmt> initializers = rewriteStatement(loop.initializer(), module, loopLocals);
-                if (initializers.size() != 1) {
-                    throw new IllegalStateException("for initializer cannot expand during tree shaking");
+                Ast.Stmt initializer = null;
+                if (loop.initializer() != null) {
+                    List<Ast.Stmt> initializers = rewriteStatement(loop.initializer(), module, loopLocals);
+                    if (initializers.size() != 1) {
+                        throw new IllegalStateException("for initializer cannot expand during tree shaking");
+                    }
+                    initializer = initializers.getFirst();
                 }
                 return List.of(new Ast.ForStmt(
-                        initializers.getFirst(),
+                        initializer,
                         rewriteExpression(loop.condition(), module, loopLocals),
                         rewriteExpression(loop.update(), module, loopLocals),
                         rewriteStatements(loop.body(), module, new LinkedHashMap<>(loopLocals))));
@@ -690,7 +694,9 @@ public final class TreeShaker {
                     scanStatements(module, loop.body(), bodyLocals);
                 } else if (statement instanceof Ast.ForStmt loop) {
                     LinkedHashSet<String> loopLocals = new LinkedHashSet<>(locals);
-                    scanStatements(module, List.of(loop.initializer()), loopLocals);
+                    if (loop.initializer() != null) {
+                        scanStatements(module, List.of(loop.initializer()), loopLocals);
+                    }
                     scanExpression(module, loop.condition(), loopLocals);
                     scanExpression(module, loop.update(), loopLocals);
                     scanStatements(module, loop.body(), new LinkedHashSet<>(loopLocals));
