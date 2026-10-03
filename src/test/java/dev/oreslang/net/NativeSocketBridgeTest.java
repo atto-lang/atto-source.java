@@ -29,7 +29,7 @@ final class NativeSocketBridgeTest {
             NativeSocketHandle accepted = null;
             try {
                 accepted = NativeSocketBridge.accept(listener);
-                NativeSocketBridge.setSoTimeout(accepted, 3_000);
+                NativeSocketBridge.setActorIoTimeout(accepted, 3_000);
 
                 byte[] request = new byte[4];
                 int offset = 0;
@@ -58,7 +58,8 @@ final class NativeSocketBridgeTest {
 
         NativeSocketHandle client = NativeSocketBridge.connectHandle("127.0.0.1", port, 3_000);
         try {
-            NativeSocketBridge.setSoTimeout(client, 3_000);
+            NativeSocketBridge.setActorIoTimeout(client, 3_000);
+            assertEquals(3_000, NativeSocketBridge.getSoTimeout(client));
             byte[] request = "ping".getBytes(StandardCharsets.UTF_8);
             assertEquals(4, NativeSocketBridge.write(client, request, 0, request.length));
 
