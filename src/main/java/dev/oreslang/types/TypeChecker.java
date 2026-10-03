@@ -5,6 +5,7 @@ import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
 import dev.oreslang.types.Types.GpuArrayType;
+import dev.oreslang.types.Types.GpuMatrixType;
 import dev.oreslang.types.Types.GpuStreamType;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
@@ -29,7 +30,7 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
-    private static final Set<String> CORE_GPU_NAMES = Set.of("GpuArray", "GpuStream");
+    private static final Set<String> CORE_GPU_NAMES = Set.of("GpuArray", "GpuMatrix", "GpuStream");
 
     private int gpuCallableDepth;
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
@@ -476,6 +477,9 @@ public final class TypeChecker {
                 else if (receiver instanceof GpuArrayType array) {
                     if (!inGpuCallable()) throw new IllegalArgumentException("GpuArray indexing/mutation is GPU-only; use copy_to_cpu() for host access");
                     targetType = array.element();
+                } else if (receiver instanceof GpuMatrixType matrix) {
+                    if (!inGpuCallable()) throw new IllegalArgumentException("GpuMatrix flat indexing/mutation is GPU-only; use copy_to_cpu() for host access");
+                    targetType = matrix.element();
                 } else if (receiver instanceof GpuStreamType) {
                     throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
                 } else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
@@ -518,6 +522,17 @@ public final class TypeChecker {
                         throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
                     }
                     yield Primitive.BOOL;
+                }
+                case "@" -> {
+                    if (!inGpuCallable()) {
+                        throw new IllegalArgumentException("GpuMatrix @ is GPU-only; execute it inside a gpu fnc or gpu { } block");
+                    }
+                    if (!(left instanceof GpuMatrixType a) || !(right instanceof GpuMatrixType b)) {
+                        throw new IllegalArgumentException("@ requires two GpuMatrix<T> operands inside GPU code");
+                    }
+                    requireAssignable(a.element(), b.element(), "GpuMatrix @ right element");
+                    requireAssignable(b.element(), a.element(), "GpuMatrix @ left element");
+                    yield new GpuMatrixType(a.element());
                 }
                 case "+" -> isStringLike(left) && isStringLike(right) ? Primitive.STRING : numericJoin(left, right, "+");
                 case "-", "*", "/", "%" -> numericJoin(left, right, binary.operator());
@@ -673,6 +688,10 @@ public final class TypeChecker {
                 if (!inGpuCallable()) throw new IllegalArgumentException("GpuArray indexing is GPU-only; use copy_to_cpu() for host access");
                 return array.element();
             }
+            if (receiver instanceof GpuMatrixType matrix) {
+                if (!inGpuCallable()) throw new IllegalArgumentException("GpuMatrix flat indexing is GPU-only; use copy_to_cpu() for host access");
+                return matrix.element();
+            }
             if (receiver instanceof GpuStreamType) throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
             if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
             throw new IllegalArgumentException("indexing requires an array/list, GpuArray, or tuple");
@@ -805,6 +824,22 @@ public final class TypeChecker {
             return new GpuArrayType(list.element());
         }
 
+        if (namespace.equals("GpuMatrix")) {
+            if (!member.equals("from_cpu")) {
+                throw new IllegalArgumentException("unknown GpuMatrix core function '" + member + "'");
+            }
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuMatrix.from_cpu() is a host-to-GPU transfer and cannot run inside a gpu callable");
+            }
+            if (arguments.size() != 1) throw new IllegalArgumentException("GpuMatrix.from_cpu() expects exactly one rectangular Array<Array<T>>/List<List<T>>");
+            Type source = deref(typeOf(arguments.getFirst(), env, generics, self));
+            if (!(source instanceof ListType rows) || !(deref(rows.element()) instanceof ListType row)) {
+                throw new IllegalArgumentException("GpuMatrix.from_cpu() requires a rectangular nested Array/List, got " + source);
+            }
+            requireGpuResidentElementType(row.element(), "GpuMatrix.from_cpu() element");
+            return new GpuMatrixType(row.element());
+        }
+
         if (!member.equals("from_array")) {
             throw new IllegalArgumentException("unknown GpuStream core function '" + member + "'");
         }
@@ -833,6 +868,17 @@ public final class TypeChecker {
                 default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
             };
         }
+        if (receiver instanceof GpuMatrixType matrix) {
+            if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuMatrix." + member + "() takes no arguments");
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException("GpuMatrix." + member + "() is host orchestration; gpu callables consume GpuMatrix directly");
+            }
+            return switch (member) {
+                case "copy_to_cpu" -> new ListType(new ListType(matrix.element()));
+                case "rows", "cols", "length" -> Primitive.INT;
+                default -> throw new IllegalArgumentException("unknown GpuMatrix member '" + member + "'");
+            };
+        }
         if (receiver instanceof GpuStreamType stream) {
             if (!arguments.isEmpty()) throw new IllegalArgumentException("GpuStream." + member + "() takes no arguments");
             if (inGpuCallable()) {
@@ -855,6 +901,9 @@ public final class TypeChecker {
         if (namespace.equals("GpuArray") && member.equals("from_cpu")) {
             return new Function(List.of(new ListType(Unknown.INSTANCE)), new GpuArrayType(Unknown.INSTANCE));
         }
+        if (namespace.equals("GpuMatrix") && member.equals("from_cpu")) {
+            return new Function(List.of(new ListType(new ListType(Unknown.INSTANCE))), new GpuMatrixType(Unknown.INSTANCE));
+        }
         if (namespace.equals("GpuStream") && member.equals("from_array")) {
             return new Function(List.of(new GpuArrayType(Unknown.INSTANCE)), new GpuStreamType(Unknown.INSTANCE));
         }
@@ -871,6 +920,16 @@ public final class TypeChecker {
                 case "copy_to_cpu" -> new Function(List.of(), new ListType(array.element()));
                 case "length" -> new Function(List.of(), Primitive.INT);
                 default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
+            };
+        }
+        if (receiver instanceof GpuMatrixType matrix) {
+            if (inGpuCallable()) {
+                throw new IllegalArgumentException(member + " is a host orchestration member and cannot be extracted inside a gpu callable");
+            }
+            return switch (member) {
+                case "copy_to_cpu" -> new Function(List.of(), new ListType(new ListType(matrix.element())));
+                case "rows", "cols", "length" -> new Function(List.of(), Primitive.INT);
+                default -> throw new IllegalArgumentException("unknown GpuMatrix member '" + member + "'");
             };
         }
         if (receiver instanceof GpuStreamType stream) {
@@ -1463,6 +1522,12 @@ public final class TypeChecker {
                 Type element = ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self);
                 requireGpuResidentElementType(element, "GpuArray element");
                 yield new GpuArrayType(element);
+            }
+            case "GpuMatrix" -> {
+                if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException("GpuMatrix requires exactly one type argument");
+                Type element = ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self);
+                requireGpuResidentElementType(element, "GpuMatrix element");
+                yield new GpuMatrixType(element);
             }
             case "GpuStream" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException("GpuStream requires exactly one type argument");
