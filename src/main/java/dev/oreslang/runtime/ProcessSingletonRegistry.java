@@ -641,7 +641,12 @@ public final class ProcessSingletonRegistry {
 
         private void failTerminal(Throwable failure) {
             terminalFailure = Objects.requireNonNull(failure);
-            if (collectionRequested.get()) collected.completeExceptionally(failure);
+            if (collectionRequested.get()) {
+                synchronized (REGISTRY_LOCK) {
+                    CELLS.remove(key, this);
+                }
+                collected.completeExceptionally(failure);
+            }
             Request queued;
             while ((queued = mailbox.poll()) != null) {
                 releaseQueuedSlot();
