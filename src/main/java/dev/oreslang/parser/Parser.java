@@ -1165,6 +1165,9 @@ public final class Parser {
                 List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
+            } else if (match(DOUBLE_COLON)) {
+                String member = consumeMemberName();
+                expr = new Ast.StaticMemberExpr(expr, member);
             } else if (match(DOT)) {
                 String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
