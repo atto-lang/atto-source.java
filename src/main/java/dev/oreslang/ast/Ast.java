@@ -38,6 +38,7 @@ public final class Ast {
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED }
+    public enum ActorMethodKind { NONE, SERIAL, PARALLEL, EXCLUSIVE }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -223,6 +224,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            ActorMethodKind actorMethodKind,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
             List<Param> parameters,
@@ -230,12 +232,30 @@ public final class Ast {
             List<Annotation> annotations,
             List<Stmt> body) {
         public MethodDecl {
+            actorMethodKind = actorMethodKind == null ? ActorMethodKind.NONE : actorMethodKind;
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+        public MethodDecl(
+                String name,
+                Visibility visibility,
+                boolean isStatic,
+                boolean isAbstract,
+                boolean async,
+                TypeRef explicitReceiverType,
+                List<String> genericParameters,
+                List<Param> parameters,
+                TypeRef returnType,
+                List<Annotation> annotations,
+                List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, ActorMethodKind.NONE,
+                    explicitReceiverType, genericParameters, parameters, returnType, annotations, body);
+        }
+
         public int arity() { return parameters.size(); }
+        public boolean isActorEntry() { return actorMethodKind != ActorMethodKind.NONE; }
     }
 
     public record TypeAliasDecl(String name, List<String> genericParameters, TypeRef target) implements Decl {
@@ -305,7 +325,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, SpawnExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -343,6 +363,7 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+    public record SpawnExpr(Expr expression) implements Expr { }
 
     public record ListExpr(List<Expr> elements) implements Expr {
         public ListExpr { elements = List.copyOf(elements); }
