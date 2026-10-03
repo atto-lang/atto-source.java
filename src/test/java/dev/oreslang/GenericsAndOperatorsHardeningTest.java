@@ -525,7 +525,7 @@ final class GenericsAndOperatorsHardeningTest {
     void zeroArgumentLambdaStillUsesDoublePipeAndRuntimeExecutesBitwiseOps() throws Exception {
         String program = """
                 define module app
-                  fnc callback(): (():int) {
+                  fnc callback(): (() => int) {
                     return || -> {
                       return 7;
                     };
