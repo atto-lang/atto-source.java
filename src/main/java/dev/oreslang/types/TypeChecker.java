@@ -6,6 +6,8 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
 import dev.oreslang.types.Types.ClassNamespace;
+import dev.oreslang.types.Types.GpuArrayType;
+import dev.oreslang.types.Types.GpuStreamType;
 import dev.oreslang.types.Types.Generic;
 import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
@@ -29,6 +31,8 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
+    private static final Set<String> CORE_GPU_NAMES = Set.of("GpuArray", "GpuStream");
+
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
@@ -49,6 +53,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    private int gpuCallableDepth;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -56,6 +61,7 @@ public final class TypeChecker {
         checker.collect(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
+        GpuSafetyChecker.check(program);
         OwnershipChecker.check(program);
         return program;
     }
@@ -64,7 +70,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
-                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future", "GpuArray", "GpuStream",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
@@ -95,8 +101,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            rejectCoreGpuName(module.name(), "module");
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
+                rejectCoreGpuDeclName(decl);
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
@@ -110,6 +118,20 @@ public final class TypeChecker {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private static void rejectCoreGpuDeclName(Ast.Decl decl) {
+        if (decl instanceof Ast.FunctionDecl fn) rejectCoreGpuName(fn.name(), "callable");
+        else if (decl instanceof Ast.ClassDecl klass) rejectCoreGpuName(klass.name(), "class");
+        else if (decl instanceof Ast.InterfaceDecl iface) rejectCoreGpuName(iface.name(), "interface");
+        else if (decl instanceof Ast.TypeAliasDecl alias) rejectCoreGpuName(alias.name(), "type alias");
+        else if (decl instanceof Ast.FieldDecl field) rejectCoreGpuName(field.name(), "module binding");
+    }
+
+    private static void rejectCoreGpuName(String name, String kind) {
+        if (CORE_GPU_NAMES.contains(name)) {
+            throw new IllegalArgumentException(kind + " name '" + name + "' is reserved by the Oreslang GPU core prelude");
         }
     }
 
@@ -215,6 +237,7 @@ public final class TypeChecker {
             if (fn.kind() != Ast.CallableKind.FNC
                     || fn.visibility() != Ast.Visibility.PRIVATE
                     || fn.async()
+                    || fn.gpu()
                     || fn.nonLexical()
                     || fn.actorKind() != Ast.ActorKind.NONE
                     || !fn.genericParameters().isEmpty()
@@ -231,6 +254,10 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     "program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
         }
+        if (fn.name().equals("main") && fn.gpu()) {
+            throw new IllegalArgumentException(
+                    "program entrypoint 'main' cannot be gpu; main is host orchestration and may dispatch gpu callables explicitly");
+        }
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
@@ -241,6 +268,12 @@ public final class TypeChecker {
                         fn.actorKind(),
                         false,
                         "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
+            }
+            if (fn.gpu()) {
+                requireGpuTransferType(
+                        parameterType,
+                        false,
+                        "parameter '" + param.name() + "' of gpu " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "'");
             }
             env.define(
                     param.name(),
@@ -255,11 +288,19 @@ public final class TypeChecker {
                     true,
                     "return type of actor callable '" + module + "." + fn.name() + "'");
         }
+        if (fn.gpu()) {
+            requireGpuTransferType(
+                    returns,
+                    true,
+                    "return type of gpu " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "'");
+        }
         Ast.ActorKind previousActorKind = currentActorKind;
         currentActorKind = fn.actorKind();
+        if (fn.gpu()) gpuCallableDepth++;
         try {
             checkBlock(fn.body(), env, generics, returns, null);
         } finally {
+            if (fn.gpu()) gpuCallableDepth--;
             currentActorKind = previousActorKind;
         }
         if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
@@ -268,6 +309,68 @@ public final class TypeChecker {
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
             throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
         }
+    }
+
+    private void requireGpuTransferType(Type type, boolean allowVoid, String where) {
+        if (type == Unknown.INSTANCE || type instanceof Generic) {
+            // Generic GPU signatures are guarded again at the runtime transfer boundary.
+            return;
+        }
+        if (type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.NULL) {
+                throw new IllegalArgumentException(where + " cannot be standalone null; use Option<T>");
+            }
+            if (primitive == Primitive.VOID && !allowVoid) {
+                throw new IllegalArgumentException(where + " cannot be void");
+            }
+            return;
+        }
+        if (type instanceof ListType list) {
+            requireGpuTransferType(list.element(), false, where + " element");
+            return;
+        }
+        if (type instanceof GpuArrayType array) {
+            requireGpuTransferType(array.element(), false, where + " element");
+            return;
+        }
+        if (type instanceof GpuStreamType stream) {
+            requireGpuTransferType(stream.element(), false, where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                requireGpuTransferType(tuple.elements().get(i), false, where + " tuple element " + i);
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                requireGpuTransferType(option, false, where + " union member");
+            }
+            return;
+        }
+        if (type instanceof Named named && named.name().equals("Option") && named.arguments().size() == 1) {
+            Type element = named.arguments().getFirst();
+            if (element != Primitive.NULL) requireGpuTransferType(element, false, where + " Option value");
+            return;
+        }
+        if (type instanceof Borrow) {
+            throw new IllegalArgumentException(where + " cannot borrow actor-owned memory across the GPU boundary");
+        }
+        if (type instanceof Function) {
+            throw new IllegalArgumentException(where + " cannot transfer a callable across the GPU boundary");
+        }
+        if (type instanceof Record) {
+            throw new IllegalArgumentException(where + " cannot transfer a structural/class object across the GPU boundary");
+        }
+        if (type instanceof ClassNamespace) {
+            throw new IllegalArgumentException(where + " cannot transfer a class namespace across the GPU boundary");
+        }
+        if (type instanceof Named named) {
+            throw new IllegalArgumentException(where + " uses non-transferable named type '" + named.name() + "'");
+        }
+        throw new IllegalArgumentException(where + " is not GPU-transfer-safe: " + type);
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
