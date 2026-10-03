@@ -21,8 +21,29 @@ public final class Ast {
             List<String> names,
             boolean wildcard,
             String namespace,
-            String path) {
-        public ImportDecl { names = List.copyOf(names); }
+            String path,
+            java.util.Map<String, String> aliases) {
+        public ImportDecl {
+            names = List.copyOf(names);
+            aliases = java.util.Map.copyOf(aliases);
+        }
+
+        public ImportDecl(ImportKind kind, List<String> names, boolean wildcard, String namespace, String path) {
+            this(kind, names, wildcard, namespace, path, java.util.Map.of());
+        }
+
+        /** Local source name for an imported declaration, including an optional Kotlin-style alias. */
+        public String localName(String importedName) {
+            return aliases.getOrDefault(importedName, importedName);
+        }
+
+        /** Original exported name selected by a local source name. */
+        public String importedName(String localName) {
+            for (String importedName : names) {
+                if (localName(importedName).equals(localName)) return importedName;
+            }
+            return null;
+        }
     }
 
     public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
