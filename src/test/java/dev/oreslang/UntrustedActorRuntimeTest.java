@@ -580,6 +580,7 @@ final class UntrustedActorRuntimeTest {
         private final AtomicInteger bytes = new AtomicInteger();
         private final AtomicBoolean completed = new AtomicBoolean();
         private final AtomicBoolean aborted = new AtomicBoolean();
+        private final AtomicBoolean closed = new AtomicBoolean();
 
         @Override
         public int write(ByteBuffer source) {
@@ -597,6 +598,12 @@ final class UntrustedActorRuntimeTest {
         @Override
         public void abort(Throwable cause) {
             aborted.set(true);
+        }
+
+        @Override
+        public void closeTransport(Throwable cause) {
+            closed.set(true);
+            if (cause != null) abort(cause);
         }
     }
 }
