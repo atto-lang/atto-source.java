@@ -45,6 +45,29 @@ The supervisor parses/adopts the connection, creates a transport lease, then
 atomically transfers it to the target actor. Request/response bytes can move
 directly into actor-owned native memory without mailbox copies.
 
+## Mailbox streaming fallback
+
+Direct ownership handoff is the default for raw TCP/HTTP/1.1 request streams
+because it avoids body copies and preserves backpressure at the kernel/socket
+boundary.
+
+Mailbox streaming is the fallback when ownership cannot move. The supervisor
+keeps the transport and sends **data-only** chunks to the actor. The standard
+fallback must use:
+
+- bounded chunk size,
+- bounded mailbox depth,
+- explicit credit/ack flow control so the supervisor cannot outrun the actor,
+- immutable/copy-owned payloads only,
+- no socket/fd/native handle in any mailbox message,
+- cancellation propagated both directions,
+- one terminal EOF/error message,
+- the same request/response byte ceilings as direct handoff.
+
+For an untrusted actor, mailbox-return data remains much smaller than direct
+HTTP streaming data; large responses should use the owner-bound response
+transport rather than serializing bytes back through the supervisor.
+
 ## Untrusted actors
 
 Untrusted actors receive only the narrow request/response capability. They do
