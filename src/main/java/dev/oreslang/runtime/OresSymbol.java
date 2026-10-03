@@ -146,16 +146,15 @@ public final class OresSymbol {
         }
     }
 
-    /** Built-in protocol identity such as Symbol.iterator. */
+    /** Built-in protocol identity. Currently Symbol.iterator is defined. */
     public static OresSymbol wellKnown(String name, IsolatePolicy policy) {
         requireTrusted(policy, "well-known Symbol");
-        String validated = validateKey(name);
-        if (validated.length() > MAX_LITERAL_NAME_LENGTH || !IDENTIFIER.matcher(validated).matches()) {
-            throw new IllegalArgumentException(
-                    "well-known Symbol name must be an identifier of at most "
-                            + MAX_LITERAL_NAME_LENGTH + " characters");
-        }
-        return internProcess("Symbol." + validated, true);
+        String validated = validateLiteralName(name);
+        return switch (validated) {
+            case "iterator" -> internProcess("Symbol.iterator", true);
+            default -> throw new IllegalArgumentException(
+                    "unknown well-known Symbol." + validated);
+        };
     }
 
     private static OresSymbol internProcess(String key, boolean compilerLiteral) {
@@ -462,8 +461,7 @@ public final class OresSymbol {
     @Override
     public String toString() {
         return switch (scope) {
-            case PROCESS -> key.startsWith("Symbol.")
-                    && IDENTIFIER.matcher(key.substring("Symbol.".length())).matches()
+            case PROCESS -> key.equals("Symbol.iterator")
                     ? key
                     : IDENTIFIER.matcher(key).matches()
                             ? ":" + key
