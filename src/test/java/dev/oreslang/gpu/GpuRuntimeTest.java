@@ -76,6 +76,74 @@ final class GpuRuntimeTest {
     }
 
     @Test
+    void matrixTransfersAreRectangularRowMajorAndDetached() {
+        GpuRuntime.installBackend(new TransferBackend("matrix-transfer"));
+        GpuRuntime runtime = new GpuRuntime();
+
+        GpuRuntime.MatrixHandle matrix = runtime.uploadMatrix(
+                "f64",
+                List.of(List.of(1.0, 2.0, 3.0), List.of(4.0, 5.0, 6.0)));
+
+        assertEquals(2L, matrix.rows());
+        assertEquals(3L, matrix.cols());
+        assertEquals(6L, matrix.length());
+        assertEquals("f64", matrix.elementAbiType());
+        assertEquals(
+                List.of(List.of(1.0, 2.0, 3.0), List.of(4.0, 5.0, 6.0)),
+                runtime.downloadMatrix(matrix));
+
+        @SuppressWarnings("unchecked")
+        List<List<Object>> host = (List<List<Object>>) (List<?>) runtime.downloadMatrix(matrix);
+        host.getFirst().set(0, 99.0);
+        assertEquals(1.0, ((List<?>) runtime.downloadMatrix(matrix).getFirst()).getFirst());
+    }
+
+    @Test
+    void matrixTransfersRejectJaggedAndZeroDimensionShapes() {
+        GpuRuntime.installBackend(new TransferBackend("matrix-shape"));
+        GpuRuntime runtime = new GpuRuntime();
+
+        GpuRuntime.GpuTransferException jagged = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> runtime.uploadMatrix(
+                        "f32",
+                        List.of(List.of(1.0), List.of(2.0, 3.0))));
+        assertTrue(jagged.getMessage().contains("rectangular"));
+
+        GpuRuntime.GpuTransferException empty = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> runtime.uploadMatrix("f32", List.of()));
+        assertTrue(empty.getMessage().contains("dimensions must be positive"));
+
+        GpuRuntime.GpuTransferException zeroColumns = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> runtime.uploadMatrix("f32", List.of(List.of())));
+        assertTrue(zeroColumns.getMessage().contains("dimensions must be positive"));
+    }
+
+    @Test
+    void complexMatrixTransfersPreserveComplexAbi() {
+        GpuRuntime.installBackend(new TransferBackend("matrix-complex"));
+        GpuRuntime runtime = new GpuRuntime();
+
+        GpuRuntime.MatrixHandle matrix = runtime.uploadMatrix(
+                "complex64",
+                List.of(
+                        List.of(
+                                new GpuRuntime.ComplexValue(1.0, 2.0),
+                                new GpuRuntime.ComplexValue(3.0, -4.0))));
+
+        assertEquals("complex64", matrix.elementAbiType());
+        assertEquals(1L, matrix.rows());
+        assertEquals(2L, matrix.cols());
+        assertEquals(
+                List.of(List.of(
+                        new GpuRuntime.ComplexValue(1.0, 2.0),
+                        new GpuRuntime.ComplexValue(3.0, -4.0))),
+                runtime.downloadMatrix(matrix));
+    }
+
+    @Test
     void streamCollectPreservesBackendAndConcreteCardinality() {
         GpuRuntime.installBackend(new TransferBackend("stream-test"));
         GpuRuntime runtime = new GpuRuntime();
