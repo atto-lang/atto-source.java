@@ -93,7 +93,7 @@ public final class CapabilityChecker {
     private static void requireTrustedSymbolPolicy(IsolatePolicy policy) {
         if (policy.adversarial()) {
             throw new SecurityException(
-                    "process-wide symbols are unavailable to adversarial/untrusted isolates");
+                    "trusted symbols are unavailable to adversarial/untrusted isolates");
         }
     }
 
