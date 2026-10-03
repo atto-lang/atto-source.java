@@ -890,7 +890,7 @@ type Predicate = typeof fnc(bool value) => bool;
 The shorter inline function type is also valid:
 
 ```ores
-fnc sink(): ((bool foo):void) {
+fnc sink(): ((bool foo) => void) {
   return |foo| -> {
     stdio.println(foo);
     return;
@@ -909,7 +909,7 @@ fnc find(bool found): F {
   };
 }
 
-fnc callback(): ((bool foo):void) {
+fnc callback(): ((bool foo) => void) {
   return |foo| -> {
     stdio.println(foo);
     return;
@@ -929,7 +929,7 @@ This means higher-order functions and functors do not introduce a second return 
 Closures are lexical. A lambda resolves free variables from the scope where the lambda is created, not from the scope where it is called.
 
 ```ores
-fnc makeCounter(): (():int) {
+fnc makeCounter(): (() => int) {
   let int count = 0;
 
   return || -> {
