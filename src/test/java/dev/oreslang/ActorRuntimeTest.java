@@ -2,12 +2,14 @@ package dev.oreslang;
 
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.OresMutex;
 import org.junit.jupiter.api.Test;
 
 import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -1365,6 +1367,81 @@ final class ActorRuntimeTest {
             assertTrue(exclusiveEntered.await(2, TimeUnit.SECONDS));
             assertFalse(exclusiveOverlapped.get());
             runtime.stop(ref);
+        }
+    }
+
+    @Test
+    void persistentSharedActorStateIsAccountedAndReleased() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy policy = new IsolatePolicy(
+                base.capabilities(),
+                16L * 1024 * 1024,
+                base.maxMailboxMessages(),
+                Duration.ofSeconds(30));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            CountDownLatch accounted = new CountDownLatch(1);
+            String retained = "x".repeat(512 * 1024);
+
+            var ref = runtime.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        OresMutex.SharedState state = () -> List.of(retained);
+                        context.runtime().reconcileCurrentSharedActorState(state);
+                        accounted.countDown();
+                    });
+
+            ref.send("account");
+            assertTrue(accounted.await(2, TimeUnit.SECONDS));
+            assertTrue(runtime.sharedMemoryBytes() > 0,
+                    "persistent shared actor state must consume runtime memory quota");
+
+            ref.stop();
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "actor termination must release persistent shared actor state accounting");
+        }
+    }
+
+    @Test
+    void persistentSharedActorStateOverLimitFailsActor() throws Exception {
+        IsolatePolicy base = IsolatePolicy.developer();
+        IsolatePolicy policy = new IsolatePolicy(
+                base.capabilities(),
+                16L * 1024 * 1024,
+                base.maxMailboxMessages(),
+                Duration.ofSeconds(30));
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            String tooLarge = "x".repeat(9 * 1024 * 1024);
+
+            var ref = runtime.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        OresMutex.SharedState state = () -> List.of(tooLarge);
+                        context.runtime().reconcileCurrentSharedActorState(state);
+                    });
+
+            ref.send("overflow");
+            assertTrue(ref.awaitTermination(3, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    ActorRuntime.SharedActorMemoryLimitException.class,
+                    ref.failure().orElseThrow());
+            assertEquals(0L, runtime.sharedMemoryBytes(),
+                    "failed actor teardown must release any persistent shared-state reservation");
+        }
+    }
+
+    @Test
+    void actorTerminationCompletionCarriesFailure() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> {
+                        throw new IllegalStateException("boom");
+                    });
+
+            ref.send("fail");
+            Throwable failure = ref.termination().toCompletableFuture().get(2, TimeUnit.SECONDS);
+            assertInstanceOf(IllegalStateException.class, failure);
+            assertEquals("boom", failure.getMessage());
         }
     }
 
