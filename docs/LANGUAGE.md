@@ -93,21 +93,32 @@ val bool collected = await process.collect_singleton(counter);
 
 ## Symbols
 
-`Symbol` is an immutable identity value for protocol tags, dispatch keys, and other identity-bearing labels. It is semantically a value/handle, not permission to share a mutable heap pointer.
+`Symbol` is an immutable identity primitive for protocol tags, dispatch keys, and other identity-bearing labels. A Symbol is a token; it is never permission to share a mutable heap pointer.
+
+Oreslang has three explicit symbol domains:
 
 ```ores
-val Symbol ready = :ready;
-val Symbol stable = new Symbol("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+val Symbol ready = :ready;                         // PROCESS
+val Symbol process = Symbol.process("ready");     // PROCESS
+val Symbol stable =
+    Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2"); // STABLE
+val Symbol local = Symbol.local("request-tag");   // LOCAL, actor only
 ```
 
-Within the trusted process domain, equal live keys are canonical across the main process and trusted actors/threads. The runtime assigns a monotonic process-local id and never reuses an id; serialization uses the Symbol key rather than that process-local id. Ordinary symbols live in a weak interner, so automatic GC may reclaim a symbol after the last strong reference disappears.
+`:ready` is syntax sugar for a trusted process Symbol. `Symbol.process(key)` is strongly canonical for the lifetime of the trusted OS-process runtime: the same key resolves to the same process identity across main execution, shared actors, and trusted isolated actors that participate in that process domain. Process symbols are deliberately bounded; dynamic unbounded input must not be blindly interned into this table.
 
-A universal/pinned symbol belongs in a singleton module:
+`Symbol.local(key)` belongs to the currently executing actor. It is canonical only inside that actor, cannot be serialized or sent to another actor, and its local interning table disappears with the actor cell. This is the preferred Symbol domain for dynamic labels that do not require process-wide identity.
+
+`Symbol.stable(uuid)` uses a canonical UUID as its persistent identity. Stable symbols can be serialized and reconstructed without depending on a process-local numeric handle. For compatibility, `new Symbol("uuid")` is the stable-UUID constructor; new code should prefer `Symbol.stable(...)` because the lifetime domain is explicit.
+
+Process-local numeric handles are monotonically allocated and are never the wire representation. Wire transport carries the Symbol scope plus canonical key. A LOCAL Symbol has no wire form. A STABLE Symbol compares by its stable UUID identity; PROCESS and LOCAL identities remain scoped to their owning runtime domain.
+
+A universal binding can live in singleton state:
 
 ```ores
 define singleton module UniversalSymbols as
   pub val Symbol request =
-      new Symbol("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+      Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
 end
 
 define module app as
@@ -117,9 +128,9 @@ define module app as
 end
 ```
 
-The singleton state cell is the strong semantic GC root. Ordinary GC does not destroy it. Trusted code can intentionally release that root with `await process.collect_singleton(UniversalSymbols)`; collection closes admission, drains admitted work, removes the singleton root, and only then makes the Symbol eligible for ordinary GC once no other references remain. This deliberately avoids a force-free Symbol API and therefore avoids use-after-free.
+The singleton state cell pins the **binding and singleton state**, not the existence of a process/stable Symbol identity. Ordinary GC never destroys a live singleton. `await process.collect_singleton(UniversalSymbols)` closes admission, drains admitted work, performs cleanup, and removes that singleton root; it does not erase or reuse the underlying PROCESS/STABLE Symbol identity. A later singleton instance may bind the same canonical Symbol again. LOCAL symbols are rejected from process-singleton state.
 
-Untrusted/adversarial actors and Graal isolates never gain the trusted process Symbol table. They cannot create trusted Symbols and cannot receive a Symbol through their mailbox, including one nested inside another message. Use a validated string or enum representation when a protocol value must cross that security boundary.
+Adversarial/untrusted actors and Graal isolates do not join any trusted Symbol domain. They cannot create, decode, or receive trusted Symbol values, including Symbols nested inside otherwise Sendable messages. Cross that security boundary with a validated string or enum representation instead.
 
 ## Initialization lifecycle
 
