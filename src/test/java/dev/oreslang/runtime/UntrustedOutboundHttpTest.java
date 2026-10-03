@@ -100,6 +100,63 @@ final class UntrustedOutboundHttpTest {
     }
 
     @Test
+    void cancellationDoesNotReleasePermitUntilTransportActuallyTerminates() throws Exception {
+        java.util.List<CompletableFuture<ActorRuntime.OutboundHttpResponse>> upstream =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        ActorRuntime.OutboundHttpTransport transport = request -> {
+            CompletableFuture<ActorRuntime.OutboundHttpResponse> future =
+                    new CompletableFuture<>();
+            upstream.add(future);
+            return future;
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    new ActorRuntime.UntrustedActorLimits(
+                            Duration.ofSeconds(2),
+                            10_000,
+                            1024,
+                            1024,
+                            1024,
+                            1),
+                    null,
+                    null,
+                    transport,
+                    ignored -> (message, turn) -> {
+                        var http = turn.outboundHttp().orElseThrow();
+                        OresFuture<ActorRuntime.OutboundHttpResponse> first =
+                                http.send(get("https://example.test/one"));
+                        if (!first.cancel(true)) {
+                            throw new AssertionError("first request should be cancellable");
+                        }
+
+                        OresFuture<ActorRuntime.OutboundHttpResponse> blocked =
+                                http.send(get("https://example.test/two"));
+                        if (!blocked.isCompletedExceptionally()) {
+                            throw new AssertionError(
+                                    "cancel request must not release permit before host termination");
+                        }
+                        if (upstream.size() != 1) {
+                            throw new AssertionError(
+                                    "second request must not reach host transport");
+                        }
+
+                        // CompletableFuture.cancel completes the underlying
+                        // transport, so its completion callback can now release
+                        // the permit. The assertion above occurs before this
+                        // actor turn can start a replacement request.
+                        turn.self().stop();
+                    });
+
+            ref.send("run");
+            assertTrue(ref.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty(), () -> "actor failed: " + ref.failure());
+            assertEquals(1, upstream.size());
+        }
+    }
+
+    @Test
     void capabilityRejectsTcpTunnelsAndProtocolUpgradesBeforeTransport() throws Exception {
         AtomicInteger transportCalls = new AtomicInteger();
         ActorRuntime.OutboundHttpTransport transport = request -> {
