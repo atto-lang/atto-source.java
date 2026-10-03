@@ -49,7 +49,7 @@ final class MutexLanguageTest {
     void sharedActorMethodsRejectBlockingSharedMutexWithLock() {
         var program = Parser.parse("""
                 shared actor Worker {
-                  pub fnc run(SharedMutex<int> mutex) => void {
+                  pub actor run(SharedMutex<int> mutex) => void {
                     mutex.with_lock(|value| -> {
                       return;
                     });
