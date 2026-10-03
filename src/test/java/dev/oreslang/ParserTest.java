@@ -59,7 +59,7 @@ final class ParserTest {
                 define module model
                   define class x as
                     @Ret<self>
-                    find() : self {
+                    find() {
                       return self;
                     }
 
@@ -78,7 +78,7 @@ final class ParserTest {
 
     @Test
     void lexerRecognizesLambdaAndFatReturnArrows() {
-        var tokens = new Lexer("(int x) -> x + 1; fnc f() : int { return 1; }").scan();
+        var tokens = new Lexer("(int x) -> x + 1; fnc legacy() => int { return 1; }").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
     }
@@ -455,6 +455,87 @@ final class ParserTest {
                     end
                     """.formatted(keyword, keyword)));
         }
+    }
+
+    @Test
+    void namedFunctionDeclarationsAndExpressionsAreDistinct() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc declared() : int {
+                  return 7;
+                }
+
+                pub fnc expressed = || -> int {
+                  return 8;
+                }
+                """)));
+
+        Ast.Program program = Parser.parse("""
+                pub fnc declared() : int { return 7; }
+                pub fnc expressed = || -> int { return 8; }
+                """);
+        assertEquals(2, program.modules().getFirst().declarations().size());
+        assertEquals("declared", ((Ast.FunctionDecl) program.modules().getFirst().declarations().get(0)).name());
+        assertEquals("expressed", ((Ast.FunctionDecl) program.modules().getFirst().declarations().get(1)).name());
+    }
+
+    @Test
+    void retAnnotationCanSupplyFunctionOrMethodReturnType() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                @Ret<int>
+                pub fnc answer() {
+                  return 42;
+                }
+
+                define class Box as
+                  @Ret<int>
+                  pub value() {
+                    return 42;
+                  }
+                end
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                @Ret<int>
+                pub fnc expressed = || -> {
+                  return 42;
+                }
+                """)));
+    }
+
+    @Test
+    void explicitReturnTypeMustAgreeWithRetAnnotation() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                @Ret<int>
+                pub fnc bad() : String {
+                  return "bad";
+                }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Box as
+                  @Ret<int>
+                  pub bad() : String {
+                    return "bad";
+                  }
+                end
+                """));
+    }
+
+    @Test
+    void namedCallableDeclarationsRejectArrowReturnSyntax() {
+        IllegalArgumentException fatArrow = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc old_style() => int {
+                  return 1;
+                }
+                """));
+        assertTrue(fatArrow.getMessage().contains("do not use"));
+
+        IllegalArgumentException thinArrow = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc wrong_style() -> int {
+                  return 1;
+                }
+                """));
+        assertTrue(thinArrow.getMessage().contains("do not use"));
     }
 
     @Test
