@@ -89,9 +89,9 @@ public final class NativeCarrierExecutor {
 
     private static long configuredCarrierStackBytes() {
         long configured = Long.getLong("ores.actor.carrier-stack-bytes", 2L * 1024 * 1024);
-        if (configured < 256L * 1024) {
+        if (configured < 256L * 1024 || configured > 64L * 1024 * 1024) {
             throw new IllegalArgumentException(
-                    "ores.actor.carrier-stack-bytes must be >= 262144");
+                    "ores.actor.carrier-stack-bytes must be between 262144 and 67108864");
         }
         return configured;
     }
