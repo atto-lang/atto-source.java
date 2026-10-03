@@ -112,17 +112,17 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     (void)cls;
     if (executor == NULL || thread_prefix == NULL) {
         throw_illegal_state(env, "native carrier executor/prefix cannot be null");
-        return 0;
+        return;
     }
     if (max_threads <= 0 || desired_threads <= 0 || desired_threads > max_threads) {
         throw_illegal_state(env, "invalid native carrier thread counts");
-        return 0;
+        return;
     }
 
     ores_carrier_pool *pool = (ores_carrier_pool *)calloc(1, sizeof(*pool));
     if (pool == NULL) {
         throw_illegal_state(env, "failed to allocate native carrier pool");
-        return 0;
+        return;
     }
     pool->max_threads = (int)max_threads;
     pool->desired_threads = (int)desired_threads;
@@ -132,33 +132,33 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     if ((*env)->GetJavaVM(env, &pool->jvm) != JNI_OK || pool->jvm == NULL) {
         free_pool(env, pool);
         throw_illegal_state(env, "JNI GetJavaVM failed");
-        return 0;
+        return;
     }
 
     pool->executor = (*env)->NewGlobalRef(env, executor);
     if (pool->executor == NULL) {
         free_pool(env, pool);
         throw_illegal_state(env, "failed to root native carrier executor");
-        return 0;
+        return;
     }
 
     jclass executor_class = (*env)->GetObjectClass(env, executor);
     if (executor_class == NULL) {
         free_pool(env, pool);
-        return 0;
+        return;
     }
     pool->carrier_loop = (*env)->GetMethodID(env, executor_class, "nativeCarrierLoop", "(I)V");
     (*env)->DeleteLocalRef(env, executor_class);
     if (pool->carrier_loop == NULL) {
         free_pool(env, pool);
         throw_illegal_state(env, "nativeCarrierLoop(int) JNI callback is missing");
-        return 0;
+        return;
     }
 
     const char *prefix = (*env)->GetStringUTFChars(env, thread_prefix, NULL);
     if (prefix == NULL) {
         free_pool(env, pool);
-        return 0;
+        return;
     }
 
     pool->threads = (pthread_t *)calloc((size_t)max_threads, sizeof(pthread_t));
@@ -167,7 +167,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
         free_pool(env, pool);
         throw_illegal_state(env, "failed to allocate native carrier slots");
-        return 0;
+        return;
     }
 
     int created = 0;
@@ -186,7 +186,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
             (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
             free_pool(env, pool);
             throw_illegal_state(env, "pthread_create failed for Oreslang carrier");
-            return 0;
+            return;
         }
         created++;
     }
@@ -289,6 +289,7 @@ struct ores_standalone_thread {
     int interrupt_requested;
     int attach_ready;
     int attach_ok;
+    int published;
     int terminated;
     int release_requested;
     ores_standalone_thread *next;
@@ -387,6 +388,12 @@ static void *standalone_thread_main(void *raw) {
         return NULL;
     }
 
+    pthread_mutex_lock(&thread->mutex);
+    while (!thread->published) {
+        pthread_cond_wait(&thread->condition, &thread->mutex);
+    }
+    pthread_mutex_unlock(&thread->mutex);
+
     set_native_thread_name(thread->pthread, thread->name);
     (*env)->CallVoidMethod(env, thread->thread_object, thread->run_method);
     if ((*env)->ExceptionCheck(env)) {
@@ -394,17 +401,16 @@ static void *standalone_thread_main(void *raw) {
         (*env)->ExceptionClear(env);
     }
 
-    (*thread->jvm)->DetachCurrentThread(thread->jvm);
     /*
-     * The Java callback requests release before returning. Marking termination
-     * afterwards prevents freeing the control block while this C frame still
-     * references it.
+     * The Java callback requests release before returning. Mark termination and
+     * release JNI roots while env is still valid, then detach from the VM.
      */
     standalone_mark_terminated(env, thread);
+    (*thread->jvm)->DetachCurrentThread(thread->jvm);
     return NULL;
 }
 
-JNIEXPORT jlong JNICALL
+JNIEXPORT void JNICALL
 Java_dev_oreslang_runtime_OresThread_nativeStart(
         JNIEnv *env,
         jclass cls,
@@ -414,18 +420,18 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
     (void)cls;
     if (thread_object == NULL || name == NULL) {
         throw_illegal_state(env, "OresThread native start requires a thread object and name");
-        return 0;
+        return;
     }
     if (stack_bytes < 262144) {
         throw_illegal_state(env, "OresThread stack size must be at least 262144 bytes");
-        return 0;
+        return;
     }
 
     ores_standalone_thread *thread =
             (ores_standalone_thread *)calloc(1, sizeof(*thread));
     if (thread == NULL) {
         throw_illegal_state(env, "failed to allocate OresThread native state");
-        return 0;
+        return;
     }
     pthread_mutex_init(&thread->mutex, NULL);
     pthread_cond_init(&thread->condition, NULL);
@@ -435,20 +441,20 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
     if ((*env)->GetJavaVM(env, &thread->jvm) != JNI_OK || thread->jvm == NULL) {
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "JNI GetJavaVM failed for OresThread");
-        return 0;
+        return;
     }
 
     thread->thread_object = (*env)->NewGlobalRef(env, thread_object);
     if (thread->thread_object == NULL) {
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "failed to root OresThread while native pthread is running");
-        return 0;
+        return;
     }
 
     jclass thread_class = (*env)->GetObjectClass(env, thread_object);
     if (thread_class == NULL) {
         free_standalone_thread(env, thread);
-        return 0;
+        return;
     }
     thread->run_method = (*env)->GetMethodID(env, thread_class, "nativeRun", "()V");
     jfieldID handle_field = (*env)->GetFieldID(env, thread_class, "nativeHandle", "J");
@@ -456,20 +462,20 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
     if (thread->run_method == NULL || handle_field == NULL) {
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "OresThread JNI callback/control field is missing");
-        return 0;
+        return;
     }
 
     const char *raw_name = (*env)->GetStringUTFChars(env, name, NULL);
     if (raw_name == NULL) {
         free_standalone_thread(env, thread);
-        return 0;
+        return;
     }
     thread->name = strdup(raw_name);
     (*env)->ReleaseStringUTFChars(env, name, raw_name);
     if (thread->name == NULL) {
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "failed to copy OresThread name");
-        return 0;
+        return;
     }
 
     pthread_mutex_lock(&standalone_registry_mutex);
@@ -483,7 +489,7 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
         pthread_mutex_unlock(&standalone_registry_mutex);
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "pthread_attr_init failed for OresThread");
-        return 0;
+        return;
     }
     if (pthread_attr_setstacksize(&attr, (size_t)stack_bytes) != 0) {
         pthread_attr_destroy(&attr);
@@ -492,7 +498,7 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
         pthread_mutex_unlock(&standalone_registry_mutex);
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "invalid OresThread native stack size");
-        return 0;
+        return;
     }
 
     int create_status = pthread_create(
@@ -504,7 +510,7 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
         pthread_mutex_unlock(&standalone_registry_mutex);
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "pthread_create failed for OresThread");
-        return 0;
+        return;
     }
 
     /*
@@ -526,7 +532,7 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
         pthread_mutex_unlock(&standalone_registry_mutex);
         free_standalone_thread(env, thread);
         throw_illegal_state(env, "AttachCurrentThread failed for OresThread");
-        return 0;
+        return;
     }
 
     /*
@@ -535,7 +541,10 @@ Java_dev_oreslang_runtime_OresThread_nativeStart(
      * only on the Java assignment from this method's return value is racy.
      */
     (*env)->SetLongField(env, thread_object, handle_field, (jlong)thread->handle);
-    return (jlong)thread->handle;
+    pthread_mutex_lock(&thread->mutex);
+    thread->published = 1;
+    pthread_cond_broadcast(&thread->condition);
+    pthread_mutex_unlock(&thread->mutex);
 }
 
 JNIEXPORT void JNICALL
@@ -682,7 +691,7 @@ static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {
             THREAD_BASIC_INFO,
             (thread_info_t)&info,
             &count);
-    if (status != KERN_SUCCESS) return 0;
+    if (status != KERN_SUCCESS) return;
     uint64_t user = (uint64_t)info.user_time.seconds * 1000000000ULL
             + (uint64_t)info.user_time.microseconds * 1000ULL;
     uint64_t system = (uint64_t)info.system_time.seconds * 1000000000ULL
@@ -690,13 +699,13 @@ static uint64_t pthread_cpu_time_nanos(pthread_t pthread) {
     return user + system;
 #elif defined(CLOCK_THREAD_CPUTIME_ID)
     clockid_t clock_id;
-    if (pthread_getcpuclockid(pthread, &clock_id) != 0) return 0;
+    if (pthread_getcpuclockid(pthread, &clock_id) != 0) return;
     struct timespec ts;
-    if (clock_gettime(clock_id, &ts) != 0) return 0;
+    if (clock_gettime(clock_id, &ts) != 0) return;
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 #else
     (void)pthread;
-    return 0;
+    return;
 #endif
 }
 
