@@ -118,6 +118,26 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void wellKnownIteratorUsesCanonicalProcessSymbolIdentity() {
+        OresSymbol iterator = OresSymbol.wellKnown("iterator", IsolatePolicy.developer());
+        OresSymbol viaProcess = OresSymbol.process("Symbol.iterator");
+
+        assertSame(iterator, viaProcess);
+        assertEquals(OresSymbol.Scope.PROCESS, iterator.scope());
+        assertEquals("Symbol.iterator", iterator.key());
+        assertEquals("Symbol.iterator", iterator.toString());
+
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define module protocol
+                  pub fnc iterator_symbol() => Symbol {
+                    return Symbol.iterator;
+                  }
+                end
+                """));
+        assertDoesNotThrow(() -> OwnershipChecker.check(program));
+    }
+
+    @Test
     void processAndStableSymbolsAreStronglyCanonicalInTheirDomains() {
         OresSymbol first = OresSymbol.process("shared-key");
         OresSymbol again = OresSymbol.process("shared-key");
@@ -319,6 +339,18 @@ final class SymbolLifecycleTest {
         OresSymbol admitted =
                 OresSymbol.fromTrustedWire(unknownProcess, IsolatePolicy.developer());
         assertSame(admitted, OresSymbol.fromWire(unknownProcess, IsolatePolicy.developer()));
+
+        int stableEntriesBefore = OresSymbol.stableRegistryEntries();
+        OresSymbol.Wire unknownStable = new OresSymbol.Wire(
+                OresSymbol.Scope.STABLE,
+                "b2c45229-4e99-4ebd-a551-c1331fe40ef3");
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.fromWire(unknownStable, IsolatePolicy.developer()));
+        assertEquals(stableEntriesBefore, OresSymbol.stableRegistryEntries());
+        OresSymbol trustedStable =
+                OresSymbol.fromTrustedWire(unknownStable, IsolatePolicy.developer());
+        assertSame(trustedStable, OresSymbol.fromWire(unknownStable, IsolatePolicy.developer()));
 
         assertThrows(
                 SecurityException.class,
