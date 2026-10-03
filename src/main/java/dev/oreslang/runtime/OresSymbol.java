@@ -7,7 +7,8 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.regex.Pattern;
+
+import dev.oreslang.symbol.SymbolNames;
 
 /**
  * Canonical Oreslang symbol used for protocol tags and other immutable identities.
@@ -24,10 +25,8 @@ import java.util.regex.Pattern;
  * isolates are not participants and must not create or receive symbols.</p>
  */
 public final class OresSymbol {
-    public static final int MAX_NAME_LENGTH = 128;
+    public static final int MAX_NAME_LENGTH = SymbolNames.MAX_NAME_LENGTH;
     public static final int MAX_INTERNED_SYMBOLS = 65_536;
-
-    private static final Pattern VALID_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final byte[] ID_DOMAIN =
             "oreslang-symbol-v1\0".getBytes(StandardCharsets.UTF_8);
 
@@ -162,8 +161,7 @@ public final class OresSymbol {
 
     /** Pattern/runtime helper that validates both canonical name and stable ID. */
     public boolean matchesName(String candidate) {
-        String validated = validateName(candidate);
-        return name.equals(validated) && id.equals(idForValidatedName(validated));
+        return name.equals(validateName(candidate));
     }
 
     private static void requireTrustedPolicy(IsolatePolicy policy) {
@@ -191,17 +189,7 @@ public final class OresSymbol {
     }
 
     private static String validateName(String name) {
-        Objects.requireNonNull(name, "symbol name");
-        if (name.isBlank()) throw new IllegalArgumentException("symbol name cannot be blank");
-        if (name.length() > MAX_NAME_LENGTH) {
-            throw new IllegalArgumentException(
-                    "symbol name exceeds " + MAX_NAME_LENGTH + " characters");
-        }
-        if (!VALID_NAME.matcher(name).matches()) {
-            throw new IllegalArgumentException(
-                    "symbol name must be an identifier ([A-Za-z_][A-Za-z0-9_]*)");
-        }
-        return name;
+        return SymbolNames.validate(name);
     }
 
     @Override
