@@ -176,6 +176,51 @@ final class HttpTransportLeaseTest {
     }
 
     @Test
+    void failedResponseCompletionAbortsAndRevokesTransport() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            HttpTransportLease lease = new HttpTransportLease();
+            java.util.concurrent.atomic.AtomicBoolean aborted =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            ActorRuntime.HttpResponseTransport response = new ActorRuntime.HttpResponseTransport() {
+                @Override
+                public int write(ByteBuffer source) {
+                    int count = source.remaining();
+                    source.position(source.limit());
+                    return count;
+                }
+
+                @Override
+                public void complete() throws java.io.IOException {
+                    throw new java.io.IOException("finish failed");
+                }
+
+                @Override
+                public void abort(Throwable cause) {
+                    aborted.set(true);
+                }
+            };
+
+            var actor = runtime.<String>spawnPrivateHttp(
+                    IsolatePolicy.developer(),
+                    new ActorRuntime.HttpTransportLimits(1024, 1024),
+                    null,
+                    response,
+                    lease,
+                    ignored -> (message, turn) -> {
+                        var out = turn.httpResponse().orElseThrow();
+                        out.write(ByteBuffer.wrap(new byte[]{1}));
+                        out.complete();
+                    });
+
+            actor.send("go");
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(java.io.IOException.class, actor.failure().orElseThrow());
+            assertTrue(aborted.get());
+            assertEquals(HttpTransportLease.OwnerKind.RELEASED, lease.owner().kind());
+        }
+    }
+
+    @Test
     void guestActorCannotPerformSupervisorOwnershipTransfer() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             HttpTransportLease lease = new HttpTransportLease();
