@@ -44,6 +44,31 @@ import class ArrayList as JArrayList from "java:java.util.ArrayList";
 
 The selected name (`ArrayList`) must match the Java simple class name; `JArrayList` is only the Oreslang-local alias. Java imports never grant authority by themselves: runtime use additionally requires the `JAVA_INTEROP` capability and an exact host-class allowlist supplied by the launcher/embedder.
 
+Mixed-source Java uses two distinct forms before the ordinary Ores parser runs:
+
+```ores
+java {
+  final class Helper {
+    public static int twice(int value) { return value * 2; }
+  }
+}
+
+pub fnc main() => void {
+  do java {
+    Ores.log_from_java();
+  }
+  return;
+}
+```
+
+`java { ... }` declares one Java type for the source unit. `do java { ... }`
+executes Java statements at that Ores control-flow point. The initial
+`do java` contract is statement-only and does not implicitly capture Ores
+locals, actor state, borrows, or closure environments. Use ordinary typed Java
+calls when values must cross the boundary. See
+[MIXED_JAVA_ORES.md](MIXED_JAVA_ORES.md).
+
+
 ### Circular imports and file initialization
 
 Import cycles are legal. Oreslang does not reject a program merely because its
@@ -677,7 +702,7 @@ Security is layered. Oreslang uses a deny-by-default language capability policy 
 
 An isolate policy can independently allow or deny:
 
-`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `SHARED_MEMORY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
+`STDIN`, `STDOUT`, `PROCESS_INFO`, `ACTOR_SHARE_READONLY`, `SHARED_MEMORY`, `NETWORK`, `FILESYSTEM_READ`, `FILESYSTEM_WRITE`, `ENVIRONMENT`, `HOT_CODE_LOAD`, `JAVA_INTEROP`, `JAVA_SOURCE_INTEROP`, `FFI`, `NATIVE`, `REFLECTION`, `CHILD_PROCESS`, `THREAD_CREATE`, and `POLYGLOT`.
 
 The trusted compiler API can reject forbidden API usage before execution:
 
@@ -687,7 +712,7 @@ OresCompiler.validateForIsolate(source, policy);
 
 Runtime facades perform the same check again. A source file therefore cannot grant itself a capability. The launcher/supervisor chooses policy.
 
-The strict FaaS baseline permits only stdout. Host reflection, native access, unrestricted polyglot access, environment access, guest-created threads, and host IO remain disabled at the Graal context boundary.
+The strict FaaS baseline permits only stdout. Host reflection, native access, unrestricted polyglot access, environment access, guest-created threads, host IO, Java host interop, and inline Java source remain disabled at the Graal context boundary. `JAVA_SOURCE_INTEROP` requires `JAVA_INTEROP`; adversarial policies reject both, and private actor policies strip both.
 
 Actor cells may receive a policy stricter than their parent runtime. Their mailbox capacity is also bounded by that policy.
 
