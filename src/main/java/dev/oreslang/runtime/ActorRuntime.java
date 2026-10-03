@@ -1759,8 +1759,31 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    void validateBoundSharedMutexPayload(Object value) {
+    long reconcileBoundSharedMutexPayload(Object value, long previouslyAccountedBytes) {
+        if (previouslyAccountedBytes < 0) {
+            throw new IllegalArgumentException("previous SharedMutex accounting cannot be negative");
+        }
         requireSharedMutexPayloadSafe(value, new IdentityHashMap<>(), 0);
+        long nextBytes = estimateFrozenBytes(value);
+
+        IsolatePolicy actorPolicy = currentActorPolicy();
+        if (actorPolicy != null && nextBytes > actorPolicy.maxHeapBytes()) {
+            throw new SharedActorMemoryLimitException(
+                    "SharedMutex payload exceeds current actor heap policy: payload="
+                            + nextBytes + " limit=" + actorPolicy.maxHeapBytes());
+        }
+
+        long delta = nextBytes - previouslyAccountedBytes;
+        if (delta > 0) {
+            try {
+                reserveSharedRuntimeBytes(delta, "SharedMutex payload");
+            } catch (IllegalStateException limit) {
+                throw new SharedActorMemoryLimitException(limit.getMessage());
+            }
+        } else if (delta < 0) {
+            releaseSharedRuntimeBytes(-delta);
+        }
+        return nextBytes;
     }
 
     private void requireSharedMutexPayloadSafe(
