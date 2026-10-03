@@ -23,6 +23,7 @@ public final class OresVector implements OresMutex.SharedState {
 
     public int length() { return value.rows(); }
     public boolean isComplex() { return value.isComplex(); }
+    public long logicalBytes() { return Math.addExact(24L, value.logicalBytes()); }
     public Object get(int index) { return value.get(index, 0); }
 
     public OresVector add(OresVector other) {
