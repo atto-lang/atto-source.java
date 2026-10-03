@@ -2521,6 +2521,30 @@ final class SingletonModuleTest {
     }
 
     @Test
+    void processCapabilityNamespaceCannotBeShadowed() {
+        IllegalArgumentException local = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          pub routine main() => void {
+                            val int process = 1;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(local.getMessage().contains("reserved for the ambient process capability namespace"));
+
+        IllegalArgumentException parameter = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc spoof(int process) => int {
+                          return process;
+                        }
+                        """)));
+        assertTrue(parameter.getMessage().contains("reserved for the ambient process capability namespace"));
+    }
+
+    @Test
     void singletonCollectionTokenCannotEscapeOrRunUnawaited() {
         IllegalArgumentException unawaited = assertThrows(
                 IllegalArgumentException.class,
