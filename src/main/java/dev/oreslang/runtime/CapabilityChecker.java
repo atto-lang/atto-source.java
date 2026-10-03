@@ -198,6 +198,7 @@ public final class CapabilityChecker {
         if (type == null) return;
 
         if (type.name().equals("SharedMutex")) {
+            requireNonAdversarialSharedMutable(policy, "SharedMutex<T>");
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex<T>");
         }
         if (type.name().equals("Symbol")) {
@@ -278,6 +279,7 @@ public final class CapabilityChecker {
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
             require(policy, IsolatePolicy.Capability.STDOUT, "print");
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("SharedMutex")) {
+            requireNonAdversarialSharedMutable(policy, "SharedMutex");
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex");
         } else if (expr instanceof Ast.NameExpr n) {
             // Function values can be laundered through locals/callbacks before
@@ -309,7 +311,10 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.descriptor") || path.equals("process.context_id")) require(policy, IsolatePolicy.Capability.PROCESS_INFO, path);
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
                 if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
-                if (path.equals("SharedMutex") || path.startsWith("SharedMutex.")) require(policy, IsolatePolicy.Capability.SHARED_MEMORY, path);
+                if (path.equals("SharedMutex") || path.startsWith("SharedMutex.")) {
+                    requireNonAdversarialSharedMutable(policy, path);
+                    require(policy, IsolatePolicy.Capability.SHARED_MEMORY, path);
+                }
                 if (path.equals("Symbol") || path.startsWith("Symbol.")) requireTrustedSymbols(policy, path);
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
@@ -351,6 +356,13 @@ public final class CapabilityChecker {
             return parent == null ? null : parent + "." + m.member();
         }
         return null;
+    }
+
+    private static void requireNonAdversarialSharedMutable(IsolatePolicy policy, String api) {
+        if (policy.adversarial()) {
+            throw new SecurityException(
+                    "Oreslang adversarial/untrusted isolate denies live shared mutable state required by " + api);
+        }
     }
 
     private static void requireTrustedSymbols(IsolatePolicy policy, String api) {
