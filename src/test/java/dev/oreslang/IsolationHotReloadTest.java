@@ -64,9 +64,19 @@ final class IsolationHotReloadTest {
                 () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
         assertTrue(denied.getMessage().contains("GPU"));
 
-        assertDoesNotThrow(() -> CapabilityChecker.check(
-                program,
-                IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.GPU)));
+        IsolatePolicy gpuEnabled = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.GPU);
+        assertDoesNotThrow(() -> CapabilityChecker.check(program, gpuEnabled));
+
+        var kernel = TypeChecker.check(Parser.parse("""
+                gpu fnc add(i32 a, i32 b) => i32 {
+                  return a + b;
+                }
+                """));
+        SecurityException kernelDenied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(kernel, IsolatePolicy.strictFaas()));
+        assertTrue(kernelDenied.getMessage().contains("GPU"));
+        assertDoesNotThrow(() -> CapabilityChecker.check(kernel, gpuEnabled));
     }
 
     @Test
