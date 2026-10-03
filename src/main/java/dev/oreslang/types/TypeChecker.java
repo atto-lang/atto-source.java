@@ -271,7 +271,15 @@ public final class TypeChecker {
     }
 
     private void checkClass(String module, Ast.ClassDecl klass) {
-        Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), "class " + klass.name());
+        Set<String> classGenerics = uniqueGenerics(
+                klass.genericParameters(), (klass.isStruct() ? "struct " : "class ") + klass.name());
+        if (klass.isStruct()) {
+            if (klass.isAbstract() || klass.actorKind() != Ast.ActorKind.NONE || !klass.parents().isEmpty()
+                    || !klass.interfaces().isEmpty() || !klass.methods().isEmpty()) {
+                throw new IllegalArgumentException("typed struct '" + klass.name()
+                        + "' must be fixed-shape, non-actor, non-abstract, and field-only");
+            }
+        }
         Type self = nominalClassType(klass);
 
         Set<String> parentNames = new HashSet<>();
@@ -498,7 +506,13 @@ public final class TypeChecker {
         if (expr instanceof Ast.NameExpr name) {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
-            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")
+                    || name.name().equals("thread") || name.name().equals("net") || name.name().equals("native_net")) {
+                return new Named(name.name(), List.of());
+            }
+            if (name.name().equals("List") || name.name().equals("Map") || name.name().equals("File")) {
+                return new Named("$" + name.name() + "Factory", List.of());
+            }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -868,6 +882,10 @@ public final class TypeChecker {
                 requireAssignable(index, Primitive.STRING, "DynamicStruct key");
                 return dynamic.arguments().getFirst();
             }
+            if (receiver instanceof Named map && map.name().equals("Map") && map.arguments().size() == 2) {
+                requireAssignable(index, map.arguments().getFirst(), "Map key");
+                return map.arguments().get(1);
+            }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
                 if (index instanceof StringLiteral key) {
@@ -883,9 +901,25 @@ public final class TypeChecker {
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-            throw new IllegalArgumentException("indexing requires an array/list, tuple, or DynamicStruct");
+            throw new IllegalArgumentException("indexing requires an array/list, tuple, Map, or DynamicStruct");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("List") || created.type().name().equals("Array")) {
+                Type list = resolve(created.type(), generics, self);
+                Type element = list instanceof ListType values ? values.element() : Unknown.INSTANCE;
+                for (Ast.Expr argument : created.arguments()) {
+                    requireAssignable(typeOf(argument, env, generics, self), element,
+                            created.type().name() + " constructor item");
+                }
+                return list;
+            }
+            if (created.type().name().equals("Map")) {
+                Type map = resolve(created.type(), generics, self);
+                if (!created.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Map<K,V> constructor takes no positional arguments");
+                }
+                return map;
+            }
             if (created.type().name().equals("DynamicStruct")) {
                 Type dynamic = resolve(created.type(), generics, self);
                 if (!created.arguments().isEmpty()) {
@@ -2164,6 +2198,17 @@ public final class TypeChecker {
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
+            }
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException("Map requires exactly two explicit type arguments");
+                }
+                Type key = resolve(ref.arguments().get(0), generics, self);
+                Type value = resolve(ref.arguments().get(1), generics, self);
+                if (key == Primitive.VOID || value == Primitive.VOID) {
+                    throw new IllegalArgumentException("Map<void,...> and Map<...,void> are invalid");
+                }
+                yield new Named("Map", List.of(key, value));
             }
             case "DynamicStruct" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
