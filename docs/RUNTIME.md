@@ -119,9 +119,13 @@ PROCESS and STABLE registries have hard cardinality limits. Dynamic PROCESS allo
 
 Wire data carries scope plus key. The ordinary decode path is lookup-only and cannot allocate a new immortal Symbol. Unknown keys are rejected. A separate explicitly trusted decode path may intern a new key after the caller has authenticated/validated its protocol dictionary. This mirrors the atom-table safety rule that arbitrary external strings must never become permanent identities by default.
 
+Capability admission stages every `:literal` it encounters and commits the whole unique literal set only after the code unit has passed all capability checks. The registry preflights capacity and installs the batch under one insertion lock, so failed code admission or capacity exhaustion cannot partially consume permanent literal slots.
+
 The symbol registry is a trusted-process facility. Both compile-time capability admission and runtime APIs reject adversarial policies. Actor transport recursively rejects Symbols before delivering to adversarial actors, even when a symbol is nested in a list/map/array/shared wrapper. Runtime construction also checks the *currently executing actor policy* in addition to any explicit policy argument so guest code cannot launder authority by passing a more permissive parent policy object.
 
 LOCAL symbol storage is attached to the semantic actor cell, not a carrier thread. This is required because actor turns may migrate between dispatcher workers. Actor teardown clears that registry together with other actor-owned state.
+
+Adversarial actors cannot receive, create, or operate live shared-mutable capabilities such as `SharedMutex` or `SyncCell`, even if a custom adversarial policy attempts to add `SHARED_MEMORY`. This prevents a mutable shared container from becoming a time-of-check/time-of-use tunnel through which trusted Symbols or other trusted-process identity state could later be exposed.
 
 ## Actor dispatchers
 
