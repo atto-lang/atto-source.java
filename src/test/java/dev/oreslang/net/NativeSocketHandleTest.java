@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 final class NativeSocketHandleTest {
 
     @Test
-    void generationsAreUniqueEvenWhenFdNumberIsReused() {
+    void generationsAreUniqueEvenWhenTheNumericFdIsReused() {
         NativeSocketHandle first = new NativeSocketHandle(7);
         NativeSocketHandle second = new NativeSocketHandle(7);
 
@@ -22,36 +22,45 @@ final class NativeSocketHandleTest {
     }
 
     @Test
-    void closeInvalidatesBeforeFdCanBeReusedThroughStaleHandle() throws Exception {
-        NativeSocketHandle handle = new NativeSocketHandle(11);
+    void closedHandleFailsClosedAndCannotTargetAReusedFd() throws Exception {
+        NativeSocketHandle stale = new NativeSocketHandle(11);
         AtomicLong closedFd = new AtomicLong(-1);
 
-        handle.closeWith(closedFd::set);
+        stale.closeWith(closedFd::set);
 
         assertEquals(11, closedFd.get());
-        assertFalse(handle.isOpen());
-        assertThrows(IOException.class, () -> handle.withFd(fd -> fd));
+        assertFalse(stale.isOpen());
+        IOException error = assertThrows(
+                IOException.class,
+                () -> stale.withFd(fd -> fd));
+        assertTrue(error.getMessage().contains("closed"));
+
+        NativeSocketHandle replacement = new NativeSocketHandle(11);
+        assertTrue(replacement.isOpen());
+        assertNotEquals(stale.generation(), replacement.generation());
+        assertEquals(11L, replacement.withFd(fd -> fd));
     }
 
     @Test
-    void closeWaitsForInflightIoBeforeReleasingFd() throws Exception {
-        NativeSocketHandle handle = new NativeSocketHandle(13);
+    void closeWaitsForInflightIoBeforeInvalidatingDescriptor() throws Exception {
+        NativeSocketHandle handle = new NativeSocketHandle(23);
         CountDownLatch ioEntered = new CountDownLatch(1);
-        CountDownLatch letIoFinish = new CountDownLatch(1);
-        CountDownLatch closeFinished = new CountDownLatch(1);
+        CountDownLatch allowIoExit = new CountDownLatch(1);
+        CountDownLatch closeReturned = new CountDownLatch(1);
+        AtomicLong closedFd = new AtomicLong(-1);
 
         Thread io = new Thread(() -> {
             try {
                 handle.withFd(fd -> {
-                    assertEquals(13, fd);
+                    assertEquals(23L, fd);
                     ioEntered.countDown();
                     try {
-                        assertTrue(letIoFinish.await(2, TimeUnit.SECONDS));
+                        assertTrue(allowIoExit.await(2, TimeUnit.SECONDS));
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new AssertionError(interrupted);
                     }
-                    return 1;
+                    return null;
                 });
             } catch (IOException failure) {
                 throw new AssertionError(failure);
@@ -61,8 +70,8 @@ final class NativeSocketHandleTest {
         Thread closer = new Thread(() -> {
             try {
                 assertTrue(ioEntered.await(2, TimeUnit.SECONDS));
-                handle.closeWith(fd -> assertEquals(13, fd));
-                closeFinished.countDown();
+                handle.closeWith(closedFd::set);
+                closeReturned.countDown();
             } catch (Exception failure) {
                 throw new AssertionError(failure);
             }
@@ -72,12 +81,28 @@ final class NativeSocketHandleTest {
         closer.start();
 
         assertTrue(ioEntered.await(2, TimeUnit.SECONDS));
-        assertFalse(closeFinished.await(50, TimeUnit.MILLISECONDS));
-        letIoFinish.countDown();
+        assertFalse(closeReturned.await(50, TimeUnit.MILLISECONDS),
+                "close must wait for the operation holding the descriptor");
+        allowIoExit.countDown();
 
-        io.join(2000);
-        closer.join(2000);
+        io.join(2_000);
+        closer.join(2_000);
         assertFalse(handle.isOpen());
-        assertEquals(0, closeFinished.getCount());
+        assertEquals(23L, closedFd.get());
+    }
+
+    @Test
+    void failedNativeCloseStillInvalidatesTheHandle() {
+        NativeSocketHandle handle = new NativeSocketHandle(29);
+
+        IOException failure = assertThrows(
+                IOException.class,
+                () -> handle.closeWith(fd -> {
+                    throw new IOException("close failed");
+                }));
+
+        assertEquals("close failed", failure.getMessage());
+        assertFalse(handle.isOpen());
+        assertThrows(IOException.class, () -> handle.withFd(fd -> fd));
     }
 }
