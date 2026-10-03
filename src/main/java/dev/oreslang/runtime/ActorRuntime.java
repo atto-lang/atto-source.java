@@ -1394,7 +1394,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
-        if (value instanceof OresSymbol symbol) return 32L + (long) symbol.name().length() * 2L;
+        if (value instanceof OresSymbol symbol) return 64L + (long) symbol.name().length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
@@ -1446,6 +1446,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
+        if (value instanceof OresSymbol symbol) return 64L + (long) symbol.name().length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
