@@ -653,24 +653,24 @@ public final class GpuKernelCompiler {
      * output-buffer case); otherwise a single buffer parameter may drive a map-style kernel.
      */
     private WorkItemPlan findWorkItemPlan(Target target, Ast.TypeRef resultType) {
-        if (!containsTransitiveWorkItemIntrinsic(target, new HashSet<>())) return null;
+        // Launch cardinality is an entrypoint property and must be explicit in this callable.
+        // Device helpers may read gpu.index, but they do not secretly multiply a caller's
+        // work-item count. Scalar-returning GPU functions therefore stay one-work-item host
+        // entrypoints; data-parallel host kernels are void and write an explicit output buffer.
+        if (!containsWorkItemIntrinsic(target.body) || !isVoid(resultType)) return null;
 
-        List<Ast.Param> buffers = target.parameters.stream()
-                .filter(param -> isBuffer(resolveAlias(param.type(), target.module)))
+        List<Ast.Param> mutableBuffers = target.parameters.stream()
+                .filter(param -> param.mutable()
+                        && isBuffer(resolveAlias(param.type(), target.module)))
                 .toList();
-        List<Ast.Param> mutableBuffers = buffers.stream().filter(Ast.Param::mutable).toList();
 
-        Ast.Param driver;
-        if (mutableBuffers.size() == 1) {
-            driver = mutableBuffers.getFirst();
-        } else if (mutableBuffers.isEmpty() && buffers.size() == 1) {
-            driver = buffers.getFirst();
-        } else {
+        if (mutableBuffers.size() != 1) {
             throw new IllegalArgumentException(
-                    "GPU work-item kernels using gpu.index/gpu.*_id need one unambiguous launch buffer; "
-                            + "use exactly one mutable output buffer, or exactly one buffer parameter");
+                    "explicit SIMT gpu kernels must return void and expose exactly one mutable "
+                            + "Array/List/GpuArray output buffer to define the 1-D launch extent");
         }
 
+        Ast.Param driver = mutableBuffers.getFirst();
         validateWorkItemRaceSafety(target);
         return new WorkItemPlan(driver.name(), bufferLengthName(driver.name()));
     }
@@ -824,21 +824,6 @@ public final class GpuKernelCompiler {
                     || intrinsic.intrinsic() == Ast.GpuIntrinsic.GLOBAL_ID);
         }
         return expr instanceof Ast.NameExpr name && scope.isUnique(name.name());
-    }
-
-    private boolean containsTransitiveWorkItemIntrinsic(Target target, Set<Target> visiting) {
-        if (!visiting.add(target)) return false;
-        try {
-            if (containsWorkItemIntrinsic(target.body)) return true;
-            LinkedHashSet<Target> calls = new LinkedHashSet<>();
-            collectNamedCalls(target.module, target.body, calls);
-            for (Target callee : calls) {
-                if (containsTransitiveWorkItemIntrinsic(callee, visiting)) return true;
-            }
-            return false;
-        } finally {
-            visiting.remove(target);
-        }
     }
 
     private boolean containsWorkItemIntrinsic(List<Ast.Stmt> statements) {
