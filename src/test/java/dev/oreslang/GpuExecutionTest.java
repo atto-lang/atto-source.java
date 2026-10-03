@@ -595,7 +595,7 @@ final class GpuExecutionTest {
     }
 
     @Test
-    void scalarMapKernelUsesInputLengthForResultSlots() {
+    void scalarReturningWorkItemFunctionStaysSingleWorkItemAtHostBoundary() {
         OresCompiler.CompilationResult compilation = OresCompiler.compile("""
                 gpu fnc load(GpuArray<i32> values) => i32 {
                   return values[gpu.global_id(0)];
@@ -603,11 +603,38 @@ final class GpuExecutionTest {
                 """);
 
         GpuKernelCompiler.GpuKernel kernel = compilation.gpuProgram().kernels().getFirst();
-        assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, kernel.executionShape());
-        assertEquals("__ores_len_values", kernel.launchPlan().globalWorkItemsExpression());
-        assertEquals("__ores_len_values", kernel.launchPlan().resultSlotsExpression());
+        assertEquals(GpuKernelCompiler.ExecutionShape.SINGLE_WORK_ITEM, kernel.executionShape());
+        assertEquals("1", kernel.launchPlan().globalWorkItemsExpression());
+        assertEquals("1", kernel.launchPlan().resultSlotsExpression());
         assertTrue(compilation.gpuProgram().source()
-                .contains("__ores_out[get_global_id(0)] = "));
+                .contains("__ores_out[0] = "));
+    }
+
+    @Test
+    void explicitSimtEntrypointRequiresExactlyOneMutableOutputBuffer() {
+        IllegalArgumentException readOnly = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc consume(GpuArray<i32> values) => void {
+                          val u64 i = gpu.index;
+                          val i32 x = values[i];
+                          return;
+                        }
+                        """));
+        assertTrue(readOnly.getMessage().contains("exactly one mutable"));
+
+        IllegalArgumentException multiple = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc split(
+                          GpuArray<i32> mut left,
+                          GpuArray<i32> mut right
+                        ) => void {
+                          val u64 i = gpu.index;
+                          left[i] = 1;
+                          right[i] = 2;
+                          return;
+                        }
+                        """));
+        assertTrue(multiple.getMessage().contains("exactly one mutable"));
     }
 
     @Test
@@ -629,7 +656,7 @@ final class GpuExecutionTest {
                           return;
                         }
                         """));
-        assertTrue(local.getMessage().contains("gpu.index/gpu.global_id(0)"));
+        assertTrue(local.getMessage().contains("work-group/local-size"));
 
         IllegalArgumentException mutableAlias = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.compile("""
@@ -672,7 +699,7 @@ final class GpuExecutionTest {
     }
 
     @Test
-    void workItemIdentityPropagatesThroughGpuHelperCalls() {
+    void helperWorkItemIdentityDoesNotSecretlyChangeCallerLaunchCardinality() {
         OresCompiler.CompilationResult compilation = OresCompiler.compile("""
                 define module math
                   gpu fnc at_index(GpuArray<i32> values) => i32 {
@@ -685,12 +712,18 @@ final class GpuExecutionTest {
                 end
                 """);
 
+        GpuKernelCompiler.GpuKernel helper =
+                compilation.gpuProgram().requireKernel("math", "at_index");
         GpuKernelCompiler.GpuKernel outer =
                 compilation.gpuProgram().requireKernel("math", "outer");
-        assertEquals("math", outer.module());
-        assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, outer.executionShape());
-        assertEquals("__ores_len_values", outer.launchPlan().globalWorkItemsExpression());
-        assertEquals("__ores_len_values", outer.launchPlan().resultSlotsExpression());
+
+        assertEquals(GpuKernelCompiler.ExecutionShape.SINGLE_WORK_ITEM, helper.executionShape());
+        assertEquals("1", helper.launchPlan().globalWorkItemsExpression());
+        assertEquals("1", helper.launchPlan().resultSlotsExpression());
+
+        assertEquals(GpuKernelCompiler.ExecutionShape.SINGLE_WORK_ITEM, outer.executionShape());
+        assertEquals("1", outer.launchPlan().globalWorkItemsExpression());
+        assertEquals("1", outer.launchPlan().resultSlotsExpression());
     }
 
     @Test
