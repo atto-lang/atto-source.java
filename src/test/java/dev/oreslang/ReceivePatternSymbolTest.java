@@ -204,6 +204,24 @@ final class ReceivePatternSymbolTest {
     }
 
     @Test
+    void symbolEqualityIsNominalAndDoesNotMixWithStrings() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc same() => bool {
+                  return :ping == :ping;
+                }
+                """)));
+
+        IllegalArgumentException mixed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad() => bool {
+                          return :ping == "ping";
+                        }
+                        """)));
+        assertTrue(mixed.getMessage().contains("not string aliases"));
+    }
+
+    @Test
     void untrustedPoliciesCannotCreateOrReceiveProcessSymbols() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 pub fnc protocol_tag() => Symbol {
