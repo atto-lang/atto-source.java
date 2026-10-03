@@ -902,7 +902,7 @@ public final class OresEvalRootNode extends RootNode {
                     "parallel actor method attempted unsynchronized "
                             + (write ? "write to" : "read of")
                             + " actor-owned field '" + object.klass.name() + "." + fieldName
-                            + "'; use an ordinary actor helper/Mutex/SharedMutex or an exclusive actor method");
+                            + "'; use an ordinary actor helper/SharedMutex or an exclusive actor method");
         }
 
         private Object member(Object receiver, String name) {
