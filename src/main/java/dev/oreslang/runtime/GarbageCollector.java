@@ -10,7 +10,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * Ownership/borrow analysis determines when guest values become unreachable.
  * The host JVM/Graal collector remains responsible for reclaiming heap storage.
  * Explicit GC is therefore a bounded hint plus a runtime-maintenance barrier,
- * never a guest-visible "free" primitive.
+ * never a guest-visible "free" primitive. Strongly rooted runtime state is
+ * outside this API: pinned roots require an explicit owner-defined lifecycle
+ * operation and are never semantically released by System.gc().
  */
 public final class GarbageCollector {
     public enum Scope { ACTOR, PROCESS }
@@ -60,7 +62,8 @@ public final class GarbageCollector {
                 "suppressed_requests", suppressedRequests.get(),
                 "min_request_interval_ms", Duration.ofNanos(MIN_REQUEST_INTERVAL_NANOS).toMillis(),
                 "host_reclamation", "jvm-graal-gc",
-                "ownership_reclamation", "lexical-drop");
+                "ownership_reclamation", "lexical-drop",
+                "pinned_root_reclamation", "explicit-lifecycle-only");
     }
 
     public record GcResult(Scope scope, long requestNumber, boolean hostGcHintIssued) { }
