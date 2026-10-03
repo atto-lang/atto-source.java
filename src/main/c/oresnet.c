@@ -102,7 +102,7 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
 
     int result = connect(fd, address, length);
     if (result == 0) {
-        (void)fcntl(fd, F_SETFL, original_flags);
+        if (fcntl(fd, F_SETFL, original_flags) < 0) return -1;
         return 0;
     }
     if (errno != EINPROGRESS) {
@@ -142,11 +142,12 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
         return -1;
     }
 
-    (void)fcntl(fd, F_SETFL, original_flags);
     if (socket_error != 0) {
+        (void)fcntl(fd, F_SETFL, original_flags);
         errno = socket_error;
         return -1;
     }
+    if (fcntl(fd, F_SETFL, original_flags) < 0) return -1;
     return 0;
 }
 
