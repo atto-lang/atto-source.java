@@ -178,10 +178,11 @@ Java_dev_oreslang_net_NativeSocketBridge_listen(
     if (backlog <= 0) backlog = 50;
 
     const char *host_chars = NULL;
+    const char *host_query = NULL;
     if (host != NULL) {
         host_chars = (*env)->GetStringUTFChars(env, host, NULL);
         if (host_chars == NULL) return -1;
-        if (host_chars[0] == '\0') host_chars = NULL;
+        host_query = host_chars[0] == '\0' ? NULL : host_chars;
     }
 
     char service[16];
@@ -195,13 +196,10 @@ Java_dev_oreslang_net_NativeSocketBridge_listen(
     hints.ai_flags = AI_PASSIVE;
 
     struct addrinfo *addresses = NULL;
-    int gai = getaddrinfo(host_chars, service, &hints, &addresses);
+    int gai = getaddrinfo(host_query, service, &hints, &addresses);
 
-    if (host != NULL) {
-        const char *release = (*env)->GetStringUTFChars(env, host, NULL);
-        if (release != NULL) {
-            (*env)->ReleaseStringUTFChars(env, host, release);
-        }
+    if (host_chars != NULL) {
+        (*env)->ReleaseStringUTFChars(env, host, host_chars);
     }
 
     if (gai != 0) {
