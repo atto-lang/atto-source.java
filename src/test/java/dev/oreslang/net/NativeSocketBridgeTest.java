@@ -20,13 +20,13 @@ final class NativeSocketBridgeTest {
 
     @Test
     void roundTripsTcpOverJniSocketSyscalls() throws Exception {
-        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
         assertTrue(port > 0);
 
         AtomicReference<Throwable> serverFailure = new AtomicReference<>();
         Thread server = new Thread(() -> {
-            long accepted = -1;
+            NativeSocketHandle accepted = null;
             try {
                 accepted = NativeSocketBridge.accept(listener);
                 NativeSocketBridge.setSoTimeout(accepted, 3_000);
@@ -49,14 +49,14 @@ final class NativeSocketBridgeTest {
             } catch (Throwable error) {
                 serverFailure.set(error);
             } finally {
-                if (accepted >= 0) {
+                if (accepted != null && accepted.isOpen()) {
                     try { NativeSocketBridge.close(accepted); } catch (Exception ignored) { }
                 }
             }
         }, "oresnet-test-server");
         server.start();
 
-        long client = NativeSocketBridge.connect("127.0.0.1", port, 3_000);
+        NativeSocketHandle client = NativeSocketBridge.connectHandle("127.0.0.1", port, 3_000);
         try {
             NativeSocketBridge.setSoTimeout(client, 3_000);
             byte[] request = "ping".getBytes(StandardCharsets.UTF_8);
