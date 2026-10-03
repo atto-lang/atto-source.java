@@ -26,6 +26,7 @@ annotated_module_decl = { annotation } "define" "module" IDENT
 
 module_member   = actor_decl
                 | actor_callable_decl
+                | callable_decl
                 | module_static_callable_decl
                 | class_decl
                 | interface_decl
@@ -263,6 +264,8 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - instance methods may overload only when arity differs.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.
+   - Module fnc/routine members are inherently static; an explicit "static"
+     modifier is accepted for symmetry with class static functions.
    - fnc/routine declarations use ": ReturnType"; named function-expression
      bindings use "= |...| -> ReturnType { ... }".
    - @Ret<T> may replace the explicit ": T" on declarations/methods and may
