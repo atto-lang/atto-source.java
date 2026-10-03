@@ -3,7 +3,9 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.GpuKernelCompiler;
 import dev.oreslang.compiler.OresCompiler;
+import dev.oreslang.gpu.GpuRuntime;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.IsolatePolicy;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
@@ -11,7 +13,9 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -665,6 +669,142 @@ final class GpuExecutionTest {
                         }
                         """));
         assertTrue(dimension.getMessage().contains("current automatic GPU launch contract is 1-D"));
+    }
+
+    @Test
+    void workItemIdentityPropagatesThroughGpuHelperCalls() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module math
+                  gpu fnc at_index(GpuArray<i32> values) => i32 {
+                    return values[gpu.index];
+                  }
+
+                  gpu fnc outer(GpuArray<i32> values) => i32 {
+                    return at_index(values);
+                  }
+                end
+                """);
+
+        GpuKernelCompiler.GpuKernel outer =
+                compilation.gpuProgram().requireKernel("math", "outer");
+        assertEquals("math", outer.module());
+        assertEquals(GpuKernelCompiler.ExecutionShape.DATA_PARALLEL_1D, outer.executionShape());
+        assertEquals("__ores_len_values", outer.launchPlan().globalWorkItemsExpression());
+        assertEquals("__ores_len_values", outer.launchPlan().resultSlotsExpression());
+    }
+
+    @Test
+    void kernelMetadataIsModuleQualifiedAndGpuAbiIsVersioned() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                define module left
+                  gpu fnc add(i32 a, i32 b) => i32 { return a + b; }
+                end
+                define module right
+                  gpu fnc add(i32 a, i32 b) => i32 { return a + b; }
+                end
+                """);
+
+        assertEquals("left", compilation.gpuProgram().requireKernel("left", "add").module());
+        assertEquals("right", compilation.gpuProgram().requireKernel("right", "add").module());
+        assertTrue(compilation.gpuProgram().manifest().contains("abi=ores-gpu-abi-v2"));
+        assertTrue(compilation.gpuProgram().source().contains("#define ORES_GPU_ABI_VERSION 2"));
+    }
+
+    @Test
+    void namedGpuFunctionDispatchesThroughInstalledBackendWithCompiledArtifact() throws Exception {
+        AtomicReference<GpuRuntime.Invocation> observed = new AtomicReference<>();
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "recording"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) {
+                observed.set(invocation);
+                return null;
+            }
+        });
+
+        try {
+            String program = """
+                    define module app
+                      gpu fnc kernel(i32 x) => void {
+                        return;
+                      }
+
+                      pub fnc main() => void {
+                        kernel(7);
+                        return;
+                      }
+                    end
+                    """;
+            Source source = Source.newBuilder(OresLanguage.ID, program, "gpu-runtime-dispatch.ores")
+                    .mimeType(OresLanguage.MIME_TYPE)
+                    .build();
+
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .build()) {
+                context.eval(source);
+            }
+
+            GpuRuntime.Invocation invocation = assertNotNull(observed.get());
+            assertTrue(invocation.compiled());
+            assertEquals("app.kernel", invocation.callable());
+            assertEquals("app", invocation.kernel().module());
+            assertEquals("kernel", invocation.kernel().sourceName());
+            assertEquals("ores-gpu-abi-v2", invocation.program().manifest().lines()
+                    .filter(line -> line.startsWith("abi="))
+                    .findFirst().orElseThrow().substring("abi=".length()));
+        } finally {
+            GpuRuntime.clearBackend();
+        }
+    }
+
+    @Test
+    void residentGpuArrayHostOrchestrationUsesInstalledBackend() throws Exception {
+        AtomicReference<List<?>> uploaded = new AtomicReference<>();
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "resident"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+            @Override public Object uploadArray(List<?> values) {
+                uploaded.set(values);
+                return List.copyOf(values);
+            }
+            @Override public List<?> downloadArray(Object token, long length) {
+                return (List<?>) token;
+            }
+        });
+
+        try {
+            String program = """
+                    pub fnc main() => void {
+                      val values = [1, 2, 3];
+                      val resident = GpuArray.from_cpu(values);
+                      val copied = resident.copy_to_cpu();
+                      return;
+                    }
+                    """;
+            Source source = Source.newBuilder(OresLanguage.ID, program, "gpu-resident-runtime.ores")
+                    .mimeType(OresLanguage.MIME_TYPE)
+                    .build();
+
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .build()) {
+                context.eval(source);
+            }
+            assertEquals(List.of(1L, 2L, 3L), uploaded.get());
+        } finally {
+            GpuRuntime.clearBackend();
+        }
+    }
+
+    @Test
+    void strictIsolateDeniesGpuCapabilityAtAdmission() {
+        SecurityException failure = assertThrows(SecurityException.class,
+                () -> OresCompiler.validateForIsolate("""
+                        gpu fnc kernel(i32 x) => i32 {
+                          return x;
+                        }
+                        """, IsolatePolicy.strictFaas()));
+        assertTrue(failure.getMessage().contains("GPU"));
     }
 
     @Test
