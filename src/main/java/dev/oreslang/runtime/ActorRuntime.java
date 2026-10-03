@@ -3322,6 +3322,12 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "SharedMutex payload cannot contain SyncCell writable shared state");
         }
+        if (value instanceof HttpRequestCapability
+                || value instanceof HttpResponseCapability
+                || value instanceof HttpTransportLease) {
+            throw new IllegalArgumentException(
+                    "SharedMutex payload cannot contain live HTTP transport capabilities");
+        }
         if (value instanceof java.util.concurrent.CompletionStage<?>) {
             throw new IllegalArgumentException(
                     "SharedMutex payload cannot contain pending/asynchronous computation state");
@@ -3709,7 +3715,10 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Lock<?>
-                || value instanceof OresMutex.Guard<?>) {
+                || value instanceof OresMutex.Guard<?>
+                || value instanceof ActorRuntime.HttpRequestCapability
+                || value instanceof ActorRuntime.HttpResponseCapability
+                || value instanceof HttpTransportLease) {
             throw new IllegalArgumentException(
                     "freeze() accepts data values only; live actor/shared capabilities require explicit actor transport");
         }
