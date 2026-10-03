@@ -1142,6 +1142,11 @@ public final class Parser {
     private String consumeMemberName() {
         Token token = peek();
         if (isMemberNameToken(token.type())) {
+            if (isReservedCallableName(token.type())
+                    && !reservedCallableNameFollowedByInvocation(current)) {
+                throw error(token, "'" + token.lexeme()
+                        + "' is reserved and may only be used as a function name in a call or as an object/map key");
+            }
             advance();
             return token.lexeme();
         }
