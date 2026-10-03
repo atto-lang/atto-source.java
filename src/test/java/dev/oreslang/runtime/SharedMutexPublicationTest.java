@@ -54,4 +54,46 @@ final class SharedMutexPublicationTest {
             shared.abortRuntimePublication(runtimeB);
         }
     }
+    @Test
+    void boundMutexRejectsUnsafeMutationBeforePermitRelease() {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            var foreign = runtimeB.<String>spawnSharedTrusted(
+                    factoryContext -> (message, context) -> { });
+            MutableState state = new MutableState("safe");
+            var shared = OresMutex.shared(state);
+
+            assertTrue(shared.bindToRuntime(runtimeA));
+
+            var guard = shared.lock();
+            state.child = foreign;
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    guard::release);
+            assertTrue(failure.getMessage().contains("another ActorRuntime"));
+            assertTrue(shared.isPoisoned(),
+                    "unsafe mutation must poison the SharedMutex rather than publish it");
+
+            shared.recover(value -> {
+                value.child = "repaired";
+                return null;
+            });
+            assertFalse(shared.isPoisoned());
+        }
+    }
+
+    private static final class MutableState implements OresMutex.SharedState {
+        private Object child;
+
+        private MutableState(Object child) {
+            this.child = child;
+        }
+
+        @Override
+        public Iterable<?> sharedStateChildren() {
+            return java.util.Collections.singletonList(child);
+        }
+    }
+
 }
