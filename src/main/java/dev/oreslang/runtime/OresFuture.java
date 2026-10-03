@@ -45,8 +45,10 @@ public final class OresFuture<T> extends CompletableFuture<T> {
             return (OresFuture<T>) ores;
         }
 
-        CompletableFuture<?> source = stage.toCompletableFuture();
-        OresFuture<T> result = new OresFuture<>(() -> source.cancel(true));
+        Runnable cancelHook = stage instanceof java.util.concurrent.Future<?> cancellable
+                ? () -> cancellable.cancel(true)
+                : () -> { };
+        OresFuture<T> result = new OresFuture<>(cancelHook);
         stage.whenComplete((value, failure) -> {
             if (failure == null) {
                 result.completeFromRuntime(value);
