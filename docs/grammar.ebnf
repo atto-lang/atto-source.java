@@ -1,5 +1,15 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
+(* Mixed-source preprocessing happens before this Ores grammar:
+   - in .ores files, java { <one Java type declaration> } declares Java;
+   - in .ores files, do java { <Java statements> } executes Java at that
+     Ores statement position and is lowered to a generated Java helper call;
+   - in .java files, ores { <Ores source> } embeds Oreslang.
+   These language islands are split/re-written by MixedSourceUnit before the
+   ordinary Ores lexer/parser sees the source. The initial do-java form is
+   statement-only and does not implicitly capture Ores locals or borrows. *)
+
+
 source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
 namespace_decl  = "namespace" IDENT ";" ;
 
