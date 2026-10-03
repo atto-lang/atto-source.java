@@ -50,11 +50,9 @@ public final class CapabilityChecker {
         checker.checkProgram(program, policy);
 
         // Commit permanent source-literal identities only after the complete
-        // admission pass succeeds. Invalid/rejected code therefore cannot burn
-        // the process registry's compiler-literal reserve.
-        for (String literal : checker.sourceSymbolLiterals) {
-            OresSymbol.processLiteral(literal, policy);
-        }
+        // admission pass succeeds. Batch admission preflights capacity and is
+        // atomic, so failed/rejected code cannot burn the compiler-literal reserve.
+        OresSymbol.registerProcessLiterals(checker.sourceSymbolLiterals, policy);
     }
 
     private static <T> void index(
