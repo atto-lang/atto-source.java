@@ -32,6 +32,7 @@ public final class CapabilityChecker {
     private final Set<Object> typeExpansionStack =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final Set<String> sourceSymbolLiterals = new java.util.LinkedHashSet<>();
+    private final Set<String> untrustedSymbolExports = new java.util.LinkedHashSet<>();
 
     private CapabilityChecker(Ast.Program program) {
         for (Ast.ImportDecl imported : program.imports()) {
@@ -44,6 +45,12 @@ public final class CapabilityChecker {
         }
 
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.storage() == Ast.ModuleStorage.GLOBAL) {
+                require(
+                        policy,
+                        IsolatePolicy.Capability.PROCESS_GLOBAL,
+                        "global module " + module.name());
+            }
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.TypeAliasDecl alias) {
                     index(aliases, ambiguousAliases, module.name(), alias.name(), alias);
@@ -70,6 +77,11 @@ public final class CapabilityChecker {
             // Permanent identities are committed only after the whole code unit
             // passes capability admission.
             OresSymbol.registerProcessLiterals(checker.sourceSymbolLiterals, policy);
+            for (String exported : checker.untrustedSymbolExports) {
+                OresSymbol.exportToUntrusted(
+                        OresSymbol.processLiteral(exported, policy),
+                        policy);
+            }
         }
     }
 
@@ -204,11 +216,30 @@ public final class CapabilityChecker {
                 } else if (declaration instanceof Ast.FieldDecl field) {
                     checkType(field.type(), policy);
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
+                    if (hasAnnotation(field, "ExportToUntrusted")) {
+                        require(
+                                policy,
+                                IsolatePolicy.Capability.SYMBOL_EXPORT,
+                                "@ExportToUntrusted " + module.name() + "." + field.name());
+                        if (!(field.initializer() instanceof Ast.LiteralExpr literal
+                                && literal.value() instanceof Ast.Symbol symbol)) {
+                            throw new SecurityException(
+                                    "@ExportToUntrusted requires a static Symbol literal");
+                        }
+                        untrustedSymbolExports.add(symbol.name());
+                    }
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
                 }
             }
         }
+    }
+
+    private static boolean hasAnnotation(Ast.FieldDecl field, String name) {
+        for (Ast.Annotation annotation : field.annotations()) {
+            if (annotation.name().equals(name)) return true;
+        }
+        return false;
     }
 
     private static IsolatePolicy actorPolicy(Ast.ActorKind kind, IsolatePolicy parent) {
@@ -233,6 +264,9 @@ public final class CapabilityChecker {
 
         if (type.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex<T>");
+        }
+        if (type.name().equals("GlobalRef")) {
+            require(policy, IsolatePolicy.Capability.PROCESS_GLOBAL, "GlobalRef<T>");
         }
         String javaClass = javaImports.get(type.name());
         if (javaClass != null) {
