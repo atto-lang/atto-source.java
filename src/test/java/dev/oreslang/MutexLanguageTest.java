@@ -49,7 +49,7 @@ final class MutexLanguageTest {
     void sharedActorMethodsRejectBlockingSharedMutexWithLock() {
         var program = Parser.parse("""
                 shared actor Worker {
-                  pub fnc run(SharedMutex<int> mutex) => void {
+                  pub run(SharedMutex<int> mutex) : void {
                     mutex.with_lock(|value| -> {
                       return;
                     });
@@ -572,7 +572,7 @@ final class MutexLanguageTest {
         var methodProgram = Parser.parse("""
                 define module model
                   define class Counter as
-                    pub read() => int { return 1; }
+                    pub read() : int { return 1; }
                   end
                 end
                 define module app
@@ -595,7 +595,7 @@ final class MutexLanguageTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module model
                   define class Counter as
-                    pub read() => int { return 7; }
+                    pub read() : int { return 7; }
                   end
                 end
                 define module app
