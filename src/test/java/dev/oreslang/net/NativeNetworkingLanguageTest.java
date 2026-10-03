@@ -415,6 +415,137 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
+    void adversarialNetworkCapabilityCannotUseRawSocketSurfaces() {
+        String rawNative = """
+                define module app
+                  pub fnc main() => void {
+                    native_net.resolve_all("localhost");
+                    return;
+                  }
+                end
+                """;
+        Exception nativeError = assertThrows(
+                Exception.class,
+                () -> evaluateAdversarial(rawNative));
+        assertTrue(
+                nativeError.toString().contains("bounded stateless HTTP")
+                        || nativeError.toString().contains("raw native networking"),
+                nativeError::toString);
+
+        String rawSocket = """
+                define module app
+                  pub fnc main() => void {
+                    val socket = net.Socket.new();
+                    return;
+                  }
+                end
+                """;
+        Exception socketError = assertThrows(
+                Exception.class,
+                () -> evaluateAdversarial(rawSocket));
+        assertTrue(
+                socketError.toString().contains("bounded stateless HTTP")
+                        || socketError.toString().contains("raw sockets"),
+                socketError::toString);
+    }
+
+    @Test
+    void malformedChunkTrailerFailsClosed() throws Exception {
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        Thread server = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                readHeadersText(client);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
+                        + "Connection: close\r\n\r\n"
+                        + "1\r\nx\r\n"
+                        + "0\r\n"
+                        + "broken-trailer\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable ignored) {
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-http-malformed-trailer-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/").GET().build();
+                    net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.ofString());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        Exception error = assertThrows(Exception.class, () -> evaluate(program));
+        assertTrue(error.toString().contains("malformed chunk trailer"), error::toString);
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+    }
+
+    @Test
+    void patchRequestCarriesContentLength() throws Exception {
+        NativeSocketHandle listener = NativeSocketBridge.listenHandle("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread server = new Thread(() -> {
+            NativeSocketHandle client = null;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                NativeSocketBridge.setSoTimeout(client, 3_000);
+                String headers = readHeadersText(client);
+                assertTrue(headers.startsWith("PATCH /patch HTTP/1.1"));
+                assertEquals(3, headerInt(headers, "content-length"));
+                byte[] body = new byte[3];
+                readExactly(client, body);
+                assertEquals("abc", new String(body, StandardCharsets.UTF_8));
+                writeAll(client, ("HTTP/1.1 204 No Content\r\n"
+                        + "Content-Length: 0\r\n"
+                        + "Connection: close\r\n\r\n")
+                        .getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable error) {
+                failure.set(error);
+            } finally {
+                if (client != null && client.isOpen()) {
+                    try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+                }
+            }
+        }, "oreslang-http-patch-content-length-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val builder = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/patch");
+                    val request = builder.method(
+                        "PATCH",
+                        net.http.HttpRequest.BodyPublishers.ofString("abc")
+                    ).build();
+                    val response = net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.discarding());
+                    stdio.println(response.statusCode());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        String output = evaluate(program);
+        assertTrue(output.contains("204"));
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+        if (failure.get() != null) fail("server failed", failure.get());
+    }
+
+    @Test
     void networkingImplementationKeepsProtocolEngineOutOfJava() throws Exception {
         String source = java.nio.file.Files.readString(
                 java.nio.file.Path.of("src/main/java/dev/oreslang/net/OresNet.java"));
@@ -503,6 +634,23 @@ final class NativeNetworkingLanguageTest {
                 java.nio.file.Path.of("src/main/c/oresnet.c"));
         assertTrue(source.contains("close(fd) < 0 && errno != EINTR"));
         assertFalse(source.contains("if (errno == EINTR) continue;\n        throw_errno(env, \"close\")"));
+    }
+
+    private static String evaluateAdversarial(String program) throws Exception {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.NETWORK)
+                .asAdversarial();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "native-net-adversarial-test.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = policy.restrictedContextBuilder(ExecutionProfile.serverJit())
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     private static String evaluate(String program) throws Exception {
