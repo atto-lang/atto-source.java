@@ -626,6 +626,31 @@ public final class TypeChecker {
                             label);
                 }
             }
+            if (call.callee() instanceof Ast.StaticMemberExpr qualifiedCall
+                    && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
+                    && modules.containsKey(namespace.name())) {
+                Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
+                if (target != null) {
+                    if (target.actorKind() != Ast.ActorKind.NONE
+                            && currentActorKind != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + namespace.name() + "::" + target.name()
+                                        + "' cannot be synchronously invoked from another actor turn; "
+                                        + "use mailbox-oriented actor composition");
+                    }
+                    String label = "function " + namespace.name() + "::" + qualifiedCall.member();
+                    validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+                    return checkGenericCallable(
+                            target.genericParameters(),
+                            target.parameters(),
+                            target.returnType(),
+                            call.arguments(),
+                            env, generics, self,
+                            null,
+                            explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
+                            label);
+                }
+            }
             if (call.callee() instanceof Ast.MemberExpr qualifiedCall
                     && qualifiedCall.receiver() instanceof Ast.NameExpr namespace
                     && modules.containsKey(namespace.name())) {
@@ -683,6 +708,27 @@ public final class TypeChecker {
                     case "Err" -> new Named("Result", List.of(Unknown.INSTANCE, value));
                     default -> throw new IllegalStateException("unreachable sum constructor");
                 };
+            }
+            if (call.callee() instanceof Ast.StaticMemberExpr member) {
+                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                if (receiver instanceof ClassNamespace classNamespace) {
+                    Ast.ClassDecl klass = findClass(classNamespace.className());
+                    if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
+                    Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                    if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
+                    validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + klass.name() + "::" + fn.name());
+                    List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
+                    String label = "static function " + klass.name() + "::" + fn.name();
+                    return checkGenericCallable(
+                            callableGenerics,
+                            fn.parameters(),
+                            fn.returnType(),
+                            call.arguments(),
+                            env, generics, self,
+                            null,
+                            explicitGenericBindings(fn.genericParameters(), call.typeArguments(), generics, self, label),
+                            label);
+                }
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
@@ -765,6 +811,48 @@ public final class TypeChecker {
             }
             return fn.result();
         }
+        if (expr instanceof Ast.StaticMemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
+                Ast.FunctionDecl moduleFunction = functions.get(namespace.name() + "." + member.member());
+                if (moduleFunction != null) {
+                    if (!moduleFunction.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "generic callable '" + namespace.name() + "::" + member.member()
+                                        + "' must be specialized by a direct call; polymorphic function values are not supported yet");
+                    }
+                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), Set.of(), null);
+                }
+                Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
+                if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
+            }
+
+            Type receiver = typeOf(member.receiver(), env, generics, self);
+            if (receiver instanceof ClassNamespace classNamespace) {
+                Ast.ClassDecl klass = findClass(classNamespace.className());
+                if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
+                List<Ast.MethodDecl> staticFunctions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
+                if (staticFunctions.size() == 1) {
+                    Ast.MethodDecl fn = staticFunctions.getFirst();
+                    if (!fn.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "generic static function '" + klass.name() + "::" + fn.name()
+                                        + "' must be specialized by a direct call; polymorphic function values are not supported yet");
+                    }
+                    return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                }
+                if (staticFunctions.size() > 1) {
+                    throw new IllegalArgumentException("overloaded static function '" + member.member()
+                            + "' must be called so arity can select the overload");
+                }
+                throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
+            }
+
+            if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) {
+                return Unknown.INSTANCE;
+            }
+            throw new IllegalArgumentException("'::' requires a module or class namespace on the left");
+        }
+
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl moduleFunction = functions.get(namespace.name() + "." + member.member());
