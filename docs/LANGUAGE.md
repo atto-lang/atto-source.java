@@ -316,7 +316,31 @@ end
 
 `implements` and `impl` remain accepted as migration aliases for `is`; new source should use `is`.
 
-Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible types.
+Multiple class inheritance is supported, but declaring more than one direct class parent produces a compiler warning. Prefer multiple interfaces with `is` when only contracts are needed, and traits with `with` when reusable behavior/state does not require a second class identity.
+
+There is deliberately **no left-to-right method-resolution order**. If two direct parent branches contribute the same instance method name and arity, the subclass must declare an explicit resolving override. This includes a diamond where both branches reach the same base method.
+
+A resolving override chooses a parent implementation explicitly:
+
+```ores
+define class A as
+  pub foo() => int { return 1; }
+end
+
+define class B as
+  pub foo() => int { return 2; }
+end
+
+define class C extends A, B as
+  pub foo() => int {
+    return super.B.foo();
+  }
+end
+```
+
+`super.Parent.method(...)` may name only a **direct** parent. `super.Parent` is a dispatch namespace, not a first-class value, so it cannot be stored or passed around. Parent-qualified dispatch preserves the same `self` object; only method lookup starts at the named parent.
+
+Inherited state is stricter than methods: distinct parent fields with the same name are rejected, and a subclass cannot shadow an inherited field. Oreslang never silently chooses a parent storage slot by declaration order. The static checker also rejects inheritance cycles and incompatible inherited member shapes; explicit method overrides must remain type-compatible with all inherited contracts.
 
 `Object` and `List` are extensible base classes:
 
