@@ -26,8 +26,9 @@ Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
 import module foo from "../xyz";
-import module {foo, bar} from "../xyz";
-import class {x} from '../xyz';
+import module {foo as foo_v2, bar} from "../xyz";
+import class {x as ExternalX} from '../xyz';
+import fnc {solve as linear_solve} from '../solver';
 import fnc * as funcs from '../xyz';
 import * as x from './xyz';
 ```
@@ -305,15 +306,56 @@ Panics are distinct from ordinary recoverable errors. Normal `try/catch` does no
 
 `Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
 
-## Numbers
+## Numbers, vectors, matrices, and engineering math
 
-Built-in numeric families include integral, floating, decimal, and complex types. Imaginary literals use `i`:
+Built-in numeric families include integral, floating, decimal, and complex types. Imaginary literals use `i`, and `complex(real, imag)` is the explicit constructor:
 
 ```ores
 const complex z = 3 + 4i;
+val complex same = complex(3.0, 4.0);
+val magnitude = z.abs();
+val phase = z.phase();
+val conjugate = z.conj();
 ```
 
 Numeric widening is loss-aware; real values can widen toward complex values, but silent lossy narrowing is not performed.
+
+Dense vectors and matrices are immutable numeric values with contiguous primitive backing storage in the JVM implementation. Literal sugar lowers to the ordinary `vector(...)` and `matrix(...)` constructors:
+
+```ores
+val a = matrix[[1.0, 2.0], [3.0, 4.0]];
+val x = vector[5.0, 6.0];
+
+val y = a @ x;        // matrix multiplication
+val b = 2.0 * a;      // scalar scaling; * is deliberately not matrix multiply
+val at = a.transpose();
+val inv = a.inverse();
+val n = a.norm();
+```
+
+`@` is reserved for linear-algebra multiplication. This avoids the common ambiguity between element-wise/scalar multiplication and matrix multiplication. Matrix shape compatibility is checked at runtime; numeric category compatibility is checked statically. The JVM runtime delegates dense kernels and decompositions to EJML while keeping Oreslang values immutable at the guest-language boundary.
+
+The `math` facade contains constants and complex helpers:
+
+```ores
+val i = math.i;
+val identity = math.identity(3);
+val complex phasor = math.polar(10.0, math.pi / 4.0);
+```
+
+The `ee` facade provides electrical-engineering primitives using SI units:
+
+```ores
+val omega = ee.omega(60.0);       // radians / second
+val zr = ee.z_r(100.0);           // resistance
+val zl = ee.z_l(omega, 10e-3);    // j*w*L
+val zc = ee.z_c(omega, 100e-6);   // 1/(j*w*C)
+val total = ee.parallel(zr, zc);
+val y = ee.admittance(total);
+val source = ee.phasor_deg(120.0, -30.0);
+```
+
+The core facade is intentionally small. Larger FFT, signal-processing, sparse-matrix, optimization, or domain-specific packages can bind to mature JVM libraries behind the same Oreslang types rather than reimplementing numerical kernels.
 
 ## Lambdas
 
