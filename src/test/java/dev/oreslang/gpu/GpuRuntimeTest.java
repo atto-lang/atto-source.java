@@ -98,7 +98,11 @@ final class GpuRuntimeTest {
         GpuRuntime.Backend backend = new TransferBackend("alias");
         GpuRuntime.installBackend(backend);
         GpuRuntime runtime = new GpuRuntime();
-        GpuRuntime.ArrayHandle array = runtime.uploadArray(List.of(1L, 2L));
+        Object sharedAllocation = new Object();
+        GpuRuntime.ArrayHandle first =
+                GpuRuntime.adoptArray(backend, sharedAllocation, 2);
+        GpuRuntime.ArrayHandle second =
+                GpuRuntime.adoptArray(backend, sharedAllocation, 2);
 
         var compilation = OresCompiler.compile("""
                 define module app
@@ -107,17 +111,17 @@ final class GpuRuntimeTest {
                   }
                 end
                 """);
-        var kernel = compilation.gpuProgram().requireKernel("app", "combine");
+        var kernel = compilation.gpuProgram().requireKernel("app", "combine", 2);
 
         GpuRuntime.GpuTransferException failure = assertThrows(
                 GpuRuntime.GpuTransferException.class,
                 () -> runtime.dispatch(
                         "app.combine",
                         GpuRuntime.CallableKind.FNC,
-                        List.of(array, array),
+                        List.of(first, second),
                         compilation.gpuProgram(),
                         kernel));
-        assertTrue(failure.getMessage().contains("restrict/no-alias"));
+        assertTrue(failure.getMessage().contains("aliased GpuArray resources"));
     }
 
     @Test
@@ -138,7 +142,7 @@ final class GpuRuntimeTest {
                   }
                 end
                 """);
-        var kernel = compilation.gpuProgram().requireKernel("app", "id");
+        var kernel = compilation.gpuProgram().requireKernel("app", "id", 1);
 
         assertEquals(9L, new GpuRuntime().dispatch(
                 "app.id",
@@ -150,6 +154,76 @@ final class GpuRuntimeTest {
         assertSame(kernel, seen[0].kernel());
         assertSame(compilation.gpuProgram(), seen[0].program());
         assertEquals("app", seen[0].kernel().module());
+        assertEquals(1, seen[0].kernel().arity());
+    }
+
+    @Test
+    void compiledDispatchRejectsMismatchedCallableIdentityBeforeBackendInvocation() {
+        final boolean[] invoked = {false};
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "identity"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) {
+                invoked[0] = true;
+                return 1L;
+            }
+        });
+
+        var compilation = OresCompiler.compile("""
+                define module app
+                  gpu fnc id(i32 x) => i32 { return x; }
+                end
+                """);
+        var kernel = compilation.gpuProgram().requireKernel("app", "id", 1);
+
+        GpuRuntime.GpuTransferException failure = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> new GpuRuntime().dispatch(
+                        "wrong.id",
+                        GpuRuntime.CallableKind.FNC,
+                        List.of(1L),
+                        compilation.gpuProgram(),
+                        kernel));
+        assertTrue(failure.getMessage().contains("identity mismatch"));
+        assertFalse(invoked[0]);
+    }
+
+    @Test
+    void compiledDispatchEnforcesVoidAndScalarBackendResults() {
+        var voidCompilation = OresCompiler.compile("""
+                define module app
+                  gpu fnc sink(i32 x) => void { return; }
+                end
+                """);
+        var voidKernel = voidCompilation.gpuProgram().requireKernel("app", "sink", 1);
+
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "bad-void"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) { return 1L; }
+        });
+        GpuRuntime.GpuExecutionException badVoid = assertThrows(
+                GpuRuntime.GpuExecutionException.class,
+                () -> new GpuRuntime().dispatch(
+                        "app.sink", GpuRuntime.CallableKind.FNC, List.of(1L),
+                        voidCompilation.gpuProgram(), voidKernel));
+        assertTrue(badVoid.getMessage().contains("void callable"));
+
+        var scalarCompilation = OresCompiler.compile("""
+                define module app
+                  gpu fnc value(i32 x) => i32 { return x; }
+                end
+                """);
+        var scalarKernel = scalarCompilation.gpuProgram().requireKernel("app", "value", 1);
+
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "bad-scalar"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+        });
+        GpuRuntime.GpuExecutionException badScalar = assertThrows(
+                GpuRuntime.GpuExecutionException.class,
+                () -> new GpuRuntime().dispatch(
+                        "app.value", GpuRuntime.CallableKind.FNC, List.of(1L),
+                        scalarCompilation.gpuProgram(), scalarKernel));
+        assertTrue(badScalar.getMessage().contains("non-void"));
     }
 
     @Test
