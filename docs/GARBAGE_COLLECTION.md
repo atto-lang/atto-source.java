@@ -2,6 +2,14 @@
 
 Oreslang is **ownership-first, GC-assisted**.
 
+Oreslang distinguishes three lifetime classes:
+
+1. **managed** values, whose unreachable host/runtime representation may be reclaimed automatically;
+2. **owned** values/resources, whose semantic lifetime is determined by move/borrow rules and deterministic drop/close boundaries;
+3. **pinned runtime roots**, whose owner deliberately keeps them alive independently of ordinary reachability until an explicit lifecycle operation releases them.
+
+Process-wide registries such as singleton state or canonical symbol interners belong in the third class when those features are present. Ordinary `actor.gc()` and `process.gc()` are not allowed to unroot them.
+
 The ownership/borrow checker is the primary lifetime mechanism. Ordinary owned
 values should become reclaimable when lexical ownership ends, an actor-owned
 allocation is released, or an actor terminates. Garbage collection is a fallback
@@ -53,6 +61,7 @@ process.gc();
 `process.gc()`:
 
 - is an explicit whole-runtime/host-VM collection hint;
+- never changes language-level reachability and never destroys pinned runtime roots;
 - requires the `PROCESS_GC` capability;
 - is denied by strict FaaS;
 - is stripped from private actors;
@@ -133,6 +142,10 @@ Prefer, in order:
 4. deterministic release for explicit resources;
 5. tracing GC only for the residual graph the compiler/runtime cannot reclaim
    deterministically.
+
+6. explicit, owner-specific lifecycle operations for pinned roots; never reinterpret a GC hint as `free(ptr)`.
+
+A pinned root may expose its own safe teardown API, but that API must serialize teardown against users of the root, invalidate stale handles, perform cleanup, and only then make the backing graph eligible for physical reclamation. Symbols whose identity must remain stable for the process lifetime should normally have no individual collection operation.
 
 Do not make application code call GC to prevent ordinary leaks. If an ordinary
 owned value survives too long, that is an ownership/runtime bug to fix rather
