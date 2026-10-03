@@ -1,0 +1,127 @@
+package dev.oreslang;
+
+import dev.oreslang.ast.Ast;
+import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
+import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+final class ActorSpawnLanguageTest {
+
+    @Test
+    void parsesSpawnAsDedicatedExpression() {
+        Ast.Program program = Parser.parse("""
+                pub actor fnc worker(int value) => int {
+                  return value;
+                }
+
+                pub routine main() => void {
+                  val pending = spawn worker(1);
+                  val ready = await spawn worker(2);
+                  return;
+                }
+                """);
+
+        Ast.FunctionDecl main = (Ast.FunctionDecl) program.modules().getFirst().declarations().get(1);
+        Ast.BindingStmt pending = (Ast.BindingStmt) main.body().getFirst();
+        assertInstanceOf(Ast.SpawnExpr.class, pending.initializer());
+
+        Ast.BindingStmt ready = (Ast.BindingStmt) main.body().get(1);
+        Ast.AwaitExpr awaited = assertInstanceOf(Ast.AwaitExpr.class, ready.initializer());
+        assertInstanceOf(Ast.SpawnExpr.class, awaited.expression());
+
+        assertDoesNotThrow(() -> TypeChecker.check(program));
+    }
+
+    @Test
+    void actorCallableRequiresSpawn() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub actor fnc worker(int value) => int {
+                          return value;
+                        }
+
+                        pub routine main() => void {
+                          val nope = worker(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("spawn"));
+    }
+
+    @Test
+    void spawnRejectsOrdinaryCallable() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc ordinary(int value) => int {
+                          return value;
+                        }
+
+                        pub routine main() => void {
+                          val nope = spawn ordinary(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("not declared with the actor keyword"));
+    }
+
+    @Test
+    void routineSpawnDoesNotExposeResultFuture() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub actor routine worker() => void {
+                          return;
+                        }
+
+                        pub routine main() => void {
+                          val pending = spawn worker();
+                          val nope = pending.result;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("routine spawn has no result"));
+    }
+
+    @Test
+    void spawnReturnsImmediatelyAndResultIsAwaitedSeparately() throws Exception {
+        String program = """
+                pub actor fnc add_one(int value) => int {
+                  return value + 1;
+                }
+
+                pub routine main() => void {
+                  val pending = spawn add_one(41);
+                  val ready = await pending.ready;
+                  val answer = await pending.result;
+                  stdio.println(answer);
+                  stdio.println(ready.id);
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "actor-spawn.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("42"));
+        assertTrue(rendered.contains("ActorId"));
+    }
+}
