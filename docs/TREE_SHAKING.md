@@ -23,20 +23,20 @@ Example source:
 pub const bool use_a = false;
 
 define module A
-  pub fnc foo() => String { return "hi"; }
+  pub fnc foo(): String { return "hi"; }
 end
 
 define module B
-  pub fnc foo() => String { return "bye"; }
+  pub fnc foo(): String { return "bye"; }
 end
 
-type F = typeof fnc() -> String;
+type F = typeof fnc() => String;
 
-pub fnc choose(bool t) => F {
+pub fnc choose(bool t): F {
   return t ? A.foo : B.foo;
 }
 
-pub routine main() => void {
+pub routine main(): void {
   val F selected = choose(use_a);
   stdio.stdout.write(selected());
   return;
