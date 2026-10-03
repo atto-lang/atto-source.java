@@ -110,7 +110,9 @@ The GPU artifact declares device requirements explicitly. In particular, `cl_khr
 
 The evaluator now executes **resident-data host orchestration** through `GpuRuntime`:
 `GpuArray.from_cpu`, `GpuArray.length`, `GpuArray.stream`, `GpuArray.copy_to_cpu`,
-`GpuStream.from_array`, `GpuStream.collect`, and `GpuStream.copy_to_cpu`. Uploads
+`GpuMatrix.from_cpu`, `GpuMatrix.rows`, `GpuMatrix.cols`, `GpuMatrix.length`,
+`GpuMatrix.copy_to_cpu`, `GpuStream.from_array`, `GpuStream.collect`, and
+`GpuStream.copy_to_cpu`. Uploads
 freeze/copy host inputs before handing them to the backend; downloads return a fresh
 detached mutable host Array/List.
 
@@ -120,7 +122,7 @@ without a configured physical GPU launcher, execution fails closed. A future lau
 should consume the already-generated `GpuProgram` artifact, compile/cache the OpenCL
 source for the selected device, bind buffers/scalars according to the manifest, and launch
 according to `SINGLE_WORK_ITEM`, `DATA_PARALLEL_1D`, or batch-dispatch metadata. It
-must honor GPU ABI v2 launch-safety flags: clamp signed negative global-work extents to
+must honor GPU ABI v3 matrix-shape metadata and launch-safety flags: clamp signed negative global-work extents to
 zero, skip submission when the resolved global work-item count is zero, size error/result
 slots from the launch plan, and reject overlapping global-buffer bindings whenever the
 manifest marks the kernel as requiring no-alias enforcement.
