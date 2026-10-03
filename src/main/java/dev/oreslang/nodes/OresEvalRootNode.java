@@ -62,18 +62,22 @@ public final class OresEvalRootNode extends RootNode {
         }
         if (isControl(arguments, INIT_ONLY_COMMAND)) {
             current.link();
-            return current.initialize();
+            return context.actors().executeRootTask(current::initialize);
         }
         if (isControl(arguments, MAIN_ONLY_COMMAND)) {
             current.link();
-            return current.executeMain(new Object[0]);
+            return context.actors().executeRootTask(
+                    () -> current.executeMain(new Object[0]));
         }
 
-        // Backward-compatible single-source execution. Multi-file hosts use
-        // link/init/main commands to install a full import graph before init.
+        // Root/main guest execution belongs to the SHARED carrier domain. Keep
+        // link metadata installation outside the pool, then run init + main as
+        // one ordered root task so main never races its own initialization.
         current.link();
-        current.initialize();
-        return current.executeMain(arguments);
+        return context.actors().executeRootTask(() -> {
+            current.initialize();
+            return current.executeMain(arguments);
+        });
     }
 
     private Evaluator evaluator(OresContext context) {
@@ -270,7 +274,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
-            if (ActorRuntime.currentActorKind() == ActorRuntime.ActorKind.UNTRUSTED) {
+            // Every actor kind observes stop/turn-overrun signals at statement
+            // boundaries. UNTRUSTED actors additionally consume fuel here and
+            // at expression boundaries below.
+            if (ActorRuntime.inActorExecution()) {
                 context.schedulerSafepoint();
             }
             if (stmt instanceof Ast.BindingStmt binding) {
