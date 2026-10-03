@@ -491,8 +491,11 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (receiver instanceof GpuArrayFacade factory) {
-                if (!name.equals("from_cpu")) throw new IllegalArgumentException("unknown GpuArray member " + name);
-                return (Invokable) factory::fromCpu;
+                return switch (name) {
+                    case "from_cpu" -> (Invokable) factory::fromCpu;
+                    case "zeros_like" -> (Invokable) factory::zerosLike;
+                    default -> throw new IllegalArgumentException("unknown GpuArray member " + name);
+                };
             }
             if (receiver instanceof GpuStreamFacade factory) {
                 if (!name.equals("from_array")) throw new IllegalArgumentException("unknown GpuStream member " + name);
@@ -1058,6 +1061,15 @@ public final class OresEvalRootNode extends RootNode {
             if (source instanceof List<?> list) return context.gpuRuntime().uploadArray(list);
             if (source instanceof Object[] array) return context.gpuRuntime().uploadArray(List.of(array));
             throw new IllegalArgumentException("GpuArray.from_cpu expects an Array/List");
+        }
+
+        private Object zerosLike(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.zeros_like");
+            requireOne(args, "GpuArray.zeros_like");
+            if (!(args.getFirst() instanceof GpuRuntime.ArrayHandle source)) {
+                throw new IllegalArgumentException("GpuArray.zeros_like expects GpuArray");
+            }
+            return context.gpuRuntime().zerosLike(source);
         }
     }
 
