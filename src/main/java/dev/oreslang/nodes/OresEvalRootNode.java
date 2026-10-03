@@ -5,6 +5,8 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.compiler.GpuKernelCompiler;
+import dev.oreslang.gpu.GpuRuntime;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -14,6 +16,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -25,10 +28,19 @@ import java.util.concurrent.CompletionStage;
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
     private final Ast.Program program;
+    private final GpuKernelCompiler.GpuProgram gpuProgram;
 
     public OresEvalRootNode(OresLanguage language, Ast.Program program) {
+        this(language, program, GpuKernelCompiler.compile(program));
+    }
+
+    public OresEvalRootNode(
+            OresLanguage language,
+            Ast.Program program,
+            GpuKernelCompiler.GpuProgram gpuProgram) {
         super(language);
-        this.program = program;
+        this.program = Objects.requireNonNull(program, "program");
+        this.gpuProgram = Objects.requireNonNull(gpuProgram, "gpuProgram");
     }
 
     @Override public String getName() { return "ores-eval"; }
@@ -42,11 +54,12 @@ public final class OresEvalRootNode extends RootNode {
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
         CapabilityChecker.check(program, context.isolatePolicy());
-        return new Evaluator(program, context).execute(arguments);
+        return new Evaluator(program, gpuProgram, context).execute(arguments);
     }
 
     private static final class Evaluator {
         private final Ast.Program program;
+        private final GpuKernelCompiler.GpuProgram gpuProgram;
         private final OresContext context;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
@@ -55,9 +68,16 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
+        private final IdentityHashMap<Ast.FunctionDecl, String> functionModules = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.MethodDecl, String> methodModules = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.MethodDecl, String> methodClasses = new IdentityHashMap<>();
 
-        private Evaluator(Ast.Program program, OresContext context) {
+        private Evaluator(
+                Ast.Program program,
+                GpuKernelCompiler.GpuProgram gpuProgram,
+                OresContext context) {
             this.program = program;
+            this.gpuProgram = gpuProgram;
             this.context = context;
             indexDeclarations();
         }
@@ -66,9 +86,18 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.ModuleDecl module : program.modules()) {
                 modules.put(module.name(), module);
                 for (Ast.Decl decl : module.declarations()) {
-                    if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
-                    else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
-                    else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                    if (decl instanceof Ast.FunctionDecl fn) {
+                        functionModules.put(fn, module.name());
+                        index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                    } else if (decl instanceof Ast.ClassDecl klass) {
+                        index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                        for (Ast.MethodDecl method : klass.methods()) {
+                            methodModules.put(method, module.name());
+                            methodClasses.put(method, klass.name());
+                        }
+                    } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                        index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
+                    }
                 }
             }
         }
@@ -104,11 +133,31 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
-            if (Ast.hasQuantumPlacement(fn.annotations())) throw quantumBackendUnavailable("function " + fn.name());
-            if (Ast.hasGpuPlacement(fn.annotations())) throw gpuBackendUnavailable("function " + fn.name());
             if (args.size() != fn.parameters().size()) {
-                if (fn.parameters().isEmpty() && args.size() == 1 && args.getFirst() instanceof Object[] array && array.length == 0) args = List.of();
-                else throw new IllegalArgumentException("function " + fn.name() + " expects " + fn.parameters().size() + " arguments, got " + args.size());
+                if (fn.parameters().isEmpty() && args.size() == 1
+                        && args.getFirst() instanceof Object[] array && array.length == 0) {
+                    args = List.of();
+                } else {
+                    throw new IllegalArgumentException(
+                            "function " + fn.name() + " expects " + fn.parameters().size()
+                                    + " arguments, got " + args.size());
+                }
+            }
+            if (Ast.hasQuantumPlacement(fn.annotations())) {
+                throw quantumBackendUnavailable("function " + fn.name());
+            }
+            if (Ast.hasGpuPlacement(fn.annotations())) {
+                String module = functionModules.get(fn);
+                if (module == null) throw new IllegalStateException("missing module identity for GPU function " + fn.name());
+                context.requireCapability(IsolatePolicy.Capability.GPU, "gpu fnc " + module + "." + fn.name());
+                GpuKernelCompiler.GpuKernel kernel = gpuProgram.requireKernel(module, fn.name());
+                Object result = context.gpuRuntime().dispatch(
+                        module + "." + fn.name(),
+                        GpuRuntime.CallableKind.FNC,
+                        args,
+                        gpuProgram,
+                        kernel);
+                return shapeReturnedValue(fn.returnType(), result, "gpu function " + module + "." + fn.name());
             }
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -118,7 +167,9 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "function " + fn.name()); }
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(fn.returnType(), signal.value, "function " + fn.name());
+            }
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -246,6 +297,8 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("GpuArray")) return new GpuArrayFacade(context);
+                if (name.name().equals("GpuStream")) return new GpuStreamFacade(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -437,6 +490,49 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown process member " + name);
                 };
             }
+            if (receiver instanceof GpuArrayFacade factory) {
+                if (!name.equals("from_cpu")) throw new IllegalArgumentException("unknown GpuArray member " + name);
+                return (Invokable) factory::fromCpu;
+            }
+            if (receiver instanceof GpuStreamFacade factory) {
+                if (!name.equals("from_array")) throw new IllegalArgumentException("unknown GpuStream member " + name);
+                return (Invokable) factory::fromArray;
+            }
+            if (receiver instanceof GpuRuntime.ArrayHandle array) {
+                return switch (name) {
+                    case "stream" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.stream");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.stream");
+                        return context.gpuRuntime().stream(array);
+                    };
+                    case "copy_to_cpu" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.copy_to_cpu");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.copy_to_cpu");
+                        return context.gpuRuntime().downloadArray(array);
+                    };
+                    case "length" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.length");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.length");
+                        return array.length();
+                    };
+                    default -> throw new IllegalArgumentException("unknown GpuArray member " + name);
+                };
+            }
+            if (receiver instanceof GpuRuntime.StreamHandle stream) {
+                return switch (name) {
+                    case "collect" -> (Invokable) args -> {
+                        requireZero(args, "GpuStream.collect");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.collect");
+                        return context.gpuRuntime().collect(stream);
+                    };
+                    case "copy_to_cpu" -> (Invokable) args -> {
+                        requireZero(args, "GpuStream.copy_to_cpu");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.copy_to_cpu");
+                        return context.gpuRuntime().downloadStream(stream);
+                    };
+                    default -> throw new IllegalArgumentException("unknown GpuStream member " + name);
+                };
+            }
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
@@ -536,10 +632,34 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
-            if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
-            if (Ast.hasQuantumPlacement(fn.annotations())) throw quantumBackendUnavailable("static function " + klass.name() + "." + fn.name());
-            if (Ast.hasGpuPlacement(fn.annotations())) throw gpuBackendUnavailable("static function " + klass.name() + "." + fn.name());
-            if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            if (!fn.isStatic()) {
+                throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
+            }
+            if (args.size() != fn.parameters().size()) {
+                throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            }
+            if (Ast.hasQuantumPlacement(fn.annotations())) {
+                throw quantumBackendUnavailable("static function " + klass.name() + "." + fn.name());
+            }
+            if (Ast.hasGpuPlacement(fn.annotations())) {
+                String module = methodModules.get(fn);
+                String className = methodClasses.get(fn);
+                if (module == null || className == null) {
+                    throw new IllegalStateException("missing owner identity for GPU static function " + klass.name() + "." + fn.name());
+                }
+                String sourceName = className + "." + fn.name();
+                context.requireCapability(IsolatePolicy.Capability.GPU,
+                        "gpu static fnc " + module + "." + sourceName);
+                GpuKernelCompiler.GpuKernel kernel = gpuProgram.requireKernel(module, sourceName);
+                Object result = context.gpuRuntime().dispatch(
+                        module + "." + sourceName,
+                        GpuRuntime.CallableKind.FNC,
+                        args,
+                        gpuProgram,
+                        kernel);
+                return shapeReturnedValue(fn.returnType(), result,
+                        "gpu static function " + module + "." + sourceName);
+            }
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -548,7 +668,9 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name());
+            }
         }
 
         /**
@@ -928,6 +1050,28 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ModuleFacade(Ast.ModuleDecl module) { }
     private record ClassFacade(Ast.ClassDecl klass) { }
+    private record GpuArrayFacade(OresContext context) {
+        private Object fromCpu(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.from_cpu");
+            requireOne(args, "GpuArray.from_cpu");
+            Object source = args.getFirst();
+            if (source instanceof List<?> list) return context.gpuRuntime().uploadArray(list);
+            if (source instanceof Object[] array) return context.gpuRuntime().uploadArray(List.of(array));
+            throw new IllegalArgumentException("GpuArray.from_cpu expects an Array/List");
+        }
+    }
+
+    private record GpuStreamFacade(OresContext context) {
+        private Object fromArray(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.from_array");
+            requireOne(args, "GpuStream.from_array");
+            if (!(args.getFirst() instanceof GpuRuntime.ArrayHandle array)) {
+                throw new IllegalArgumentException("GpuStream.from_array expects GpuArray");
+            }
+            return context.gpuRuntime().stream(array);
+        }
+    }
+
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
