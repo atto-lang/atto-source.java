@@ -211,6 +211,29 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void rejectedCodeDoesNotConsumePermanentSourceLiteralSlots() {
+        Ast.Program program = Parser.parse("""
+                define module rejected
+                  pub fnc bad() => Symbol {
+                    val Symbol staged = :must_not_be_admitted;
+                    ffi.invoke("forbidden");
+                    return staged;
+                  }
+                end
+                """);
+        OresSymbol.Wire wire = new OresSymbol.Wire(
+                OresSymbol.Scope.PROCESS,
+                "must_not_be_admitted");
+
+        assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.fromWire(wire, IsolatePolicy.developer()));
+    }
+
+    @Test
     void compilerLiteralAndDynamicProcessFactoryShareCanonicalIdentity() {
         OresSymbol dynamicFirst = OresSymbol.process("literal-shared-key");
         OresSymbol literalAfter = OresSymbol.processLiteral(
