@@ -156,7 +156,7 @@ Private actors reject explicit shared mutable cells. Shared actors may use synch
 
 - strings, bytes, byte slices and Unicode code points are distinct types; strings are not integer lists;
 - variables do not use capitalization to distinguish them from protocol tags;
-- `:name` symbols are immutable canonical identities: one exact interned object per trusted runtime heap plus a deterministic 256-bit SymbolId/name identity for verified trusted-isolate bridges; ordinary GC never reclaims local interned symbols, local tables are bounded, multi-isolate supervisors must enforce an aggregate budget, and adversarial/untrusted isolates are excluded from the symbol namespace and symbol-bearing transport;
+- `:name` symbols are immutable canonical identities: one exact interned object per trusted runtime heap plus a deterministic 256-bit SymbolId/name identity for verified trusted-isolate bridges; ordinary GC never reclaims local interned symbols, local tables have a 65,536 hard ceiling (optionally lowered by the host), multi-isolate supervisors must enforce an aggregate budget, and adversarial/untrusted isolates are excluded from the symbol namespace and symbol-bearing transport;
 - mutable bindings are explicit (`let`) instead of overloading pattern-match syntax as reassignment;
 - receive pattern matching is local dispatch after FIFO dequeue, never an implicit mailbox scan;
 - no process dictionary / ambient actor-local key-value global;
