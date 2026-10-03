@@ -29,7 +29,7 @@ public final class OresContext implements AutoCloseable {
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
-    private final Map<String, Object> linkedCodeUnits = new HashMap<>();
+    private final Map<String, Object> linkedCodeUnits = new HashMap<>();\n    private final Set<AutoCloseable> nativeResources = ConcurrentHashMap.newKeySet();
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -109,6 +109,14 @@ public final class OresContext implements AutoCloseable {
 
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
+    public void registerNativeResource(AutoCloseable resource) {
+        nativeResources.add(resource);
+    }
+
+    public void unregisterNativeResource(AutoCloseable resource) {
+        nativeResources.remove(resource);
+    }
+
     /**
      * Host-managed cross-file link registry. Guest imports may only observe
      * units that the host has explicitly loaded into this context; import
@@ -167,6 +175,12 @@ public final class OresContext implements AutoCloseable {
             synchronized (this) {
                 linkedCodeUnits.clear();
             }
+            AutoCloseable[] resources = nativeResources.toArray(AutoCloseable[]::new);
+            for (AutoCloseable resource : resources) {
+                try { resource.close(); }
+                catch (Exception ignored) { }
+            }
+            nativeResources.clear();
             garbageCollector.close();
             output.flush();
         }
