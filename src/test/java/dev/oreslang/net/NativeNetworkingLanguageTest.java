@@ -434,6 +434,72 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
+    void nativeSocketHandleIsStaticallyOpaqueAndNonSendable() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc open_listener() => NativeSocketHandle {
+                  return native_net.listen("127.0.0.1", 0, 8, true);
+                }
+
+                pub fnc close_listener(NativeSocketHandle handle) => void {
+                  native_net.close(handle);
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException forgedScalar = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc bad() => NativeSocketHandle {
+                          return native_net.accept(1);
+                        }
+                        """)));
+        assertTrue(forgedScalar.getMessage().contains("argument"));
+
+        IllegalArgumentException actorBoundary = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        isoactor fnc bad(NativeSocketHandle handle) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(actorBoundary.getMessage().contains("NativeSocketHandle"));
+    }
+
+    @Test
+    void nativeNetNamespaceIsStaticallyNetworkGated() {
+        var program = TypeChecker.check(Parser.parse("""
+                pub fnc lookup() => Array<String> {
+                  return native_net.resolve_all("localhost");
+                }
+                """));
+
+        SecurityException denied = assertThrows(
+                SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.developer()));
+        assertTrue(denied.getMessage().contains("NETWORK"));
+
+        assertDoesNotThrow(() -> CapabilityChecker.check(
+                program,
+                IsolatePolicy.developer().withCapabilities(IsolatePolicy.Capability.NETWORK)));
+    }
+
+    @Test
+    void nativeNetGuestNeverReceivesNumericSocketToken() throws Exception {
+        String output = evaluate("""
+                pub routine main() => void {
+                  val handle = native_net.listen("127.0.0.1", 0, 8, true);
+                  stdio.println(handle);
+                  native_net.close(handle);
+                  return;
+                }
+                """);
+
+        assertTrue(output.contains("NativeSocketHandle[opaque]"));
+        assertFalse(output.matches("(?s).*\\b[0-9]{6,}\\b.*"),
+                "guest output must not reveal the numeric liboresnet token");
+    }
+
+    @Test
     void nativeNetBuiltinIsCapabilityGatedWithoutGeneralNativeAuthority() throws Exception {
         String denied = """
                 define module app
