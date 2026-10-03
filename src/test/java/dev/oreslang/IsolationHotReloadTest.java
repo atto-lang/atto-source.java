@@ -174,7 +174,7 @@ final class IsolationHotReloadTest {
                 define class Box as
                   val int value;
 
-                  pub get() => int {
+                  pub get() : int {
                     return self.value;
                   }
                 end
@@ -189,7 +189,7 @@ final class IsolationHotReloadTest {
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define class Box as
-                  pub bad() => void {
+                  pub bad() : void {
                     self = new Box();
                     return;
                   }
