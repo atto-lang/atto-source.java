@@ -1948,9 +1948,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
-        if (value instanceof ProcessGlobalRegistry.Handle<?>) {
+        if (value instanceof SandboxForbiddenCapability) {
             throw new SecurityException(
-                    "process-global references cannot cross into an untrusted actor; "
+                    "live global/singleton/runtime capabilities cannot cross into an untrusted actor; "
                             + "send only copied/frozen result data");
         }
         if (value instanceof SyncCell<?> || value instanceof OresMutex.Shared<?>
