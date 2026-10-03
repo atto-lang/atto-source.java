@@ -393,9 +393,7 @@ extracts the future's result; Oreslang does not expose a blocking
 The built-in `Futures` control-flow facade provides:
 
 ```ores
-val first = http.get("https://service-a.example/data");
-val second = http.get("https://service-b.example/data");
-
+// first and second are Future<Response> values returned by an async API.
 val responses = await Futures.all([first, second]);
 ```
 
