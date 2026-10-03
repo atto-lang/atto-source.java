@@ -725,6 +725,7 @@ public final class Parser {
             return new Ast.DeferStmt(expression);
         }
         if (match(IF)) return parseIf();
+        if (match(SWITCH)) return parseSwitch();
         if (match(TRY)) return parseTry();
         if (match(FOR)) return parseFor();
 
@@ -912,6 +913,110 @@ public final class Parser {
                     normalizeLegacyConditionPipe(binary.right()));
         }
         return expr;
+    }
+
+    private Ast.SwitchStmt parseSwitch() {
+        Ast.Expr subject = parseExpression();
+        consume(LBRACE, "expected '{' after switch subject");
+        List<Ast.SwitchClause> clauses = new ArrayList<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            Ast.Pattern pattern = parsePattern();
+            Ast.Expr guard = match(WHEN) ? parseExpression() : null;
+            consume(ARROW, "expected '->' after switch pattern");
+            List<Ast.Stmt> body = parseBlock();
+            clauses.add(new Ast.SwitchClause(pattern, guard, body));
+        }
+        consume(RBRACE, "expected '}' after switch clauses");
+        if (clauses.isEmpty()) throw error(previous(), "switch requires at least one pattern clause");
+        return new Ast.SwitchStmt(subject, clauses);
+    }
+
+    private Ast.Pattern parsePattern() {
+        if (check(IDENT) && peek().lexeme().equals("_")) {
+            advance();
+            return new Ast.WildcardPattern();
+        }
+
+        if (match(VAL) || match(CONST)) {
+            String name = consume(IDENT, "expected immutable pattern binding name").lexeme();
+            if (name.equals("_")) return new Ast.WildcardPattern();
+            return new Ast.BindingPattern(name);
+        }
+        if (match(LET)) {
+            throw error(previous(), "pattern bindings are immutable; use val/const, not let");
+        }
+
+        if (match(INT)) {
+            return new Ast.LiteralPattern(Long.parseLong(previous().lexeme().replace("_", "")));
+        }
+        if (match(FLOAT)) {
+            return new Ast.LiteralPattern(Double.parseDouble(previous().lexeme().replace("_", "")));
+        }
+        if (match(STRING)) return new Ast.LiteralPattern(previous().lexeme());
+        if (match(TRUE)) return new Ast.LiteralPattern(Boolean.TRUE);
+        if (match(FALSE)) return new Ast.LiteralPattern(Boolean.FALSE);
+        if (match(COLON)) {
+            String name = consume(IDENT, "expected Symbol name after ':' in pattern").lexeme();
+            return new Ast.LiteralPattern(new Ast.Symbol(name));
+        }
+
+        if (match(LBRACKET)) {
+            List<Ast.Pattern> elements = new ArrayList<>();
+            if (!check(RBRACKET)) {
+                do elements.add(parsePattern()); while (match(COMMA));
+            }
+            consume(RBRACKET, "expected ']' after list pattern");
+            return new Ast.SequencePattern(Ast.PatternSequenceKind.LIST, elements);
+        }
+
+        if (match(LPAREN)) {
+            List<Ast.Pattern> elements = new ArrayList<>();
+            if (!check(RPAREN)) {
+                elements.add(parsePattern());
+                if (!match(COMMA)) {
+                    consume(RPAREN, "expected ')' after grouped pattern");
+                    return elements.getFirst();
+                }
+                do elements.add(parsePattern()); while (match(COMMA));
+            }
+            consume(RPAREN, "expected ')' after tuple pattern");
+            return new Ast.SequencePattern(Ast.PatternSequenceKind.TUPLE, elements);
+        }
+
+        if (match(LBRACE)) {
+            List<Ast.ObjectPatternField> fields = new ArrayList<>();
+            if (!check(RBRACE)) {
+                do {
+                    String name = consume(IDENT, "expected object-pattern field name").lexeme();
+                    consume(COLON, "expected ':' after object-pattern field name");
+                    fields.add(new Ast.ObjectPatternField(name, parsePattern()));
+                } while (match(COMMA));
+            }
+            consume(RBRACE, "expected '}' after object pattern");
+            return new Ast.ObjectPattern(fields);
+        }
+
+        if (check(IDENT) && checkNext(IDENT)) {
+            Ast.TypeRef type = Ast.TypeRef.simple(advance().lexeme());
+            String binding = advance().lexeme();
+            if (binding.equals("_")) binding = null;
+            return new Ast.TypePattern(type, binding);
+        }
+
+        if (match(IDENT)) {
+            String name = previous().lexeme();
+            if (match(LPAREN)) {
+                List<Ast.Pattern> args = new ArrayList<>();
+                if (!check(RPAREN)) {
+                    do args.add(parsePattern()); while (match(COMMA));
+                }
+                consume(RPAREN, "expected ')' after constructor/variant pattern");
+                return new Ast.VariantPattern(name, args);
+            }
+            return new Ast.VariantPattern(name, List.of());
+        }
+
+        throw error(peek(), "expected switch pattern");
     }
 
     private Ast.TryStmt parseTry() {
@@ -1162,7 +1267,7 @@ public final class Parser {
         return switch (type) {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
-                    TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
+                    TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN, WHEN,
                     NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
@@ -1181,6 +1286,10 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        if (match(COLON)) {
+            String name = consume(IDENT, "expected Symbol name after ':'").lexeme();
+            return new Ast.LiteralExpr(new Ast.Symbol(name));
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
