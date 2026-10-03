@@ -31,7 +31,7 @@ final class SymbolLifecycleTest {
     @Test
     void colonAndScopedFactoriesTypecheckAsCopySymbols() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                define module symbols as
+                define module symbols
                   pub fnc same() => bool {
                     val Symbol literal = :connected;
                     val Symbol compat = new Symbol("1d46c11d-580c-4ee0-b5ff-cb3bbd83d596");
@@ -86,7 +86,7 @@ final class SymbolLifecycleTest {
         IllegalArgumentException staticFailure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define module symbols as
+                        define module symbols
                           pub fnc bad() => Symbol {
                             return Symbol.local("request");
                           }
@@ -302,7 +302,7 @@ final class SymbolLifecycleTest {
         assertTrue(assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define module Symbol as
+                        define module Symbol
                           pub fnc x() => int { return 1; }
                         end
                         """))).getMessage().contains("reserved"));
@@ -310,7 +310,7 @@ final class SymbolLifecycleTest {
         assertTrue(assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define module app as
+                        define module app
                           define class Symbol as
                           end
                         end
@@ -319,7 +319,7 @@ final class SymbolLifecycleTest {
         assertTrue(assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define module app as
+                        define module app
                           pub fnc x() => int {
                             val int Symbol = 1;
                             return Symbol;
@@ -330,7 +330,7 @@ final class SymbolLifecycleTest {
         assertTrue(assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define module app as
+                        define module app
                           pub fnc identity<Symbol>(Symbol value) => Symbol {
                             return value;
                           }
@@ -341,7 +341,7 @@ final class SymbolLifecycleTest {
     @Test
     void adversarialPoliciesCannotCreateDecodeOrReceiveSymbols() {
         Ast.Program literalProgram = TypeChecker.check(Parser.parse("""
-                define module app as
+                define module app
                   pub fnc tag() => Symbol {
                     return :secret;
                   }
@@ -352,7 +352,7 @@ final class SymbolLifecycleTest {
                 () -> CapabilityChecker.check(literalProgram, IsolatePolicy.strictFaas()));
 
         Ast.Program factoryProgram = TypeChecker.check(Parser.parse("""
-                define module app as
+                define module app
                   pub fnc tag() => Symbol {
                     return Symbol.process("secret");
                   }
