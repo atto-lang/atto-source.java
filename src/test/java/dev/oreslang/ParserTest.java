@@ -88,7 +88,7 @@ final class ParserTest {
                 shared actor Account {
                   let balance = 100;
 
-                  pub fnc withdraw(int amount) => void {
+                  pub actor withdraw(int amount) => void {
                     self.balance = self.balance - amount;
                     return;
                   }
@@ -144,14 +144,24 @@ final class ParserTest {
     }
 
     @Test
-    void actorCallablesMayBeCalledButActorClassesCannotBeConstructedOrdinarily() {
+    void actorCallablesRequireSpawnAndActorClassesCannotBeConstructedOrdinarily() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                pub actor fnc worker(int value) => int {
+                  return value;
+                }
+
+                pub fnc bad_direct_call() => int {
+                  return worker(1);
+                }
+                """)));
+
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub actor fnc worker(int value) => int {
                   return value;
                 }
 
-                pub fnc good() => int {
-                  return worker(1);
+                pub fnc good_spawn() => int {
+                  return await spawn worker(1);
                 }
                 """)));
 
@@ -159,7 +169,7 @@ final class ParserTest {
                 shared actor Account {
                   let int balance = 100;
 
-                  pub fnc read() => int {
+                  pub actor read() => int {
                     return self.balance;
                   }
                 }
@@ -202,7 +212,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => Account {
+                      pub actor leak() => Account {
                         return self;
                       }
                     }
@@ -215,7 +225,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => &mut Account {
+                      pub actor leak() => &mut Account {
                         return &mut self;
                       }
                     }
@@ -228,7 +238,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => &mut Account {
+                      pub actor leak() => &mut Account {
                         val alias = &mut self;
                         return alias;
                       }
@@ -242,7 +252,7 @@ final class ParserTest {
                     shared actor Account {
                       let Array<int> items = [1, 2, 3];
 
-                      pub fnc leak() => Array<int> {
+                      pub actor leak() => Array<int> {
                         return self.items;
                       }
                     }
@@ -258,7 +268,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc current() => int {
+                      pub actor current() => int {
                         return self.balance;
                       }
                     }
@@ -275,7 +285,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc inspectSelf() => int {
+                      pub actor inspectSelf() => int {
                         return inspect(&self);
                       }
                     }
@@ -293,7 +303,7 @@ final class ParserTest {
                 }
 
                 shared actor Child extends Parent {
-                  pub fnc current() => int {
+                  pub actor current() => int {
                     return self.value;
                   }
                 }
