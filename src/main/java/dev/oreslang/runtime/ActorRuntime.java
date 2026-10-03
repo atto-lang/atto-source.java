@@ -2570,11 +2570,9 @@ public final class ActorRuntime implements AutoCloseable {
                     if (transportLease == null) {
                         transportLease = new HttpTransportLease();
                     }
-                    transportLease.transferToActor(id);
-                    transferredActorId = id;
                 } else if (transportLease != null) {
                     throw new IllegalArgumentException(
-                            "HTTP transport lease requires an untrusted actor with request/response transport");
+                            "HTTP transport lease requires a memory-isolated actor with request/response transport");
                 }
                 cell = new ActorCell<>(
                         ref,
@@ -2588,6 +2586,10 @@ public final class ActorRuntime implements AutoCloseable {
                         responseTransport,
                         transportLease);
                 actors.put(id, cell);
+                if (transportLease != null) {
+                    transportLease.transferToActor(id);
+                    transferredActorId = id;
+                }
                 cell.armLifetimeLimit();
                 return ref;
             } catch (RuntimeException | Error failure) {
@@ -2595,8 +2597,8 @@ public final class ActorRuntime implements AutoCloseable {
                     actors.remove(cell.ref.id(), cell);
                     if (cell.httpRequest != null) cell.httpRequest.cancelFromRuntime(failure);
                     if (cell.httpResponse != null) cell.httpResponse.abortFromRuntime(failure);
-                    if (cell.httpTransportLease != null) {
-                        cell.httpTransportLease.revokeFromActor(cell.ref.id());
+                    if (cell.httpTransportLease != null && transferredActorId != null) {
+                        cell.httpTransportLease.revokeFromActor(transferredActorId);
                     }
                     if (cell.memorySlice != null) cell.memorySlice.close();
                 } else if (transportLease != null && transferredActorId != null) {
