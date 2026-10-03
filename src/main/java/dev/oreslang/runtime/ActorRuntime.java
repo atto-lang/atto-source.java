@@ -91,6 +91,41 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.runtime();
     }
 
+    /** Returns this runtime's currently executing actor id, or null off-actor. */
+    public ActorId currentActorId() {
+        ActorCell<?> cell = currentActor.get();
+        return cell == null ? null : cell.ref.id();
+    }
+
+    /**
+     * Runtime/compiler-owned actor-local storage. Values live exactly as long
+     * as the actor cell, migrate with the actor rather than the carrier thread,
+     * and are cleared during deterministic actor finalization.
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T currentActorLocal(Object key, Supplier<? extends T> initializer) {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(initializer, "initializer");
+        if (closed.get()) throw new CancellationException("actor runtime is closing");
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null) return null;
+
+        Object existing = cell.actorLocals.get(key);
+        if (existing != null) return (T) existing;
+        if (!cell.initializingActorLocals.add(key)) {
+            throw new IllegalStateException("actor-local initialization cycle");
+        }
+        try {
+            T value = Objects.requireNonNull(
+                    initializer.get(),
+                    "actor-local initializer returned null");
+            cell.actorLocals.put(key, value);
+            return value;
+        } finally {
+            cell.initializingActorLocals.remove(key);
+        }
+    }
+
     public static ActorKind currentActorKind() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.kind();
@@ -1385,6 +1420,9 @@ public final class ActorRuntime implements AutoCloseable {
         boolean mailboxSlotTransferred = false;
         try {
         validateMessageGraph(message);
+        if (cell.policy.adversarial()) {
+            rejectTrustedSymbols(message, new IdentityHashMap<>(), 0);
+        }
         requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
         requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
         long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
@@ -1946,6 +1984,53 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Adversarial/untrusted actors are a separate identity domain and may not
+     * receive trusted Symbol values, even when nested in a Sendable graph.
+     */
+    private static void rejectTrustedSymbols(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null) return;
+        if (value instanceof OresSymbol) {
+            throw new SecurityException(
+                    "Symbol values cannot cross into an adversarial/untrusted actor");
+        }
+        if (isScalar(value) || value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.SyncCell<?>
+                || value instanceof OresMutex.Shared<?>
+                || value instanceof OresMutex.Local<?>
+                || value instanceof OresMutex.Guard<?>) {
+            return;
+        }
+        if (value instanceof Shared<?> shared) {
+            rejectTrustedSymbols(shared.value(), visiting, depth + 1);
+            return;
+        }
+        if (visiting.put(value, Boolean.TRUE) != null) return;
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) rejectTrustedSymbols(item, visiting, depth + 1);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) rejectTrustedSymbols(item, visiting, depth + 1);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectTrustedSymbols(entry.getKey(), visiting, depth + 1);
+                    rejectTrustedSymbols(entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    rejectTrustedSymbols(Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
     private static void requireGraphNodeCapacity(long alreadyVisited, long additionalNodes) {
         if (additionalNodes < 0
                 || additionalNodes > (long) MAX_MESSAGE_GRAPH_NODES - alreadyVisited) {
@@ -2020,6 +2105,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        if (value instanceof OresSymbol) {
+            throw new IllegalArgumentException(
+                    "actor-local Symbol values cannot cross actor boundaries");
+        }
         if (value instanceof Shared<?> shared) {
             shared.value();
             return shared;
@@ -2081,6 +2170,10 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (isScalar(value)) return value;
+        if (value instanceof OresSymbol) {
+            throw new IllegalArgumentException(
+                    "actor-local Symbol values cannot cross actor boundaries");
+        }
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
         }
@@ -2326,6 +2419,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof OresSymbol symbol) {
+            if (!symbol.sendable()) {
+                throw new IllegalArgumentException(
+                        "actor-local Symbol values cannot cross actor boundaries");
+            }
+            return 48L + (long) symbol.key().length() * 2L;
+        }
         if (value instanceof Enum<?>) return 24L;
         return -1L;
     }
@@ -2377,6 +2477,13 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof OresSymbol symbol) {
+            if (!symbol.sendable()) {
+                throw new IllegalArgumentException(
+                        "actor-local Symbol values cannot be frozen");
+            }
+            return 48L + (long) symbol.key().length() * 2L;
+        }
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
@@ -2422,7 +2529,8 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || (value instanceof OresSymbol symbol && symbol.sendable());
     }
 
     @Override
@@ -2527,6 +2635,9 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
+        private final Map<Object, Object> actorLocals = new IdentityHashMap<>();
+        private final Set<Object> initializingActorLocals =
+                Collections.newSetFromMap(new IdentityHashMap<>());
         private int activeTurns;
         private boolean finalized;
         private Behavior<M> behavior;
@@ -2588,6 +2699,8 @@ public final class ActorRuntime implements AutoCloseable {
             if (finalized || activeTurns != 0) return;
             finalized = true;
             drainMailboxReservations();
+            actorLocals.clear();
+            initializingActorLocals.clear();
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
