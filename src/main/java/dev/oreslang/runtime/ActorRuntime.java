@@ -3297,7 +3297,9 @@ public final class ActorRuntime implements AutoCloseable {
                 parallelism,
                 0L,
                 TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(readyQueueCapacity),
+                // Fair queue locking avoids producer/consumer barging under
+                // sustained contention. Actor tasks themselves remain FIFO.
+                new ArrayBlockingQueue<>(readyQueueCapacity, true),
                 namedFactory(threadPrefix),
                 new ThreadPoolExecutor.AbortPolicy());
         // Core workers are created lazily on first scheduled actor turn.
