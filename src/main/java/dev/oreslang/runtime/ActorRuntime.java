@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import dev.oreslang.net.NativeSocketBridge;
+
 import java.io.IOException;
 import java.lang.foreign.Arena;
 import java.lang.reflect.Array;
@@ -62,6 +64,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    private static final int MAX_NATIVE_SOCKET_IO_CHUNK = 64 * 1024;
     public static final Duration HARD_MAX_UNTRUSTED_LIFETIME = Duration.ofSeconds(300);
     private static final long DEFAULT_UNTRUSTED_FUEL_PER_TURN = 100_000L;
     private static final long DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES = 1024L * 1024L;
@@ -660,6 +663,370 @@ public final class ActorRuntime implements AutoCloseable {
                 requestTransport,
                 responseTransport,
                 HttpLeaseExitPolicy.CLOSE);
+    }
+
+    /**
+     * Linear ownership of one native TCP socket capability. Creating this lease
+     * consumes the supervisor's NativeSocketHandle; the old handle can never be
+     * used again. This mirrors Erlang/OTP controlling-process transfer without
+     * duplicating the kernel fd.
+     */
+    public final class NativeSocketLease implements AutoCloseable {
+        private final OresContext sourceContext;
+        private final HttpLeaseExitPolicy exitPolicy;
+        private final Object ownershipLock = new Object();
+
+        private long token;
+        private ActorId actorOwner;
+        private ActorKind actorOwnerKind;
+        private long generation;
+        private boolean closed;
+
+        private NativeSocketLease(
+                NativeNetBuiltin.DetachedNativeSocket detached,
+                HttpLeaseExitPolicy exitPolicy) {
+            this.sourceContext = detached.context();
+            this.token = detached.token();
+            this.exitPolicy = Objects.requireNonNull(exitPolicy, "exitPolicy");
+        }
+
+        public HttpLeaseExitPolicy exitPolicy() { return exitPolicy; }
+
+        private boolean ownedBy(ActorRuntime runtime) {
+            return ActorRuntime.this == runtime;
+        }
+
+        public boolean closed() {
+            synchronized (ownershipLock) {
+                return closed;
+            }
+        }
+
+        public boolean ownedBySupervisor() {
+            synchronized (ownershipLock) {
+                return !closed && actorOwner == null && token != 0L;
+            }
+        }
+
+        public Optional<ActorId> actorOwner() {
+            synchronized (ownershipLock) {
+                return Optional.ofNullable(actorOwner);
+            }
+        }
+
+        public long generation() {
+            synchronized (ownershipLock) {
+                return generation;
+            }
+        }
+
+        private long transferToActor(ActorId newOwner, ActorKind newOwnerKind) {
+            Objects.requireNonNull(newOwner, "newOwner");
+            Objects.requireNonNull(newOwnerKind, "newOwnerKind");
+            requireSupervisorContext("transfer a native socket lease");
+            synchronized (ownershipLock) {
+                if (closed || token == 0L) {
+                    throw new IllegalStateException("native socket lease is closed or detached");
+                }
+                if (actorOwner != null) {
+                    throw new IllegalStateException(
+                            "native socket lease is already controlled by actor " + actorOwner);
+                }
+                if (newOwnerKind == ActorKind.UNTRUSTED
+                        && exitPolicy != HttpLeaseExitPolicy.CLOSE) {
+                    throw new SecurityException(
+                            "untrusted actors require CLOSE-on-exit native socket leases");
+                }
+                actorOwner = newOwner;
+                actorOwnerKind = newOwnerKind;
+                generation = nextGeneration(generation);
+                return generation;
+            }
+        }
+
+        private long requireActorToken(
+                ActorId expectedOwner,
+                long expectedGeneration,
+                String operation) {
+            synchronized (ownershipLock) {
+                if (closed || token == 0L) {
+                    throw new IllegalStateException(
+                            "native socket lease is closed: " + operation);
+                }
+                if (!Objects.equals(actorOwner, expectedOwner)
+                        || generation != expectedGeneration) {
+                    throw new SecurityException(
+                            "stale or non-owner native socket capability rejected: " + operation);
+                }
+                return token;
+            }
+        }
+
+        private void releaseFromActor(
+                ActorId expectedOwner,
+                long expectedGeneration,
+                Throwable cause) {
+            long tokenToClose = 0L;
+            synchronized (ownershipLock) {
+                if (closed || token == 0L) return;
+                if (!Objects.equals(actorOwner, expectedOwner)
+                        || generation != expectedGeneration) {
+                    return;
+                }
+
+                boolean mustClose = cause != null
+                        || exitPolicy == HttpLeaseExitPolicy.CLOSE
+                        || actorOwnerKind == ActorKind.UNTRUSTED;
+
+                actorOwner = null;
+                actorOwnerKind = null;
+                generation = nextGeneration(generation);
+
+                if (!mustClose) return;
+
+                tokenToClose = token;
+                token = 0L;
+                closed = true;
+            }
+            closeNativeTokenBestEffort(tokenToClose);
+        }
+
+        private void closeFromActor(
+                ActorId expectedOwner,
+                long expectedGeneration) {
+            long tokenToClose;
+            synchronized (ownershipLock) {
+                tokenToClose = requireActorToken(
+                        expectedOwner, expectedGeneration, "close");
+                actorOwner = null;
+                actorOwnerKind = null;
+                generation = nextGeneration(generation);
+                token = 0L;
+                closed = true;
+            }
+            closeNativeTokenBestEffort(tokenToClose);
+        }
+
+        /**
+         * Reclaim a clean trusted RETURN_TO_SUPERVISOR lease. The returned
+         * handle is a fresh capability object; the pre-transfer handle remains
+         * permanently consumed.
+         */
+        public NativeNetBuiltin.NativeSocketHandle reclaimToSupervisor() {
+            requireSupervisorContext("reclaim a native socket lease");
+            long reclaimedToken;
+            synchronized (ownershipLock) {
+                if (closed || token == 0L) {
+                    throw new IllegalStateException("native socket lease is closed");
+                }
+                if (actorOwner != null) {
+                    throw new IllegalStateException(
+                            "native socket lease is still controlled by actor " + actorOwner);
+                }
+                if (exitPolicy != HttpLeaseExitPolicy.RETURN_TO_SUPERVISOR) {
+                    throw new IllegalStateException(
+                            "CLOSE-on-exit native socket leases cannot be reclaimed");
+                }
+                reclaimedToken = token;
+                token = 0L;
+                closed = true;
+                generation = nextGeneration(generation);
+            }
+            return NativeNetBuiltin.restoreSupervisorSocket(
+                    new NativeNetBuiltin.DetachedNativeSocket(sourceContext, reclaimedToken),
+                    ActorRuntime.this);
+        }
+
+        @Override
+        public void close() {
+            requireSupervisorContext("close a native socket lease");
+            long tokenToClose;
+            synchronized (ownershipLock) {
+                if (closed) return;
+                if (actorOwner != null) {
+                    throw new IllegalStateException(
+                            "cannot close native socket lease while controlled by actor " + actorOwner);
+                }
+                tokenToClose = token;
+                token = 0L;
+                closed = true;
+                generation = nextGeneration(generation);
+            }
+            closeNativeTokenBestEffort(tokenToClose);
+        }
+
+        private long nextGeneration(long current) {
+            return current == Long.MAX_VALUE ? 1L : current + 1L;
+        }
+    }
+
+    /**
+     * Actor-owned view of a native socket lease. No raw descriptor or numeric
+     * registry token is exposed. For untrusted actors, reads/writes are charged
+     * against the existing HTTP request/response byte ceilings.
+     */
+    public final class NativeSocketCapability {
+        private final ActorId owner;
+        private final NativeSocketLease lease;
+        private final long leaseGeneration;
+        private final long maxReadBytes;
+        private final long maxWriteBytes;
+        private final AtomicLong readBytes = new AtomicLong();
+        private final AtomicLong writtenBytes = new AtomicLong();
+        private final AtomicBoolean invalidated = new AtomicBoolean();
+
+        private NativeSocketCapability(
+                ActorId owner,
+                NativeSocketLease lease,
+                long leaseGeneration,
+                long maxReadBytes,
+                long maxWriteBytes) {
+            this.owner = Objects.requireNonNull(owner);
+            this.lease = Objects.requireNonNull(lease);
+            this.leaseGeneration = leaseGeneration;
+            this.maxReadBytes = maxReadBytes;
+            this.maxWriteBytes = maxWriteBytes;
+        }
+
+        public long readBytes() { return readBytes.get(); }
+        public long writtenBytes() { return writtenBytes.get(); }
+        public long remainingReadBytes() { return Math.max(0L, maxReadBytes - readBytes.get()); }
+        public long remainingWriteBytes() { return Math.max(0L, maxWriteBytes - writtenBytes.get()); }
+
+        private ActorCell<?> requireOwner(String operation) {
+            if (invalidated.get()) {
+                throw new IllegalStateException("native socket capability is invalidated: " + operation);
+            }
+            ActorCell<?> cell = currentActor.get();
+            if (cell == null || !cell.ref.id().equals(owner)) {
+                throw new SecurityException(
+                        "native socket capability may only be used by its controlling actor: " + operation);
+            }
+            lease.requireActorToken(owner, leaseGeneration, operation);
+            if (cell.kind == ActorKind.UNTRUSTED) cell.checkUntrustedBudget(1);
+            return cell;
+        }
+
+        private long token(String operation) {
+            requireOwner(operation);
+            return lease.requireActorToken(owner, leaseGeneration, operation);
+        }
+
+        public int read(ByteBuffer target) throws IOException {
+            Objects.requireNonNull(target, "target");
+            long token = token("read");
+            if (!target.hasRemaining()) return 0;
+
+            long remaining = remainingReadBytes();
+            if (remaining == 0L) {
+                throw new HttpRequestLimitExceededException(
+                        "native socket read limit exceeded: max=" + maxReadBytes);
+            }
+            int permitted = (int) Math.min(
+                    Math.min((long) target.remaining(), remaining),
+                    (long) MAX_NATIVE_SOCKET_IO_CHUNK);
+            byte[] buffer = new byte[permitted];
+            int count = NativeSocketBridge.read(token, buffer, 0, permitted);
+            if (count > 0) {
+                target.put(buffer, 0, count);
+                readBytes.addAndGet(count);
+            }
+            return count;
+        }
+
+        public int write(ByteBuffer source) throws IOException {
+            Objects.requireNonNull(source, "source");
+            long token = token("write");
+            if (!source.hasRemaining()) return 0;
+
+            long remaining = remainingWriteBytes();
+            if (remaining == 0L) {
+                throw new HttpResponseLimitExceededException(
+                        "native socket write limit exceeded: max=" + maxWriteBytes);
+            }
+            int permitted = (int) Math.min(
+                    Math.min((long) source.remaining(), remaining),
+                    (long) MAX_NATIVE_SOCKET_IO_CHUNK);
+            byte[] buffer = new byte[permitted];
+            ByteBuffer view = source.duplicate();
+            view.limit(view.position() + permitted);
+            view.get(buffer);
+            int count = NativeSocketBridge.write(token, buffer, 0, permitted);
+            if (count < 0 || count > permitted) {
+                throw new IllegalStateException("native socket write violated byte-count contract");
+            }
+            source.position(source.position() + count);
+            writtenBytes.addAndGet(count);
+            return count;
+        }
+
+        public int available() throws IOException {
+            return NativeSocketBridge.available(token("available"));
+        }
+
+        public void shutdownInput() throws IOException {
+            NativeSocketBridge.shutdownInput(token("shutdownInput"));
+        }
+
+        public void shutdownOutput() throws IOException {
+            NativeSocketBridge.shutdownOutput(token("shutdownOutput"));
+        }
+
+        public String remoteAddress() throws IOException {
+            return NativeSocketBridge.remoteAddress(token("remoteAddress"));
+        }
+
+        public int remotePort() throws IOException {
+            return NativeSocketBridge.remotePort(token("remotePort"));
+        }
+
+        public String localAddress() throws IOException {
+            return NativeSocketBridge.localAddress(token("localAddress"));
+        }
+
+        public int localPort() throws IOException {
+            return NativeSocketBridge.localPort(token("localPort"));
+        }
+
+        public void close() {
+            requireOwner("close");
+            if (invalidated.compareAndSet(false, true)) {
+                lease.closeFromActor(owner, leaseGeneration);
+            }
+        }
+
+        private void invalidateFromRuntime() {
+            invalidated.set(true);
+        }
+    }
+
+    /**
+     * Consume a supervisor-owned native socket handle into a linear lease.
+     * The supplied handle is permanently invalid after this call succeeds.
+     */
+    public NativeSocketLease leaseNativeSocket(
+            NativeNetBuiltin.NativeSocketHandle handle,
+            HttpLeaseExitPolicy exitPolicy) {
+        requireSupervisorContext("create a native socket lease");
+        NativeNetBuiltin.DetachedNativeSocket detached =
+                NativeNetBuiltin.detachSupervisorSocket(handle, ActorRuntime.this);
+        return new NativeSocketLease(detached, exitPolicy);
+    }
+
+    /** Secure default for untrusted/request-scoped actors. */
+    public NativeSocketLease leaseNativeSocket(
+            NativeNetBuiltin.NativeSocketHandle handle) {
+        return leaseNativeSocket(handle, HttpLeaseExitPolicy.CLOSE);
+    }
+
+    private static void closeNativeTokenBestEffort(long token) {
+        if (token <= 0L) return;
+        try {
+            NativeSocketBridge.close(token);
+        } catch (IOException ignored) {
+            // liboresnet revokes the opaque handle before physical close, so
+            // a cleanup error must never resurrect authority.
+        }
     }
 
     /** Lightweight scheduler telemetry suitable for ores-otel/JMX export. */
