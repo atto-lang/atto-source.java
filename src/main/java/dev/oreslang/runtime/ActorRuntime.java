@@ -3919,6 +3919,23 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        if (interrupted) Thread.currentThread().interrupt();
+        if (!stillRunning.isEmpty() || rootStillRunning || interrupted) {
+            if (interrupted) {
+                for (ActorCell<?> cell : snapshot) {
+                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
+                        stillRunning.add(cell.ref.id());
+                    }
+                }
+            }
+            // Do not tear shared state out from under guest code that failed to
+            // quiesce. A later close() may retry after the offending turn exits.
+            throw new IllegalStateException(
+                    "ActorRuntime close did not observe full guest termination: "
+                            + stillRunning.size() + " actor(s), "
+                            + activeRootTasks.get() + " root task(s) still running");
+        }
+
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
@@ -3929,20 +3946,6 @@ public final class ActorRuntime implements AutoCloseable {
                             + sharedMemoryBytes.get());
         }
 
-        if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || rootStillRunning || interrupted) {
-            if (interrupted) {
-                for (ActorCell<?> cell : snapshot) {
-                    if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
-                        stillRunning.add(cell.ref.id());
-                    }
-                }
-            }
-            throw new IllegalStateException(
-                    "ActorRuntime close did not observe full guest termination: "
-                            + stillRunning.size() + " actor(s), "
-                            + activeRootTasks.get() + " root task(s) still running");
-        }
         actors.clear();
         actorCount.set(0);
         privateActorCount.set(0);
