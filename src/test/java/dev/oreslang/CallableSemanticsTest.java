@@ -53,7 +53,7 @@ final class CallableSemanticsTest {
     void explicitNlexLambdaCannotCaptureOuterLocal() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
-                        fnc make(): (():int) {
+                        fnc make(): (() => int) {
                           val int local = 42;
                           return nlex || -> {
                             return local;
@@ -67,7 +67,7 @@ final class CallableSemanticsTest {
     void nlexNamedCallableMakesNestedLambdasNonCapturing() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
                 TypeChecker.check(Parser.parse("""
-                        nlex fnc make(): (():int) {
+                        nlex fnc make(): (() => int) {
                           val int local = 42;
                           return || -> {
                             return local;
