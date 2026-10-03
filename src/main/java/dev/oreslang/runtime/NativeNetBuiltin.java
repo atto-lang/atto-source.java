@@ -27,7 +27,6 @@ public final class NativeNetBuiltin implements BuiltinValue {
             case "connect" -> (BuiltinCallable) args -> {
                 require(args, 3, name);
                 admit(name);
-                yieldIo(() -> NativeSocketBridge.connect(str(args, 0), integer(args, 1), integer(args, 2)));
                 return yieldIo(() -> NativeSocketBridge.connect(str(args, 0), integer(args, 1), integer(args, 2)));
             };
             case "listen" -> (BuiltinCallable) args -> {
