@@ -242,6 +242,12 @@ static int borrow_socket(JNIEnv *env, jlong raw_handle, const char *operation, s
         return 0;
     }
 
+    if (slot->refs == UINT32_MAX) {
+        pthread_mutex_unlock(&socket_registry_lock);
+        errno = EOVERFLOW;
+        throw_errno(env, operation);
+        return 0;
+    }
     slot->refs++;
     borrow->slot_index = slot_index;
     borrow->fd = slot->fd;
