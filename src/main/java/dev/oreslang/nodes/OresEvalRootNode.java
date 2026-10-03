@@ -119,6 +119,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
+        private final ThreadLocal<Ast.ActorMethodKind> activeActorMethodKind =
+                ThreadLocal.withInitial(() -> Ast.ActorMethodKind.NONE);
         private boolean initialized;
 
         private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
@@ -337,7 +339,9 @@ public final class OresEvalRootNode extends RootNode {
 
             boolean stateLocked = receiver.klass.actorKind() != Ast.ActorKind.NONE
                     && method.actorMethodKind() != Ast.ActorMethodKind.PARALLEL;
+            Ast.ActorMethodKind previousActorMethodKind = activeActorMethodKind.get();
             if (stateLocked) receiver.actorStateLock.lock();
+            activeActorMethodKind.set(method.actorMethodKind());
             try {
                 Env env = new Env(null);
                 if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -352,6 +356,7 @@ public final class OresEvalRootNode extends RootNode {
                     return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
                 }
             } finally {
+                activeActorMethodKind.set(previousActorMethodKind);
                 if (stateLocked) receiver.actorStateLock.unlock();
             }
         }
@@ -512,6 +517,7 @@ public final class OresEvalRootNode extends RootNode {
                     Object receiver = eval(target.receiver(), env);
                     if (receiver instanceof OresMutex.Guard<?> guard) receiver = guard.value();
                     if (receiver instanceof OresObject object) {
+                        requireSynchronizedActorFieldAccess(object, target.member(), true);
                         if (!object.fields.containsKey(target.member())) {
                             throw new IllegalArgumentException("unknown field " + target.member());
                         }
@@ -780,7 +786,9 @@ public final class OresEvalRootNode extends RootNode {
 
             ConcurrentHashMap<String, CompletableFuture<Object>> pending = new ConcurrentHashMap<>();
             AtomicLong ids = new AtomicLong();
-            List<Object> capturedConstructorArgs = List.copyOf(constructorArgs);
+            @SuppressWarnings("unchecked")
+            List<Object> capturedConstructorArgs =
+                    (List<Object>) ActorRuntime.freeze(List.copyOf(constructorArgs));
 
             ActorRuntime.TurnClassifier<Map<String, Object>> classifier = message -> {
                 Object mode = message.get("mode");
@@ -847,6 +855,21 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), value);
             }
             return new OresObject(this, klass, fields);
+        }
+
+        private void requireSynchronizedActorFieldAccess(
+                OresObject object,
+                String fieldName,
+                boolean write) {
+            if (object.klass.actorKind() == Ast.ActorKind.NONE) return;
+            if (activeActorMethodKind.get() != Ast.ActorMethodKind.PARALLEL) return;
+            if (object.actorStateLock.isHeldByCurrentThread()) return;
+
+            throw new IllegalStateException(
+                    "parallel actor method attempted unsynchronized "
+                            + (write ? "write to" : "read of")
+                            + " actor field '" + object.klass.name() + "." + fieldName
+                            + "'; use an ordinary actor helper/Mutex/SharedMutex or an exclusive actor method");
         }
 
         private Object member(Object receiver, String name) {
@@ -916,7 +939,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
-                if (object.fields.containsKey(name)) return object.fields.get(name);
+                if (object.fields.containsKey(name)) {
+                    requireSynchronizedActorFieldAccess(object, name, false);
+                    return object.fields.get(name);
+                }
                 return new BoundMethod(object.owner, object, name);
             }
             if (receiver instanceof DynamicStructValue dynamic) {
