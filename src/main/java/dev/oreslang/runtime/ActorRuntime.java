@@ -3893,10 +3893,13 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
         }
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
         if (value == null || isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.Recipient<?>
-                || value instanceof ActorRuntime.ActorSpawn<?, ?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
                 || value instanceof OresMutex.Shared<?>) {
@@ -4019,10 +4022,6 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "ActorSpawn is local control state and cannot cross actor boundaries");
         }
-        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
-            throw new IllegalArgumentException(
-                    "ActorSpawn is local control state and cannot cross actor boundaries");
-        }
         if (value instanceof ActorRuntime.SyncCell<?> cell) return cell;
         if (value instanceof OresMutex.Shared<?> sharedMutex) return sharedMutex;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -4091,6 +4090,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof Shared<?> shared) return isolateCopy(shared.value(), visiting, depth + 1);
         if (value instanceof ActorRuntime.ActorRef<?> ref) return ref;
         if (value instanceof ActorRuntime.Recipient<?> recipient) return recipient;
+        if (value instanceof ActorRuntime.ActorSpawn<?, ?>) {
+            throw new IllegalArgumentException(
+                    "ActorSpawn is local control state and cannot cross actor boundaries");
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
