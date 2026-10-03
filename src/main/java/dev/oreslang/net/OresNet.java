@@ -449,8 +449,10 @@ public final class OresNet {
         private void close() {
             if (closed) return;
             requireNetwork("Socket.close");
-            if (fd >= 0) ioVoid(() -> NativeSocketBridge.close(handle));
-            fd = -1;
+            if (handle != null && handle.isOpen()) {
+                ioVoid(() -> NativeSocketBridge.close(handle));
+            }
+            handle = null;
             closed = true;
         }
     }
@@ -696,8 +698,10 @@ public final class OresNet {
         private void close() {
             if (closed) return;
             requireNetwork("ServerSocket.close");
-            if (fd >= 0) ioVoid(() -> NativeSocketBridge.close(handle));
-            fd = -1;
+            if (handle != null && handle.isOpen()) {
+                ioVoid(() -> NativeSocketBridge.close(handle));
+            }
+            handle = null;
             closed = true;
         }
     }
