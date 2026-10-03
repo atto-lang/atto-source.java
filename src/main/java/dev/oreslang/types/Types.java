@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, DynamicStruct, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -25,6 +25,11 @@ public final class Types {
 
     public record Record(Map<String, Type> members) implements Type {
         public Record { members = Map.copyOf(members); }
+    }
+
+    /** Open string-keyed object whose values all satisfy one static type. */
+    public record DynamicStruct(Type value) implements Type {
+        public DynamicStruct { Objects.requireNonNull(value); }
     }
 
     public record Function(List<Type> parameters, Type result) implements Type {
@@ -77,6 +82,15 @@ public final class Types {
                 if (!isAssignable(a, b) || !isAssignable(b, a)) return false;
             }
             return true;
+        }
+
+        if (from instanceof Record source && to instanceof DynamicStruct target) {
+            return source.members().values().stream().allMatch(member -> isAssignable(member, target.value()));
+        }
+
+        if (from instanceof DynamicStruct source && to instanceof DynamicStruct target) {
+            return isAssignable(source.value(), target.value())
+                    && isAssignable(target.value(), source.value());
         }
 
         if (from instanceof Record source && to instanceof Record target) {
