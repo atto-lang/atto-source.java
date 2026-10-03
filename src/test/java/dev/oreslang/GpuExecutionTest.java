@@ -794,12 +794,17 @@ final class GpuExecutionTest {
     @Test
     void residentGpuArrayHostOrchestrationUsesInstalledBackend() throws Exception {
         AtomicReference<List<?>> uploaded = new AtomicReference<>();
+        AtomicReference<Boolean> zeroAllocated = new AtomicReference<>(false);
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
             @Override public String name() { return "resident"; }
             @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
             @Override public Object uploadArray(List<?> values) {
                 uploaded.set(values);
                 return List.copyOf(values);
+            }
+            @Override public Object zeroArrayLike(Object token, long length) {
+                zeroAllocated.set(true);
+                return java.util.Collections.nCopies(Math.toIntExact(length), 0L);
             }
             @Override public List<?> downloadArray(Object token, long length) {
                 return (List<?>) token;
@@ -811,7 +816,8 @@ final class GpuExecutionTest {
                     pub fnc main() => void {
                       val values = [1, 2, 3];
                       val resident = GpuArray.from_cpu(values);
-                      val copied = resident.copy_to_cpu();
+                      val out = GpuArray.zeros_like(resident);
+                      val copied = out.copy_to_cpu();
                       return;
                     }
                     """;
@@ -825,6 +831,7 @@ final class GpuExecutionTest {
                 context.eval(source);
             }
             assertEquals(List.of(1L, 2L, 3L), uploaded.get());
+            assertEquals(Boolean.TRUE, zeroAllocated.get());
         } finally {
             GpuRuntime.clearBackend();
         }
