@@ -88,11 +88,19 @@ This separation is important: "collect the ordinary heap" is a performance/memor
 
 ## Symbols
 
-`Symbol` is an immutable identity value, never a raw shared pointer. `:ready` is the compact identifier form; `new Symbol("stable-key")` accepts an explicit key such as a UUID. Trusted threads and actors in one process canonicalize the same live key to the same process-local handle. Handles use monotonically increasing ids that are not reused; the key, never the id, is the serialization/wire representation.
+`Symbol` is an immutable identity token, never a raw shared pointer. The runtime implements three disjoint domains:
 
-The trusted symbol interner is weak. An ordinary symbol can therefore be reclaimed by automatic GC after every strong reference disappears. Storing a Symbol in a `singleton module` pins it transitively because singleton state is a process root. `await process.collect_singleton(SymbolModule)` safely removes that process root after admission closes and admitted work drains. The Symbol becomes GC-eligible only after any other live references also disappear; there is no unsafe force-free operation that can invalidate a live handle.
+- **LOCAL** — actor-owned, canonical only within one actor, non-Send, non-serializable, and reclaimed with the actor cell. Each actor-local table is bounded.
+- **PROCESS** — strongly interned and bounded for the lifetime of the trusted OS-process runtime. `:ready` and `Symbol.process("ready")` select this domain.
+- **STABLE** — UUID-backed identity for persistence/wire reconstruction. `Symbol.stable("uuid")` is explicit; legacy `new Symbol("uuid")` has the same stable semantics.
 
-Adversarial/untrusted actors and isolates do not join the trusted process symbol domain. Source-level creation is rejected under adversarial policy, and mailbox delivery rejects a Symbol even when nested in an otherwise Sendable graph. Cross that boundary using a validated string/enum key instead.
+PROCESS and STABLE values are immutable and may cross trusted actor heaps without sharing mutable state. PROCESS handles use monotonically increasing process-local ids for efficient identity/debugging, but those ids are never serialized and are not reused as wire identity. Wire encoding carries scope + canonical key; LOCAL values are rejected before transport.
+
+The PROCESS/STABLE registries are strong rather than weak. This is intentional: process identity must not silently change because the host collector happened to run. Both registries are bounded so user-controlled dynamic input cannot create an unbounded Erlang-style atom table. Use LOCAL symbols, strings, enums, or another bounded application registry for unbounded/dynamic input.
+
+A singleton may store PROCESS or STABLE Symbols as immutable state. Singleton collection releases the singleton state/binding root only; it does **not** delete a canonical PROCESS/STABLE Symbol or make its process id reusable. LOCAL Symbols are invalid in process-singleton storage.
+
+Adversarial/untrusted actors and isolates have no access to trusted Symbol construction or wire decoding and cannot receive a Symbol even when it is nested in an otherwise Sendable graph. Protocols crossing that boundary must use a validated non-Symbol representation.
 
 ## Actor message freezing limits
 
