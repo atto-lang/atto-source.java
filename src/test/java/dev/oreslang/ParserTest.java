@@ -59,12 +59,12 @@ final class ParserTest {
                 define module model
                   define class x as
                     @Ret<self>
-                    find() {
+                    find() : self {
                       return self;
                     }
 
                     @Ret<self>
-                    find_with_arg(self x)(int foo) {
+                    find_with_arg(self x)(int foo) : self {
                       return self;
                     }
                   end
@@ -293,7 +293,7 @@ final class ParserTest {
                 }
 
                 shared actor Child extends Parent {
-                  pub fnc current() => int {
+                  pub current() : int {
                     return self.value;
                   }
                 }
@@ -444,7 +444,7 @@ final class ParserTest {
 
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                     define class Flow as
-                      pub %s() => int { return 1; }
+                      pub %s() : int { return 1; }
                     end
                     define module app
                       fnc main() => void {
@@ -455,6 +455,70 @@ final class ParserTest {
                     end
                     """.formatted(keyword, keyword)));
         }
+    }
+
+    @Test
+    void instanceMethodsRequireColonReturnType() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class Counter as
+                  pub read() : int {
+                    return 1;
+                  }
+                end
+                """));
+
+        IllegalArgumentException fatArrow = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Counter as
+                  pub read() => int {
+                    return 1;
+                  }
+                end
+                """));
+        assertTrue(fatArrow.getMessage().contains("instance methods do not use"));
+
+        IllegalArgumentException thinArrow = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Counter as
+                  pub read() -> int {
+                    return 1;
+                  }
+                end
+                """));
+        assertTrue(thinArrow.getMessage().contains("instance methods do not use"));
+    }
+
+    @Test
+    void actorInstanceMethodsUseMethodSyntaxWithoutFnc() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                shared actor Counter {
+                  pub read() : int {
+                    return 1;
+                  }
+                }
+                """));
+
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared actor Counter {
+                  pub fnc read() => int {
+                    return 1;
+                  }
+                }
+                """));
+        assertTrue(failure.getMessage().contains("actor instance methods omit"));
+    }
+
+    @Test
+    void staticClassFncKeepsFunctionReturnSyntax() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class Counter as
+                  pub static fnc twice(int value) => int {
+                    return value * 2;
+                  }
+
+                  pub read() : int {
+                    return Counter.twice(1);
+                  }
+                end
+                """));
     }
 
     @Test
