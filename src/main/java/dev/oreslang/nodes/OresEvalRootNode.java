@@ -1722,6 +1722,8 @@ public final class OresEvalRootNode extends RootNode {
         private final Evaluator owner;
         private final Ast.ClassDecl klass;
         private final Map<String,Object> fields;
+        private final ReentrantLock actorStateLock = new ReentrantLock(true);
+
         private OresObject(Evaluator owner, Ast.ClassDecl klass, Map<String,Object> fields) {
             this.owner = owner;
             this.klass = klass;
@@ -1729,6 +1731,77 @@ public final class OresEvalRootNode extends RootNode {
         }
         @Override public Iterable<?> sharedStateChildren(){return fields.values();}
         @Override public String toString(){return klass.name()+fields;}
+    }
+
+    private static final class SourceActorRef {
+        private final Evaluator owner;
+        private final Ast.ClassDecl klass;
+        private final ActorRuntime.ActorRef<Map<String, Object>> runtimeRef;
+        private final ConcurrentHashMap<String, CompletableFuture<Object>> pending;
+        private final AtomicLong ids;
+
+        private SourceActorRef(
+                Evaluator owner,
+                Ast.ClassDecl klass,
+                ActorRuntime.ActorRef<Map<String, Object>> runtimeRef,
+                ConcurrentHashMap<String, CompletableFuture<Object>> pending,
+                AtomicLong ids) {
+            this.owner = owner;
+            this.klass = klass;
+            this.runtimeRef = runtimeRef;
+            this.pending = pending;
+            this.ids = ids;
+        }
+
+        private CompletableFuture<Object> spawn(String methodName, List<Object> arguments) {
+            Ast.MethodDecl method = owner.findMethod(
+                    klass, methodName, arguments.size(), new LinkedHashSet<>());
+            if (method == null) {
+                throw new IllegalArgumentException(
+                        "no actor method " + klass.name() + "." + methodName
+                                + " with arity " + arguments.size());
+            }
+            if (!method.isActorEntry()) {
+                throw new IllegalArgumentException(
+                        "ordinary actor method " + klass.name() + "." + methodName
+                                + " is internal and cannot be called through ActorRef");
+            }
+            if (method.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "actor method " + klass.name() + "." + methodName + " is private");
+            }
+
+            String id = Long.toUnsignedString(ids.incrementAndGet());
+            CompletableFuture<Object> completion = new CompletableFuture<>();
+            if (pending.putIfAbsent(id, completion) != null) {
+                throw new IllegalStateException("duplicate actor invocation id " + id);
+            }
+
+            ActorRuntime.TurnMode mode = switch (method.actorMethodKind()) {
+                case NONE -> throw new IllegalStateException(
+                        "ordinary method reached actor invocation lowering");
+                case SERIAL -> ActorRuntime.TurnMode.SERIAL;
+                case PARALLEL -> ActorRuntime.TurnMode.PARALLEL;
+                case EXCLUSIVE -> ActorRuntime.TurnMode.EXCLUSIVE;
+            };
+
+            Map<String, Object> message = Map.of(
+                    "id", id,
+                    "method", methodName,
+                    "mode", mode.name(),
+                    "args", List.copyOf(arguments));
+            try {
+                runtimeRef.send(message);
+            } catch (Throwable failure) {
+                pending.remove(id, completion);
+                completion.completeExceptionally(failure);
+            }
+            return completion;
+        }
+
+        @Override public String toString() {
+            return "ActorRef[" + klass.name() + ":" + runtimeRef.id() + "]";
+        }
     }
 
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
