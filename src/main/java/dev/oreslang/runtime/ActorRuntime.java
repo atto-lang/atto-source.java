@@ -391,6 +391,26 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /** Hard byte ceilings for a direct HTTP transport handed to an isolated actor. */
+    public record HttpTransportLimits(
+            long maxRequestBytes,
+            long maxResponseBytes) {
+        public HttpTransportLimits {
+            if (maxRequestBytes <= 0) {
+                throw new IllegalArgumentException("maxRequestBytes must be positive");
+            }
+            if (maxResponseBytes <= 0) {
+                throw new IllegalArgumentException("maxResponseBytes must be positive");
+            }
+        }
+
+        public static HttpTransportLimits defaults() {
+            return new HttpTransportLimits(
+                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
+                    DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES);
+        }
+    }
+
     public static final class ActorBudgetExceededException extends RuntimeException {
         public ActorBudgetExceededException(String message) { super(message); }
     }
@@ -496,11 +516,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         private ActorCell<?> requireOwner(String operation) {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || cell.kind != ActorKind.UNTRUSTED || !cell.ref.id().equals(owner)) {
+            if (cell == null || !cell.kind.memoryIsolated() || !cell.ref.id().equals(owner)) {
                 throw new SecurityException(
-                        "HTTP request capability may only be used by its owning untrusted actor: " + operation);
+                        "HTTP request capability may only be used by its owning isolated actor: " + operation);
             }
-            cell.checkUntrustedBudget(1);
+            if (cell.kind == ActorKind.UNTRUSTED) cell.checkUntrustedBudget(1);
             transportLease.assertActorOwner(owner, operation);
             return cell;
         }
@@ -689,11 +709,11 @@ public final class ActorRuntime implements AutoCloseable {
 
         private ActorCell<?> requireOwner(String operation) {
             ActorCell<?> cell = currentActor.get();
-            if (cell == null || cell.kind != ActorKind.UNTRUSTED || !cell.ref.id().equals(owner)) {
+            if (cell == null || !cell.kind.memoryIsolated() || !cell.ref.id().equals(owner)) {
                 throw new SecurityException(
-                        "HTTP response capability may only be used by its owning untrusted actor: " + operation);
+                        "HTTP response capability may only be used by its owning isolated actor: " + operation);
             }
-            cell.checkUntrustedBudget(1);
+            if (cell.kind == ActorKind.UNTRUSTED) cell.checkUntrustedBudget(1);
             transportLease.assertActorOwner(owner, operation);
             if (completed.get()) {
                 throw new IllegalStateException("HTTP response is already completed");
@@ -1887,10 +1907,10 @@ public final class ActorRuntime implements AutoCloseable {
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
 
-        /** Present only for an UNTRUSTED actor explicitly bound to one HTTP request. */
+        /** Present only for a memory-isolated actor explicitly bound to one HTTP request. */
         Optional<HttpRequestCapability> httpRequest();
 
-        /** Present only for an UNTRUSTED actor explicitly bound to one HTTP response. */
+        /** Present only for a memory-isolated actor explicitly bound to one HTTP response. */
         Optional<HttpResponseCapability> httpResponse();
 
         /** Mandatory compiler/runtime scheduling checkpoint. */
@@ -2107,6 +2127,54 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnInternal(ActorKind.PRIVATE, policy, behaviorFactory, true);
     }
 
+
+    /**
+     * Host/supervisor entry point for handing one admitted HTTP stream directly
+     * to an ordinary memory-isolated actor without mailbox-copying the body.
+     */
+    public <M> ActorRef<M> spawnPrivateHttp(
+            IsolatePolicy policy,
+            HttpTransportLimits httpLimits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            BehaviorFactory<M> behaviorFactory) {
+        return spawnPrivateHttp(
+                policy,
+                httpLimits,
+                requestTransport,
+                responseTransport,
+                null,
+                behaviorFactory);
+    }
+
+    public <M> ActorRef<M> spawnPrivateHttp(
+            IsolatePolicy policy,
+            HttpTransportLimits httpLimits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            HttpTransportLease transportLease,
+            BehaviorFactory<M> behaviorFactory) {
+        requireSupervisorContext("spawn private actor with HTTP transport ownership");
+        Objects.requireNonNull(policy);
+        Objects.requireNonNull(httpLimits);
+        Objects.requireNonNull(behaviorFactory);
+        if (requestTransport == null && responseTransport == null) {
+            throw new IllegalArgumentException(
+                    "spawnPrivateHttp requires a request or response transport");
+        }
+        if (transportLease == null) transportLease = new HttpTransportLease();
+        return spawnInternal(
+                ActorKind.PRIVATE,
+                policy,
+                behaviorFactory,
+                false,
+                null,
+                httpLimits,
+                requestTransport,
+                responseTransport,
+                transportLease);
+    }
+
     public <M> ActorRef<M> spawnShared(Supplier<? extends Behavior<M>> behaviorFactory) {
         return spawnShared(defaultSpawnPolicy(), behaviorFactory);
     }
@@ -2213,6 +2281,9 @@ public final class ActorRuntime implements AutoCloseable {
                 behaviorFactory,
                 false,
                 limits,
+                new HttpTransportLimits(
+                        limits.maxHttpRequestBytes(),
+                        limits.maxHttpResponseBytes()),
                 requestTransport,
                 responseTransport,
                 transportLease);
@@ -2419,7 +2490,7 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
-        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null, null, null);
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null, null, null, null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -2428,6 +2499,7 @@ public final class ActorRuntime implements AutoCloseable {
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory,
             UntrustedActorLimits untrustedLimits,
+            HttpTransportLimits httpLimits,
             HttpRequestTransport requestTransport,
             HttpResponseTransport responseTransport,
             HttpTransportLease suppliedTransportLease) {
@@ -2445,11 +2517,21 @@ public final class ActorRuntime implements AutoCloseable {
         if (kind == ActorKind.UNTRUSTED && untrustedLimits == null) {
             throw new SecurityException("untrusted actor hard limits are required");
         }
-        if (kind != ActorKind.UNTRUSTED
-                && (untrustedLimits != null || requestTransport != null || responseTransport != null
-                        || suppliedTransportLease != null)) {
+        if (kind != ActorKind.UNTRUSTED && untrustedLimits != null) {
             throw new IllegalArgumentException(
-                    "untrusted limits/HTTP capabilities may only be attached to UNTRUSTED actors");
+                    "untrusted limits may only be attached to UNTRUSTED actors");
+        }
+        boolean hasHttpTransport = requestTransport != null || responseTransport != null;
+        if (hasHttpTransport && !kind.memoryIsolated()) {
+            throw new IllegalArgumentException(
+                    "HTTP transport ownership may only be attached to memory-isolated actors");
+        }
+        if (hasHttpTransport && httpLimits == null) {
+            throw new IllegalArgumentException("HTTP transport limits are required");
+        }
+        if (!hasHttpTransport && (httpLimits != null || suppliedTransportLease != null)) {
+            throw new IllegalArgumentException(
+                    "HTTP transport limits/lease require a request or response transport");
         }
 
         IsolatePolicy effectivePolicy = kind.memoryIsolated()
@@ -2483,7 +2565,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 ActorId id = ActorId.create();
                 ActorRef<M> ref = new ActorRef<>(id, kind);
-                if (kind == ActorKind.UNTRUSTED
+                if (kind.memoryIsolated()
                         && (requestTransport != null || responseTransport != null)) {
                     if (transportLease == null) {
                         transportLease = new HttpTransportLease();
@@ -2501,6 +2583,7 @@ public final class ActorRuntime implements AutoCloseable {
                         behaviorFactory,
                         trustedFactory,
                         untrustedLimits,
+                        httpLimits,
                         requestTransport,
                         responseTransport,
                         transportLease);
@@ -4264,6 +4347,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final UntrustedActorLimits untrustedLimits;
+        private final HttpTransportLimits httpLimits;
         private final HttpRequestCapability httpRequest;
         private final HttpResponseCapability httpResponse;
         private final HttpTransportLease httpTransportLease;
@@ -4296,6 +4380,7 @@ public final class ActorRuntime implements AutoCloseable {
                 BehaviorFactory<M> behaviorFactory,
                 boolean trustedFactory,
                 UntrustedActorLimits untrustedLimits,
+                HttpTransportLimits httpLimits,
                 HttpRequestTransport requestTransport,
                 HttpResponseTransport responseTransport,
                 HttpTransportLease httpTransportLease) {
@@ -4309,6 +4394,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
             this.untrustedLimits = untrustedLimits;
+            this.httpLimits = httpLimits;
             this.createdNanos = System.nanoTime();
             if (kind == ActorKind.UNTRUSTED) {
                 if (untrustedLimits == null) {
@@ -4322,24 +4408,33 @@ public final class ActorRuntime implements AutoCloseable {
                         ? Long.MAX_VALUE
                         : createdNanos + lifetimeNanos;
                 this.fuelRemaining.set(untrustedLimits.fuelPerTurn());
-                this.httpTransportLease = httpTransportLease;
+            } else {
+                this.hardLifetime = policy.maxWallTime();
+                this.deadlineNanos = Long.MAX_VALUE;
+            }
+
+            if (requestTransport != null || responseTransport != null) {
+                if (!kind.memoryIsolated()) {
+                    throw new IllegalArgumentException(
+                            "HTTP transport capabilities require a memory-isolated actor");
+                }
+                HttpTransportLimits limits = Objects.requireNonNull(httpLimits);
+                this.httpTransportLease = Objects.requireNonNull(httpTransportLease);
                 this.httpRequest = requestTransport == null
                         ? null
                         : new HttpRequestCapability(
                                 ref.id(),
                                 requestTransport,
-                                Objects.requireNonNull(httpTransportLease),
-                                untrustedLimits.maxHttpRequestBytes());
+                                this.httpTransportLease,
+                                limits.maxRequestBytes());
                 this.httpResponse = responseTransport == null
                         ? null
                         : new HttpResponseCapability(
                                 ref.id(),
                                 responseTransport,
-                                Objects.requireNonNull(httpTransportLease),
-                                untrustedLimits.maxHttpResponseBytes());
+                                this.httpTransportLease,
+                                limits.maxResponseBytes());
             } else {
-                this.hardLifetime = policy.maxWallTime();
-                this.deadlineNanos = Long.MAX_VALUE;
                 this.httpRequest = null;
                 this.httpResponse = null;
                 this.httpTransportLease = null;
