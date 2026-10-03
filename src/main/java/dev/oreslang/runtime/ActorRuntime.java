@@ -829,6 +829,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadPoolExecutor sharedDispatcher;
     private final ThreadPoolExecutor untrustedDispatcher;
     private final ScheduledThreadPoolExecutor untrustedWatchdog;
+    private final ScheduledThreadPoolExecutor messageWatchdog;
     private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
     private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
     private final AtomicInteger untrustedCompensatingThreads = new AtomicInteger();
@@ -887,6 +888,8 @@ public final class ActorRuntime implements AutoCloseable {
                 "ores-untrusted-actor-dispatcher-");
         this.untrustedWatchdog = newUntrustedWatchdog(
                 namedFactory("ores-untrusted-watchdog-"));
+        this.messageWatchdog = newUntrustedWatchdog(
+                namedFactory("ores-actor-turn-watchdog-"));
     }
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
@@ -920,6 +923,63 @@ public final class ActorRuntime implements AutoCloseable {
                 overrunCounter(kind).get(),
                 rejectionCounter(kind).get(),
                 executor.getLargestPoolSize());
+    }
+
+    /**
+     * Run trusted root/main-process guest work on the SHARED carrier domain.
+     * This is not an actor turn, so it has no mailbox identity, but it shares
+     * the same CPU bulkhead as shared actors and therefore cannot consume an
+     * isolate/untrusted carrier.
+     */
+    public <T> T executeRootTask(Supplier<T> task) {
+        requireSupervisorContext("execute root/main process work");
+        Objects.requireNonNull(task, "task");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+
+        CompletableFuture<T> completion = new CompletableFuture<>();
+        Runnable carrierTask = () -> {
+            ACTOR_CARRIER.set(Boolean.TRUE);
+            try {
+                turnExecutor.execute(() -> {
+                    try {
+                        completion.complete(task.get());
+                    } catch (Throwable failure) {
+                        completion.completeExceptionally(failure);
+                        if (failure instanceof VirtualMachineError fatal) throw fatal;
+                        if (failure instanceof ThreadDeath fatal) throw fatal;
+                        if (failure instanceof LinkageError fatal) throw fatal;
+                    }
+                });
+            } catch (Throwable failure) {
+                completion.completeExceptionally(failure);
+                if (failure instanceof VirtualMachineError fatal) throw fatal;
+                if (failure instanceof ThreadDeath fatal) throw fatal;
+                if (failure instanceof LinkageError fatal) throw fatal;
+            } finally {
+                // Never leak an actor/root control interrupt into a pooled carrier.
+                Thread.interrupted();
+                ACTOR_CARRIER.remove();
+            }
+        };
+
+        try {
+            sharedDispatcher.execute(carrierTask);
+        } catch (RejectedExecutionException rejected) {
+            sharedRejectedTurns.incrementAndGet();
+            throw rejected;
+        }
+
+        try {
+            return completion.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CancellationException("root/main process execution interrupted");
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof RuntimeException runtime) throw runtime;
+            if (cause instanceof Error error) throw error;
+            throw new RuntimeException(cause);
+        }
     }
 
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
@@ -2476,12 +2536,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
         ActorCell<?> cell = currentActor.get();
         if (cell != null) {
-            if (cell.stopped.get()) {
-                throw new CancellationException("actor execution stopped");
-            }
+            cell.throwIfControlStopped();
             cell.checkUntrustedBudget(1);
         }
         if (Thread.currentThread().isInterrupted()) {
+            if (cell != null) cell.throwIfControlStopped();
             throw new CancellationException("actor execution interrupted");
         }
     }
@@ -3470,6 +3529,7 @@ public final class ActorRuntime implements AutoCloseable {
             sharedDispatcher.shutdownNow();
             untrustedDispatcher.shutdownNow();
             untrustedWatchdog.shutdownNow();
+            messageWatchdog.shutdownNow();
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
@@ -3639,6 +3699,10 @@ public final class ActorRuntime implements AutoCloseable {
         private final long deadlineNanos;
         private volatile Thread activeCarrier;
         private volatile ScheduledFuture<?> lifetimeFuture;
+        private volatile ScheduledFuture<?> messageDeadlineFuture;
+        private final AtomicLong messageEpoch = new AtomicLong();
+        private volatile long activeMessageEpoch;
+        private final AtomicBoolean compensationClaimed = new AtomicBoolean();
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final AtomicInteger queuedMessages = new AtomicInteger();
@@ -3748,6 +3812,76 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private void throwIfControlStopped() {
+            if (!stopped.get()) return;
+            Throwable cause = ref.terminationCause.get();
+            if (cause instanceof ActorBudgetExceededException budget) throw budget;
+            if (cause instanceof ActorLifetimeExceededException lifetime) throw lifetime;
+            if (cause instanceof ActorTurnExceededException turn) throw turn;
+            throw new CancellationException("actor execution stopped");
+        }
+
+        private long armMessageDeadline(String phase) {
+            long maxNanos = dispatcherConfig.maxMessageNanos();
+            if (maxNanos == Long.MAX_VALUE) return 0L;
+            long epoch = messageEpoch.incrementAndGet();
+            Thread carrier = Thread.currentThread();
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) return 0L;
+                activeMessageEpoch = epoch;
+                messageDeadlineFuture = messageWatchdog.schedule(
+                        () -> expireMessageTurn(epoch, carrier, phase),
+                        maxNanos,
+                        TimeUnit.NANOSECONDS);
+            }
+            return epoch;
+        }
+
+        private void expireMessageTurn(long epoch, Thread carrier, String phase) {
+            boolean interrupt = false;
+            synchronized (lifecycleLock) {
+                if (finalized
+                        || stopped.get()
+                        || activeMessageEpoch != epoch
+                        || activeCarrier != carrier) {
+                    return;
+                }
+                ActorTurnExceededException failure = new ActorTurnExceededException(
+                        ref.id(),
+                        kind,
+                        "actor " + ref.id() + " (" + kind + ") exceeded hard "
+                                + phase + " quantum of "
+                                + TimeUnit.NANOSECONDS.toMillis(dispatcherConfig.maxMessageNanos())
+                                + " ms");
+                ref.terminationCause.compareAndSet(null, failure);
+                stopped.set(true);
+                drainMailboxReservations();
+                overrunCounter(kind).incrementAndGet();
+                if (compensationClaimed.compareAndSet(false, true)
+                        && !claimCompensatingThread(kind)) {
+                    compensationClaimed.set(false);
+                }
+                interrupt = true;
+            }
+            if (interrupt) carrier.interrupt();
+        }
+
+        private void disarmMessageDeadline(long epoch) {
+            if (epoch == 0L) return;
+            ScheduledFuture<?> deadline = null;
+            synchronized (lifecycleLock) {
+                if (activeMessageEpoch == epoch) {
+                    activeMessageEpoch = 0L;
+                    deadline = messageDeadlineFuture;
+                    messageDeadlineFuture = null;
+                }
+            }
+            if (deadline != null) deadline.cancel(false);
+            if (compensationClaimed.compareAndSet(true, false)) {
+                releaseCompensatingThread(kind);
+            }
+        }
+
         private Duration remainingLifetime() {
             if (kind != ActorKind.UNTRUSTED) return policy.maxWallTime();
             long remaining = Math.max(0L, deadlineNanos - System.nanoTime());
@@ -3796,6 +3930,10 @@ public final class ActorRuntime implements AutoCloseable {
             ScheduledFuture<?> timer = lifetimeFuture;
             lifetimeFuture = null;
             if (timer != null) timer.cancel(false);
+            ScheduledFuture<?> messageTimer = messageDeadlineFuture;
+            messageDeadlineFuture = null;
+            activeMessageEpoch = 0L;
+            if (messageTimer != null) messageTimer.cancel(false);
             drainMailboxReservations();
             behavior = null;
             if (httpRequest != null) {
@@ -3876,6 +4014,7 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 dispatcherFor(kind).execute(this::runBatch);
             } catch (RejectedExecutionException rejected) {
+                rejectionCounter(kind).incrementAndGet();
                 scheduled.set(false);
                 stop();
                 if (!closed.get()) throw rejected;
@@ -3936,13 +4075,18 @@ public final class ActorRuntime implements AutoCloseable {
 
                 if (behavior == null) {
                     beginMessageBudget();
-                    Behavior<M> created = Objects.requireNonNull(
-                            behaviorFactory.create(context),
-                            "actor behaviorFactory returned null");
-                    if (kind.memoryIsolated() && !trustedFactory) {
-                        validatePrivateBehaviorState(ref.id(), created);
+                    long factoryDeadline = armMessageDeadline("behavior initialization");
+                    try {
+                        Behavior<M> created = Objects.requireNonNull(
+                                behaviorFactory.create(context),
+                                "actor behaviorFactory returned null");
+                        if (kind.memoryIsolated() && !trustedFactory) {
+                            validatePrivateBehaviorState(ref.id(), created);
+                        }
+                        behavior = created;
+                    } finally {
+                        disarmMessageDeadline(factoryDeadline);
                     }
-                    behavior = created;
                 }
 
                 int processed = 0;
@@ -3954,14 +4098,14 @@ public final class ActorRuntime implements AutoCloseable {
                     releaseMailboxSlot();
                     try (envelope) {
                         beginMessageBudget();
-                        behavior.onMessage((M) envelope.value(), context);
-                        if (kind.memoryIsolated() && !trustedFactory) {
-                            // Private state that survives a mailbox turn must
-                            // remain in actor-owned storage/capabilities. This
-                            // catches behavior fields that were null/immutable
-                            // at construction but later retain a mutable JVM
-                            // object across turns.
-                            validatePrivateBehaviorState(ref.id(), behavior);
+                        long messageDeadline = armMessageDeadline("mailbox message");
+                        try {
+                            behavior.onMessage((M) envelope.value(), context);
+                            if (kind.memoryIsolated() && !trustedFactory) {
+                                validatePrivateBehaviorState(ref.id(), behavior);
+                            }
+                        } finally {
+                            disarmMessageDeadline(messageDeadline);
                         }
                     }
                     processed++;
@@ -3988,11 +4132,9 @@ public final class ActorRuntime implements AutoCloseable {
                 activeCarrier = null;
                 CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
-                if (kind == ActorKind.UNTRUSTED) {
-                    // Watchdog interruption is a control signal for this turn;
-                    // do not leak it into the pooled sandbox carrier.
-                    Thread.interrupted();
-                }
+                // Runtime watchdog interrupts are control-plane signals and
+                // must never leak into the next actor using this pooled carrier.
+                Thread.interrupted();
                 scheduled.set(false);
 
                 if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
