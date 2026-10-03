@@ -114,6 +114,19 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.kind();
     }
 
+    /**
+     * Control-plane aborts must bypass guest catch/recover semantics.
+     * They are scheduler/sandbox decisions, not application exceptions.
+     */
+    public static boolean isActorControlAbort(Throwable failure) {
+        if (failure instanceof ActorBudgetExceededException
+                || failure instanceof ActorLifetimeExceededException) {
+            return true;
+        }
+        return failure instanceof CancellationException
+                && currentActorKind() == ActorKind.UNTRUSTED;
+    }
+
     public static Object currentExecutionDomain() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? Thread.currentThread() : current.executionDomain();
@@ -128,27 +141,46 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.executionDomain();
     }
 
-    public enum ActorKind { PRIVATE, SHARED }
+    public enum ActorKind {
+        PRIVATE,
+        SHARED,
+        UNTRUSTED;
+
+        public boolean memoryIsolated() {
+            return this != SHARED;
+        }
+
+        public boolean untrusted() {
+            return this == UNTRUSTED;
+        }
+    }
 
     public record DispatcherConfig(
             int privateParallelism,
             int sharedParallelism,
+            int untrustedParallelism,
             int throughput,
             int maxActors) {
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
             if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
+            if (untrustedParallelism <= 0) throw new IllegalArgumentException("untrustedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
         }
 
+        /** Backward-compatible constructor: untrusted work gets its own pool sized like private work. */
+        public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput, int maxActors) {
+            this(privateParallelism, sharedParallelism, privateParallelism, throughput, maxActors);
+        }
+
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
-            this(privateParallelism, sharedParallelism, throughput, 16_384);
+            this(privateParallelism, sharedParallelism, privateParallelism, throughput, 16_384);
         }
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, 64, 16_384);
+            return new DispatcherConfig(cpus, cpus, Math.max(1, cpus / 2), 64, 16_384);
         }
     }
 
@@ -551,6 +583,8 @@ public final class ActorRuntime implements AutoCloseable {
     private volatile Consumer<Object> actorExitHook = ignored -> { };
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
+    private final ExecutorService untrustedDispatcher;
+    private final ScheduledThreadPoolExecutor untrustedWatchdog;
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
@@ -3399,8 +3433,22 @@ public final class ActorRuntime implements AutoCloseable {
         private void finalizeStopLocked() {
             if (finalized || activeTurns != 0) return;
             finalized = true;
+            ScheduledFuture<?> timer = lifetimeFuture;
+            lifetimeFuture = null;
+            if (timer != null) timer.cancel(false);
             drainMailboxReservations();
-            if (memorySlice != null) memorySlice.close();
+            behavior = null;
+            if (httpRequest != null) {
+                httpRequest.cancelFromRuntime(ref.terminationCause.get());
+            }
+            if (httpResponse != null) {
+                httpResponse.abortFromRuntime(ref.terminationCause.get());
+            }
+            if (memorySlice != null) {
+                // ActorMemorySlice.close() zeroes owned direct-memory blocks,
+                // releases every reservation, and makes leaked handles fail.
+                memorySlice.close();
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
