@@ -1285,4 +1285,87 @@ final class ActorRuntimeTest {
     }
 
 
+    @Test
+    void sharedConcurrentActorAllowsParallelTurns() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 4, 1, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicInteger inFlight = new AtomicInteger();
+            AtomicInteger maxInFlight = new AtomicInteger();
+            CountDownLatch entered = new CountDownLatch(2);
+            CountDownLatch release = new CountDownLatch(1);
+            CountDownLatch finished = new CountDownLatch(2);
+
+            var ref = runtime.<String>spawnSharedConcurrentTrusted(
+                    ignored -> ActorRuntime.TurnMode.PARALLEL,
+                    factoryContext -> (message, context) -> {
+                        int current = inFlight.incrementAndGet();
+                        maxInFlight.accumulateAndGet(current, Math::max);
+                        entered.countDown();
+                        try {
+                            assertTrue(release.await(2, TimeUnit.SECONDS));
+                        } finally {
+                            inFlight.decrementAndGet();
+                            finished.countDown();
+                        }
+                    });
+
+            ref.send("one");
+            ref.send("two");
+
+            assertTrue(entered.await(2, TimeUnit.SECONDS),
+                    "two PARALLEL turns should enter before either is released");
+            assertTrue(maxInFlight.get() >= 2,
+                    "shared actor PARALLEL turns should overlap");
+
+            release.countDown();
+            assertTrue(finished.await(2, TimeUnit.SECONDS));
+            runtime.stop(ref);
+        }
+    }
+
+    @Test
+    void sharedConcurrentActorExclusiveTurnWaitsForParallelTurns() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(1, 4, 1, 16);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicInteger activeParallel = new AtomicInteger();
+            AtomicBoolean exclusiveOverlapped = new AtomicBoolean();
+            CountDownLatch parallelEntered = new CountDownLatch(2);
+            CountDownLatch releaseParallel = new CountDownLatch(1);
+            CountDownLatch exclusiveEntered = new CountDownLatch(1);
+
+            var ref = runtime.<String>spawnSharedConcurrentTrusted(
+                    message -> message.equals("exclusive")
+                            ? ActorRuntime.TurnMode.EXCLUSIVE
+                            : ActorRuntime.TurnMode.PARALLEL,
+                    factoryContext -> (message, context) -> {
+                        if (message.equals("exclusive")) {
+                            if (activeParallel.get() != 0) exclusiveOverlapped.set(true);
+                            exclusiveEntered.countDown();
+                            return;
+                        }
+
+                        activeParallel.incrementAndGet();
+                        parallelEntered.countDown();
+                        try {
+                            assertTrue(releaseParallel.await(2, TimeUnit.SECONDS));
+                        } finally {
+                            activeParallel.decrementAndGet();
+                        }
+                    });
+
+            ref.send("parallel-1");
+            ref.send("parallel-2");
+            assertTrue(parallelEntered.await(2, TimeUnit.SECONDS));
+
+            ref.send("exclusive");
+            assertFalse(exclusiveEntered.await(100, TimeUnit.MILLISECONDS),
+                    "EXCLUSIVE turn must wait while PARALLEL turns are active");
+
+            releaseParallel.countDown();
+            assertTrue(exclusiveEntered.await(2, TimeUnit.SECONDS));
+            assertFalse(exclusiveOverlapped.get());
+            runtime.stop(ref);
+        }
+    }
+
 }
