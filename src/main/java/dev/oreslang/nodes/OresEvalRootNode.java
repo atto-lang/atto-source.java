@@ -188,6 +188,9 @@ public final class OresEvalRootNode extends RootNode {
                 case NONE -> throw new AssertionError("non-actor callable reached actor lowering");
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
+                case UNTRUSTED -> throw new SecurityException(
+                        "untrusted actor callables require GraalWasm sandbox lowering; "
+                                + "the ordinary JVM interpreter must not execute hostile guest code");
             };
 
             return context.actors().invoke(
