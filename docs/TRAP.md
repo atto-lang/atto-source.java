@@ -197,6 +197,25 @@ pub trap fnc pair(): [int, String] {
 
 There is no ambiguity between the compiler-owned outer success bundle and a tuple returned by user code.
 
+### Ownership of trap projections
+
+Trap destructuring obeys the ordinary ownership model.
+
+- `TrapResult<T>` owns either the success payload or the `TrapError`;
+- destructuring consumes/moves the selected payload exactly once unless the surrounding operation is an explicit borrow;
+- nested Option-aware destructuring does not implicitly copy a class, closure, buffer, actor capability, or other non-`Copy` value;
+- after a consuming destructure, the original `TrapResult<T>` cannot be reused;
+- borrowing a trap result may expose borrowed projections, but a borrow cannot outlive the result owner;
+- the absent branch carries no hidden alias to the present payload.
+
+For a non-`Copy` `User`, this:
+
+```ores
+[const [user], const err] = load_user(id);
+```
+
+moves the success `User` into the resulting `Option<User>` on success. It does not clone the user object.
+
 ## `throw`: the trappable error channel
 
 `throw` is the ordinary exception/error control effect.
@@ -238,7 +257,7 @@ conceptually becomes:
 [Some(["ok"]), None]
 ```
 
-A `throw` in a nested non-trap helper also belongs to the dynamic trap boundary:
+A `throw` in a nested non-trap helper also belongs to the **dynamic execution extent** of the trap boundary:
 
 ```ores
 fnc helper(): User {
@@ -251,6 +270,8 @@ pub trap fnc load(): User {
 ```
 
 The caller of `load()` receives the error side. The exception does not escape `load`.
+
+This is dynamic, not merely transitive/static. A synchronous callback invoked while the trap frame is active is covered. Work that is detached and executed later on another task/actor/domain does **not** inherit the old trap frame. It follows its own task/actor supervision rules unless it establishes its own trap boundary.
 
 If no dynamic `trap` boundary exists, `throw` retains normal Oreslang `try/catch` / unhandled-exception behavior.
 
@@ -508,7 +529,8 @@ The trap boundary spans the complete asynchronous computation, including code re
 - a `raise`/`panic` completes the future with its distinct non-trappable control signal;
 - awaiting that future re-emits the same `raise`/`panic` at the await site so a surrounding recover boundary can handle it;
 - a detached/unawaited task has no dynamic caller recover frame, so unrecovered `raise`/`panic` is routed to task supervision rather than fabricated into `TrapError`;
-- runtime cancellation of the future remains the non-trappable cancellation channel described above.
+- runtime cancellation of the future remains the non-trappable cancellation channel described above;
+- callbacks/tasks explicitly detached from the async computation do not inherit its trap/recover frames.
 
 This preserves the same semantics across suspension instead of making `trap` only cover the synchronous prefix of an async function.
 
@@ -777,7 +799,9 @@ error[E-TRAP-008]: 'raise' bypasses trap and cannot be converted to TrapError
 - raise in a recover handler skips that same recover frame and reaches the next outer matching frame;
 - cleanup throw cannot downgrade an in-flight raise/panic;
 - cleanup raise can supersede throw but not panic;
-- cleanup panic supersedes throw/raise.
+- cleanup panic supersedes throw/raise;
+- synchronous callback throw is caught by the active trap, while a later detached callback throw is not;
+- consuming trap destructuring moves a non-`Copy` success payload exactly once.
 
 ### Compile-fail
 
@@ -814,7 +838,9 @@ error[E-TRAP-008]: 'raise' bypasses trap and cannot be converted to TrapError
 - forced untrusted-actor cancellation/fuel exhaustion bypasses trap;
 - OOM/VM-fatal host failure is not converted to `TrapError`;
 - cause/suppressed chains are bounded and cycle-safe;
-- cross-actor/isolate signal handling reports supervision metadata without leaking raw host/guest capabilities.
+- cross-actor/isolate signal handling reports supervision metadata without leaking raw host/guest capabilities;
+- trap result cannot be reused after consuming destructure of a non-`Copy` payload;
+- borrowed trap projections cannot outlive the owning `TrapResult<T>`.
 
 ## Implementation staging
 
