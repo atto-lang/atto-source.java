@@ -276,7 +276,7 @@ public final class ActorRuntime implements AutoCloseable {
             return defaultsForProcessors(Runtime.getRuntime().availableProcessors());
         }
 
-        static DispatcherConfig defaultsForProcessors(int availableProcessors) {
+        public static DispatcherConfig defaultsForProcessors(int availableProcessors) {
             int cpus = Math.max(1, availableProcessors);
             int untrusted = Math.max(1, cpus / 8);
             int remaining = Math.max(1, cpus - untrusted);
@@ -294,6 +294,24 @@ public final class ActorRuntime implements AutoCloseable {
                     16_384);
         }
 
+        public static DispatcherConfig defaultsWithMaxActors(int maxActors) {
+            DispatcherConfig defaults = defaults();
+            return new DispatcherConfig(
+                    defaults.privateParallelism(),
+                    defaults.sharedParallelism(),
+                    defaults.untrustedParallelism(),
+                    defaults.throughput(),
+                    defaults.maxBatchNanos(),
+                    defaults.maxMessageNanos(),
+                    defaults.maxCompensatingThreads(),
+                    maxActors);
+        }
+
+        /** Reserve most actor identities for trusted domains during hostile load. */
+        public int maxUntrustedActors() {
+            return Math.max(1, maxActors / 8);
+        }
+
         public int throughputFor(ActorKind kind) {
             Objects.requireNonNull(kind, "kind");
             return kind == ActorKind.UNTRUSTED ? 1 : throughput;
@@ -306,6 +324,94 @@ public final class ActorRuntime implements AutoCloseable {
                 case UNTRUSTED -> untrustedParallelism;
             };
         }
+    }
+
+    /**
+     * Hard sandbox limits for one untrusted actor. The five-minute lifetime is
+     * an absolute ceiling; mailbox return data is deliberately much smaller
+     * than direct HTTP streaming data.
+     */
+    public record UntrustedActorLimits(
+            Duration maxLifetime,
+            long fuelPerTurn,
+            long maxMailboxReturnBytes,
+            long maxHttpRequestBytes,
+            long maxHttpResponseBytes) {
+        public UntrustedActorLimits {
+            Objects.requireNonNull(maxLifetime, "maxLifetime");
+            if (maxLifetime.isZero() || maxLifetime.isNegative()) {
+                throw new IllegalArgumentException("untrusted actor maxLifetime must be positive");
+            }
+            if (maxLifetime.compareTo(HARD_MAX_UNTRUSTED_LIFETIME) > 0) {
+                throw new IllegalArgumentException(
+                        "untrusted actor maxLifetime cannot exceed "
+                                + HARD_MAX_UNTRUSTED_LIFETIME.toSeconds() + " seconds");
+            }
+            if (fuelPerTurn <= 0) throw new IllegalArgumentException("untrusted actor fuelPerTurn must be positive");
+            if (maxMailboxReturnBytes <= 0) throw new IllegalArgumentException("maxMailboxReturnBytes must be positive");
+            if (maxHttpRequestBytes <= 0) throw new IllegalArgumentException("maxHttpRequestBytes must be positive");
+            if (maxHttpResponseBytes <= 0) throw new IllegalArgumentException("maxHttpResponseBytes must be positive");
+        }
+
+        public UntrustedActorLimits(
+                Duration maxLifetime,
+                long fuelPerTurn,
+                long maxMailboxReturnBytes,
+                long maxHttpResponseBytes) {
+            this(
+                    maxLifetime,
+                    fuelPerTurn,
+                    maxMailboxReturnBytes,
+                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
+                    maxHttpResponseBytes);
+        }
+
+        public static UntrustedActorLimits defaults() {
+            return new UntrustedActorLimits(
+                    HARD_MAX_UNTRUSTED_LIFETIME,
+                    DEFAULT_UNTRUSTED_FUEL_PER_TURN,
+                    DEFAULT_UNTRUSTED_MAILBOX_RETURN_BYTES,
+                    DEFAULT_UNTRUSTED_HTTP_REQUEST_BYTES,
+                    DEFAULT_UNTRUSTED_HTTP_RESPONSE_BYTES);
+        }
+    }
+
+    public static final class ActorBudgetExceededException extends RuntimeException {
+        public ActorBudgetExceededException(String message) { super(message); }
+    }
+
+    public static final class ActorLifetimeExceededException extends RuntimeException {
+        public ActorLifetimeExceededException(String message) { super(message); }
+    }
+
+    public static final class HttpRequestLimitExceededException extends RuntimeException {
+        public HttpRequestLimitExceededException(String message) { super(message); }
+    }
+
+    public static final class HttpResponseLimitExceededException extends RuntimeException {
+        public HttpResponseLimitExceededException(String message) { super(message); }
+    }
+
+    /** Host adapter for one already-admitted HTTP request, not general NETWORK authority. */
+    public interface HttpRequestTransport {
+        String method();
+        String path();
+        default Optional<String> header(String name) { return Optional.empty(); }
+        int read(ByteBuffer target) throws IOException;
+        default void cancel(Throwable cause) { }
+    }
+
+    /**
+     * Host adapter for one HTTP response. Implementations must be non-blocking
+     * or scheduler-aware; untrusted guest code never receives a raw socket/fd.
+     */
+    public interface HttpResponseTransport {
+        default void status(int statusCode) throws IOException { }
+        default void header(String name, String value) throws IOException { }
+        int write(ByteBuffer source) throws IOException;
+        default void flush() throws IOException { }
+        default void complete() throws IOException { }
+        default void abort(Throwable cause) { }
     }
 
     /** Lightweight scheduler telemetry suitable for ores-otel/JMX export. */
@@ -705,6 +811,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final AtomicInteger actorCount = new AtomicInteger();
+    private final AtomicInteger privateActorCount = new AtomicInteger();
+    private final AtomicInteger sharedActorCount = new AtomicInteger();
+    private final AtomicInteger untrustedActorCount = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -743,11 +852,7 @@ public final class ActorRuntime implements AutoCloseable {
     public ActorRuntime(IsolatePolicy policyCeiling, int maxActors) {
         this(
                 policyCeiling,
-                new DispatcherConfig(
-                        DispatcherConfig.defaults().privateParallelism(),
-                        DispatcherConfig.defaults().sharedParallelism(),
-                        DispatcherConfig.defaults().throughput(),
-                        maxActors),
+                DispatcherConfig.defaultsWithMaxActors(maxActors),
                 TurnExecutor.direct());
     }
 
@@ -1840,7 +1945,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-            reserveActorSlot();
+            reserveActorSlot(kind);
 
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
@@ -2000,22 +2105,37 @@ public final class ActorRuntime implements AutoCloseable {
                 true);
     }
 
-    private void reserveActorSlot() {
-        while (true) {
-            int current = actorCount.get();
-            if (current >= dispatcherConfig.maxActors()) {
-                throw new IllegalStateException(
-                        "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
-            }
-            if (actorCount.compareAndSet(current, current + 1)) return;
+    private AtomicInteger actorCountFor(ActorKind kind) {
+        return switch (kind) {
+            case PRIVATE -> privateActorCount;
+            case SHARED -> sharedActorCount;
+            case UNTRUSTED -> untrustedActorCount;
+        };
+    }
+
+    private void reserveActorSlot(ActorKind kind) {
+        Objects.requireNonNull(kind);
+        if (actorCount.get() >= dispatcherConfig.maxActors()) {
+            throw new IllegalStateException(
+                    "actor runtime limit exceeded: maximum " + dispatcherConfig.maxActors());
         }
+        if (kind == ActorKind.UNTRUSTED
+                && untrustedActorCount.get() >= dispatcherConfig.maxUntrustedActors()) {
+            throw new IllegalStateException(
+                    "untrusted actor limit exceeded: maximum "
+                            + dispatcherConfig.maxUntrustedActors());
+        }
+        actorCount.incrementAndGet();
+        actorCountFor(kind).incrementAndGet();
     }
 
     private void unregisterActor(ActorCell<?> cell) {
         if (actors.remove(cell.ref.id(), cell)) {
             int remaining = actorCount.decrementAndGet();
-            if (remaining < 0) {
-                actorCount.incrementAndGet();
+            int domainRemaining = actorCountFor(cell.kind).decrementAndGet();
+            if (remaining < 0 || domainRemaining < 0) {
+                if (remaining < 0) actorCount.incrementAndGet();
+                if (domainRemaining < 0) actorCountFor(cell.kind).incrementAndGet();
                 throw new IllegalStateException("actor count accounting underflow");
             }
         }
@@ -3389,6 +3509,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         actors.clear();
         actorCount.set(0);
+        privateActorCount.set(0);
+        sharedActorCount.set(0);
+        untrustedActorCount.set(0);
     }
 
     private ThreadPoolExecutor dispatcherFor(ActorKind kind) {
