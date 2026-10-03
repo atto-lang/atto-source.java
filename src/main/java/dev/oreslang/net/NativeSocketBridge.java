@@ -200,6 +200,10 @@ final class NativeSocketBridge {
         return handle.withFd(NativeSocketBridge::getSoTimeout);
     }
 
+    static int getSendTimeout(NativeSocketHandle handle) throws IOException {
+        return handle.withFd(NativeSocketBridge::getSendTimeout);
+    }
+
     static void setActorIoTimeout(
             NativeSocketHandle handle,
             int timeoutMillis) throws IOException {
