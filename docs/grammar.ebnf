@@ -280,9 +280,12 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Until actor Protocol<M> is carried through source declarations, simple
      receive-loop bindings require an explicit message type even though the
      grammar preserves the future inferred form.
-   - :name is a Symbol literal. Trusted symbols are canonical identities in a
-     bounded process-runtime interner and are pinned against ordinary GC.
-     Adversarial/untrusted isolates cannot create or receive Symbol values.
+   - :name is a Symbol literal. Trusted symbols intern to one exact object per
+     runtime heap and also carry a deterministic 256-bit SymbolId/name identity
+     for verified transport across separate trusted isolate heaps. Local tables
+     are bounded and pinned against ordinary GC; a multi-isolate supervisor must
+     enforce the aggregate process budget. Adversarial/untrusted isolates cannot
+     create or receive Symbol values.
    - blocking send/receive/select suspension hoists live actor locals into a
      continuation frame; actor state is not encoded as recursive loop arguments.
    - every actor statement/backedge and concurrency operation consumes a separate
