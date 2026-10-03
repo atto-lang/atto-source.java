@@ -150,7 +150,8 @@ public final class OresEvalRootNode extends RootNode {
                 String module = functionModules.get(fn);
                 if (module == null) throw new IllegalStateException("missing module identity for GPU function " + fn.name());
                 context.requireCapability(IsolatePolicy.Capability.GPU, "gpu fnc " + module + "." + fn.name());
-                GpuKernelCompiler.GpuKernel kernel = gpuProgram.requireKernel(module, fn.name());
+                GpuKernelCompiler.GpuKernel kernel =
+                        gpuProgram.requireKernel(module, fn.name(), fn.parameters().size());
                 Object result = context.gpuRuntime().dispatch(
                         module + "." + fn.name(),
                         GpuRuntime.CallableKind.FNC,
@@ -653,7 +654,8 @@ public final class OresEvalRootNode extends RootNode {
                 String sourceName = className + "." + fn.name();
                 context.requireCapability(IsolatePolicy.Capability.GPU,
                         "gpu static fnc " + module + "." + sourceName);
-                GpuKernelCompiler.GpuKernel kernel = gpuProgram.requireKernel(module, sourceName);
+                GpuKernelCompiler.GpuKernel kernel =
+                        gpuProgram.requireKernel(module, sourceName, fn.parameters().size());
                 Object result = context.gpuRuntime().dispatch(
                         module + "." + sourceName,
                         GpuRuntime.CallableKind.FNC,
