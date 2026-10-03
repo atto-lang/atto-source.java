@@ -20,6 +20,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * the multiplexed connection.</p>
  */
 public final class HttpTransportLease implements AutoCloseable {
+    public HttpTransportLease() { }
     public enum OwnerKind {
         SUPERVISOR,
         ACTOR,
