@@ -41,10 +41,11 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
-                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                = { annotation } visibility [ "async" ] [ "nlex" ]
+                  ( [ "shared" ] "actor" | "isoactor" ) callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
-actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
+actor_decl      = visibility ( [ "shared" ] "actor" | "isoactor" ) IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
@@ -54,8 +55,11 @@ actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
-                = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
-                  method_head return_spec block ;
+                = { annotation } visibility [ "async" ]
+                  [ ( "parallel" | "exclusive" ) ] "actor"
+                  method_name [ generic_params ] method_head return_spec block
+                | { annotation } visibility [ "async" ]
+                  method_name [ generic_params ] method_head return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -150,8 +154,9 @@ equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
-unary           = [ "!" | "-" | "+" | "await" ] postfix
-                | "&" [ "mut" ] unary ;
+unary           = ( "!" | "-" | "+" | "await" | "spawn" ) unary
+                | "&" [ "mut" ] unary
+                | postfix ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." member_name ;\nmember_name     = IDENT | "stop" | "do" | "done" ;
@@ -253,10 +258,16 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      dispatched through the class namespace, never through an instance.
    - "=>" belongs to named callable return declarations.
    - "->" belongs to function types and lambdas.
-   - Unqualified "actor" declarations are private actors; "shared actor" opts
-     into the SHARED_MEMORY execution domain.
-   - Actor fields are private mailbox-owned state; public actor API is exposed
-     through actor methods/messages rather than public mutable fields.
+   - "actor" and "shared actor" are shared-memory actor declarations;
+     "isoactor" is the confined/private actor declaration.
+   - Top-level actor fnc/routine declarations and actor-marked instance methods
+     may be invoked only through "spawn".
+   - Actor instance methods omit "fnc". "actor method(...)" is serialized by
+     default; "parallel actor method(...)" may overlap other shared-actor turns;
+     "exclusive actor method(...)" is an actor-wide barrier.
+   - isoactor/private methods cannot use "parallel actor".
+   - Actor fields are private actor-owned state; public mailbox API is exposed
+     through actor-marked methods rather than public mutable fields.
    - Actor inheritance must preserve actor isolation kind.
    - In a destructure pattern, an explicit binding kind propagates to subsequent
      unqualified names until another binding kind appears. A leading binding
