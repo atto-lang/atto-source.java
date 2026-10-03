@@ -790,6 +790,19 @@ public final class TypeChecker {
         if (!CORE_GPU_NAMES.contains(namespace)) return null;
 
         if (namespace.equals("GpuArray")) {
+            if (member.equals("zeros_like")) {
+                if (inGpuCallable()) {
+                    throw new IllegalArgumentException("GpuArray.zeros_like() is host orchestration and cannot run inside a gpu callable");
+                }
+                if (arguments.size() != 1) {
+                    throw new IllegalArgumentException("GpuArray.zeros_like() expects exactly one GpuArray<T>");
+                }
+                Type source = deref(typeOf(arguments.getFirst(), env, generics, self));
+                if (!(source instanceof GpuArrayType array)) {
+                    throw new IllegalArgumentException("GpuArray.zeros_like() requires GpuArray<T>, got " + source);
+                }
+                return new GpuArrayType(array.element());
+            }
             if (!member.equals("from_cpu")) {
                 throw new IllegalArgumentException("unknown GpuArray core function '" + member + "'");
             }
@@ -854,6 +867,11 @@ public final class TypeChecker {
         }
         if (namespace.equals("GpuArray") && member.equals("from_cpu")) {
             return new Function(List.of(new ListType(Unknown.INSTANCE)), new GpuArrayType(Unknown.INSTANCE));
+        }
+        if (namespace.equals("GpuArray") && member.equals("zeros_like")) {
+            return new Function(
+                    List.of(new GpuArrayType(Unknown.INSTANCE)),
+                    new GpuArrayType(Unknown.INSTANCE));
         }
         if (namespace.equals("GpuStream") && member.equals("from_array")) {
             return new Function(List.of(new GpuArrayType(Unknown.INSTANCE)), new GpuStreamType(Unknown.INSTANCE));
