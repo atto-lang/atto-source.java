@@ -690,10 +690,10 @@ public final class GpuKernelCompiler {
         for (Ast.Stmt stmt : statements) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 validateWorkItemExpr(module, binding.initializer(), scope, mutableBuffers);
-                if (binding.kind() != Ast.BindingKind.LET
-                        && isUniqueWorkItemIndex(binding.initializer(), scope)) {
-                    scope.defineUnique(binding.name());
-                }
+                scope.define(
+                        binding.name(),
+                        binding.kind() != Ast.BindingKind.LET
+                                && isUniqueWorkItemIndex(binding.initializer(), scope));
             } else if (stmt instanceof Ast.ReturnStmt returned) {
                 if (returned.value() != null) {
                     validateWorkItemExpr(module, returned.value(), scope, mutableBuffers);
@@ -710,10 +710,10 @@ public final class GpuKernelCompiler {
                 WorkItemIndexScope loopScope = new WorkItemIndexScope(scope);
                 if (loop.initializer() instanceof Ast.BindingStmt binding) {
                     validateWorkItemExpr(module, binding.initializer(), loopScope, mutableBuffers);
-                    if (binding.kind() != Ast.BindingKind.LET
-                            && isUniqueWorkItemIndex(binding.initializer(), loopScope)) {
-                        loopScope.defineUnique(binding.name());
-                    }
+                    loopScope.define(
+                            binding.name(),
+                            binding.kind() != Ast.BindingKind.LET
+                                    && isUniqueWorkItemIndex(binding.initializer(), loopScope));
                 } else if (loop.initializer() instanceof Ast.ExprStmt expression) {
                     validateWorkItemExpr(module, expression.expression(), loopScope, mutableBuffers);
                 }
@@ -1915,18 +1915,20 @@ public final class GpuKernelCompiler {
 
     private static final class WorkItemIndexScope {
         private final WorkItemIndexScope parent;
-        private final Set<String> unique = new HashSet<>();
+        private final Map<String, Boolean> uniqueByName = new HashMap<>();
 
         private WorkItemIndexScope(WorkItemIndexScope parent) {
             this.parent = parent;
         }
 
-        private void defineUnique(String name) {
-            unique.add(name);
+        private void define(String name, boolean unique) {
+            uniqueByName.put(name, unique);
         }
 
         private boolean isUnique(String name) {
-            return unique.contains(name) || (parent != null && parent.isUnique(name));
+            Boolean own = uniqueByName.get(name);
+            if (own != null) return own;
+            return parent != null && parent.isUnique(name);
         }
     }
 
