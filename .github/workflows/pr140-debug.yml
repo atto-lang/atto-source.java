@@ -1,0 +1,41 @@
+name: pr140-debug
+
+on:
+  push:
+    branches:
+      - feat/multiple-inheritance-explicit-super-20261003
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-with-log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.3'
+          java-version: '25'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: maven
+      - name: Maven verify with captured log
+        id: verify
+        shell: bash
+        run: |
+          set +e
+          mvn -B -ntp verify 2>&1 | tee verify.log
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload diagnostic log
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr140-maven-log
+          path: verify.log
+          retention-days: 1
+      - name: Preserve Maven result
+        shell: bash
+        run: exit "${{ steps.verify.outputs.exit_code }}"
