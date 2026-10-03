@@ -54,8 +54,8 @@ actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
-                = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
-                  method_head return_spec block ;
+                = { annotation } visibility { callable_modifier } method_name [ generic_params ]
+                  method_head method_return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -69,7 +69,7 @@ class_member    = field_decl
 field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
 
 method_decl     = { annotation } visibility { method_modifier } method_name [ generic_params ]
-                  method_head return_spec ( block | stmt_terminator ) ;
+                  method_head method_return_spec ( block | stmt_terminator ) ;
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
 explicit_receiver = "self" type_ref ;
@@ -96,6 +96,8 @@ type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
+method_return_spec
+                = ":" type_ref ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
@@ -251,7 +253,8 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - instance methods may overload only when arity differs.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.
-   - "=>" belongs to named callable return declarations.
+   - Instance/actor methods use ": ReturnType" and never "->" or "=>".
+   - "=>" remains the named fnc/routine/static-fnc return declaration syntax.
    - "->" belongs to function types and lambdas.
    - Unqualified "actor" declarations are private actors; "shared actor" opts
      into the SHARED_MEMORY execution domain.
