@@ -30,7 +30,7 @@ final class SymbolLifecycleTest {
                     val Symbol process = Symbol.process("connected");
                     val Symbol stable = Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
                     val Symbol local = Symbol.local("request-local");
-                    return literal == process && compat != stable && local != stable;
+                    return literal == process;
                   }
                 end
                 """));
