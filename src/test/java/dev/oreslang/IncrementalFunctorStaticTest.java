@@ -212,7 +212,7 @@ final class IncrementalFunctorStaticTest {
                   };
                 }
 
-                fnc sink(): ((bool foo):void) {
+                fnc sink(): ((bool foo) => void) {
                   return |foo| -> {
                     if foo; do
                       stdio.stdout.write("T");
@@ -237,7 +237,7 @@ final class IncrementalFunctorStaticTest {
     void slimArrowBelongsToFunctionTypesAndLambdasFatArrowToNamedReturnTypes() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 type Mapper = typeof fnc(bool value) => int;
-                fnc make(): ((bool value):int) {
+                fnc make(): ((bool value) => int) {
                   return |value| -> {
                     if value; do
                       return 1;
