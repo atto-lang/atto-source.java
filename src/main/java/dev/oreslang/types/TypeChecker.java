@@ -1210,14 +1210,14 @@ public final class TypeChecker {
 
         boolean stableBinding = field.bindingKind() != Ast.BindingKind.LET;
         boolean explicitLockHandle = fieldType instanceof Named named
-                && (named.name().equals("Mutex") || named.name().equals("SharedMutex"));
+                && named.name().equals("SharedMutex");
         boolean deeplyReadOnlyValue = stableBinding && isParallelReadOnlyFieldType(fieldType);
 
         if ((explicitLockHandle && stableBinding) || deeplyReadOnlyValue) return;
 
         throw new IllegalArgumentException(
                 "parallel actor method cannot directly read mutable actor field '" + field.name()
-                        + "'; use an ordinary actor helper method, an immutable Mutex/SharedMutex handle, "
+                        + "'; use an ordinary actor helper method, a stable SharedMutex handle, "
                         + "or an exclusive actor method");
     }
 
@@ -1397,7 +1397,7 @@ public final class TypeChecker {
                             && receiverName.name().equals("self")) {
                         throw new IllegalArgumentException(
                                 "parallel actor method cannot directly mutate actor field '" + member.member()
-                                        + "'; use an ordinary actor helper method, Mutex/SharedMutex, or an exclusive actor method");
+                                        + "'; use an ordinary actor helper method, SharedMutex, or an exclusive actor method");
                     }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
