@@ -715,43 +715,53 @@ static int socket_name(JNIEnv *env, int fd, int peer, char *host, size_t host_le
     return 1;
 }
 
+static int socket_name_handle(
+        JNIEnv *env,
+        jlong raw_handle,
+        int peer,
+        char *host,
+        size_t host_len,
+        int *port) {
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, peer ? "getpeername" : "getsockname", &borrow)) return 0;
+    int ok = socket_name(env, borrow.fd, peer, host, host_len, port);
+    release_socket(&borrow);
+    return ok;
+}
+
 JNIEXPORT jstring JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_remoteAddress(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_remoteAddress(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    int fd = as_fd(raw_fd);
     char host[NI_MAXHOST];
     int port;
-    if (fd < 0 || !socket_name(env, fd, 1, host, sizeof(host), &port)) return NULL;
+    if (!socket_name_handle(env, raw_handle, 1, host, sizeof(host), &port)) return NULL;
     return (*env)->NewStringUTF(env, host);
 }
 
 JNIEXPORT jstring JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_localAddress(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_localAddress(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    int fd = as_fd(raw_fd);
     char host[NI_MAXHOST];
     int port;
-    if (fd < 0 || !socket_name(env, fd, 0, host, sizeof(host), &port)) return NULL;
+    if (!socket_name_handle(env, raw_handle, 0, host, sizeof(host), &port)) return NULL;
     return (*env)->NewStringUTF(env, host);
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_remotePort(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_remotePort(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    int fd = as_fd(raw_fd);
     char host[NI_MAXHOST];
     int port;
-    if (fd < 0 || !socket_name(env, fd, 1, host, sizeof(host), &port)) return -1;
+    if (!socket_name_handle(env, raw_handle, 1, host, sizeof(host), &port)) return -1;
     return (jint)port;
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_localPort(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_localPort(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    int fd = as_fd(raw_fd);
     char host[NI_MAXHOST];
     int port;
-    if (fd < 0 || !socket_name(env, fd, 0, host, sizeof(host), &port)) return -1;
+    if (!socket_name_handle(env, raw_handle, 0, host, sizeof(host), &port)) return -1;
     return (jint)port;
 }
 
@@ -850,68 +860,102 @@ static jint get_int_option(JNIEnv *env, int fd, int level, int option, const cha
     return (jint)value;
 }
 
+static void set_bool_handle(
+        JNIEnv *env, jlong raw_handle, int level, int option, jboolean enabled, const char *name) {
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, name, &borrow)) return;
+    set_bool_option(env, borrow.fd, level, option, enabled, name);
+    release_socket(&borrow);
+}
+
+static jboolean get_bool_handle(
+        JNIEnv *env, jlong raw_handle, int level, int option, const char *name) {
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, name, &borrow)) return JNI_FALSE;
+    jboolean value = get_bool_option(env, borrow.fd, level, option, name);
+    release_socket(&borrow);
+    return value;
+}
+
+static void set_int_handle(
+        JNIEnv *env, jlong raw_handle, int level, int option, jint value, const char *name) {
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, name, &borrow)) return;
+    set_int_option(env, borrow.fd, level, option, value, name);
+    release_socket(&borrow);
+}
+
+static jint get_int_handle(
+        JNIEnv *env, jlong raw_handle, int level, int option, const char *name) {
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, name, &borrow)) return -1;
+    jint value = get_int_option(env, borrow.fd, level, option, name);
+    release_socket(&borrow);
+    return value;
+}
+
 JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_setTcpNoDelay(JNIEnv *env, jclass cls, jlong raw_fd, jboolean enabled) {
+Java_dev_oreslang_net_NativeSocketBridge_setTcpNoDelay(JNIEnv *env, jclass cls, jlong raw_handle, jboolean enabled) {
     (void)cls;
-    set_bool_option(env, as_fd(raw_fd), IPPROTO_TCP, TCP_NODELAY, enabled, "setsockopt(TCP_NODELAY)");
+    set_bool_handle(env, raw_handle, IPPROTO_TCP, TCP_NODELAY, enabled, "setsockopt(TCP_NODELAY)");
 }
 
 JNIEXPORT jboolean JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_getTcpNoDelay(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_getTcpNoDelay(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    return get_bool_option(env, as_fd(raw_fd), IPPROTO_TCP, TCP_NODELAY, "getsockopt(TCP_NODELAY)");
+    return get_bool_handle(env, raw_handle, IPPROTO_TCP, TCP_NODELAY, "getsockopt(TCP_NODELAY)");
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_setKeepAlive(JNIEnv *env, jclass cls, jlong raw_fd, jboolean enabled) {
+Java_dev_oreslang_net_NativeSocketBridge_setKeepAlive(JNIEnv *env, jclass cls, jlong raw_handle, jboolean enabled) {
     (void)cls;
-    set_bool_option(env, as_fd(raw_fd), SOL_SOCKET, SO_KEEPALIVE, enabled, "setsockopt(SO_KEEPALIVE)");
+    set_bool_handle(env, raw_handle, SOL_SOCKET, SO_KEEPALIVE, enabled, "setsockopt(SO_KEEPALIVE)");
 }
 
 JNIEXPORT jboolean JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_getKeepAlive(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_getKeepAlive(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    return get_bool_option(env, as_fd(raw_fd), SOL_SOCKET, SO_KEEPALIVE, "getsockopt(SO_KEEPALIVE)");
+    return get_bool_handle(env, raw_handle, SOL_SOCKET, SO_KEEPALIVE, "getsockopt(SO_KEEPALIVE)");
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_setReuseAddress(JNIEnv *env, jclass cls, jlong raw_fd, jboolean enabled) {
+Java_dev_oreslang_net_NativeSocketBridge_setReuseAddress(JNIEnv *env, jclass cls, jlong raw_handle, jboolean enabled) {
     (void)cls;
-    set_bool_option(env, as_fd(raw_fd), SOL_SOCKET, SO_REUSEADDR, enabled, "setsockopt(SO_REUSEADDR)");
+    set_bool_handle(env, raw_handle, SOL_SOCKET, SO_REUSEADDR, enabled, "setsockopt(SO_REUSEADDR)");
 }
 
 JNIEXPORT jboolean JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_getReuseAddress(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_getReuseAddress(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    return get_bool_option(env, as_fd(raw_fd), SOL_SOCKET, SO_REUSEADDR, "getsockopt(SO_REUSEADDR)");
+    return get_bool_handle(env, raw_handle, SOL_SOCKET, SO_REUSEADDR, "getsockopt(SO_REUSEADDR)");
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_setReceiveBufferSize(JNIEnv *env, jclass cls, jlong raw_fd, jint bytes) {
+Java_dev_oreslang_net_NativeSocketBridge_setReceiveBufferSize(JNIEnv *env, jclass cls, jlong raw_handle, jint bytes) {
     (void)cls;
-    set_int_option(env, as_fd(raw_fd), SOL_SOCKET, SO_RCVBUF, bytes, "setsockopt(SO_RCVBUF)");
+    set_int_handle(env, raw_handle, SOL_SOCKET, SO_RCVBUF, bytes, "setsockopt(SO_RCVBUF)");
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_getReceiveBufferSize(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_getReceiveBufferSize(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    return get_int_option(env, as_fd(raw_fd), SOL_SOCKET, SO_RCVBUF, "getsockopt(SO_RCVBUF)");
+    return get_int_handle(env, raw_handle, SOL_SOCKET, SO_RCVBUF, "getsockopt(SO_RCVBUF)");
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_setSendBufferSize(JNIEnv *env, jclass cls, jlong raw_fd, jint bytes) {
+Java_dev_oreslang_net_NativeSocketBridge_setSendBufferSize(JNIEnv *env, jclass cls, jlong raw_handle, jint bytes) {
     (void)cls;
-    set_int_option(env, as_fd(raw_fd), SOL_SOCKET, SO_SNDBUF, bytes, "setsockopt(SO_SNDBUF)");
+    set_int_handle(env, raw_handle, SOL_SOCKET, SO_SNDBUF, bytes, "setsockopt(SO_SNDBUF)");
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_getSendBufferSize(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_getSendBufferSize(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
-    return get_int_option(env, as_fd(raw_fd), SOL_SOCKET, SO_SNDBUF, "getsockopt(SO_SNDBUF)");
+    return get_int_handle(env, raw_handle, SOL_SOCKET, SO_SNDBUF, "getsockopt(SO_SNDBUF)");
 }
 
 JNIEXPORT void JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_setSoTimeout(JNIEnv *env, jclass cls, jlong raw_fd, jint timeout_ms) {
+Java_dev_oreslang_net_NativeSocketBridge_setSoTimeout(JNIEnv *env, jclass cls, jlong raw_handle, jint timeout_ms) {
     (void)cls;
     if (timeout_ms < 0) {
         throw_with_message(env, "SO_TIMEOUT cannot be negative");
@@ -920,22 +964,35 @@ Java_dev_oreslang_net_NativeSocketBridge_setSoTimeout(JNIEnv *env, jclass cls, j
     struct timeval value;
     value.tv_sec = timeout_ms / 1000;
     value.tv_usec = (timeout_ms % 1000) * 1000;
-    int fd = as_fd(raw_fd);
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value)) < 0) {
+
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "setsockopt(SO_RCVTIMEO)", &borrow)) return;
+    if (setsockopt(borrow.fd, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value)) < 0) {
+        int saved = errno;
+        release_socket(&borrow);
+        errno = saved;
         throw_errno(env, "setsockopt(SO_RCVTIMEO)");
+        return;
     }
+    release_socket(&borrow);
 }
 
 JNIEXPORT jint JNICALL
-Java_dev_oreslang_net_NativeSocketBridge_getSoTimeout(JNIEnv *env, jclass cls, jlong raw_fd) {
+Java_dev_oreslang_net_NativeSocketBridge_getSoTimeout(JNIEnv *env, jclass cls, jlong raw_handle) {
     (void)cls;
     struct timeval value;
     socklen_t length = sizeof(value);
-    int fd = as_fd(raw_fd);
-    if (getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, &length) < 0) {
+
+    socket_borrow_t borrow;
+    if (!borrow_socket(env, raw_handle, "getsockopt(SO_RCVTIMEO)", &borrow)) return -1;
+    if (getsockopt(borrow.fd, SOL_SOCKET, SO_RCVTIMEO, &value, &length) < 0) {
+        int saved = errno;
+        release_socket(&borrow);
+        errno = saved;
         throw_errno(env, "getsockopt(SO_RCVTIMEO)");
         return -1;
     }
+    release_socket(&borrow);
     long millis = value.tv_sec * 1000L + value.tv_usec / 1000L;
     return (jint)millis;
 }
