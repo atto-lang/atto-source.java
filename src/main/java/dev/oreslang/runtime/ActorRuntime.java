@@ -1283,13 +1283,14 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 durationNanos = policyCeiling.maxWallTime().toNanos();
             } catch (ArithmeticException overflow) {
-                return Long.MAX_VALUE;
+                durationNanos = Long.MAX_VALUE / 4L;
             }
-            if (durationNanos <= 0) return System.nanoTime();
-            long now = System.nanoTime();
-            return durationNanos >= Long.MAX_VALUE - now
-                    ? Long.MAX_VALUE
-                    : now + durationNanos;
+            durationNanos = Math.max(1L, Math.min(durationNanos, Long.MAX_VALUE / 4L));
+
+            // nanoTime has an arbitrary signed origin and may wrap. Deadline
+            // checks use subtraction, which remains valid for intervals below
+            // 2^63 ns, so deliberately allow addition to wrap naturally.
+            return System.nanoTime() + durationNanos;
         }
 
         private void armRootDeadline() {
