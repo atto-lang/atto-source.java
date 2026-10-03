@@ -2654,6 +2654,38 @@ final class SingletonModuleTest {
         assertEquals(List.of("1", "true", "1"), lines);
     }
 
+    @Test
+    void terminalWorkerFailureDoesNotDropPinnedStateBeforeExplicitCollection() {
+        String key = "terminal-pinned:" + UUID.randomUUID();
+        AtomicBoolean closed = new AtomicBoolean();
+
+        final class TestVmError extends VirtualMachineError {
+            private TestVmError() { super("synthetic terminal worker failure"); }
+        }
+        final class PinnedState implements AutoCloseable {
+            @Override
+            public void close() {
+                closed.set(true);
+            }
+        }
+
+        ProcessSingletonRegistry.Handle<PinnedState> handle =
+                ProcessSingletonRegistry.getOrCreate(key, PinnedState::new);
+
+        CompletionException failure = assertThrows(
+                CompletionException.class,
+                () -> handle.call(List.of(), (state, ignored) -> {
+                    throw new TestVmError();
+                }).toCompletableFuture().join());
+        assertTrue(causeChainContains(failure, "synthetic terminal worker failure"));
+        assertFalse(closed.get(),
+                "terminal worker failure must not implicitly collect pinned singleton state");
+
+        assertTrue(ProcessSingletonRegistry.collect(key).toCompletableFuture().join());
+        assertTrue(closed.get(),
+                "explicit collection must still clean up state retained after worker failure");
+    }
+
     private static boolean causeChainContains(Throwable failure, String text) {
         Throwable current = failure;
         while (current != null) {
