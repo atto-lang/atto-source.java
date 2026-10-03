@@ -44,7 +44,7 @@ final class GenericsAndOperatorsHardeningTest {
                   define class Box<T> as
                     pub val T value;
 
-                    pub get() => T {
+                    pub get() : T {
                       return self.value;
                     }
                   end
@@ -123,7 +123,7 @@ final class GenericsAndOperatorsHardeningTest {
                   define class Parent<T> as
                     pub val T value;
 
-                    pub get() => T {
+                    pub get() : T {
                       return self.value;
                     }
                   end
@@ -209,7 +209,7 @@ final class GenericsAndOperatorsHardeningTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module app
                   define class Box as
-                    pub map<T>(T value) => T { return value; }
+                    pub map<T>(T value) : T { return value; }
                   end
 
                   fnc bad(Box box) => void {
@@ -265,7 +265,7 @@ final class GenericsAndOperatorsHardeningTest {
                   end
 
                   define class Good<T> implements Mapper<T> as
-                    pub map<V>(T input, V fallback) => V {
+                    pub map<V>(T input, V fallback) : V {
                       return fallback;
                     }
                   end
@@ -279,7 +279,7 @@ final class GenericsAndOperatorsHardeningTest {
                   end
 
                   define class Bad<T> implements Mapper<T> as
-                    pub map<A, B>(T input, A fallback) => A {
+                    pub map<A, B>(T input, A fallback) : A {
                       return fallback;
                     }
                   end
