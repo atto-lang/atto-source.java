@@ -166,6 +166,28 @@ A bare `_` is a sequence discard pattern: it consumes that array/tuple position 
 
 Sequence destructuring requires a returned tuple or array/list. Finite tuples are checked for exact arity and per-position type. Object destructuring requires a record/map-like value and every requested key must exist. If the returned type is a union, destructuring is allowed only when every union alternative supports the requested pattern; each extracted binding receives the union of the corresponding alternative member types. Function-parameter destructuring is intentionally not part of this syntax yet.
 
+## Symbols
+
+`Symbol` is Oreslang's canonical immutable identity value, analogous to an Erlang atom or a JavaScript symbol, but with explicit lifetime and trust domains.
+
+```ores
+val Symbol connected = :connected;
+val Symbol same = Symbol.process("connected");
+val Symbol durable = Symbol.stable("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+```
+
+`:connected` is identifier-only syntax and is exactly the same canonical **PROCESS** symbol as `Symbol.process("connected")`. Process symbols are strongly interned for the OS-process lifetime; their identity is not garbage-collected merely because ordinary guest references disappear. The process registry is bounded, and a reserved slice is kept for compiler/source literals so untrusted dynamic key creation cannot consume all literal capacity.
+
+`Symbol.stable(uuid_string)` creates a **STABLE** identity whose external identity is the canonical UUID. The compatibility spelling `new Symbol(uuid_string)` means the same thing. Stable symbols are also strongly interned and bounded.
+
+`Symbol.local(key)` creates an actor-local **LOCAL** symbol. It is canonical only inside the owning actor, is reclaimed when that actor is finalized, is not Sendable, cannot be serialized to the wire, and may be constructed only while an actor turn is executing.
+
+PROCESS and STABLE symbols are Copy/Sendable immutable values for trusted actors. Their wire representation is `(scope, key)`, never an internal numeric handle; a receiver re-interns the key in its own process registry. Symbol IDs are implementation details used only for fast local equality/hash paths.
+
+Symbols are deliberately unavailable to adversarial/untrusted execution domains. Static capability admission rejects symbol literals/types/factories under an adversarial policy, and runtime construction, decode, plus nested actor-message transport repeat that check as defense in depth. Untrusted code must use ordinary strings/UUIDs or another explicitly scoped data representation instead of sharing the trusted process symbol table.
+
+`Symbol` is a reserved built-in type/factory namespace. Modules, classes, type aliases, top-level bindings, imports, local bindings, parameters, and generic parameters cannot shadow it.
+
 ## Classes, receivers, multiple inheritance, and interfaces
 
 Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
