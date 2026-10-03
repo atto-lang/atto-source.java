@@ -78,6 +78,9 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long MAX_UNTRUSTED_HTTP_REQUEST_HEADER_VALUE_BYTES = 16L * 1024L;
     private static final int MAX_UNTRUSTED_HTTP_RESPONSE_HEADERS = 128;
     private static final long MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES = 64L * 1024L;
+    private static final int MAX_UNTRUSTED_OUTBOUND_HTTP_HEADERS = 128;
+    private static final long MAX_UNTRUSTED_OUTBOUND_HTTP_METADATA_BYTES = 64L * 1024L;
+    private static final long MAX_UNTRUSTED_OUTBOUND_HTTP_URI_BYTES = 8L * 1024L;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
@@ -636,10 +639,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void validateOutboundRequest(OutboundHttpRequest request) {
             String method = request.method().trim().toUpperCase(Locale.ROOT);
-            if (method.isEmpty()) throw new IllegalArgumentException("HTTP method cannot be empty");
+            if (!method.matches("[!#$%&'*+.^_|~0-9A-Za-z-]{1,32}")) {
+                throw new HttpRequestLimitExceededException(
+                        "untrusted outbound HTTP method is invalid or exceeds 32 characters");
+            }
             if (method.equals("CONNECT")) {
                 throw new SecurityException("untrusted actors cannot open HTTP CONNECT tunnels");
             }
+
             URI uri = request.uri();
             String scheme = uri.getScheme();
             if (scheme == null
@@ -647,27 +654,72 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new SecurityException(
                         "untrusted outbound networking is HTTP/HTTPS only");
             }
+            if (!uri.isAbsolute() || uri.getHost() == null || uri.getHost().isBlank()) {
+                throw new SecurityException(
+                        "untrusted outbound HTTP requires an absolute URI with a host");
+            }
             if (uri.getUserInfo() != null) {
                 throw new SecurityException(
                         "userinfo-bearing outbound HTTP URIs are forbidden");
             }
+            if (uri.getFragment() != null) {
+                throw new SecurityException(
+                        "outbound HTTP request URIs cannot contain fragments");
+            }
+            long uriBytes = uri.toASCIIString().getBytes(StandardCharsets.UTF_8).length;
+            if (uriBytes > MAX_UNTRUSTED_OUTBOUND_HTTP_URI_BYTES) {
+                throw new HttpRequestLimitExceededException(
+                        "outbound HTTP URI exceeds "
+                                + MAX_UNTRUSTED_OUTBOUND_HTTP_URI_BYTES + " bytes");
+            }
+
             if (request.body().length > maxRequestBytes) {
                 throw new HttpRequestLimitExceededException(
                         "outbound HTTP request body exceeds limit of "
                                 + maxRequestBytes + " bytes");
             }
-            for (Map.Entry<String, List<String>> entry : request.headers().entrySet()) {
-                String name = entry.getKey().toLowerCase(Locale.ROOT);
+
+            validateOutboundRequestHeaders(request.headers());
+        }
+
+        private void validateOutboundRequestHeaders(Map<String, List<String>> headers) {
+            int headerCount = 0;
+            long metadataBytes = 0L;
+            for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                String rawName = entry.getKey();
+                if (!rawName.matches("[!#$%&'*+.^_|~0-9A-Za-z-]{1,256}")) {
+                    throw new HttpRequestLimitExceededException(
+                            "invalid or oversized outbound HTTP header name");
+                }
+                String name = rawName.toLowerCase(Locale.ROOT);
                 if (name.equals("upgrade") || name.equals("proxy-connection")) {
                     throw new SecurityException(
                             "untrusted outbound HTTP cannot request protocol upgrades or proxy tunnels");
                 }
-                if (name.equals("connection")) {
-                    for (String value : entry.getValue()) {
-                        if (value.toLowerCase(Locale.ROOT).contains("upgrade")) {
-                            throw new SecurityException(
-                                    "untrusted outbound HTTP cannot request protocol upgrades");
-                        }
+
+                for (String value : entry.getValue()) {
+                    headerCount++;
+                    if (headerCount > MAX_UNTRUSTED_OUTBOUND_HTTP_HEADERS) {
+                        throw new HttpRequestLimitExceededException(
+                                "outbound HTTP header-count limit exceeded: "
+                                        + MAX_UNTRUSTED_OUTBOUND_HTTP_HEADERS);
+                    }
+                    long valueBytes = value.getBytes(StandardCharsets.UTF_8).length;
+                    if (valueBytes > MAX_UNTRUSTED_HTTP_REQUEST_HEADER_VALUE_BYTES) {
+                        throw new HttpRequestLimitExceededException(
+                                "outbound HTTP header value exceeds "
+                                        + MAX_UNTRUSTED_HTTP_REQUEST_HEADER_VALUE_BYTES + " bytes");
+                    }
+                    metadataBytes += rawName.getBytes(StandardCharsets.UTF_8).length + valueBytes;
+                    if (metadataBytes > MAX_UNTRUSTED_OUTBOUND_HTTP_METADATA_BYTES) {
+                        throw new HttpRequestLimitExceededException(
+                                "outbound HTTP metadata exceeds "
+                                        + MAX_UNTRUSTED_OUTBOUND_HTTP_METADATA_BYTES + " bytes");
+                    }
+                    if (name.equals("connection")
+                            && value.toLowerCase(Locale.ROOT).contains("upgrade")) {
+                        throw new SecurityException(
+                                "untrusted outbound HTTP cannot request protocol upgrades");
                     }
                 }
             }
@@ -679,6 +731,31 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new HttpResponseLimitExceededException(
                         "outbound HTTP response body exceeds limit of "
                                 + maxResponseBytes + " bytes");
+            }
+
+            int headerCount = 0;
+            long metadataBytes = 0L;
+            for (Map.Entry<String, List<String>> entry : response.headers().entrySet()) {
+                String name = entry.getKey();
+                if (!name.matches("[!#$%&'*+.^_|~0-9A-Za-z-]{1,256}")) {
+                    throw new HttpResponseLimitExceededException(
+                            "invalid or oversized outbound HTTP response header name");
+                }
+                for (String value : entry.getValue()) {
+                    headerCount++;
+                    if (headerCount > MAX_UNTRUSTED_OUTBOUND_HTTP_HEADERS) {
+                        throw new HttpResponseLimitExceededException(
+                                "outbound HTTP response header-count limit exceeded: "
+                                        + MAX_UNTRUSTED_OUTBOUND_HTTP_HEADERS);
+                    }
+                    metadataBytes += name.getBytes(StandardCharsets.UTF_8).length
+                            + value.getBytes(StandardCharsets.UTF_8).length;
+                    if (metadataBytes > MAX_UNTRUSTED_OUTBOUND_HTTP_METADATA_BYTES) {
+                        throw new HttpResponseLimitExceededException(
+                                "outbound HTTP response metadata exceeds "
+                                        + MAX_UNTRUSTED_OUTBOUND_HTTP_METADATA_BYTES + " bytes");
+                    }
+                }
             }
         }
 
