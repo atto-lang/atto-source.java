@@ -339,6 +339,80 @@ final class NativeNetworkingLanguageTest {
         if (failure.get() != null) fail("server failed", failure.get());
     }
 
+
+    @Test
+    void rejectsAmbiguousTransferEncodingAndContentLength() throws Exception {
+        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        Thread server = new Thread(() -> {
+            long client = -1;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                readHeadersText(client);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
+                        + "Content-Length: 5\r\n"
+                        + "Connection: close\r\n\r\n"
+                        + "5\r\nhello\r\n0\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable ignored) {
+            } finally {
+                if (client >= 0) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+            }
+        }, "oreslang-http-ambiguous-framing-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/").GET().build();
+                    net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.ofString());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        Exception error = assertThrows(Exception.class, () -> evaluate(program));
+        assertTrue(error.toString().contains("ambiguous HTTP response framing"));
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+    }
+
+    @Test
+    void requestTimeoutAppliesToResponseReads() throws Exception {
+        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        Thread server = new Thread(() -> {
+            long client = -1;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                readHeadersText(client);
+                Thread.sleep(500);
+            } catch (Throwable ignored) {
+            } finally {
+                if (client >= 0) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+            }
+        }, "oreslang-http-read-timeout-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/")
+                        .timeout(100).GET().build();
+                    net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.ofString());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        assertThrows(Exception.class, () -> evaluate(program));
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+    }
+
     private static String evaluate(String program) throws Exception {
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.NETWORK);
