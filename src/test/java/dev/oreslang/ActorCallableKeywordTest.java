@@ -270,6 +270,125 @@ final class ActorCallableKeywordTest {
         assertEquals("2:0", output);
     }
 
+    @Test
+    void sharedActorConstructionAcceptsFrozenDataButRejectsIdentityBearingState() throws Exception {
+        String output = run("""
+                shared actor Holder {
+                  let Array<int> values;
+
+                  pub actor first() => int {
+                    return self.values[0];
+                  }
+                }
+
+                pub routine main() => void {
+                  val holder = spawn Holder(arr[7, 8]);
+                  stdio.stdout.write(await spawn holder.first());
+                  return;
+                }
+                """);
+        assertEquals("7", output);
+
+        IllegalArgumentException objectCapture = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        shared actor Holder {
+                          let Box box;
+                          pub actor read() => int { return self.box.value; }
+                        }
+
+                        pub routine main() => void {
+                          val holder = spawn Holder(new Box());
+                          return;
+                        }
+                        """)));
+        assertTrue(objectCapture.getMessage().contains("cannot capture")
+                || objectCapture.getMessage().contains("actor constructor field"));
+
+        IllegalArgumentException capabilityCapture = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Holder {
+                          let SharedMutex<int> state;
+                          pub actor read() => int { return 1; }
+                        }
+
+                        pub routine main() => void {
+                          val state = SharedMutex.new(1);
+                          val holder = spawn Holder(state);
+                          return;
+                        }
+                        """)));
+        assertTrue(capabilityCapture.getMessage().contains("cannot capture")
+                || capabilityCapture.getMessage().contains("actor constructor field"));
+    }
+
+    @Test
+    void actorMailboxSurfaceRejectsOpaqueIdentityAndCapabilityReturns() {
+        IllegalArgumentException sourceObject = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 1;
+                        end
+
+                        shared actor Worker {
+                          pub actor accept(Box box) => int {
+                            return box.value;
+                          }
+                        }
+                        """)));
+        assertTrue(sourceObject.getMessage().contains("cannot transport source class"));
+
+        IllegalArgumentException optionWithoutCodec = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Worker {
+                          pub actor accept(Option<int> value) => int {
+                            return 1;
+                          }
+                        }
+                        """)));
+        assertTrue(optionWithoutCodec.getMessage().contains("does not yet have an explicit actor transport codec"));
+
+        IllegalArgumentException sharedMutexReturn = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        shared actor Worker {
+                          pub actor leak() => SharedMutex<int> {
+                            return SharedMutex.new(1);
+                          }
+                        }
+                        """)));
+        assertTrue(sharedMutexReturn.getMessage().contains("cannot return SharedMutex"));
+    }
+
+    @Test
+    void parallelActorCannotReachNestedMutableStateThroughStableField() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub let int value = 0;
+                        end
+
+                        shared actor Worker {
+                          val Box box = new Box();
+
+                          pub parallel actor bad() => void {
+                            self.box.value = self.box.value + 1;
+                            return;
+                          }
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains("parallel actor method cannot directly read mutable actor field 'box'"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "actor-callables.ores")
