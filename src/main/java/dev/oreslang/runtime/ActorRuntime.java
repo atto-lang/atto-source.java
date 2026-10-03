@@ -883,6 +883,29 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
+     * Trusted compiler/interpreter lowering path for shared actor classes.
+     * This may capture compiler-owned state such as constructor arguments and
+     * request-completion tables; it is intentionally unavailable to
+     * adversarial policies.
+     */
+    public <M> ActorRef<M> spawnSharedConcurrentTrusted(
+            TurnClassifier<M> classifier,
+            BehaviorFactory<M> behaviorFactory) {
+        IsolatePolicy policy = defaultSpawnPolicy();
+        requireSupervisorContext("spawn trusted shared concurrent actor");
+        requireTrustedSupplierPolicy(policy);
+        Objects.requireNonNull(classifier, "classifier");
+        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        return spawnInternal(
+                ActorKind.SHARED,
+                policy,
+                behaviorFactory,
+                true,
+                classifier,
+                true);
+    }
+
+    /**
      * Explicit host-only escape hatch for context-aware shared actor factories
      * that intentionally capture host objects. Compiler lowering must never use
      * this path. Adversarial policies reject it.
