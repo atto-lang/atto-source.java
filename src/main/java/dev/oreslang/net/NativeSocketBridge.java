@@ -71,6 +71,8 @@ final class NativeSocketBridge {
     private static native int getSendBufferSize(long fd) throws IOException;
     private static native void setSoTimeout(long fd, int timeoutMillis) throws IOException;
     private static native int getSoTimeout(long fd) throws IOException;
+    private static native void setSendTimeout(long fd, int timeoutMillis) throws IOException;
+
 
     static NativeSocketHandle connectHandle(String host, int port, int timeoutMillis) throws IOException {
         return new NativeSocketHandle(connect(host, port, timeoutMillis));
@@ -182,5 +184,14 @@ final class NativeSocketBridge {
 
     static int getSoTimeout(NativeSocketHandle handle) throws IOException {
         return handle.withFd(NativeSocketBridge::getSoTimeout);
+    }
+
+    static void setActorIoTimeout(
+            NativeSocketHandle handle,
+            int timeoutMillis) throws IOException {
+        handle.withFdVoid(fd -> {
+            setSoTimeout(fd, timeoutMillis);
+            setSendTimeout(fd, timeoutMillis);
+        });
     }
 }
