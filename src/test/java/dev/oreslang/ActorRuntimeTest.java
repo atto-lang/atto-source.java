@@ -137,6 +137,95 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void boundedMailboxBatchLetsPeerActorRunBeforeHotMailboxDrains() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                2,
+                Long.MAX_VALUE,
+                1024);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch firstHotEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirstHot = new CountDownLatch(1);
+            CountDownLatch peerRan = new CountDownLatch(1);
+            AtomicInteger hotProcessed = new AtomicInteger();
+            AtomicInteger hotCountWhenPeerRan = new AtomicInteger(Integer.MAX_VALUE);
+
+            var hot = runtime.<Integer>spawnPrivate(() -> (message, context) -> {
+                if (message == 0) {
+                    firstHotEntered.countDown();
+                    assertTrue(releaseFirstHot.await(2, TimeUnit.SECONDS));
+                }
+                hotProcessed.incrementAndGet();
+            });
+            var peer = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                hotCountWhenPeerRan.set(hotProcessed.get());
+                peerRan.countDown();
+            });
+
+            for (int i = 0; i < 10; i++) hot.send(i);
+            assertTrue(firstHotEntered.await(2, TimeUnit.SECONDS));
+            peer.send("peer");
+            releaseFirstHot.countDown();
+
+            assertTrue(peerRan.await(2, TimeUnit.SECONDS));
+            assertTrue(
+                    hotCountWhenPeerRan.get() <= config.throughput(),
+                    "hot actor must return to the FIFO dispatcher queue after one bounded message batch");
+        }
+    }
+
+    @Test
+    void wallClockBatchQuantumLetsPeerRunEvenWithLargeMessageThroughput() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                64,
+                1L,
+                1024);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch firstHotEntered = new CountDownLatch(1);
+            CountDownLatch releaseFirstHot = new CountDownLatch(1);
+            CountDownLatch peerRan = new CountDownLatch(1);
+            AtomicInteger hotProcessed = new AtomicInteger();
+            AtomicInteger hotCountWhenPeerRan = new AtomicInteger(Integer.MAX_VALUE);
+
+            var hot = runtime.<Integer>spawnPrivate(() -> (message, context) -> {
+                if (message == 0) {
+                    firstHotEntered.countDown();
+                    assertTrue(releaseFirstHot.await(2, TimeUnit.SECONDS));
+                }
+                hotProcessed.incrementAndGet();
+            });
+            var peer = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                hotCountWhenPeerRan.set(hotProcessed.get());
+                peerRan.countDown();
+            });
+
+            for (int i = 0; i < 10; i++) hot.send(i);
+            assertTrue(firstHotEntered.await(2, TimeUnit.SECONDS));
+            peer.send("peer");
+            releaseFirstHot.countDown();
+
+            assertTrue(peerRan.await(2, TimeUnit.SECONDS));
+            assertEquals(
+                    1,
+                    hotCountWhenPeerRan.get(),
+                    "elapsed batch quantum must requeue a hot actor before its next mailbox message");
+        }
+    }
+
+    @Test
+    void untrustedDispatcherAlwaysUsesSingleMessageTurns() {
+        var config = new ActorRuntime.DispatcherConfig(4, 4, 2, 64, 1024);
+        assertEquals(64, config.throughputFor(ActorRuntime.ActorKind.PRIVATE));
+        assertEquals(64, config.throughputFor(ActorRuntime.ActorKind.SHARED));
+        assertEquals(1, config.throughputFor(ActorRuntime.ActorKind.UNTRUSTED));
+    }
+
+    @Test
     void sharedActorsCanCoordinateThroughExplicitSyncCell() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 4, 32);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
