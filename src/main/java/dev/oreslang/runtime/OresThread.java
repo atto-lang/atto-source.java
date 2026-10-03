@@ -74,7 +74,7 @@ public final class OresThread {
         }
         slotHeld.set(true);
         try {
-            nativeStart(this, name);
+            nativeHandle = nativeStart(this, name, configuredStackBytes());
         } catch (Throwable startFailure) {
             if (slotHeld.compareAndSet(true, false)) PLATFORM_THREAD_SLOTS.release();
             failure = startFailure;
@@ -90,7 +90,6 @@ public final class OresThread {
     @SuppressWarnings("unused") // JNI callback
     private void nativeRun() {
         CURRENT.set(this);
-        attachedJvmThread = Thread.currentThread();
         nativeThreadId = nativeCurrentThreadId();
         try {
             target.run();
@@ -99,26 +98,29 @@ public final class OresThread {
             failure = targetFailure;
             terminated.completeExceptionally(targetFailure);
         } finally {
-            attachedJvmThread = null;
             state.set(State.TERMINATED);
             CURRENT.remove();
+            long handle = nativeHandle;
+            nativeHandle = 0L;
+            if (handle != 0L) nativeRelease(handle);
             if (slotHeld.compareAndSet(true, false)) PLATFORM_THREAD_SLOTS.release();
         }
     }
 
     /**
-     * Java-compatible interrupt intent. This is safe because an OresThread has
-     * a dedicated pthread; actor carriers never flow through this class.
+     * Cooperative native interrupt intent. This never asynchronously tears
+     * through a JVM/Truffle stack: it sets the OresThread control-block flag and
+     * wakes native waits owned by this thread.
      */
     public void interrupt() {
         interrupted.set(true);
-        Thread carrier = attachedJvmThread;
-        if (carrier != null) carrier.interrupt();
+        long handle = nativeHandle;
+        if (handle != 0L) nativeInterrupt(handle);
     }
 
     public boolean isInterrupted() {
-        Thread carrier = attachedJvmThread;
-        return interrupted.get() || (carrier != null && carrier.isInterrupted());
+        long handle = nativeHandle;
+        return interrupted.get() || (handle != 0L && nativeIsInterrupted(handle));
     }
 
     /**
@@ -132,7 +134,8 @@ public final class OresThread {
                     "Thread.interrupted() cannot expose a scheduler-owned actor/root carrier");
         }
         boolean flagged = current.interrupted.getAndSet(false);
-        return Thread.interrupted() || flagged;
+        long handle = current.nativeHandle;
+        return (handle != 0L && nativeClearInterrupt(handle)) || flagged;
     }
 
     public static OresThread currentThread() {
@@ -177,13 +180,13 @@ public final class OresThread {
             throw new IllegalStateException(
                     "Thread.sleep() may not block a scheduler-owned actor/root carrier");
         }
-        try {
-            Thread.sleep(millis);
-        } catch (InterruptedException interrupted) {
-            // Match java.lang.Thread: throwing InterruptedException consumes
-            // the interrupted status.
+        if (millis < 0L) throw new IllegalArgumentException("sleep duration must be >= 0");
+        long handle = current.nativeHandle;
+        if (handle == 0L) throw new IllegalStateException("current OresThread has no native control block");
+        if (nativeSleep(handle, millis)) {
+            // Match java.lang.Thread: InterruptedException consumes status.
             current.interrupted.set(false);
-            throw interrupted;
+            throw new InterruptedException("OresThread sleep interrupted");
         }
     }
 
@@ -192,7 +195,7 @@ public final class OresThread {
             throw new IllegalStateException(
                     "Thread.yield() may not yield a scheduler-owned actor/root carrier; actor yielding is mailbox/continuation scheduling");
         }
-        Thread.yield();
+        nativeYield();
     }
 
     private static void rejectActorBlocking(String operation) {
@@ -210,15 +213,29 @@ public final class OresThread {
 
     public void setName(String name) {
         this.name = normalizeName(name);
-        Thread carrier = attachedJvmThread;
-        if (carrier != null) carrier.setName(this.name);
+        long handle = nativeHandle;
+        if (handle != 0L) nativeSetName(handle, this.name);
     }
 
     public Optional<Throwable> failure() { return Optional.ofNullable(failure); }
     public long nativeThreadId() { return nativeThreadId; }
 
+    /** CPU consumed by this native thread when it is still running. */
+    public long cpuTimeNanos() {
+        long handle = nativeHandle;
+        return handle == 0L ? 0L : nativeCpuTimeNanos(handle);
+    }
+
     public static boolean isCurrentOresThread() {
         return CURRENT.get() != null;
+    }
+
+    private static long configuredStackBytes() {
+        long configured = Long.getLong("ores.thread.stack-bytes", 2L * 1024 * 1024);
+        if (configured < 256L * 1024) {
+            throw new IllegalArgumentException("ores.thread.stack-bytes must be >= 262144");
+        }
+        return configured;
     }
 
     private static String normalizeName(String name) {
@@ -228,6 +245,14 @@ public final class OresThread {
         return name;
     }
 
-    private static native void nativeStart(OresThread thread, String name);
+    private static native long nativeStart(OresThread thread, String name, long stackBytes);
+    private static native void nativeInterrupt(long handle);
+    private static native boolean nativeIsInterrupted(long handle);
+    private static native boolean nativeClearInterrupt(long handle);
+    private static native boolean nativeSleep(long handle, long millis);
+    private static native void nativeYield();
+    private static native void nativeSetName(long handle, String name);
+    private static native long nativeCpuTimeNanos(long handle);
+    private static native void nativeRelease(long handle);
     private static native long nativeCurrentThreadId();
 }
