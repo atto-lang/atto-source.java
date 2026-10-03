@@ -182,6 +182,7 @@ argument_list   = expression { "," expression } ;
 primary         = literal
                 | IDENT
                 | "self"
+                | "super" "." IDENT
                 | "new" type_ref "(" [ argument_list ] ")"
                 | named_struct_literal
                 | anonymous_struct_literal
@@ -266,6 +267,18 @@ struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_
      Private trait state remains lexical to the defining trait.
    - Multiple traits that contribute the same field are rejected. Multiple concrete
      methods with the same name/arity require an explicit class override.
+   - Classes may extend multiple classes. Declaring more than one direct class parent
+     emits a compiler warning recommending "is" with multiple interfaces for contracts
+     and "with" with traits for reusable behavior/state when class identity inheritance
+     is unnecessary.
+   - Multiple class inheritance never uses declaration-order method resolution. If two
+     direct parent branches contribute the same instance method name/arity, the subclass
+     must declare a resolving override. A true diamond therefore also requires a resolver.
+   - A resolving override may explicitly invoke a direct parent implementation with
+     "super.Parent.method(...)". "super.Parent" is not a first-class value, and Parent
+     must be a direct parent of the current class.
+   - Distinct inherited state fields with the same name are rejected, and subclasses
+     cannot shadow inherited state fields. Parent order never chooses a state slot.
    - v0 trait composition is module-local so flattening cannot silently change a
      trait method's lexical module environment.
    - "init routine() => void { ... }" is a lifecycle declaration, not an ordinary
