@@ -141,7 +141,7 @@ The runtime does not interrupt a carrier thread to stop one actor because that t
 
 ## Shared actor memory
 
-Shared actors keep ordinary mutable fields actor-owned even when multiple actor turns are active. A PARALLEL entrypoint may not directly read or mutate ordinary mutable actor fields. It must route state access through an ordinary actor method (serialized by the per-instance actor-state lock), use an immutable `Mutex`/`SharedMutex` handle, or use an EXCLUSIVE actor entrypoint for actor-wide mutation. Cross-actor mutable memory remains exceptional and is represented by explicit synchronized capabilities such as `SyncCell<T>`/`SharedMutex<T>`.
+Shared actors keep ordinary mutable fields actor-owned even when multiple actor turns are active. A PARALLEL entrypoint may not directly read or mutate ordinary mutable actor fields. It must route state access through an ordinary actor method (serialized by the per-instance actor-state lock), use a stable `SharedMutex<T>` handle, or use an EXCLUSIVE actor entrypoint for actor-wide mutation. Actor-local `Mutex<T>` is deliberately not treated as cross-turn synchronization because overlapping turns share one semantic actor domain. Cross-actor mutable memory remains exceptional and is represented by explicit synchronized capabilities such as `SyncCell<T>`/`SharedMutex<T>`.
 
 `SyncCell<T>` is runtime-owned and closeable. Its frozen state consumes shared actor-memory quota; growth reserves quota before publishing a replacement value, shrink/close returns quota, and runtime teardown closes remaining cells. The combined private-slice plus shared-cell total cannot exceed the parent `IsolatePolicy.maxHeapBytes()`.
 
