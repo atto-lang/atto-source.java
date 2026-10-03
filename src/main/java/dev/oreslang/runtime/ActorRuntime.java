@@ -1866,6 +1866,9 @@ public final class ActorRuntime implements AutoCloseable {
         /** Remaining per-message execution fuel, or Long.MAX_VALUE for trusted actors. */
         long fuelRemaining();
 
+        /** Native carrier CPU charged to this actor across completed turns. */
+        long cpuTimeNanos();
+
         /** Remaining hard lifetime; trusted actors report their policy wall-time. */
         Duration remainingLifetime();
     }
@@ -1874,6 +1877,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final AtomicLong cpuTimeNanos = new AtomicLong();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -1884,6 +1888,16 @@ public final class ActorRuntime implements AutoCloseable {
         public ActorKind kind() { return kind; }
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
+        public long cpuTimeNanos() {
+            ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
+            if (caller != null
+                    && caller.kind() == ActorKind.UNTRUSTED
+                    && !caller.actorId().equals(id)) {
+                throw new SecurityException(
+                        "untrusted actors cannot inspect another actor's CPU accounting");
+            }
+            return cpuTimeNanos.get();
+        }
         public Optional<Throwable> failure() {
             ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
             if (caller != null
@@ -2994,6 +3008,7 @@ public final class ActorRuntime implements AutoCloseable {
         ActorCell<?> cell = currentActor.get();
         if (cell != null) {
             cell.throwIfControlStopped();
+            cell.checkCpuBudget();
             cell.checkUntrustedBudget(1);
         }
         if (Thread.currentThread().isInterrupted()) {
@@ -4178,6 +4193,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final Duration hardLifetime;
         private final long deadlineNanos;
         private volatile Thread activeCarrier;
+        private volatile int activeCarrierSlot = -1;
+        private volatile long activeCarrierCpuStartNanos;
         private volatile ScheduledFuture<?> lifetimeFuture;
         private volatile ScheduledFuture<?> messageDeadlineFuture;
         private final AtomicLong messageEpoch = new AtomicLong();
@@ -4301,6 +4318,45 @@ public final class ActorRuntime implements AutoCloseable {
             throw new CancellationException("actor execution stopped");
         }
 
+        private long beginCpuAccounting() {
+            int slot = NativeCarrierExecutor.currentCarrierSlot();
+            long started = NativeCarrierExecutor.currentCarrierCpuTimeNanos();
+            activeCarrierSlot = slot;
+            activeCarrierCpuStartNanos = started;
+            return started;
+        }
+
+        private void endCpuAccounting(long started) {
+            long finished = NativeCarrierExecutor.currentCarrierCpuTimeNanos();
+            if (started > 0L && finished >= started) {
+                ref.cpuTimeNanos.addAndGet(finished - started);
+            }
+            activeCarrierCpuStartNanos = 0L;
+            activeCarrierSlot = -1;
+        }
+
+        private long activeCpuNanos() {
+            int slot = activeCarrierSlot;
+            long started = activeCarrierCpuStartNanos;
+            if (slot < 0 || started <= 0L) return 0L;
+            long current = dispatcherFor(kind).carrierCpuTimeNanos(slot);
+            return current >= started ? current - started : 0L;
+        }
+
+        private void checkCpuBudget() {
+            long limit = dispatcherConfig.maxMessageNanos();
+            if (limit == Long.MAX_VALUE) return;
+            long consumed = activeCpuNanos();
+            if (consumed >= limit) {
+                throw new ActorTurnExceededException(
+                        ref.id(),
+                        kind,
+                        "actor " + ref.id() + " (" + kind
+                                + ") exceeded native carrier CPU budget of "
+                                + TimeUnit.NANOSECONDS.toMillis(limit) + " ms");
+            }
+        }
+
         private long armMessageDeadline(String phase) {
             long maxNanos = dispatcherConfig.maxMessageNanos();
             if (maxNanos == Long.MAX_VALUE) return 0L;
@@ -4326,13 +4382,15 @@ public final class ActorRuntime implements AutoCloseable {
                         || activeCarrier != carrier) {
                     return;
                 }
+                long cpuNanos = activeCpuNanos();
                 ActorTurnExceededException failure = new ActorTurnExceededException(
                         ref.id(),
                         kind,
                         "actor " + ref.id() + " (" + kind + ") exceeded hard "
                                 + phase + " quantum of "
                                 + TimeUnit.NANOSECONDS.toMillis(dispatcherConfig.maxMessageNanos())
-                                + " ms");
+                                + " ms; native_cpu_ms="
+                                + TimeUnit.NANOSECONDS.toMillis(cpuNanos));
                 ref.terminationCause.compareAndSet(null, failure);
                 stopped.set(true);
                 drainMailboxReservations();
@@ -4565,6 +4623,9 @@ public final class ActorRuntime implements AutoCloseable {
                                 ? ActorCell.this.fuelRemaining.get()
                                 : Long.MAX_VALUE;
                     }
+                    @Override public long cpuTimeNanos() {
+                        return ref.cpuTimeNanos.get();
+                    }
                     @Override public Duration remainingLifetime() {
                         return ActorCell.this.remainingLifetime();
                     }
@@ -4572,6 +4633,7 @@ public final class ActorRuntime implements AutoCloseable {
 
                 if (behavior == null) {
                     beginMessageBudget();
+                    long factoryCpuStart = beginCpuAccounting();
                     long factoryDeadline = armMessageDeadline("behavior initialization");
                     try {
                         Behavior<M> created = Objects.requireNonNull(
@@ -4583,6 +4645,7 @@ public final class ActorRuntime implements AutoCloseable {
                         behavior = created;
                     } finally {
                         disarmMessageDeadline(factoryDeadline);
+                        endCpuAccounting(factoryCpuStart);
                     }
                 }
 
@@ -4595,6 +4658,7 @@ public final class ActorRuntime implements AutoCloseable {
                     releaseMailboxSlot();
                     try (envelope) {
                         beginMessageBudget();
+                        long messageCpuStart = beginCpuAccounting();
                         long messageDeadline = armMessageDeadline("mailbox message");
                         try {
                             behavior.onMessage((M) envelope.value(), context);
@@ -4603,6 +4667,7 @@ public final class ActorRuntime implements AutoCloseable {
                             }
                         } finally {
                             disarmMessageDeadline(messageDeadline);
+                            endCpuAccounting(messageCpuStart);
                         }
                     }
                     processed++;
