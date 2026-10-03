@@ -990,11 +990,21 @@ public final class TypeChecker {
         Set<String> classGenerics = uniqueGenerics(klass.genericParameters(), aggregateLabel + klass.name());
         Type self = nominalClassType(klass);
 
+        if (klass.parents().size() > 1) {
+            System.err.println("Oreslang warning [multiple-class-inheritance]: "
+                    + (klass.isStruct() ? "struct" : "class") + " '" + klass.name()
+                    + "' declares " + klass.parents().size()
+                    + " class parents. Multiple inheritance is supported, but prefer multiple interfaces with 'is'"
+                    + " for contracts and traits with 'with' for reusable behavior/state when class-identity inheritance"
+                    + " is not required.");
+        }
+
         Set<String> parentNames = new HashSet<>();
         for (Ast.TypeRef parent : klass.parents()) {
             if (!parentNames.add(parent.name())) throw new IllegalArgumentException("duplicate parent class '" + parent.name() + "' on " + klass.name());
             resolveClassParent(parent, klass);
         }
+        validateInheritedClassMembers(klass);
 
         Set<String> localMethodSignatures = new HashSet<>();
         for (Ast.MethodDecl method : klass.methods()) {
@@ -1254,6 +1264,10 @@ public final class TypeChecker {
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
+        if (expr instanceof Ast.SuperExpr parentDispatch) {
+            throw new IllegalArgumentException("super." + parentDispatch.parentName()
+                    + " is not a first-class value; use it only as super.Parent.method(...) inside an instance method");
+        }
         if (expr instanceof Ast.AssignExpr assignment) {
             Type targetType;
             String where;
@@ -1338,6 +1352,37 @@ public final class TypeChecker {
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
+                if (member.receiver() instanceof Ast.SuperExpr parentDispatch) {
+                    if (activeClassOwner == null || self == null) {
+                        throw new IllegalArgumentException("super.Parent.method(...) is only valid inside an instance method");
+                    }
+                    Ast.TypeRef parentRef = resolveDirectParentRef(activeClassOwner, parentDispatch.parentName());
+                    Ast.ClassDecl parent = resolveClassParent(parentRef, activeClassOwner);
+                    if (parent == null) {
+                        throw new IllegalArgumentException("built-in parent '" + parentRef.name()
+                                + "' does not expose Oreslang parent-method dispatch");
+                    }
+                    Ast.MethodDecl method = findMethod(
+                            parent, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                    if (method == null) {
+                        throw new IllegalArgumentException("no parent method '" + parent.name() + "."
+                                + member.member() + "' with arity " + call.arguments().size());
+                    }
+
+                    List<Type> actualTypes = call.arguments().stream()
+                            .map(argument -> typeOf(argument, env, generics, self))
+                            .toList();
+                    Type parentType = resolve(parentRef, generics, self);
+                    Function signature = instantiateCallableGenerics(
+                            methodFunctionTypeForReceiver(method, parent, parentType),
+                            method.genericParameters(),
+                            actualTypes,
+                            "super call " + parent.name() + "." + method.name());
+                    validateCallArguments(
+                            call.arguments(), actualTypes, signature, env, generics, self, "super argument");
+                    return signature.result();
+                }
+
                 if (member.receiver() instanceof Ast.NameExpr namespace
                         && env.lookup(namespace.name()) == null
                         && modules.containsKey(namespace.name())) {
@@ -2306,6 +2351,125 @@ public final class TypeChecker {
         }
         seen.remove(klass);
         return null;
+    }
+
+    private void validateInheritedClassMembers(Ast.ClassDecl klass) {
+        if (klass.parents().isEmpty()) return;
+
+        LinkedHashMap<String, Ast.FieldDecl> inheritedFields = new LinkedHashMap<>();
+        LinkedHashMap<String, String> inheritedFieldBranches = new LinkedHashMap<>();
+        LinkedHashMap<String, LinkedHashSet<String>> methodBranches = new LinkedHashMap<>();
+
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+
+            Map<String, Ast.FieldDecl> branchFields = effectiveFieldDeclarations(parent, new LinkedHashSet<>());
+            for (Map.Entry<String, Ast.FieldDecl> entry : branchFields.entrySet()) {
+                Ast.FieldDecl previous = inheritedFields.putIfAbsent(entry.getKey(), entry.getValue());
+                if (previous != null && previous != entry.getValue()) {
+                    throw new IllegalArgumentException("ambiguous inherited state field '" + entry.getKey()
+                            + "' on class '" + klass.name() + "' from parent branches '"
+                            + inheritedFieldBranches.get(entry.getKey()) + "' and '" + parentRef.name()
+                            + "'. Oreslang never chooses a parent state slot by declaration order; rename/refactor the"
+                            + " state or move reusable state into an explicit trait.");
+                }
+                inheritedFieldBranches.putIfAbsent(entry.getKey(), parentRef.name());
+            }
+
+            for (String key : effectivePublicInstanceMethods(parent, new LinkedHashSet<>()).keySet()) {
+                methodBranches.computeIfAbsent(key, ignored -> new LinkedHashSet<>()).add(parentRef.name());
+            }
+        }
+
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (inheritedFields.containsKey(field.name())) {
+                throw new IllegalArgumentException("class '" + klass.name() + "' redeclares inherited state field '"
+                        + field.name() + "'. Inherited state fields are not virtual and cannot be overridden/shadowed.");
+            }
+        }
+
+        Set<String> explicitResolvers = new LinkedHashSet<>();
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && !method.composed() && method.visibility() == Ast.Visibility.PUBLIC) {
+                explicitResolvers.add(methodKey(method.name(), method.arity()));
+            }
+        }
+
+        for (Map.Entry<String, LinkedHashSet<String>> entry : methodBranches.entrySet()) {
+            if (entry.getValue().size() < 2 || explicitResolvers.contains(entry.getKey())) continue;
+            String key = entry.getKey();
+            int marker = key.lastIndexOf("$arity");
+            String methodName = marker < 0 ? key : key.substring(0, marker);
+            String arity = marker < 0 ? "?" : key.substring(marker + "$arity".length());
+            throw new IllegalArgumentException("ambiguous inherited method '" + methodName + "' with arity "
+                    + arity + " on class '" + klass.name() + "' from parent branches " + entry.getValue()
+                    + ". Multiple inheritance never uses left-to-right method resolution: declare an explicit"
+                    + " resolving override in '" + klass.name() + "' and delegate with super.Parent."
+                    + methodName + "(...) when a parent implementation should be reused.");
+        }
+    }
+
+    private Map<String, Ast.FieldDecl> effectiveFieldDeclarations(
+            Ast.ClassDecl klass,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
+        LinkedHashMap<String, Ast.FieldDecl> result = new LinkedHashMap<>();
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            for (Map.Entry<String, Ast.FieldDecl> entry
+                    : effectiveFieldDeclarations(parent, seen).entrySet()) {
+                result.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+        }
+        for (Ast.FieldDecl field : klass.fields()) result.put(field.name(), field);
+        seen.remove(klass);
+        return result;
+    }
+
+    private Map<String, Ast.MethodDecl> effectivePublicInstanceMethods(
+            Ast.ClassDecl klass,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving class '" + klass.name() + "'");
+        LinkedHashMap<String, Ast.MethodDecl> result = new LinkedHashMap<>();
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            for (Map.Entry<String, Ast.MethodDecl> entry
+                    : effectivePublicInstanceMethods(parent, seen).entrySet()) {
+                result.putIfAbsent(entry.getKey(), entry.getValue());
+            }
+        }
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
+                result.put(methodKey(method.name(), method.arity()), method);
+            }
+        }
+        seen.remove(klass);
+        return result;
+    }
+
+    private Ast.TypeRef resolveDirectParentRef(Ast.ClassDecl child, String requestedName) {
+        List<Ast.TypeRef> exact = child.parents().stream()
+                .filter(parent -> parent.name().equals(requestedName))
+                .toList();
+        if (exact.size() == 1) return exact.getFirst();
+
+        List<Ast.TypeRef> simple = child.parents().stream()
+                .filter(parent -> {
+                    int dot = parent.name().lastIndexOf('.');
+                    String simpleName = dot < 0 ? parent.name() : parent.name().substring(dot + 1);
+                    return simpleName.equals(requestedName);
+                })
+                .toList();
+        if (simple.size() == 1) return simple.getFirst();
+        if (simple.size() > 1) {
+            throw new IllegalArgumentException("super." + requestedName
+                    + " is ambiguous because more than one direct parent has that simple name");
+        }
+        throw new IllegalArgumentException("super." + requestedName
+                + " is invalid for class '" + child.name() + "': super dispatch may name only a direct parent");
     }
 
     private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
