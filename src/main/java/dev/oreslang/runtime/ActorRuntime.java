@@ -696,6 +696,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
+        private final CompletableFuture<Throwable> termination = new CompletableFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -707,6 +708,13 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean ownedBy(ActorRuntime runtime) { return ActorRuntime.this == runtime; }
         public boolean isAlive() { return ActorRuntime.this.isAlive(this); }
         public Optional<Throwable> failure() { return Optional.ofNullable(terminationCause.get()); }
+
+        /**
+         * Completes exactly once when this actor is fully finalized. Normal
+         * termination completes with null; fail-stop termination completes with
+         * the recorded failure as the value.
+         */
+        public CompletionStage<Throwable> termination() { return termination; }
 
         public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
             Objects.requireNonNull(unit);
@@ -2796,6 +2804,7 @@ public final class ActorRuntime implements AutoCloseable {
                 // are best-effort and retryable by the process collector.
             }
             unregisterActor(this);
+            ref.termination.complete(ref.terminationCause.get());
             lifecycleLock.notifyAll();
         }
 
