@@ -104,6 +104,13 @@ public final class Parser {
             } else {
                 names.add(consumeImportName(kind));
             }
+
+            if (!wildcard && match(AS)) {
+                if (names.size() != 1) {
+                    throw error(previous(), "named import aliases require exactly one selected name");
+                }
+                namespace = consume(IDENT, "expected import alias").lexeme();
+            }
         }
 
         consume(FROM, "expected 'from' in import");

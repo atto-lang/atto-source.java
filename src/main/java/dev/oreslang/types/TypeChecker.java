@@ -1,6 +1,7 @@
 package dev.oreslang.types;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.Types.Function;
 import dev.oreslang.types.Types.Borrow;
@@ -61,17 +62,32 @@ public final class TypeChecker {
 
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
+        Set<String> localNames = new HashSet<>(Set.of(
+                "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
+                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
+                "self", "null"));
+
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
+            for (Ast.Decl declaration : module.declarations()) {
+                if (declaration instanceof Ast.FunctionDecl fn) localNames.add(fn.name());
+                else if (declaration instanceof Ast.ClassDecl klass) localNames.add(klass.name());
+                else if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
+                else if (declaration instanceof Ast.FieldDecl field) localNames.add(field.name());
+                else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+            }
+        }
+
         for (Ast.ImportDecl imported : program.imports()) {
-            if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
-            if (imported.wildcard()) {
-                if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
-                if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
-                importedValues.add(imported.namespace());
-            } else {
-                if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
-                for (String name : imported.names()) {
-                    if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
+            ImportRules.validate(imported);
+            for (String name : ImportRules.exposedBindings(imported)) {
+                if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
+                if (localNames.contains(name)) {
+                    throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
+                }
+                if (imported.kind() != Ast.ImportKind.CLASS || ImportRules.isJavaPath(imported.path())) {
+                    importedValues.add(name);
                 }
             }
         }

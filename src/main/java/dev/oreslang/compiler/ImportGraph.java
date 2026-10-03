@@ -1,6 +1,7 @@
 package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
+import dev.oreslang.imports.ImportRules;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -25,6 +26,8 @@ final class ImportGraph {
     private ImportGraph() { }
 
     static String resolveImportUnitId(String unitId, Ast.ImportDecl imported, Set<String> available) {
+        ImportRules.validate(imported);
+        if (ImportRules.isJavaPath(imported.path())) return null;
         String raw = imported.path().replace('\\', '/');
         Path parent = Path.of(unitId).getParent();
         Path candidatePath = raw.startsWith(".")
