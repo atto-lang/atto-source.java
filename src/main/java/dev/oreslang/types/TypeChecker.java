@@ -2082,6 +2082,8 @@ public final class TypeChecker {
             for (Ast.Expr argument : created.arguments()) {
                 rejectStaticClassGenericReferences(argument, classGenerics, klass, method);
             }
+        } else if (expression instanceof Ast.SpawnExpr spawned) {
+            rejectStaticClassGenericReferences(spawned.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ListExpr list) {
@@ -2718,6 +2720,7 @@ public final class TypeChecker {
         } else if (expr instanceof Ast.MemberExpr e) collectCalls(e.receiver(), module, out);
         else if (expr instanceof Ast.IndexExpr e) { collectCalls(e.receiver(), module, out); collectCalls(e.index(), module, out); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) collectCalls(arg, module, out);
+        else if (expr instanceof Ast.SpawnExpr e) collectCalls(e.expression(), module, out);
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
