@@ -41,6 +41,7 @@ public record IsolatePolicy(
         FILESYSTEM_WRITE,
         ENVIRONMENT,
         HOT_CODE_LOAD,
+        GPU,
         JAVA_INTEROP,
         JAVA_SOURCE_INTEROP,
         FFI,
