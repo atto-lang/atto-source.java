@@ -1025,13 +1025,15 @@ pub routine main() => void {
 }
 ```
 
-The initial Java-shaped surface includes `start()`, `join()`, `interrupt()`, `isAlive()`, `isInterrupted()`, `getName()`, `setName()`, `threadId()`, `getState()`, `isVirtual()`, plus `Thread.currentThread()`, `Thread.interrupted()`, `Thread.sleep(ms)`, and `Thread.yield()`.
+The initial Java-shaped surface includes `start()`, `join()`, `interrupt()`, `isAlive()`, `isInterrupted()`, `getName()`, `setName()`, `threadId()`, `cpuTimeNanos()`, `getState()`, `isVirtual()`, plus `Thread.currentThread()`, `Thread.interrupted()`, `Thread.sleep(ms)`, and `Thread.yield()`. The implementation does not delegate interrupt/sleep/yield/name control to `java.lang.Thread`: those operations use Oreslang's native pthread control block and cooperative wakeup flag.
 
 Important boundaries:
 
 - actors cannot construct or control dedicated `Thread` instances; they must use actor spawning/mailboxes;
 - `Thread.currentThread()` never exposes an actor/root carrier;
 - `Thread.sleep()` and `Thread.yield()` are valid only on a dedicated `Thread`, so user code cannot park a shared actor carrier;
-- explicit threads are process-bounded by the runtime even in trusted mode;
+- explicit threads are process-bounded by the runtime even in trusted mode, with a bounded configurable native stack;
+- private/isolate and untrusted actors never own a source-level `Thread`; they are logical actors multiplexed over separate native carrier pools, so thread creation cannot bypass confined actor memory or scheduler CPU limits;
+- untrusted code may be non-cooperative, so hard termination is performed at the killable isolate/process boundary rather than with unsafe `pthread_cancel()`;
 - the current implementation is a platform-thread API (`isVirtual() == false`), not a Java virtual-thread emulation;
 - broader cross-thread transfer will still require first-class `Send`/`Sync`-equivalent marker semantics before arbitrary move-only values can cross this boundary.
