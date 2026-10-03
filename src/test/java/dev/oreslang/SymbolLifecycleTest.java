@@ -68,6 +68,23 @@ final class SymbolLifecycleTest {
     }
 
     @Test
+    void compilerLiteralAndDynamicProcessFactoryShareCanonicalIdentity() {
+        OresSymbol dynamicFirst = OresSymbol.process("literal-shared-key");
+        OresSymbol literalAfter = OresSymbol.processLiteral(
+                "literal-shared-key", IsolatePolicy.developer());
+        OresSymbol literalFirst = OresSymbol.processLiteral(
+                "literal-first-key", IsolatePolicy.developer());
+        OresSymbol dynamicAfter = OresSymbol.process("literal-first-key");
+
+        assertSame(dynamicFirst, literalAfter);
+        assertSame(literalFirst, dynamicAfter);
+        assertEquals(dynamicFirst.id(), literalAfter.id());
+        assertEquals(literalFirst.id(), dynamicAfter.id());
+        assertTrue(OresSymbol.RESERVED_LITERAL_PROCESS_SYMBOLS > 0);
+        assertTrue(OresSymbol.MAX_DYNAMIC_PROCESS_SYMBOLS < OresSymbol.MAX_PROCESS_SYMBOLS);
+    }
+
+    @Test
     void wireFormatUsesScopeAndKeyNeverProcessIds() {
         OresSymbol process = OresSymbol.process("wire-key");
         OresSymbol stable = OresSymbol.stable(UUID_KEY);
