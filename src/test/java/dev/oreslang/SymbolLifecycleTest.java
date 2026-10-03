@@ -127,6 +127,21 @@ final class SymbolLifecycleTest {
         assertEquals(OresSymbol.Scope.PROCESS, iterator.scope());
         assertEquals("Symbol.iterator", iterator.key());
         assertEquals("Symbol.iterator", iterator.toString());
+        assertEquals(
+                "Symbol.process(\"Symbol.custom\")",
+                OresSymbol.process("Symbol.custom").toString());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> OresSymbol.wellKnown("typo", IsolatePolicy.developer()));
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class BadProtocol as
+                          [Symbol.typo]() => void {
+                            return;
+                          }
+                        end
+                        """));
 
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define module protocol
