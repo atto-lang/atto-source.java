@@ -155,32 +155,83 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Actor dispatcher configuration.
+     *
+     * Fairness is bounded by both mailbox throughput and wall-clock batch time.
+     * The wall-clock limit is intentionally a between-message quantum: arbitrary
+     * host Java stacks are not asynchronously stopped. UNTRUSTED execution has
+     * a stricter one-message quantum plus fuel/deadline/isolate enforcement.
+     */
     public record DispatcherConfig(
             int privateParallelism,
             int sharedParallelism,
             int untrustedParallelism,
             int throughput,
+            long maxBatchNanos,
             int maxActors) {
+        public static final long DEFAULT_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
+
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
             if (sharedParallelism <= 0) throw new IllegalArgumentException("sharedParallelism must be > 0");
             if (untrustedParallelism <= 0) throw new IllegalArgumentException("untrustedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
+            if (maxBatchNanos <= 0) throw new IllegalArgumentException("maxBatchNanos must be > 0");
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
+        }
+
+        /** Backward-compatible constructor with an explicit untrusted pool. */
+        public DispatcherConfig(
+                int privateParallelism,
+                int sharedParallelism,
+                int untrustedParallelism,
+                int throughput,
+                int maxActors) {
+            this(
+                    privateParallelism,
+                    sharedParallelism,
+                    untrustedParallelism,
+                    throughput,
+                    DEFAULT_MAX_BATCH_NANOS,
+                    maxActors);
         }
 
         /** Backward-compatible constructor: untrusted work gets its own pool sized like private work. */
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput, int maxActors) {
-            this(privateParallelism, sharedParallelism, privateParallelism, throughput, maxActors);
+            this(
+                    privateParallelism,
+                    sharedParallelism,
+                    privateParallelism,
+                    throughput,
+                    DEFAULT_MAX_BATCH_NANOS,
+                    maxActors);
         }
 
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
-            this(privateParallelism, sharedParallelism, privateParallelism, throughput, 16_384);
+            this(
+                    privateParallelism,
+                    sharedParallelism,
+                    privateParallelism,
+                    throughput,
+                    DEFAULT_MAX_BATCH_NANOS,
+                    16_384);
         }
 
         public static DispatcherConfig defaults() {
             int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
             return new DispatcherConfig(cpus, cpus, Math.max(1, cpus / 2), 64, 16_384);
+        }
+
+        /**
+         * Trusted actors may amortize scheduling overhead with a bounded batch.
+         * Untrusted actors always surrender the sandbox carrier after one
+         * mailbox message; hostile/hot mailboxes therefore cannot monopolize a
+         * worker merely by remaining non-empty.
+         */
+        public int throughputFor(ActorKind kind) {
+            Objects.requireNonNull(kind, "kind");
+            return kind == ActorKind.UNTRUSTED ? 1 : throughput;
         }
     }
 
@@ -2172,8 +2223,15 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Cooperative scheduler hook used by compiler-injected loop safepoints.
-     * Carrier threads remain an implementation detail.
+     * Compiler-injected scheduling/cancellation checkpoint.
+     *
+     * Do not use Thread.yield() here: yielding the carrier thread does not
+     * return the current actor to the dispatcher, so a single-worker pool still
+     * cannot run a queued peer. Actor fairness is provided at resumable mailbox
+     * boundaries by the bounded message/time quantum. UNTRUSTED guest code is
+     * additionally charged fuel here and is hard-bounded by its sandbox
+     * deadline/isolate. A future resumable Oreslang fiber/continuation backend
+     * may turn this checkpoint into a true mid-message cooperative handoff.
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
@@ -2186,13 +2244,6 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (Thread.currentThread().isInterrupted()) {
             throw new CancellationException("actor execution interrupted");
-        }
-        // Trusted actors retain cooperative yielding. UNTRUSTED actors are
-        // enforced by fuel/deadline checks and periodically yield as a courtesy
-        // to the dedicated sandbox dispatcher.
-        if (cell == null || cell.kind != ActorKind.UNTRUSTED
-                || (cell.fuelRemaining.get() & 1023L) == 0L) {
-            Thread.yield();
         }
     }
 
@@ -3586,7 +3637,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
 
                 int processed = 0;
-                while (processed < dispatcherConfig.throughput() && !stopped.get()) {
+                int turnThroughput = dispatcherConfig.throughputFor(kind);
+                long batchStartedNanos = System.nanoTime();
+                while (processed < turnThroughput && !stopped.get()) {
                     MessageEnvelope envelope = mailbox.poll();
                     if (envelope == null) break;
                     releaseMailboxSlot();
@@ -3603,6 +3656,16 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     }
                     processed++;
+
+                    // This is deliberately checked between complete mailbox
+                    // messages. We never asynchronously tear through an
+                    // arbitrary trusted Java stack. If the actor remains hot,
+                    // schedule() below places it at the tail of the FIFO ready
+                    // queue so peer actors get a turn.
+                    if (kind != ActorKind.UNTRUSTED
+                            && System.nanoTime() - batchStartedNanos >= dispatcherConfig.maxBatchNanos()) {
+                        break;
+                    }
                 }
             } catch (Throwable failure) {
                 // Fail-stop supervision for ordinary actor failures. Fatal VM
