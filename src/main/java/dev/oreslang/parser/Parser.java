@@ -392,6 +392,9 @@ public final class Parser {
             String symbol = consume(IDENT, "expected symbol name").lexeme();
             consume(RBRACKET, "expected ']' after symbol method");
             if (!namespace.equals("Symbol")) throw error(previous(), "symbol methods must use Symbol.<name>");
+            if (!symbol.equals("iterator")) {
+                throw error(previous(), "unknown well-known protocol Symbol." + symbol);
+            }
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
