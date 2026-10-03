@@ -277,7 +277,7 @@ public final class OresEvalRootNode extends RootNode {
             // Every actor kind observes stop/turn-overrun signals at statement
             // boundaries. UNTRUSTED actors additionally consume fuel here and
             // at expression boundaries below.
-            if (ActorRuntime.inActorExecution()) {
+            if (ActorRuntime.inActorExecution() || ActorRuntime.inRootExecution()) {
                 context.schedulerSafepoint();
             }
             if (stmt instanceof Ast.BindingStmt binding) {
