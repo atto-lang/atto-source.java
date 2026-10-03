@@ -362,6 +362,15 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr symbolCall
+                && symbolCall.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Symbol")
+                && (symbolCall.member().equals("local")
+                    || symbolCall.member().equals("process")
+                    || symbolCall.member().equals("stable"))) {
+            for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
+            return new ValueInfo(Ast.TypeRef.simple("Symbol"), ValueKind.COPY, null);
+        }
         if (call.callee() instanceof Ast.NameExpr name) {
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
