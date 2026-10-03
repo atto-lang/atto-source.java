@@ -41,6 +41,7 @@ public final class NativeCarrierExecutor {
 
     private final ArrayBlockingQueue<Runnable> queue;
     private final int maximumPoolSize;
+    private final long nativeStackBytes;
     private final AtomicInteger corePoolSize;
     private final AtomicInteger largestPoolSize;
     private final AtomicInteger activeCount = new AtomicInteger();
@@ -63,11 +64,13 @@ public final class NativeCarrierExecutor {
 
         this.queue = new ArrayBlockingQueue<>(queueCapacity, true);
         this.maximumPoolSize = maximumPoolSize;
+        this.nativeStackBytes = configuredCarrierStackBytes();
         this.carrierThreads = new AtomicReferenceArray<>(maximumPoolSize);
         this.corePoolSize = new AtomicInteger(corePoolSize);
         this.largestPoolSize = new AtomicInteger(corePoolSize);
 
-        long handle = nativeCreate(this, maximumPoolSize, corePoolSize, threadPrefix);
+        long handle = nativeCreate(
+                this, maximumPoolSize, corePoolSize, threadPrefix, nativeStackBytes);
         if (handle == 0L) throw new IllegalStateException("native carrier pool returned a null handle");
         this.nativeHandle = handle;
 
@@ -82,6 +85,15 @@ public final class NativeCarrierExecutor {
 
     static void ensureNativeLibraryLoaded() {
         // Class initialization performs the one-time load.
+    }
+
+    private static long configuredCarrierStackBytes() {
+        long configured = Long.getLong("ores.actor.carrier-stack-bytes", 2L * 1024 * 1024);
+        if (configured < 256L * 1024) {
+            throw new IllegalArgumentException(
+                    "ores.actor.carrier-stack-bytes must be >= 262144");
+        }
+        return configured;
     }
 
     private static void loadNativeLibrary() {
@@ -207,6 +219,7 @@ public final class NativeCarrierExecutor {
     public long getCompletedTaskCount() { return completedTaskCount.get(); }
     public int getLargestPoolSize() { return largestPoolSize.get(); }
     public int getMaximumPoolSize() { return maximumPoolSize; }
+    public long getNativeStackBytes() { return nativeStackBytes; }
     public int getCorePoolSize() { return corePoolSize.get(); }
     public boolean isShutdown() { return shutdown.get(); }
 
@@ -245,14 +258,28 @@ public final class NativeCarrierExecutor {
         return slot == null ? -1 : slot;
     }
 
+    /** CPU consumed by the current native carrier, excluding time descheduled. */
+    public static long currentCarrierCpuTimeNanos() {
+        return isNativeCarrierThread() ? nativeCurrentThreadCpuNanos() : 0L;
+    }
+
+    /** CPU consumed by a specific carrier slot in this pool, for watchdog accounting. */
+    public long carrierCpuTimeNanos(int slot) {
+        if (slot < 0 || slot >= maximumPoolSize) return 0L;
+        return nativeCarrierCpuTimeNanos(nativeHandle, slot);
+    }
+
     private static native long nativeCreate(
             NativeCarrierExecutor executor,
             int maxThreads,
             int desiredThreads,
-            String threadPrefix);
+            String threadPrefix,
+            long stackBytes);
     private static native void nativeStart(long handle);
     private static native void nativeSetDesired(long handle, int desiredThreads);
     private static native void nativeAwaitEnabled(long handle, int slot);
     private static native void nativeShutdown(long handle);
     private static native long nativeCurrentThreadId();
+    private static native long nativeCurrentThreadCpuNanos();
+    private static native long nativeCarrierCpuTimeNanos(long handle, int slot);
 }
