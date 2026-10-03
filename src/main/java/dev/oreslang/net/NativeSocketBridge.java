@@ -41,36 +41,36 @@ final class NativeSocketBridge {
         System.loadLibrary(LIBRARY);
     }
 
-    public static native long connect(String host, int port, int timeoutMillis) throws IOException;
-    public static native long listen(String host, int port, int backlog, boolean reuseAddress) throws IOException;
-    public static native long accept(long fd) throws IOException;
+    private static native long connect(String host, int port, int timeoutMillis) throws IOException;
+    private static native long listen(String host, int port, int backlog, boolean reuseAddress) throws IOException;
+    private static native long accept(long fd) throws IOException;
 
-    public static native int read(long fd, byte[] bytes, int offset, int length) throws IOException;
-    public static native int write(long fd, byte[] bytes, int offset, int length) throws IOException;
-    public static native int available(long fd) throws IOException;
+    private static native int read(long fd, byte[] bytes, int offset, int length) throws IOException;
+    private static native int write(long fd, byte[] bytes, int offset, int length) throws IOException;
+    private static native int available(long fd) throws IOException;
 
-    public static native void shutdownInput(long fd) throws IOException;
-    public static native void shutdownOutput(long fd) throws IOException;
-    public static native void close(long fd) throws IOException;
+    private static native void shutdownInput(long fd) throws IOException;
+    private static native void shutdownOutput(long fd) throws IOException;
+    private static native void close(long fd) throws IOException;
 
-    public static native String remoteAddress(long fd) throws IOException;
-    public static native String localAddress(long fd) throws IOException;
-    public static native int remotePort(long fd) throws IOException;
-    public static native int localPort(long fd) throws IOException;
-    public static native String[] resolveAll(String host) throws IOException;
+    private static native String remoteAddress(long fd) throws IOException;
+    private static native String localAddress(long fd) throws IOException;
+    private static native int remotePort(long fd) throws IOException;
+    private static native int localPort(long fd) throws IOException;
+    private static native String[] resolveAll(String host) throws IOException;
 
-    public static native void setTcpNoDelay(long fd, boolean enabled) throws IOException;
-    public static native boolean getTcpNoDelay(long fd) throws IOException;
-    public static native void setKeepAlive(long fd, boolean enabled) throws IOException;
-    public static native boolean getKeepAlive(long fd) throws IOException;
-    public static native void setReuseAddress(long fd, boolean enabled) throws IOException;
-    public static native boolean getReuseAddress(long fd) throws IOException;
-    public static native void setReceiveBufferSize(long fd, int bytes) throws IOException;
-    public static native int getReceiveBufferSize(long fd) throws IOException;
-    public static native void setSendBufferSize(long fd, int bytes) throws IOException;
-    public static native int getSendBufferSize(long fd) throws IOException;
-    public static native void setSoTimeout(long fd, int timeoutMillis) throws IOException;
-    public static native int getSoTimeout(long fd) throws IOException;
+    private static native void setTcpNoDelay(long fd, boolean enabled) throws IOException;
+    private static native boolean getTcpNoDelay(long fd) throws IOException;
+    private static native void setKeepAlive(long fd, boolean enabled) throws IOException;
+    private static native boolean getKeepAlive(long fd) throws IOException;
+    private static native void setReuseAddress(long fd, boolean enabled) throws IOException;
+    private static native boolean getReuseAddress(long fd) throws IOException;
+    private static native void setReceiveBufferSize(long fd, int bytes) throws IOException;
+    private static native int getReceiveBufferSize(long fd) throws IOException;
+    private static native void setSendBufferSize(long fd, int bytes) throws IOException;
+    private static native int getSendBufferSize(long fd) throws IOException;
+    private static native void setSoTimeout(long fd, int timeoutMillis) throws IOException;
+    private static native int getSoTimeout(long fd) throws IOException;
 
     static NativeSocketHandle connectHandle(String host, int port, int timeoutMillis) throws IOException {
         return new NativeSocketHandle(connect(host, port, timeoutMillis));
