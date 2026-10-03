@@ -26,6 +26,9 @@ final class OresThreadTest {
             current.set(OresThread.currentThread());
             nativeId.set(OresThread.currentThread().nativeThreadId());
             actorCarrier.set(ActorRuntime.isActorCarrierThread());
+            threadCpuBurn();
+            assertTrue(OresThread.currentThread().cpuTimeNanos() > 0L);
+            OresThread.currentThread().setName("ores-test-renamed");
             OresThread.yield();
         }, "ores-test-platform-thread");
 
@@ -39,7 +42,7 @@ final class OresThreadTest {
         assertFalse(actorCarrier.get(), "explicit Thread must not masquerade as an actor carrier");
         assertEquals(OresThread.State.TERMINATED, thread.getState());
         assertFalse(thread.isVirtual());
-        assertEquals("ores-test-platform-thread", thread.getName());
+        assertEquals("ores-test-renamed", thread.getName());
     }
 
     @Test
@@ -89,6 +92,36 @@ final class OresThreadTest {
         }
 
         assertInstanceOf(SecurityException.class, failure.get());
+    }
+
+    @Test
+    void privateActorCannotEscapeDispatcherByStartingDedicatedThread() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1, 1, 1, 1, Long.MAX_VALUE, 64);
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            var ref = runtime.<Integer>spawnPrivateTrusted(factoryContext -> (message, context) -> {
+                try {
+                    new OresThread(() -> { }).start();
+                } catch (Throwable expected) {
+                    failure.set(expected);
+                } finally {
+                    done.countDown();
+                }
+            });
+            ref.send(1);
+            assertTrue(done.await(5, TimeUnit.SECONDS));
+        }
+
+        assertInstanceOf(SecurityException.class, failure.get());
+    }
+
+    private static void threadCpuBurn() {
+        long value = 0L;
+        for (int i = 0; i < 1_000_000; i++) value += i;
+        if (value == Long.MIN_VALUE) throw new AssertionError("unreachable");
     }
 
     @Test
