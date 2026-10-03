@@ -65,6 +65,21 @@ helper with a `public static void run()` method and rewrites the Ores statement
 to a normal call to that generated helper. This means the Java executes only
 when Ores control flow reaches the statement.
 
+Because `do` is also the Ores conditional delimiter, keep the two roles
+lexically separate inside conditionals:
+
+```ores
+if ready; do
+  do java {
+    Ores.signal();
+  }
+fi
+```
+
+Do not collapse that to `if ready; do java { ... }`; the first `do` belongs
+to the Ores conditional grammar, while the second `do java` is the executable
+Java statement.
+
 The initial contract is intentionally narrow and safe:
 
 - `do java { ... }` is **statement-only** and has Ores type `void`;
