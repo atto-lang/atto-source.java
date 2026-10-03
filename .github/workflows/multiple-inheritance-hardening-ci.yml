@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - harden/multiple-inheritance-diamond-super-20261003
+  pull_request:
+    branches:
+      - feat/stateful-traits
 
 permissions:
   contents: read
