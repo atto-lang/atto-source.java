@@ -2104,7 +2104,8 @@ public final class TypeChecker {
         }
 
         return switch (ref.name()) {
-            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
+            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                    "int", "Int", "uint", "bigint" -> Primitive.INT;
             case "f32", "f64", "float" -> Primitive.FLOAT;
             case "decimal" -> Primitive.DECIMAL;
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
