@@ -3,6 +3,7 @@
 // This module is intentionally protocol-free. The runtime supplies the
 // `native_net` builtin namespace after NETWORK capability admission.
 // No Java networking/protocol implementation is permitted behind this module.
+// Socket Int values are opaque liboresnet capability handles, never raw OS fds.
 
 define module native_net_api
   pub fnc connect(String host, Int port, Int timeout_ms) => Int {
@@ -13,20 +14,20 @@ define module native_net_api
     return native_net.listen(host, port, backlog, reuse_address);
   }
 
-  pub fnc accept(Int fd) => Int {
-    return native_net.accept(fd);
+  pub fnc accept(Int handle) => Int {
+    return native_net.accept(handle);
   }
 
-  pub fnc read(Int fd, Array<Int> bytes, Int offset, Int length) => Int {
+  pub fnc read(Int handle, Array<Int> bytes, Int offset, Int length) => Int {
     return native_net.read(fd, bytes, offset, length);
   }
 
-  pub fnc write(Int fd, Array<Int> bytes, Int offset, Int length) => Int {
+  pub fnc write(Int handle, Array<Int> bytes, Int offset, Int length) => Int {
     return native_net.write(fd, bytes, offset, length);
   }
 
-  pub fnc close(Int fd) => void {
-    native_net.close(fd);
+  pub fnc close(Int handle) => void {
+    native_net.close(handle);
     return;
   }
 
