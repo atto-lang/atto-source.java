@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.math.ElectricalMath;
 import dev.oreslang.runtime.math.OresComplex;
 import dev.oreslang.runtime.math.OresMatrix;
@@ -94,6 +95,63 @@ final class MathLanguageTest {
         OresVector y = a.matmul(x);
         assertEquals(17.0, (double) y.get(0), 1e-12);
         assertEquals(39.0, (double) y.get(1), 1e-12);
+    }
+
+    @Test
+    void integerDenseLiteralsPromoteToFloatAndDecimalDenseTypesAreRejected() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc promote() => Matrix<float> {
+                  return matrix[[1, 2], [3, 4]];
+                }
+                """)));
+
+        IllegalArgumentException decimal = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc exact(Matrix<decimal> a) => void {
+                          return;
+                        }
+                        """)));
+        assertTrue(decimal.getMessage().contains("decimal matrices require a separate exact backend"));
+    }
+
+    @Test
+    void mixedRealComplexLinearAlgebraPromotesToComplex() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc mixed() => Matrix<complex> {
+                  val real = matrix[[1.0, 0.0], [0.0, 1.0]];
+                  val complex_rhs = matrix[[1.0 + 2i], [3.0 - 4i]];
+                  return real.solve(complex_rhs);
+                }
+                """)));
+    }
+
+    @Test
+    void immutableMathValuesCanCrossTrustedActorTransportWithoutMutableHostEscape() {
+        OresMatrix matrix = OresMatrix.fromRows(List.of(
+                List.of(1.0, 2.0),
+                List.of(3.0, 4.0)));
+        OresVector vector = OresVector.fromValues(List.of(5.0, 6.0));
+        OresComplex complex = new OresComplex(3.0, 4.0);
+
+        assertSame(matrix, ActorRuntime.freeze(matrix));
+        assertSame(vector, ActorRuntime.freeze(vector));
+        assertSame(complex, ActorRuntime.freeze(complex));
+        assertTrue(matrix.logicalBytes() > complex.logicalBytes());
+        assertTrue(vector.logicalBytes() > complex.logicalBytes());
+    }
+
+    @Test
+    void aliasedImportsRejectDuplicateLocalNames() {
+        Ast.Program program = Parser.parse("""
+                import fnc {solve as op, invert as op} from "./solver.ores";
+                pub fnc main() => void { return; }
+                """);
+
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(program));
+        assertTrue(duplicate.getMessage().contains("duplicate imported name 'op'"));
     }
 
     @Test
