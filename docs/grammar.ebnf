@@ -270,9 +270,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      captures are rejected by the current GPU ABI.
    - GPU callables return only a supported scalar or void. Array/List results use an
      explicit mutable Array<T>/List<T> output parameter.
-   - A kernel that explicitly uses gpu.index/gpu.*_id is data-parallel. Its 1-D
-     extent comes from the unique mutable buffer parameter, or from the sole buffer when
-     there is no mutable buffer. Ambiguous launch drivers are compile errors.
+   - A void kernel that directly uses gpu.index/gpu.global_id/global_size is
+     data-parallel only when it exposes exactly one mutable flat output buffer; that
+     buffer length defines the 1-D extent. Scalar-returning GPU functions remain
+     single-work-item host entrypoints, so a declared scalar never silently becomes
+     an N-element result.
+   - gpu.local_id/group_id/local_size/num_groups are reserved but rejected until an
+     explicit work-group/local-size launch contract exists.
    - Mutable-buffer stores in explicit SIMT kernels must be indexed by gpu.index /
      gpu.global_id(0), or an immutable val/const alias of that identity. The conservative
      first proof rejects local/group IDs, constants, mutable aliases, and hidden mutable
