@@ -596,6 +596,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "local" -> (Invokable) symbols::local;
                     case "process" -> (Invokable) symbols::process;
                     case "stable" -> (Invokable) symbols::stable;
+                    case "iterator" -> symbols.iterator();
                     default -> throw new IllegalArgumentException("unknown Symbol member " + name);
                 };
             }
@@ -1452,6 +1453,9 @@ public final class OresEvalRootNode extends RootNode {
         }
         private Object stable(List<Object> args){
             return OresSymbol.stable(key(args,"Symbol.stable"),context.isolatePolicy());
+        }
+        private Object iterator(){
+            return OresSymbol.wellKnown("iterator",context.isolatePolicy());
         }
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
