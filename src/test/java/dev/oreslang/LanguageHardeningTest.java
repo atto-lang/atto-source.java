@@ -104,10 +104,10 @@ final class LanguageHardeningTest {
                   end
 
                   define class A as
-                    pub a() => int { return 1; }
+                    pub a() : int { return 1; }
                   end
                   define class B as
-                    pub b() => int { return 2; }
+                    pub b() : int { return 2; }
                   end
 
                   define class Combined extends A, B implements AApi, BApi as
@@ -251,7 +251,7 @@ final class LanguageHardeningTest {
                 shared actor Account {
                   let balance = 100;
 
-                  pub fnc current() => int {
+                  pub current() : int {
                     return self.balance;
                   }
                 }
