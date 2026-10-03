@@ -156,8 +156,7 @@ object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
                 | "true" | "false" ;
 
-type_ref        = borrow_type
-                | named_type
+type_ref        = named_type
                 | function_type
                 | grouped_type
                 | STRING_LITERAL
@@ -165,7 +164,6 @@ type_ref        = borrow_type
                 | "void"
                 | "null" ;
 
-borrow_type     = "&" [ "mut" ] type_ref ;
 named_type      = qualified_name [ "<" [ type_args ] ">" ] ;
 function_type   = "typeof" "fnc" "(" [ function_type_params ] ")" "->" type_ref
                 | "(" [ function_type_params ] ")" "->" type_ref ;
@@ -220,7 +218,13 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - self is an immutable receiver borrow and cannot be rebound.
    - Parameters are immutable by default. Type "mut" name grants mutation of an
      owned parameter inside the callee, e.g. Bar mut b.
-   - &T is a shared immutable borrow. &mut T is an exclusive mutable borrow.
+   - Borrow<T> is a shared immutable borrow and is created with borrow(value).
+   - BorrowMut<T> is an exclusive mutable borrow and is created with borrow_mut(value).
+   - '&' is not pointer/reference syntax in Oreslang and is rejected by the lexer.
+   - take(value) makes an ownership transfer explicit; copy(value) is legal only
+     for statically Copy values; share(value) creates a capability-gated immutable
+     Shared<T> transport handle.
+   - User-written lifetime parameters/annotations are not part of the language.
    - Non-Copy values move through by-value bindings, arguments, and returns.
    - Structural parameters are read-only borrowed views and do not consume the
      passed value.

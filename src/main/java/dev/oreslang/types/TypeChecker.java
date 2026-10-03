@@ -26,24 +26,24 @@ import java.util.Set;
 
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
-    private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
-    private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
-    private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
-    private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
-    private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+    private final Map<String, Ast.FunctionDecl> functions = new LinkedHashMap<>();
+    private final Map<String, Ast.ClassDecl> classes = new LinkedHashMap<>();
+    private final Map<String, Ast.InterfaceDecl> interfaces = new LinkedHashMap<>();
+    private final Map<String, Ast.TypeAliasDecl> typeAliases = new LinkedHashMap<>();
+    private final Map<String, Ast.ModuleDecl> modules = new LinkedHashMap<>();
 
     private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
 
-    private final Set<String> ambiguousFunctions = new HashSet<>();
-    private final Set<String> ambiguousClasses = new HashSet<>();
-    private final Set<String> ambiguousInterfaces = new HashSet<>();
-    private final Set<String> ambiguousTypeAliases = new HashSet<>();
-    private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
+    private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+    private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
+    private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
+    private final Set<String> importedValues = new LinkedHashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
-    private final Map<String, Function> singletonActorHandlers = new HashMap<>();
+    private final Map<String, Function> singletonActorHandlers = new LinkedHashMap<>();
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -56,7 +56,7 @@ public final class TypeChecker {
     }
 
     private void validateImports(Ast.Program program) {
-        Set<String> exposed = new HashSet<>();
+        Set<String> exposed = new LinkedHashSet<>();
         for (Ast.ImportDecl imported : program.imports()) {
             if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
             if (imported.wildcard()) {
@@ -141,7 +141,7 @@ public final class TypeChecker {
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC) {
-                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                Type signature = functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members, methodKey(fn.name(), fn.parameters().size()), signature, "module " + module.name());
             } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
@@ -178,6 +178,12 @@ public final class TypeChecker {
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+        validateAsyncSignature(
+                (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + module + "." + fn.name(),
+                fn.async(),
+                true,
+                fn.parameters(),
+                fn.returnType());
         Env env = new Env(null, fn.nonLexical());
         for (Ast.Param param : fn.parameters()) env.define(param.name(), resolveParam(param, generics, null), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         Type returns = resolve(fn.returnType(), generics, null);
@@ -187,6 +193,29 @@ public final class TypeChecker {
         }
         if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
             throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+        }
+    }
+
+    private void validateAsyncSignature(
+            String label,
+            boolean async,
+            boolean receiverSafe,
+            List<Ast.Param> parameters,
+            Ast.TypeRef returnType) {
+        if (!async) return;
+        if (!receiverSafe) {
+            throw new IllegalArgumentException(
+                    label + " cannot be async yet: async instance receivers would outlive the call boundary; use a static/top-level async callable or transfer state to an actor");
+        }
+        for (Ast.Param parameter : parameters) {
+            if (parameter.type().isBorrow()) {
+                throw new IllegalArgumentException(
+                        label + " cannot accept Borrow/BorrowMut parameters because async execution outlives the call boundary");
+            }
+        }
+        if (returnType != null && returnType.isBorrow()) {
+            throw new IllegalArgumentException(
+                    label + " cannot return Borrow/BorrowMut from an async callable");
         }
     }
 
@@ -223,6 +252,12 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            validateAsyncSignature(
+                    "method " + klass.name() + "." + method.name(),
+                    method.async(),
+                    method.isStatic(),
+                    method.parameters(),
+                    method.returnType());
             Set<String> generics = new HashSet<>(classGenerics);
             for (String generic : method.genericParameters()) {
                 if (!generics.add(generic)) throw new IllegalArgumentException("duplicate/shadowed generic '" + generic + "' in " + klass.name() + "." + method.name());
@@ -315,8 +350,22 @@ public final class TypeChecker {
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
-        if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
-        if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
+        if (stmt instanceof Ast.ExprStmt expression) {
+            Type expressionType = typeOf(expression.expression(), env, generics, self);
+            if (isFutureType(expressionType)) {
+                throw new IllegalArgumentException(
+                        "async/Future result cannot be discarded; await it or bind it to an owned value");
+            }
+            return;
+        }
+        if (stmt instanceof Ast.DeferStmt defer) {
+            Type deferredType = typeOf(defer.expression(), env, generics, self);
+            if (isFutureType(deferredType)) {
+                throw new IllegalArgumentException(
+                        "defer cannot silently detach an async/Future result; use defer await <async-call> or an explicit supervised task");
+            }
+            return;
+        }
         if (stmt instanceof Ast.IfStmt conditional) {
             for (Ast.IfBranch branch : conditional.branches()) {
                 requireAssignable(typeOf(branch.condition(), env, generics, self), Primitive.BOOL, "if condition");
@@ -373,7 +422,7 @@ public final class TypeChecker {
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
-            if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+            if (fn != null) return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
         if (expr instanceof Ast.AssignExpr assignment) {
@@ -409,8 +458,6 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.UnaryExpr unary) {
             Type operand = typeOf(unary.operand(), env, generics, self);
-            if (unary.operator().equals("&")) return new Borrow(operand, false);
-            if (unary.operator().equals("&mut")) return new Borrow(operand, true);
             if (unary.operator().equals("!")) {
                 requireAssignable(operand, Primitive.BOOL, "! operand");
                 return Primitive.BOOL;
@@ -427,7 +474,10 @@ public final class TypeChecker {
                     requireAssignable(right, Primitive.BOOL, "boolean operand");
                     yield Primitive.BOOL;
                 }
-                case "==", "!=" -> Primitive.BOOL;
+                case "==", "!=" -> {
+                    requireEqualityComparable(left, right);
+                    yield Primitive.BOOL;
+                }
                 case "<", "<=", ">", ">=" -> {
                     if (!(Types.isNumeric(left) && Types.isNumeric(right)) && !(isStringLike(left) && isStringLike(right))) {
                         throw new IllegalArgumentException("comparison operands must both be numeric or both strings");
@@ -440,6 +490,12 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.NameExpr intrinsic
+                    && env.lookup(intrinsic.name()) == null
+                    && findFunction(intrinsic.name()) == null
+                    && isOwnershipIntrinsic(intrinsic.name())) {
+                return ownershipIntrinsicCall(intrinsic.name(), call.arguments(), env, generics, self);
+            }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
                 return new Named("Option", List.of(typeOf(call.arguments().getFirst(), env, generics, self)));
@@ -467,7 +523,7 @@ public final class TypeChecker {
                         requireAssignable(typeOfWithExpected(call.arguments().get(i), expected, env, generics, self),
                                 expected, "argument " + (i + 1));
                     }
-                    return resolve(fn.returnType(), fnGenerics, null);
+                    return asyncResult(resolve(fn.returnType(), fnGenerics, null), fn.async());
                 }
                 if (receiver instanceof Named named) {
                     Ast.ClassDecl klass = findClass(named.name());
@@ -481,7 +537,7 @@ public final class TypeChecker {
                             requireAssignable(typeOfWithExpected(call.arguments().get(i), expected, env, generics, self),
                                     expected, "argument " + (i + 1));
                         }
-                        return resolve(method.returnType(), methodGenerics, named);
+                        return asyncResult(resolve(method.returnType(), methodGenerics, named), method.async());
                     }
                 }
             }
@@ -524,7 +580,7 @@ public final class TypeChecker {
                 List<Ast.MethodDecl> functions = findStaticFunctionsByName(klass, member.member(), new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null);
+                    return functionType(fn.parameters(), fn.returnType(), Set.copyOf(fn.genericParameters()), null, fn.async());
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -550,7 +606,7 @@ public final class TypeChecker {
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
-                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named);
+                        return functionType(method.parameters(), method.returnType(), Set.copyOf(method.genericParameters()), named, method.async());
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
@@ -584,13 +640,21 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
-            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) return named.arguments().getFirst();
-            return Unknown.INSTANCE;
+            if (awaitedType instanceof Named named
+                    && named.name().equals("Future")
+                    && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            throw new IllegalArgumentException("await requires an async/Future value, got " + awaitedType);
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = typeOf(list.elements().getFirst(), env, generics, self);
-            for (int i = 1; i < list.elements().size(); i++) element = commonType(element, typeOf(list.elements().get(i), env, generics, self));
+            Type element = widenCollectionLiteral(typeOf(list.elements().getFirst(), env, generics, self));
+            for (int i = 1; i < list.elements().size(); i++) {
+                element = commonType(
+                        element,
+                        widenCollectionLiteral(typeOf(list.elements().get(i), env, generics, self)));
+            }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
@@ -627,6 +691,13 @@ public final class TypeChecker {
         if (expression instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
+        }
+        if (expression instanceof Ast.ListExpr list && expected instanceof ListType expectedList) {
+            for (Ast.Expr item : list.elements()) {
+                Type actual = typeOfWithExpected(item, expectedList.element(), env, generics, self);
+                requireAssignable(actual, expectedList.element(), "list element");
+            }
+            return expected;
         }
         return typeOf(expression, env, generics, self);
     }
@@ -697,6 +768,10 @@ public final class TypeChecker {
         throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
     }
 
+    private Type widenCollectionLiteral(Type type) {
+        return type instanceof StringLiteral ? Primitive.STRING : type;
+    }
+
     private Type commonType(Type a, Type b) {
         if (assignable(b, a) && assignable(a, b)) return a;
         if (Types.isNumeric(a) && Types.isNumeric(b)) return Types.numericJoin(a, b);
@@ -733,7 +808,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (method.isStatic()) continue;
             mergeMember(members, methodKey(method.name(), method.arity()),
-                    functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                    functionType(method.parameters(), method.returnType(), generics, self, method.async()), "class " + klass.name());
         }
         stack.remove(klass);
         Record result = new Record(members);
@@ -760,7 +835,7 @@ public final class TypeChecker {
         for (Ast.MethodDecl method : klass.methods()) {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members, methodKey(method.name(), method.arity()),
-                        functionType(method.parameters(), method.returnType(), generics, self), "class " + klass.name());
+                        functionType(method.parameters(), method.returnType(), generics, self, method.async()), "class " + klass.name());
             }
         }
         stack.remove(klass);
@@ -911,7 +986,29 @@ public final class TypeChecker {
     }
 
     private Function functionType(List<Ast.Param> params, Ast.TypeRef returns, Set<String> generics, Type self) {
-        return new Function(params.stream().map(p -> resolveParam(p, generics, self)).toList(), resolve(returns, generics, self));
+        return functionType(params, returns, generics, self, false);
+    }
+
+    private Function functionType(
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            Set<String> generics,
+            Type self,
+            boolean async) {
+        Type result = resolve(returns, generics, self);
+        return new Function(
+                params.stream().map(p -> resolveParam(p, generics, self)).toList(),
+                asyncResult(result, async));
+    }
+
+    private Type asyncResult(Type result, boolean async) {
+        return async ? new Named("Future", List.of(result)) : result;
+    }
+
+    private boolean isFutureType(Type type) {
+        return type instanceof Named named
+                && named.name().equals("Future")
+                && named.arguments().size() == 1;
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
@@ -929,7 +1026,13 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
-        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        if (ref.isBorrow()) {
+            if (ref.inferArguments() || ref.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        (ref.mutableBorrow() ? "BorrowMut" : "Borrow") + " requires exactly one explicit type argument");
+            }
+            return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        }
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) return self == null ? Unknown.INSTANCE : self;
@@ -958,12 +1061,16 @@ public final class TypeChecker {
         }
 
         return switch (ref.name()) {
-            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint", "bigint" -> Primitive.INT;
-            case "f32", "f64", "float" -> Primitive.FLOAT;
-            case "decimal" -> Primitive.DECIMAL;
-            case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
+            case "int", "i64" -> Primitive.INT;
+            case "float", "f64" -> Primitive.FLOAT;
+            case "complex", "complex128" -> Primitive.COMPLEX;
+            case "i8", "i16", "i32", "u8", "u16", "u32", "u64", "uint", "bigint", "f32", "decimal", "complex64" ->
+                    throw new IllegalArgumentException(
+                            "numeric type '" + ref.name()
+                                    + "' is reserved but not implemented with exact semantics yet; "
+                                    + "use int/i64, float/f64, or complex/complex128");
             case "bool", "Bool" -> Primitive.BOOL;
-            case "string", "String" -> Primitive.STRING;
+            case "str", "string", "String" -> Primitive.STRING;
             case "void" -> Primitive.VOID;
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
@@ -975,7 +1082,7 @@ public final class TypeChecker {
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Option<void> is invalid; use void for no return value");
                 yield new Named("Option", List.of(element));
             }
-            case "ActorRef", "Shared" -> {
+            case "ActorRef", "Shared", "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(ref.name() + " requires exactly one explicit type argument");
                 }
@@ -1192,7 +1299,16 @@ public final class TypeChecker {
 
     private void requireActorTransportType(Type type, String where, Set<Type> seen) {
         Type actual = deref(type);
-        if (actual == Unknown.INSTANCE || actual instanceof Generic || actual instanceof StringLiteral) return;
+        if (actual == Unknown.INSTANCE) {
+            throw new IllegalArgumentException(
+                    where + " must have a concrete transport type; inferred/unknown values cannot cross actor or shared-memory boundaries");
+        }
+        if (actual instanceof Generic generic) {
+            throw new IllegalArgumentException(
+                    where + " uses unconstrained generic '" + generic.name()
+                            + "'; add a future Send/Share-safe bound or use a concrete transport type");
+        }
+        if (actual instanceof StringLiteral) return;
         if (!seen.add(actual)) return;
 
         if (actual instanceof Function || actual instanceof ClassNamespace || type instanceof Borrow) {
@@ -1200,6 +1316,10 @@ public final class TypeChecker {
         }
         if (actual == Primitive.VOID) {
             throw new IllegalArgumentException(where + " cannot be void");
+        }
+        if (actual == Primitive.NULL) {
+            throw new IllegalArgumentException(
+                    where + " cannot contain the raw null marker; convert interop null to Option<T> before crossing the boundary");
         }
         if (actual instanceof ListType list) {
             requireActorTransportType(list.element(), where, seen);
@@ -1218,6 +1338,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         where + " must use the underlying T; Shared<T> is a transport handle, not a delivered value");
             }
+            if (named.name().equals("Future")) {
+                throw new IllegalArgumentException(
+                        where + " cannot contain Future<T>; await the result before crossing an actor/shared boundary");
+            }
             for (Type argument : named.arguments()) {
                 requireActorTransportType(argument, where, seen);
             }
@@ -1233,6 +1357,65 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    private boolean isOwnershipIntrinsic(String name) {
+        return name.equals("borrow") || name.equals("borrow_mut")
+                || name.equals("take") || name.equals("copy") || name.equals("share");
+    }
+
+    private Type ownershipIntrinsicCall(
+            String name,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        requireBuiltinArity(name, arguments, 1);
+        Type value = typeOf(arguments.getFirst(), env, generics, self);
+        return switch (name) {
+            case "borrow" -> new Borrow(value, false);
+            case "borrow_mut" -> new Borrow(value, true);
+            case "take" -> value;
+            case "copy" -> {
+                if (!isGuaranteedCopyType(value, new LinkedHashSet<>())) {
+                    throw new IllegalArgumentException(
+                            "copy(value) requires a statically Copy value; heap/class values must provide explicit copy semantics before they can be copied");
+                }
+                yield value;
+            }
+            case "share" -> {
+                requireActorTransportType(value, "share(value)", new LinkedHashSet<>());
+                yield new Named("Shared", List.of(value));
+            }
+            default -> throw new IllegalArgumentException("unknown ownership intrinsic '" + name + "'");
+        };
+    }
+
+    private boolean isGuaranteedCopyType(Type type, Set<Type> seen) {
+        Type actual = deref(type);
+        if (!seen.add(actual)) return true;
+        if (actual == Primitive.INT || actual == Primitive.FLOAT || actual == Primitive.DECIMAL
+                || actual == Primitive.COMPLEX || actual == Primitive.BOOL || actual == Primitive.STRING) {
+            return true;
+        }
+        if (actual instanceof StringLiteral) return true;
+        if (actual instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) if (!isGuaranteedCopyType(element, seen)) return false;
+            return true;
+        }
+        if (actual instanceof Record record) {
+            for (Type member : record.members().values()) if (!isGuaranteedCopyType(member, seen)) return false;
+            return true;
+        }
+        if (actual instanceof Named named) {
+            if (named.name().equals("ActorRef") || named.name().equals("MonitorRef") || named.name().equals("Shared")) {
+                return true;
+            }
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                return isGuaranteedCopyType(named.arguments().getFirst(), seen);
+            }
+        }
+        return false;
     }
 
     private Type actorMessageType(Type type, String where) {
@@ -1306,6 +1489,39 @@ public final class TypeChecker {
     private String qualifiedInterfaceName(Ast.InterfaceDecl iface) {
         String owner = interfaceOwners.get(iface);
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
+    }
+
+    private void requireEqualityComparable(Type left, Type right) {
+        Type a = deref(left);
+        Type b = deref(right);
+        if (a == Unknown.INSTANCE || b == Unknown.INSTANCE) return;
+        if (Types.isNumeric(a) && Types.isNumeric(b)) return;
+        if (isStringLike(a) && isStringLike(b)) return;
+        if (a == Primitive.BOOL && b == Primitive.BOOL) return;
+
+        if (a instanceof Named an && b instanceof Named bn
+                && an.name().equals("Option") && bn.name().equals("Option")
+                && an.arguments().size() == 1 && bn.arguments().size() == 1) {
+            requireEqualityComparable(an.arguments().getFirst(), bn.arguments().getFirst());
+            return;
+        }
+
+        if (a instanceof Tuple at && b instanceof Tuple bt && at.elements().size() == bt.elements().size()) {
+            for (int i = 0; i < at.elements().size(); i++) {
+                requireEqualityComparable(at.elements().get(i), bt.elements().get(i));
+            }
+            return;
+        }
+
+        if (a instanceof Record ar && b instanceof Record br && ar.members().keySet().equals(br.members().keySet())) {
+            for (String key : ar.members().keySet()) {
+                requireEqualityComparable(ar.members().get(key), br.members().get(key));
+            }
+            return;
+        }
+
+        throw new IllegalArgumentException(
+                "==/!= require explicit equality-safe values; mutable lists, classes, actors, futures, borrows, and capabilities must use an explicit equality/identity operation");
     }
 
     private boolean assignable(Type actual, Type expected) {

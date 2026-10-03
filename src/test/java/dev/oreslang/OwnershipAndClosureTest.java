@@ -79,14 +79,14 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc change(&mut Bar b) => void {
+                fnc change(BorrowMut<Bar> b) => void {
                   b.foo = "borrowed";
                   return;
                 }
 
                 pub routine main() => void {
                   let Bar b = new Bar();
-                  change(&mut b);
+                  change(borrow_mut(b));
                   stdio.stdout.write(b.foo);
                   return;
                 }
@@ -102,20 +102,171 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc mutate(&mut Bar b) => void {
+                        fnc mutate(BorrowMut<Bar> b) => void {
                           b.foo = "changed";
                           return;
                         }
 
                         fnc bad() => void {
                           let Bar b = new Bar();
-                          val &Bar read = &b;
-                          mutate(&mut b);
+                          val Borrow<Bar> read = borrow(b);
+                          mutate(borrow_mut(b));
                           stdio.println(read.foo);
                           return;
                         }
                         """)));
         assertTrue(error.getMessage().toLowerCase().contains("borrow"));
+    }
+
+    @Test
+    void legacyAmpersandBorrowSyntaxIsRejectedWithMigrationGuidance() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        fnc bad(Borrow<String> value) => void {
+                          val Borrow<String> other = &value;
+                          return;
+                        }
+                        """));
+        assertTrue(error.getMessage().contains("borrow(value)"));
+    }
+
+    @Test
+    void explicitTakeMakesMoveIntentVisible() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc consume(Bar b) => void { return; }
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          consume(take(b));
+                          stdio.println(b.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("use of moved value 'b'"));
+    }
+
+    @Test
+    void copyRejectsMoveOnlyHeapValuesUntilExplicitCopySemanticsExist() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () ->
+                TypeChecker.check(Parser.parse("""
+                        define class Bar
+                          pub let String foo = "start";
+                        end
+
+                        fnc bad() => void {
+                          let Bar b = new Bar();
+                          val Bar c = copy(b);
+                          stdio.println(c.foo);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("Copy") || error.getMessage().contains("copy"));
+    }
+
+    @Test
+    void copyWorksForStaticallyCopyScalarsWithoutConsumingTheSource() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  val int x = 21;
+                  val int y = copy(x);
+                  stdio.stdout.write(x + y);
+                  return;
+                }
+                """);
+        assertEquals("42", output);
+    }
+
+    @Test
+    void deferCapturesCopyValuesAtRegistrationTime() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  let int x = 1;
+                  defer stdio.stdout.write(x);
+                  x = 2;
+                  stdio.stdout.write(x);
+                  return;
+                }
+                """);
+        assertEquals("21", output);
+    }
+
+    @Test
+    void deferOwnsMoveOnlyCapturesImmediately() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box
+                          pub let String value = "x";
+                        end
+
+                        fnc cleanup(Box box) => void { return; }
+                        fnc consume(Box box) => void { return; }
+
+                        pub routine main() => void {
+                          let Box box = new Box();
+                          defer cleanup(box);
+                          consume(box);
+                          return;
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("moved value 'box'"));
+    }
+
+    @Test
+    void deferCannotCaptureBorrowedOrDirectlyMutatedBindings() {
+        IllegalArgumentException borrowed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box
+                          pub let String value = "x";
+                        end
+
+                        fnc inspect(Borrow<Box> box) => void { return; }
+
+                        pub routine main() => void {
+                          let Box box = new Box();
+                          val Borrow<Box> view = borrow(box);
+                          defer inspect(view);
+                          return;
+                        }
+                        """)));
+        assertTrue(borrowed.getMessage().contains("defer"));
+        assertTrue(borrowed.getMessage().contains("borrow"));
+
+        IllegalArgumentException write = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main() => void {
+                          let int x = 1;
+                          defer x = 2;
+                          return;
+                        }
+                        """)));
+        assertTrue(write.getMessage().contains("defer"));
+        assertTrue(write.getMessage().contains("mutate"));
+    }
+
+    @Test
+    void malformedBorrowTypesGetCompilerDiagnostics() {
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(Borrow value) => void { return; }
+                        """)));
+        assertTrue(missing.getMessage().contains("exactly one"));
+
+        IllegalArgumentException extra = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(BorrowMut<String, String> value) => void { return; }
+                        """)));
+        assertTrue(extra.getMessage().contains("exactly one"));
     }
 
     @Test
@@ -148,9 +299,9 @@ final class OwnershipAndClosureTest {
                           pub let String foo = "start";
                         end
 
-                        fnc bad() => &Bar {
+                        fnc bad() => Borrow<Bar> {
                           let Bar b = new Bar();
-                          return &b;
+                          return borrow(b);
                         }
                         """)));
         assertTrue(error.getMessage().contains("outlive its owner"));
@@ -163,7 +314,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc identity(&Bar b) => &Bar {
+                fnc identity(Borrow<Bar> b) => Borrow<Bar> {
                   return b;
                 }
                 """)));
@@ -179,8 +330,8 @@ final class OwnershipAndClosureTest {
 
                 fnc ok() => void {
                   let Bar b = new Bar();
-                  val &Bar first = &b;
-                  val &Bar second = &b;
+                  val Borrow<Bar> first = borrow(b);
+                  val Borrow<Bar> second = borrow(b);
                   stdio.println(first.foo);
                   stdio.println(second.foo);
                   return;
@@ -198,8 +349,8 @@ final class OwnershipAndClosureTest {
 
                         fnc bad() => void {
                           let Bar b = new Bar();
-                          val &mut Bar first = &mut b;
-                          val &mut Bar second = &mut b;
+                          val BorrowMut<Bar> first = borrow_mut(b);
+                          val BorrowMut<Bar> second = borrow_mut(b);
                           stdio.println(first.foo);
                           stdio.println(second.foo);
                           return;
@@ -220,7 +371,7 @@ final class OwnershipAndClosureTest {
 
                         fnc bad() => void {
                           let Bar b = new Bar();
-                          val &Bar read = &b;
+                          val Borrow<Bar> read = borrow(b);
                           consume(b);
                           stdio.println(read.foo);
                           return;
@@ -236,7 +387,7 @@ final class OwnershipAndClosureTest {
                   pub let String foo = "start";
                 end
 
-                fnc mutate(&mut Bar b) => void {
+                fnc mutate(BorrowMut<Bar> b) => void {
                   b.foo = "changed";
                   return;
                 }
@@ -244,10 +395,10 @@ final class OwnershipAndClosureTest {
                 fnc ok() => void {
                   let Bar b = new Bar();
                   if true; do
-                    val &Bar read = &b;
+                    val Borrow<Bar> read = borrow(b);
                     stdio.println(read.foo);
                   fi
-                  mutate(&mut b);
+                  mutate(borrow_mut(b));
                   return;
                 }
                 """)));

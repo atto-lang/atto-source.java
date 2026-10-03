@@ -47,10 +47,15 @@ public final class Ast {
         public static TypeRef simple(String name) { return new TypeRef(name, List.of(), false); }
         public static TypeRef inferred() { return new TypeRef("$infer$", List.of(), false); }
         public static TypeRef borrowed(TypeRef target, boolean mutable) {
-            return new TypeRef(mutable ? "$borrow_mut$" : "$borrow$", List.of(target), false);
+            return new TypeRef(mutable ? "BorrowMut" : "Borrow", List.of(target), false);
         }
-        public boolean isBorrow() { return name.equals("$borrow$") || name.equals("$borrow_mut$"); }
-        public boolean mutableBorrow() { return name.equals("$borrow_mut$"); }
+        public boolean isBorrow() {
+            return name.equals("Borrow") || name.equals("BorrowMut")
+                    || name.equals("$borrow$") || name.equals("$borrow_mut$");
+        }
+        public boolean mutableBorrow() {
+            return name.equals("BorrowMut") || name.equals("$borrow_mut$");
+        }
         public TypeRef borrowedTarget() {
             if (!isBorrow() || arguments.size() != 1) throw new IllegalStateException("not a borrow type");
             return arguments.getFirst();

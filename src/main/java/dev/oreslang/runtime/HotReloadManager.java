@@ -31,12 +31,24 @@ public final class HotReloadManager implements AutoCloseable {
     private final ExecutionProfile executionProfile;
     private final AtomicLong sequence = new AtomicLong();
     private final AtomicReference<Generation> active = new AtomicReference<>();
+    private final int maxRetainedGenerations;
     private final Map<String, Generation> activeByCodeUnit = new LinkedHashMap<>();
     private final Map<Long, Generation> generations = new LinkedHashMap<>();
 
     public HotReloadManager(IsolatePolicy policy, ExecutionProfile executionProfile) {
-        this.policy = policy;
-        this.executionProfile = executionProfile;
+        this(policy, executionProfile, Math.max(64, Math.min(policy.maxActors(), 4096)));
+    }
+
+    public HotReloadManager(
+            IsolatePolicy policy,
+            ExecutionProfile executionProfile,
+            int maxRetainedGenerations) {
+        this.policy = java.util.Objects.requireNonNull(policy, "policy");
+        this.executionProfile = java.util.Objects.requireNonNull(executionProfile, "executionProfile");
+        if (maxRetainedGenerations <= 0) {
+            throw new IllegalArgumentException("maxRetainedGenerations must be positive");
+        }
+        this.maxRetainedGenerations = maxRetainedGenerations;
         if (!policy.allows(IsolatePolicy.Capability.HOT_CODE_LOAD)) {
             throw new SecurityException("HOT_CODE_LOAD capability is required");
         }
@@ -61,6 +73,11 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+        if (generations.size() >= maxRetainedGenerations) {
+            throw new IllegalStateException(
+                    "hot-reload retained generation limit exceeded: maxRetainedGenerations="
+                            + maxRetainedGenerations);
+        }
         long id = sequence.incrementAndGet();
         Context context = policy.restrictedContextBuilder(executionProfile).build();
         try {
@@ -120,7 +137,7 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     public synchronized Map<String, Generation> activeGenerations() {
-        return Map.copyOf(activeByCodeUnit);
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(activeByCodeUnit));
     }
 
     /**
@@ -144,6 +161,10 @@ public final class HotReloadManager implements AutoCloseable {
     /** Includes retired generations still held alive by existing leases. */
     public synchronized int retainedGenerations() {
         return generations.size();
+    }
+
+    public int maxRetainedGenerations() {
+        return maxRetainedGenerations;
     }
 
     private synchronized void onGenerationClosed(long id, Generation generation) {

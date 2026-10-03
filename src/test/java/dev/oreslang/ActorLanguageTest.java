@@ -219,6 +219,42 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void actorMailboxRejectsUnconstrainedGenericMessageTypes() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc worker<T>(T message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  actor.spawn(worker);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("unconstrained generic")
+                || failure.getMessage().contains("concrete transport type"));
+    }
+
+    @Test
+    void actorMailboxRejectsInteropNullMarkerTypes() {
+        Exception failure = assertThrows(Exception.class, () -> run("""
+                fnc worker(Option<null> message) => void {
+                  return;
+                }
+
+                pub routine main() => void {
+                  actor.spawn(worker);
+                  return;
+                }
+                """));
+
+        assertNotNull(failure.getMessage());
+        assertTrue(failure.getMessage().contains("null marker")
+                || failure.getMessage().contains("Option"));
+    }
+
+    @Test
     void statefulActorRequiresHandlerToReturnItsStateType() {
         Exception failure = assertThrows(Exception.class, () -> run("""
                 fnc bad_worker(String message, int state) => String {
@@ -236,6 +272,30 @@ final class ActorLanguageTest {
     }
 
     @Test
+    void shareIntrinsicIsAReadOnlyCapabilityCheckedAlias() throws Exception {
+        String output = run("""
+                fnc worker(Array<String> message) => void {
+                  stdio.stdout.write(message[0]);
+                  return;
+                }
+
+                pub routine main() => void {
+                  let values = arr["shared"];
+                  val shared = share(values);
+                  val worker_ref = actor.spawn(worker);
+                  actor.send(worker_ref, shared);
+                  actor.stop(worker_ref);
+                  actor.join(worker_ref);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(values[0]);
+                  return;
+                }
+                """);
+
+        assertEquals("shared:shared", output);
+    }
+
+    @Test
     void readonlySharedValuesAreTypedAndDoNotConsumeTheOriginal() throws Exception {
         String output = run("""
                 fnc worker(Array<String> message) => void {
@@ -248,15 +308,39 @@ final class ActorLanguageTest {
                   val shared = process.share_readonly(values);
                   val worker_ref = actor.spawn(worker);
                   actor.send(worker_ref, shared);
-                  stdio.stdout.write(":");
-                  stdio.stdout.write(values[0]);
                   actor.stop(worker_ref);
                   actor.join(worker_ref);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(values[0]);
                   return;
                 }
                 """);
 
         assertEquals("shared:shared", output);
+    }
+
+    @Test
+    void ordinaryMutableMessageIsCopiedIntoActorOwnership() throws Exception {
+        String output = run("""
+                fnc worker(Array<String> mut message) => void {
+                  message[0] = "actor";
+                  stdio.stdout.write(message[0]);
+                  return;
+                }
+
+                pub routine main() => void {
+                  let values = arr["sender"];
+                  val worker_ref = actor.spawn(worker);
+                  actor.send(worker_ref, values);
+                  actor.stop(worker_ref);
+                  actor.join(worker_ref);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(values[0]);
+                  return;
+                }
+                """);
+
+        assertEquals("actor:sender", output);
     }
 
     @Test

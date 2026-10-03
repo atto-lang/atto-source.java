@@ -428,7 +428,7 @@ public final class Parser {
     }
 
     private java.util.Set<String> structuralAnnotationNames(List<Ast.Annotation> annotations) {
-        java.util.Set<String> allowed = new java.util.HashSet<>();
+        java.util.Set<String> allowed = new java.util.LinkedHashSet<>();
         for (Ast.Annotation annotation : annotations) {
             if (!annotation.name().equals("AllowStructural")) continue;
             for (Ast.TypeRef argument : annotation.arguments()) {
@@ -442,9 +442,9 @@ public final class Parser {
     }
 
     private List<Ast.Param> applyStructuralAnnotations(List<Ast.Param> params, List<Ast.Annotation> annotations) {
-        java.util.Set<String> allowed = new java.util.HashSet<>(structuralAnnotationNames(annotations));
+        java.util.Set<String> allowed = new java.util.LinkedHashSet<>(structuralAnnotationNames(annotations));
         if (allowed.isEmpty()) return params;
-        java.util.Set<String> found = new java.util.HashSet<>();
+        java.util.Set<String> found = new java.util.LinkedHashSet<>();
         List<Ast.Param> result = new ArrayList<>(params.size());
         for (Ast.Param param : params) {
             boolean structural = param.structural() || allowed.contains(param.name());
@@ -452,7 +452,7 @@ public final class Parser {
             result.add(new Ast.Param(param.type(), param.name(), structural, param.mutable()));
         }
         if (!found.equals(allowed)) {
-            java.util.Set<String> missing = new java.util.HashSet<>(allowed);
+            java.util.Set<String> missing = new java.util.LinkedHashSet<>(allowed);
             missing.removeAll(found);
             throw error(previous(), "@AllowStructural names unknown parameter(s): " + missing);
         }
@@ -460,10 +460,6 @@ public final class Parser {
     }
 
     private Ast.TypeRef parseTypeRef() {
-        if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return Ast.TypeRef.borrowed(parseTypeRef(), mutable);
-        }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
         if (match(TYPEOF)) {
@@ -761,11 +757,23 @@ public final class Parser {
     }
 
     private Ast.Expr parseUnary() {
-        if (match(BANG, MINUS, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
-        if (match(AMP)) {
-            boolean mutable = match(MUT);
-            return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
+        if (match(MINUS)) {
+            if (check(INT)) {
+                Token token = advance();
+                String raw = token.lexeme().replace("_", "");
+                if (raw.equals("9223372036854775808")) {
+                    return new Ast.LiteralExpr(Long.MIN_VALUE);
+                }
+                try {
+                    return new Ast.UnaryExpr("-", new Ast.LiteralExpr(Long.parseLong(raw)));
+                } catch (NumberFormatException invalid) {
+                    throw error(token,
+                            "integer literal magnitude is outside the signed 64-bit int range");
+                }
+            }
+            return new Ast.UnaryExpr("-", parseUnary());
         }
+        if (match(BANG, PLUS)) return new Ast.UnaryExpr(previous().lexeme(), parseUnary());
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
         return parsePostfix();
     }
@@ -795,11 +803,36 @@ public final class Parser {
     }
 
     private Ast.Expr parsePrimary() {
-        if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
-        if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
+        if (match(INT)) {
+            Token token = previous();
+            String raw = token.lexeme().replace("_", "");
+            try {
+                return new Ast.LiteralExpr(Long.parseLong(raw));
+            } catch (NumberFormatException invalid) {
+                throw error(token, "integer literal is outside the signed 64-bit int range; use an explicit bigint conversion/type when bigint runtime arithmetic is available");
+            }
+        }
+        if (match(FLOAT)) {
+            Token token = previous();
+            String raw = token.lexeme().replace("_", "");
+            try {
+                double value = Double.parseDouble(raw);
+                if (!Double.isFinite(value)) throw error(token, "floating-point literal must be finite");
+                return new Ast.LiteralExpr(value);
+            } catch (NumberFormatException invalid) {
+                throw error(token, "malformed floating-point literal");
+            }
+        }
         if (match(IMAG)) {
-            String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
-            return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
+            Token token = previous();
+            String raw = token.lexeme().substring(0, token.lexeme().length() - 1).replace("_", "");
+            try {
+                double coefficient = Double.parseDouble(raw);
+                if (!Double.isFinite(coefficient)) throw error(token, "imaginary literal coefficient must be finite");
+                return new Ast.LiteralExpr(new Ast.Imaginary(coefficient));
+            } catch (NumberFormatException invalid) {
+                throw error(token, "malformed imaginary literal");
+            }
         }
         if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);

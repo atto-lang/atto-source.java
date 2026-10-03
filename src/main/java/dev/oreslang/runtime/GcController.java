@@ -9,8 +9,10 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * Oreslang's semantic lifetime model is ownership/drop first, collector second.
  * The current Java reference runtime still uses the JVM heap as its backing
- * store, so the manual operation is a rate-limited host-GC hint rather than a
- * promise of a physically actor-local collection pause.
+ * store. A guest collection request is logical/telemetry-first; a JVM-wide
+ * System.gc() hint is disabled by default and only runs when the embedding host
+ * explicitly opts in with -Doreslang.gc.host-hint=true. This avoids making a
+ * Java global-GC pause part of Oreslang language semantics.
  */
 public final class GcController {
     private static final long MIN_HOST_GC_INTERVAL_NANOS = 250_000_000L;
@@ -35,7 +37,7 @@ public final class GcController {
         long request = processRequests.incrementAndGet();
 
         long before = usedHeapBytes();
-        boolean hostHintEnabled = Boolean.parseBoolean(System.getProperty("oreslang.gc.host-hint", "true"));
+        boolean hostHintEnabled = Boolean.parseBoolean(System.getProperty("oreslang.gc.host-hint", "false"));
         boolean executed = hostHintEnabled && reserveHostGcSlot(System.nanoTime());
 
         long started = System.nanoTime();

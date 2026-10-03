@@ -45,6 +45,7 @@ final class IsolationHotReloadTest {
                 64L * 1024L * 1024L,
                 77,
                 9,
+                5,
                 Duration.ofSeconds(12),
                 false);
 
@@ -54,6 +55,7 @@ final class IsolationHotReloadTest {
         assertEquals(policy.maxHeapBytes(), parsed.maxHeapBytes());
         assertEquals(77, parsed.maxMailboxMessages());
         assertEquals(9, parsed.maxActors());
+        assertEquals(5, parsed.maxAsyncTasks());
         assertEquals(Duration.ofSeconds(12), parsed.maxWallTime());
         assertEquals(policy.capabilities(), parsed.capabilities());
     }
@@ -227,6 +229,26 @@ final class IsolationHotReloadTest {
             assertTrue(generation.closed());
             assertEquals(0, hot.liveGenerations());
             assertEquals(0, hot.retainedGenerations());
+        }
+    }
+
+    @Test
+    void stagedHotReloadGenerationsAreResourceBounded() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit(), 2)) {
+            var first = hot.load("one.ores", "pub routine main() => void { return; }");
+            hot.load("two.ores", "pub routine main() => void { return; }");
+            assertEquals(2, hot.retainedGenerations());
+
+            IllegalStateException full = assertThrows(
+                    IllegalStateException.class,
+                    () -> hot.load("three.ores", "pub routine main() => void { return; }"));
+            assertTrue(full.getMessage().contains("generation limit"));
+
+            first.close();
+            assertEquals(1, hot.retainedGenerations());
+            assertDoesNotThrow(() ->
+                    hot.load("three.ores", "pub routine main() => void { return; }"));
         }
     }
 

@@ -1,5 +1,7 @@
 package dev.oreslang.types;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -24,7 +26,7 @@ public final class Types {
     public record ClassNamespace(String className) implements Type { }
 
     public record Record(Map<String, Type> members) implements Type {
-        public Record { members = Map.copyOf(members); }
+        public Record { members = Collections.unmodifiableMap(new LinkedHashMap<>(members)); }
     }
 
     public record Function(List<Type> parameters, Type result) implements Type {
@@ -46,6 +48,8 @@ public final class Types {
     public static boolean isAssignable(Type from, Type to) {
         Objects.requireNonNull(from);
         Objects.requireNonNull(to);
+        from = canonicalBuiltin(from);
+        to = canonicalBuiltin(to);
         if (from == Unknown.INSTANCE || to == Unknown.INSTANCE) return true;
         if (to instanceof Generic || from instanceof Generic) return true;
         if (from.equals(to)) return true;
@@ -94,6 +98,19 @@ public final class Types {
         }
 
         return numericWidening(from, to);
+    }
+
+    private static Type canonicalBuiltin(Type type) {
+        if (!(type instanceof Named named) || !named.arguments().isEmpty()) return type;
+        return switch (named.name()) {
+            case "i64", "int" -> Primitive.INT;
+            case "f64", "float" -> Primitive.FLOAT;
+            case "complex128", "complex" -> Primitive.COMPLEX;
+            case "bool", "Bool" -> Primitive.BOOL;
+            case "str", "string", "String" -> Primitive.STRING;
+            case "void" -> Primitive.VOID;
+            default -> type;
+        };
     }
 
     private static boolean numericWidening(Type from, Type to) {

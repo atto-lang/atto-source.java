@@ -200,11 +200,19 @@ fnc lookup(bool found) => Option<int> {
 
 ## Numbers
 
-Built-in numeric families include integral, floating, decimal, and complex types. Imaginary literals use `i`:
+The reference runtime currently exposes only numeric types whose semantics it can enforce exactly:
+
+- `int` / `i64` — checked signed 64-bit integers;
+- `float` / `f64` — finite IEEE-754 binary64 values;
+- `complex` / `complex128` — finite pairs of binary64 components.
+
+Imaginary literals use `i`:
 
 ```ores
 const complex z = 3 + 4i;
 ```
+
+Names such as `i8/i16/i32`, unsigned integer families, `bigint`, `f32`, `decimal`, and `complex64` are reserved for future exact implementations and are rejected today. Oreslang does not alias those names onto Java `long`/`double` and pretend their width, range, precision, or overflow semantics exist.
 
 Numeric widening is loss-aware; real values can widen toward complex values, but silent lossy narrowing is not performed.
 
@@ -292,23 +300,39 @@ Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
 ## Exceptions and defer
 
-Both structured exceptions and lexical `defer` are supported:
+Structured `try/catch/finally` and lexical `defer` are supported:
 
 ```ores
 try {
   risky();
 } catch (err) {
-  recover(err);
+  log_error(err);
 } finally {
   cleanup();
 }
 ```
 
-`defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
+`recover`, `panic`, `raise`, and `throw` are not claimed by this contract yet. When those language primitives are added, they must remain separate from host security and scheduler-cancellation control flow.
+
+`defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits. Deferred expressions capture bindings at registration time rather than reading later mutations. Move-only captures transfer ownership into the deferred cleanup immediately; borrowed captures and direct deferred mutation of captured bindings are rejected. This avoids hidden use-after-move and Go-style late-binding surprises.
+
+Guest `catch` handles application/runtime failures, but host security denial and scheduler/context cancellation are not ordinary language exceptions and cannot be swallowed by guest code. Future `throw`/`raise`/`panic`/`recover` semantics must preserve that boundary.
 
 ## Async / await
 
-`async` and `await` are reserved and parsed. `await` unwraps future-like runtime values. The scheduler is intentionally separate from the language surface so actor isolation does not depend on a specific OS-thread implementation.
+`async` is a real type/runtime distinction, not a marker-only modifier. Calling an `async fnc` or async static method produces `Future<T>`; the callable body itself is checked as returning `T`. `await` accepts only `Future<T>` and yields `T`; awaiting an ordinary value is a compile-time/runtime error rather than an identity operation.
+
+Async work is executed by context-owned virtual threads in the Java/Truffle backend, but guest code has no ambient thread API. Task admission is bounded per isolate, live tasks are tracked, compiler-inserted safepoints enforce the isolate wall-time budget, and context shutdown cancels/interrupts owned async work. A bare async call whose `Future<T>` result is discarded is rejected, and `defer async_call()` is rejected unless the async result is explicitly awaited. This prevents accidental Go-style detached-task leaks.
+
+Async callables may not accept or return `Borrow<T>` / `BorrowMut<T>`, because those borrows are scoped to the synchronous call boundary. Async instance methods are currently rejected as well: until Oreslang has an explicit owned-async receiver model, an instance receiver may not outlive the call boundary on another task.
+
+`await` unwraps future failures without exposing Java `CompletionException`/`ExecutionException` wrapper semantics: interruption is preserved as cancellation and the original runtime failure is rethrown when possible.
+
+## Numeric determinism
+
+Signed integer arithmetic is checked consistently in every execution profile. `+`, `-`, `*`, unary negation, integer division overflow, division by zero, and remainder by zero do not silently inherit Java/Go wrapping behavior. `int / int` evaluates as integer division, matching the static `int` result type.
+
+If wrapping or saturating arithmetic is added later it must be explicit; ordinary arithmetic must not change semantics between JIT, AOT, debug, or optimized builds.
 
 ## Actors
 
@@ -352,6 +376,11 @@ actor.send(counter_ref, "tick");
 
 `ActorRef<T>` values are PID-like immutable/copyable handles with a statically checked mailbox type. `actor.spawn(handler)` infers `T` from the handler's first parameter; `actor.send(ref, value)` rejects values that are not assignable to `T`. A `Shared<T>` handle is accepted where `T` is expected because the runtime sends the immutable backing value. Sending is non-consuming: the sender retains its own value while the runtime freezes/copies the transport representation.
 
+Actor/monitor/shared handles are runtime/isolate-scoped capabilities. A foreign tenant's handle is rejected even when its opaque id is well-formed. Normal source actor lowering attaches typed `Protocol<M>` admission metadata derived from the handler's message type; explicit dynamic interoperability uses a dynamic protocol.
+
+The mailbox primitive is FIFO dequeue rather than Erlang-style selective receive scanning. Backpressure is explicit: `trySend` reports admission failure and fail-fast `send` never grows an unbounded queue. Request/reply is implemented with a temporary one-slot reply actor through `ask`, not shared mutable promise state. Typed monitor watchers must admit the runtime `DOWN` message shape; monitor registration fails closed otherwise, and an admitted monitor event that cannot enter a full watcher mailbox fails the watcher rather than silently losing supervision. See [ACTOR_MODEL.md](ACTOR_MODEL.md).
+
+
 Stateful handlers are checked as `(Message, State) -> State`; their initial state must match `State`. Inline actor lambdas must be `nlex` and explicitly type the message parameter. Their state parameter may infer from the supplied initial state. Named `fnc` handlers remain the simplest actor entrypoint.
 
 Literal singleton names are compile-unit contracts: after `actor.singleton("cache", handler)` fixes a handler signature, another use of the literal name `"cache"` with an incompatible actor contract is rejected. Dynamic singleton names are still checked at the ordinary actor/message boundaries.
@@ -383,7 +412,7 @@ Oreslang is ownership/drop first and GC second:
 4. cycles, dynamic graphs, hot-loaded generations, and backing-runtime objects are reclaimed by automatic collection;
 5. `process.gc()` gives trusted/developer code an explicit collection request.
 
-In the current Java reference runtime, `process.gc()` is a **rate-limited JVM collector hint** because the physical backing heap is still JVM-wide. The call is capability-gated by `GC_CONTROL` so adversarial/FaaS guest code cannot force repeated global collection pauses. The API is deliberately shaped so a future actor-local heap collector can implement the same call without changing source programs.
+In the current Java reference runtime, `process.gc()` is a logical collection/telemetry request by default. A JVM-wide `System.gc()` hint is **disabled unless the embedding host explicitly opts in** with `-Doreslang.gc.host-hint=true`; when enabled it remains globally rate-limited. This prevents Java global-GC pauses from becoming Oreslang language semantics. The call remains capability-gated by `GC_CONTROL`.
 
 ## Isolates
 
@@ -861,18 +890,28 @@ Class fields follow the same bias: a field declared with `val` or `const` cannot
 
 ## Ownership, moves, and borrows
 
-Oreslang uses Rust-style affine ownership for mutable/heap-backed values.
+Oreslang uses affine ownership for mutable/heap-backed values, but deliberately does **not** copy Rust's pointer-looking `&` / `&mut` surface or user-written lifetime annotations. Borrows are explicit language values:
+
+- `Borrow<T>` — shared immutable borrow, created with `borrow(value)`;
+- `BorrowMut<T>` — exclusive mutable borrow, created with `borrow_mut(value)`;
+- `take(value)` — makes an ownership transfer explicit;
+- `copy(value)` — duplicates only values that are statically guaranteed `Copy`;
+- `share(value)` — creates a capability-gated immutable `Shared<T>` transport handle.
+
+The lexer rejects `&` as borrow/reference syntax. Oreslang does not expose raw pointers or require lifetime parameter syntax.
 
 The initial `Copy` family is:
 
 - integer types;
 - floating/decimal/complex scalar types;
 - booleans;
-- immutable strings.
+- immutable strings;
+- copyable runtime capability handles such as `ActorRef`, `MonitorRef`, and `Shared`;
+- composite `Option`/tuple/record values only when all contained values are themselves statically Copy.
 
-Class instances, arrays/lists, object records, and closures are move-only by default.
+Class instances, mutable arrays/lists, and closures are move-only by default. `copy(classValue)` therefore fails closed until that class participates in a future explicit copy contract; the compiler never guesses that a heap object is safely cloneable.
 
-A by-value binding, argument, or return consumes a non-`Copy` value:
+A by-value binding, argument, or return consumes a non-`Copy` value. `take` can make that intent visible:
 
 ```ores
 fnc consume(Bar value) => void {
@@ -881,32 +920,39 @@ fnc consume(Bar value) => void {
 
 fnc example() => void {
   let Bar b = new Bar();
-  consume(b);
+  consume(take(b));
   // b.foo; // compile-time error: use of moved value
   return;
 }
 ```
 
-Shared immutable borrowing uses `&T`:
+Shared immutable borrowing:
 
 ```ores
-fnc inspect(&Bar value) => void {
+fnc inspect(Borrow<Bar> value) => void {
   stdio.println(value.foo);
+  return;
+}
+
+fnc example() => void {
+  let Bar b = new Bar();
+  inspect(borrow(b));
+  stdio.println(b.foo);
   return;
 }
 ```
 
-Exclusive mutable borrowing uses `&mut T`:
+Exclusive mutable borrowing:
 
 ```ores
-fnc change(&mut Bar value) => void {
+fnc change(BorrowMut<Bar> value) => void {
   value.foo = "changed";
   return;
 }
 
 fnc example() => void {
   let Bar b = new Bar();
-  change(&mut b);
+  change(borrow_mut(b));
   stdio.println(b.foo); // owner is usable again after the call
   return;
 }
@@ -918,12 +964,13 @@ Borrow rules:
 - a mutable borrow is exclusive;
 - mutation/move of the owner is forbidden while any borrow is active;
 - reading the owner is forbidden while an exclusive mutable borrow is active;
-- mutable borrowing requires a mutable owner;
+- `borrow_mut` requires a mutable owner;
 - a borrow of a local value may not escape the owner's lifetime;
 - temporary call borrows end at the call boundary;
-- borrows stored in local bindings remain active until that binding's lexical scope ends.
+- borrows stored in local bindings remain active until that binding's lexical scope ends;
+- lifetime checking is compiler-inferred; programs do not spell lifetime names.
 
-The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
+The checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL-style analysis may accept more programs without changing source syntax or weakening these invariants.
 
 Structural parameters remain read-only views and therefore do not consume the supplied value.
 
@@ -933,10 +980,10 @@ Actors/isolate message passing remains the primary concurrency model, but the ow
 
 The same compiled program can target a secondary multi-threaded runtime because:
 
-- mutable state has one owner unless temporarily accessed through an exclusive `&mut` borrow;
+- mutable state has one owner unless temporarily accessed through an exclusive `BorrowMut<T>`;
 - shared aliases are immutable;
 - move-only values cannot remain accessible from both sides of an ownership transfer;
-- closures cannot smuggle an outstanding stack borrow into a longer-lived task;
-- actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
+- closures cannot smuggle an outstanding borrow into a longer-lived task;
+- actor messages continue to cross actor boundaries only through the frozen/sendable contract.
 
-When explicit thread/task spawning is added, cross-thread transfer will require move semantics and a `Send`-equivalent capability; shared cross-thread references will additionally require a `Sync`-equivalent guarantee. Those marker traits are intentionally a future surface feature—the current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
+When explicit thread/task spawning is added, cross-thread transfer will require an Oreslang sendability bound and shared cross-thread references will require an Oreslang share-safety bound. Those bounds must be source-level guarantees, not Java-style erased generics or implicit Go-style concurrency permission. The current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
