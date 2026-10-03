@@ -1759,6 +1759,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    void validateBoundSharedMutexPayload(Object value) {
+        requireSharedMutexPayloadSafe(value, new IdentityHashMap<>(), 0);
+    }
+
     private void requireSharedMutexPayloadSafe(
             Object value,
             IdentityHashMap<Object, Boolean> visiting,
