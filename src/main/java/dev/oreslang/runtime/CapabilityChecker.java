@@ -60,7 +60,9 @@ public final class CapabilityChecker {
     }
 
     private static void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
-        if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
+        if (expr instanceof Ast.LiteralExpr literal && literal.value() instanceof Ast.Symbol) {
+            requireTrustedSymbols(policy, "symbol literal");
+        } else if (expr instanceof Ast.NameExpr n && n.name().equals("print")) require(policy, IsolatePolicy.Capability.STDOUT, "print");
         else if (expr instanceof Ast.CallExpr c) {
             checkExpr(c.callee(), policy);
             for (Ast.Expr arg : c.arguments()) checkExpr(arg, policy);
@@ -86,7 +88,10 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.AssignExpr e) checkExpr(e.value(), policy);
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
-        else if (expr instanceof Ast.NewExpr e) for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
+        else if (expr instanceof Ast.NewExpr e) {
+            if (e.type().name().equals("Symbol")) requireTrustedSymbols(policy, "new Symbol");
+            for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
+        }
         else if (expr instanceof Ast.AwaitExpr e) checkExpr(e.expression(), policy);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
@@ -104,6 +109,12 @@ public final class CapabilityChecker {
             return parent == null ? null : parent + "." + m.member();
         }
         return null;
+    }
+
+    private static void requireTrustedSymbols(IsolatePolicy policy, String api) {
+        if (policy.adversarial()) {
+            throw new SecurityException("Oreslang untrusted isolate denies process-wide symbols required by " + api);
+        }
     }
 
     private static void require(IsolatePolicy policy, IsolatePolicy.Capability capability, String api) {
