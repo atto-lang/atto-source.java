@@ -147,7 +147,18 @@ public final class ProcessSingletonRegistry {
             cell = CELLS.get(normalized);
             if (cell == null) return CompletableFuture.completedFuture(false);
             if (cell.terminalFailure != null && !cell.collectionRequested.get()) {
+                cell.collectionRequested.set(true);
                 CELLS.remove(normalized, cell);
+                Object retained = cell.state;
+                cell.state = null;
+                if (retained instanceof AutoCloseable closeable) {
+                    try {
+                        closeable.close();
+                    } catch (Exception cleanupFailure) {
+                        return CompletableFuture.failedFuture(cleanupFailure);
+                    }
+                }
+                cell.collected.complete(null);
                 return CompletableFuture.completedFuture(true);
             }
         }
@@ -474,6 +485,14 @@ public final class ProcessSingletonRegistry {
         private final Object lifecycleLock = new Object();
         private final Duration initializationWallTime;
         private volatile Supplier<?> stateFactory;
+        /**
+         * Strong process root for initialized singleton state.
+         *
+         * This must live on the registry Cell, not only on the worker stack:
+         * terminal worker failure must not silently make process-lifetime state
+         * eligible for ordinary GC. Explicit collection clears this root.
+         */
+        private volatile Object state;
         private volatile Throwable terminalFailure;
         private volatile boolean initialized;
 
@@ -510,6 +529,9 @@ public final class ProcessSingletonRegistry {
             synchronized (lifecycleLock) {
                 if (collectionRequested.get()) return collected;
                 if (terminalFailure != null) {
+                    synchronized (REGISTRY_LOCK) {
+                        CELLS.remove(key, this);
+                    }
                     collected.completeExceptionally(terminalFailure);
                     return collected;
                 }
@@ -549,6 +571,7 @@ public final class ProcessSingletonRegistry {
                 checkExecutionBudget();
                 state = Objects.requireNonNull(factory.get(),
                         "singleton state factory returned null for " + diagnosticId);
+                this.state = state;
                 checkExecutionBudget();
                 initialized = true;
             } catch (Throwable failure) {
@@ -630,6 +653,10 @@ public final class ProcessSingletonRegistry {
             } catch (Throwable failure) {
                 cleanupFailure = failure;
             } finally {
+                // Clear only after cleanup: cleanup is allowed to observe the
+                // still-live singleton state, but no stale Handle may keep it
+                // rooted after collection completes.
+                this.state = null;
                 synchronized (REGISTRY_LOCK) {
                     CELLS.remove(key, this);
                 }
