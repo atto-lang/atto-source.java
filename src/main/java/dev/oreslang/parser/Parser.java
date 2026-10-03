@@ -987,6 +987,11 @@ public final class Parser {
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
+        if (match(SUPER)) {
+            consume(DOT, "explicit parent dispatch uses 'super.Parent.method(...)'");
+            String parent = consume(IDENT, "expected direct parent class name after 'super.'").lexeme();
+            return new Ast.SuperExpr(parent);
+        }
         if (match(STRUCT)) return parseStructInitializer(null);
         if (check(IDENT) && looksLikeNamedStructInitializer()) {
             Ast.TypeRef type = parseTypeRef();
