@@ -1396,7 +1396,7 @@ public final class OwnershipChecker {
         if (type == null || type.isBorrow()) return false;
         if (type.isUnion()) return type.arguments().stream().allMatch(this::isCopyType);
         return switch (type.name()) {
-            case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
+            case "i8","i16","i32","i64","u8","u16","u32","u64","int","Int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
                     "bool","Bool","string","String","void","SharedMutex","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
