@@ -26,7 +26,17 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           cache: maven
       - name: Verify compiler/runtime tests
-        run: mvn -B -ntp verify
+        shell: bash
+        run: |
+          set -o pipefail
+          mvn -B -ntp verify 2>&1 | tee fast-ci-maven.log
+      - name: Upload Maven diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-ci-maven-log
+          path: fast-ci-maven.log
+          retention-days: 1
       - name: Run examples
         run: |
           mvn -B -ntp -DskipTests exec:java -Dexec.args="examples/showcase.ores"
