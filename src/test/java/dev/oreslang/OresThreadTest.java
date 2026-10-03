@@ -46,9 +46,10 @@ final class OresThreadTest {
     }
 
     @Test
-    void interruptWakesSleepOnDedicatedThreadWithoutTouchingActorCarrier() throws Exception {
+    void interruptWakesNativeSleepWithoutUsingJvmThreadInterrupt() throws Exception {
         CountDownLatch sleeping = new CountDownLatch(1);
         AtomicBoolean observed = new AtomicBoolean();
+        AtomicBoolean jvmInterruptFlag = new AtomicBoolean(true);
 
         OresThread thread = new OresThread(() -> {
             sleeping.countDown();
@@ -56,6 +57,7 @@ final class OresThreadTest {
                 OresThread.sleep(5_000);
             } catch (InterruptedException expected) {
                 observed.set(true);
+                jvmInterruptFlag.set(Thread.currentThread().isInterrupted());
             }
         });
 
@@ -65,8 +67,53 @@ final class OresThreadTest {
         thread.join();
 
         assertTrue(observed.get());
+        assertFalse(jvmInterruptFlag.get(),
+                "OresThread interruption must use the native control block, not java.lang.Thread.interrupt()");
         assertFalse(thread.isInterrupted(),
                 "InterruptedException consumes the explicit Thread interrupt status like java.lang.Thread");
+    }
+
+    @Test
+    void nativeCpuTimeIsVisibleAndRetainedAfterTermination() throws Exception {
+        AtomicLong duringRun = new AtomicLong();
+
+        OresThread thread = new OresThread(() -> {
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(20);
+            long value = 0;
+            while (System.nanoTime() - deadline < 0) {
+                value ^= System.nanoTime();
+            }
+            assertNotEquals(Long.MIN_VALUE, value);
+            duringRun.set(OresThread.currentThread().cpuTimeNanos());
+        }, "ores-cpu-accounting");
+
+        thread.start();
+        thread.join();
+
+        assertTrue(duringRun.get() > 0L, "native pthread CPU clock should advance while target runs");
+        assertTrue(thread.cpuTimeNanos() >= duringRun.get(),
+                "completed OresThread must retain its final native CPU accounting");
+    }
+
+    @Test
+    void logicalRenameDoesNotRequireJavaThreadSetName() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        OresThread thread = new OresThread(() -> {
+            entered.countDown();
+            try {
+                assertTrue(release.await(2, TimeUnit.SECONDS));
+            } catch (InterruptedException failure) {
+                fail(failure);
+            }
+        }, "before");
+
+        thread.start();
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        thread.setName("after");
+        assertEquals("after", thread.getName());
+        release.countDown();
+        thread.join();
     }
 
     @Test
