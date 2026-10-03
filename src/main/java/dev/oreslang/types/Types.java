@@ -7,7 +7,7 @@ import java.util.Objects;
 public final class Types {
     private Types() { }
 
-    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, SingletonProxy, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
+    public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, SingletonClass, SingletonProxy, Record, Function, ListType, Tuple, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
         INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
@@ -22,6 +22,13 @@ public final class Types {
 
     /** Compile-time meta-value for access to static class functions. */
     public record ClassNamespace(String className) implements Type { }
+
+    /**
+     * Non-first-class compiler capability naming a process-owned singleton
+     * class instance. Calls are lowered through the singleton registry; the
+     * managed reference itself cannot be stored or returned by guest code.
+     */
+    public record SingletonClass(Named target) implements Type { }
 
     /**
      * Typed capability for one process-owned class instance exported by a
