@@ -24,7 +24,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Executable Truffle root. Parsing and static checks happen before this node is created. */
 public final class OresEvalRootNode extends RootNode {
@@ -271,17 +275,26 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             List<?> normalized = normalizeFunctionArguments(fn, args);
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "actor callable '" + fn.name() + "' must be invoked with spawn");
+            }
+            return callFunctionBody(fn, normalized);
+        }
+
+        private CompletableFuture<Object> spawnFunction(Ast.FunctionDecl fn, List<?> args) {
+            List<?> normalized = normalizeFunctionArguments(fn, args);
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                return callFunctionBody(fn, normalized);
+                throw new IllegalArgumentException("spawn target '" + fn.name() + "' is not an actor callable");
             }
 
             ActorRuntime.ActorKind runtimeKind = switch (fn.actorKind()) {
-                case NONE -> throw new AssertionError("non-actor callable reached actor lowering");
+                case NONE -> throw new AssertionError("non-actor callable reached actor spawn lowering");
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
             };
 
-            return context.actors().invoke(
+            return context.actors().invokeAsync(
                     runtimeKind,
                     normalized,
                     (delivered, actorContext) -> callFunctionBody(fn, delivered));
@@ -321,16 +334,26 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
-            Env env = new Env(null);
-            if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
-            for (int i = 0; i < method.parameters().size(); i++) {
-                Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            }
+
+            boolean stateLocked = receiver.klass.actorKind() != Ast.ActorKind.NONE
+                    && method.actorMethodKind() != Ast.ActorMethodKind.PARALLEL;
+            if (stateLocked) receiver.actorStateLock.lock();
             try {
-                executeBlock(method.body(), env);
-                return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
+                Env env = new Env(null);
+                if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
+                for (int i = 0; i < method.parameters().size(); i++) {
+                    Ast.Param param = method.parameters().get(i);
+                    env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                }
+                try {
+                    executeBlock(method.body(), env);
+                    return null;
+                } catch (ReturnSignal signal) {
+                    return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
+                }
+            } finally {
+                if (stateLocked) receiver.actorStateLock.unlock();
+            }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -643,6 +666,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args);
+            }
+            if (expr instanceof Ast.SpawnExpr spawned) {
+                return evalSpawn(spawned.expression(), env);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
