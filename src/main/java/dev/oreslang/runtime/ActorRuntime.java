@@ -790,16 +790,16 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Trusted host/main-process work shares the SHARED lane by design. This is
-     * intentionally unavailable to private or untrusted actor turns.
+     * Trusted host/main-process work shares the SHARED lane by design.
+     * Actor turns already consume this lane according to their actor kind and
+     * may not enqueue arbitrary process tasks as a scheduler-amplification path.
      */
     public java.util.concurrent.CompletableFuture<Void> submitProcessTask(Runnable task) {
         Objects.requireNonNull(task, "task");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
-        if (caller != null && caller.kind() != ActorKind.SHARED) {
+        if (CURRENT_ACTOR_EXECUTION.get() != null) {
             throw new SecurityException(
-                    "only the host/main process or shared actors may submit process-lane work");
+                    "actor turns cannot submit host/main process-lane work");
         }
         return java.util.concurrent.CompletableFuture.runAsync(task, sharedDispatcher);
     }
