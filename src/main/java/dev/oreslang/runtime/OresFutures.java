@@ -33,21 +33,21 @@ public final class OresFutures {
         OresFuture<List<T>> result = new OresFuture<>(
                 () -> children.forEach(child -> child.cancel(true)));
         if (children.isEmpty()) {
-            result.complete(List.of());
+            result.completeFromRuntime(List.of());
             return result;
         }
 
         CompletableFuture<?>[] array = children.toArray(CompletableFuture[]::new);
         CompletableFuture.allOf(array).whenComplete((ignored, failure) -> {
             if (failure != null) {
-                result.completeExceptionally(OresFuture.unwrap(failure));
+                result.failFromRuntime(OresFuture.unwrap(failure));
                 return;
             }
             ArrayList<T> values = new ArrayList<>(children.size());
             for (OresFuture<T> child : children) {
                 values.add(child.join());
             }
-            result.complete(List.copyOf(values));
+            result.completeFromRuntime(List.copyOf(values));
         });
         return result;
     }
@@ -71,9 +71,9 @@ public final class OresFutures {
             child.whenComplete((value, failure) -> {
                 if (result.isDone()) return;
                 if (failure == null) {
-                    result.complete(value);
+                    result.completeFromRuntime(value);
                 } else {
-                    result.completeExceptionally(OresFuture.unwrap(failure));
+                    result.failFromRuntime(OresFuture.unwrap(failure));
                 }
             });
         }
@@ -91,7 +91,7 @@ public final class OresFutures {
         OresFuture<List<Settled<T>>> result = new OresFuture<>(
                 () -> children.forEach(child -> child.cancel(true)));
         if (children.isEmpty()) {
-            result.complete(List.of());
+            result.completeFromRuntime(List.of());
             return result;
         }
 
@@ -107,7 +107,7 @@ public final class OresFutures {
                     settled.add(new Settled<>(null, OresFuture.unwrap(failure)));
                 }
             }
-            result.complete(List.copyOf(settled));
+            result.completeFromRuntime(List.copyOf(settled));
         });
         return result;
     }
