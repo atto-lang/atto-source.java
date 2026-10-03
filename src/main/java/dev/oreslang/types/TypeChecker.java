@@ -1397,7 +1397,9 @@ public final class TypeChecker {
             return switch (member) {
                 case "id" -> new Named("ActorId", List.of());
                 case "is_alive" -> new Function(List.of(), Primitive.BOOL);
-                default -> null;
+                default -> throw new IllegalArgumentException(
+                        "unknown ActorRef member '" + member
+                                + "'; one-shot actor callables expose identity/control, not an application mailbox");
             };
         }
         return null;
