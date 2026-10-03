@@ -1967,6 +1967,8 @@ public final class TypeChecker {
             }
         } else if (expression instanceof Ast.MemberExpr member) {
             rejectStaticClassGenericReferences(member.receiver(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.StaticMemberExpr member) {
+            rejectStaticClassGenericReferences(member.receiver(), classGenerics, klass, method);
         } else if (expression instanceof Ast.IndexExpr indexed) {
             rejectStaticClassGenericReferences(indexed.receiver(), classGenerics, klass, method);
             rejectStaticClassGenericReferences(indexed.index(), classGenerics, klass, method);
@@ -2609,6 +2611,7 @@ public final class TypeChecker {
         else if (expr instanceof Ast.ConditionalExpr e) {
             collectCalls(e.condition(), module, out); collectCalls(e.whenTrue(), module, out); collectCalls(e.whenFalse(), module, out);
         } else if (expr instanceof Ast.MemberExpr e) collectCalls(e.receiver(), module, out);
+        else if (expr instanceof Ast.StaticMemberExpr e) collectCalls(e.receiver(), module, out);
         else if (expr instanceof Ast.IndexExpr e) { collectCalls(e.receiver(), module, out); collectCalls(e.index(), module, out); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) collectCalls(arg, module, out);
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
@@ -2628,6 +2631,9 @@ public final class TypeChecker {
             return ambiguousFunctions.contains(name.name()) ? null : functions.get(name.name());
         }
         if (callee instanceof Ast.MemberExpr member && member.receiver() instanceof Ast.NameExpr namespace) {
+            return functions.get(namespace.name() + "." + member.member());
+        }
+        if (callee instanceof Ast.StaticMemberExpr member && member.receiver() instanceof Ast.NameExpr namespace) {
             return functions.get(namespace.name() + "." + member.member());
         }
         return null;
