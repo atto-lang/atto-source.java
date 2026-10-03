@@ -118,9 +118,27 @@ public final class ActorRuntime implements AutoCloseable {
      * Control-plane aborts must bypass guest catch/recover semantics.
      * They are scheduler/sandbox decisions, not application exceptions.
      */
+    public static final class ActorTurnExceededException extends RuntimeException {
+        private final ActorId actorId;
+        private final ActorKind actorKind;
+
+        private ActorTurnExceededException(
+                ActorId actorId,
+                ActorKind actorKind,
+                String message) {
+            super(message);
+            this.actorId = actorId;
+            this.actorKind = actorKind;
+        }
+
+        public ActorId actorId() { return actorId; }
+        public ActorKind actorKind() { return actorKind; }
+    }
+
     public static boolean isActorControlAbort(Throwable failure) {
         if (failure instanceof ActorBudgetExceededException
-                || failure instanceof ActorLifetimeExceededException) {
+                || failure instanceof ActorLifetimeExceededException
+                || failure instanceof ActorTurnExceededException) {
             return true;
         }
         return failure instanceof CancellationException
@@ -169,8 +187,11 @@ public final class ActorRuntime implements AutoCloseable {
             int untrustedParallelism,
             int throughput,
             long maxBatchNanos,
+            long maxMessageNanos,
+            int maxCompensatingThreads,
             int maxActors) {
         public static final long DEFAULT_MAX_BATCH_NANOS = TimeUnit.MILLISECONDS.toNanos(2);
+        public static final long DEFAULT_MAX_MESSAGE_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
 
         public DispatcherConfig {
             if (privateParallelism <= 0) throw new IllegalArgumentException("privateParallelism must be > 0");
@@ -178,10 +199,39 @@ public final class ActorRuntime implements AutoCloseable {
             if (untrustedParallelism <= 0) throw new IllegalArgumentException("untrustedParallelism must be > 0");
             if (throughput <= 0) throw new IllegalArgumentException("throughput must be > 0");
             if (maxBatchNanos <= 0) throw new IllegalArgumentException("maxBatchNanos must be > 0");
+            if (maxMessageNanos <= 0) throw new IllegalArgumentException("maxMessageNanos must be > 0");
+            if (maxMessageNanos < maxBatchNanos) {
+                throw new IllegalArgumentException("maxMessageNanos must be >= maxBatchNanos");
+            }
+            if (maxCompensatingThreads < 0) {
+                throw new IllegalArgumentException("maxCompensatingThreads must be >= 0");
+            }
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
         }
 
-        /** Backward-compatible constructor with an explicit untrusted pool. */
+        /**
+         * Existing explicit scheduler configurations keep historical behavior:
+         * message watchdog/compensation are opt-in unless the full constructor
+         * or defaults() is used.
+         */
+        public DispatcherConfig(
+                int privateParallelism,
+                int sharedParallelism,
+                int untrustedParallelism,
+                int throughput,
+                long maxBatchNanos,
+                int maxActors) {
+            this(
+                    privateParallelism,
+                    sharedParallelism,
+                    untrustedParallelism,
+                    throughput,
+                    maxBatchNanos,
+                    Long.MAX_VALUE,
+                    0,
+                    maxActors);
+        }
+
         public DispatcherConfig(
                 int privateParallelism,
                 int sharedParallelism,
@@ -194,10 +244,11 @@ public final class ActorRuntime implements AutoCloseable {
                     untrustedParallelism,
                     throughput,
                     DEFAULT_MAX_BATCH_NANOS,
+                    Long.MAX_VALUE,
+                    0,
                     maxActors);
         }
 
-        /** Backward-compatible constructor: untrusted work gets its own pool sized like private work. */
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput, int maxActors) {
             this(
                     privateParallelism,
@@ -205,33 +256,55 @@ public final class ActorRuntime implements AutoCloseable {
                     privateParallelism,
                     throughput,
                     DEFAULT_MAX_BATCH_NANOS,
+                    Long.MAX_VALUE,
+                    0,
                     maxActors);
         }
 
         public DispatcherConfig(int privateParallelism, int sharedParallelism, int throughput) {
-            this(
-                    privateParallelism,
-                    sharedParallelism,
-                    privateParallelism,
-                    throughput,
-                    DEFAULT_MAX_BATCH_NANOS,
-                    16_384);
-        }
-
-        public static DispatcherConfig defaults() {
-            int cpus = Math.max(2, Runtime.getRuntime().availableProcessors());
-            return new DispatcherConfig(cpus, cpus, Math.max(1, cpus / 2), 64, 16_384);
+            this(privateParallelism, sharedParallelism, throughput, 16_384);
         }
 
         /**
-         * Trusted actors may amortize scheduling overhead with a bounded batch.
-         * Untrusted actors always surrender the sandbox carrier after one
-         * mailbox message; hostile/hot mailboxes therefore cannot monopolize a
-         * worker merely by remaining non-empty.
+         * Production defaults partition the hot CPU budget instead of giving
+         * every pool availableProcessors() workers. The untrusted domain gets
+         * the smallest slice; shared/root keeps at least two workers so a
+         * synchronous root awaiting a shared actor cannot consume its only
+         * carrier.
          */
+        public static DispatcherConfig defaults() {
+            return defaultsForProcessors(Runtime.getRuntime().availableProcessors());
+        }
+
+        static DispatcherConfig defaultsForProcessors(int availableProcessors) {
+            int cpus = Math.max(1, availableProcessors);
+            int untrusted = Math.max(1, cpus / 8);
+            int remaining = Math.max(1, cpus - untrusted);
+            int shared = Math.max(2, (remaining + 1) / 2);
+            int isolated = Math.max(1, cpus - untrusted - shared);
+            int compensation = Math.max(1, Math.min(4, cpus / 4));
+            return new DispatcherConfig(
+                    isolated,
+                    shared,
+                    untrusted,
+                    64,
+                    DEFAULT_MAX_BATCH_NANOS,
+                    DEFAULT_MAX_MESSAGE_NANOS,
+                    compensation,
+                    16_384);
+        }
+
         public int throughputFor(ActorKind kind) {
             Objects.requireNonNull(kind, "kind");
             return kind == ActorKind.UNTRUSTED ? 1 : throughput;
+        }
+
+        public int parallelismFor(ActorKind kind) {
+            return switch (kind) {
+                case PRIVATE -> privateParallelism;
+                case SHARED -> sharedParallelism;
+                case UNTRUSTED -> untrustedParallelism;
+            };
         }
     }
 
@@ -240,7 +313,11 @@ public final class ActorRuntime implements AutoCloseable {
             int parallelism,
             int activeThreads,
             int queuedActorTurns,
-            long completedActorTurns) { }
+            long completedActorTurns,
+            int compensatingThreads,
+            long overrunTurns,
+            long rejectedTurns,
+            int largestPoolSize) { }
 
     public record ActorId(UUID value) {
         public ActorId { Objects.requireNonNull(value); }
@@ -639,10 +716,19 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
-    private final ExecutorService privateDispatcher;
-    private final ExecutorService sharedDispatcher;
-    private final ExecutorService untrustedDispatcher;
+    private final ThreadPoolExecutor privateDispatcher;
+    private final ThreadPoolExecutor sharedDispatcher;
+    private final ThreadPoolExecutor untrustedDispatcher;
     private final ScheduledThreadPoolExecutor untrustedWatchdog;
+    private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
+    private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
+    private final AtomicInteger untrustedCompensatingThreads = new AtomicInteger();
+    private final AtomicLong privateOverrunTurns = new AtomicLong();
+    private final AtomicLong sharedOverrunTurns = new AtomicLong();
+    private final AtomicLong untrustedOverrunTurns = new AtomicLong();
+    private final AtomicLong privateRejectedTurns = new AtomicLong();
+    private final AtomicLong sharedRejectedTurns = new AtomicLong();
+    private final AtomicLong untrustedRejectedTurns = new AtomicLong();
     private final ThreadLocal<ActorCell<?>> currentActor = new ThreadLocal<>();
     private final ThreadLocal<SyncCell<?>> currentSyncCell = new ThreadLocal<>();
 
@@ -676,17 +762,23 @@ public final class ActorRuntime implements AutoCloseable {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        int readyQueueCapacity = dispatcherConfig.maxActors() == Integer.MAX_VALUE
+                ? Integer.MAX_VALUE
+                : dispatcherConfig.maxActors() + 1;
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
-                dispatcherConfig.maxActors(),
+                readyQueueCapacity,
+                dispatcherConfig.maxCompensatingThreads(),
                 "ores-private-actor-dispatcher-");
         this.sharedDispatcher = newDispatcher(
                 dispatcherConfig.sharedParallelism(),
-                dispatcherConfig.maxActors(),
+                readyQueueCapacity,
+                dispatcherConfig.maxCompensatingThreads(),
                 "ores-shared-actor-dispatcher-");
         this.untrustedDispatcher = newDispatcher(
                 dispatcherConfig.untrustedParallelism(),
-                dispatcherConfig.maxActors(),
+                readyQueueCapacity,
+                dispatcherConfig.maxCompensatingThreads(),
                 "ores-untrusted-actor-dispatcher-");
         this.untrustedWatchdog = newUntrustedWatchdog(
                 namedFactory("ores-untrusted-watchdog-"));
@@ -713,12 +805,16 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public DispatcherStats dispatcherStats(ActorKind kind) {
         Objects.requireNonNull(kind, "kind");
-        ThreadPoolExecutor executor = (ThreadPoolExecutor) dispatcherFor(kind);
+        ThreadPoolExecutor executor = dispatcherFor(kind);
         return new DispatcherStats(
-                executor.getMaximumPoolSize(),
+                dispatcherConfig.parallelismFor(kind),
                 executor.getActiveCount(),
                 executor.getQueue().size(),
-                executor.getCompletedTaskCount());
+                executor.getCompletedTaskCount(),
+                compensationCounter(kind).get(),
+                overrunCounter(kind).get(),
+                rejectionCounter(kind).get(),
+                executor.getLargestPoolSize());
     }
 
     public long privateMemoryBytes() { return privateMemoryBytes.get(); }
@@ -3295,12 +3391,73 @@ public final class ActorRuntime implements AutoCloseable {
         actorCount.set(0);
     }
 
-    private ExecutorService dispatcherFor(ActorKind kind) {
+    private ThreadPoolExecutor dispatcherFor(ActorKind kind) {
         return switch (kind) {
             case PRIVATE -> privateDispatcher;
             case SHARED -> sharedDispatcher;
             case UNTRUSTED -> untrustedDispatcher;
         };
+    }
+
+    private AtomicInteger compensationCounter(ActorKind kind) {
+        return switch (kind) {
+            case PRIVATE -> privateCompensatingThreads;
+            case SHARED -> sharedCompensatingThreads;
+            case UNTRUSTED -> untrustedCompensatingThreads;
+        };
+    }
+
+    private AtomicLong overrunCounter(ActorKind kind) {
+        return switch (kind) {
+            case PRIVATE -> privateOverrunTurns;
+            case SHARED -> sharedOverrunTurns;
+            case UNTRUSTED -> untrustedOverrunTurns;
+        };
+    }
+
+    private AtomicLong rejectionCounter(ActorKind kind) {
+        return switch (kind) {
+            case PRIVATE -> privateRejectedTurns;
+            case SHARED -> sharedRejectedTurns;
+            case UNTRUSTED -> untrustedRejectedTurns;
+        };
+    }
+
+    private boolean claimCompensatingThread(ActorKind kind) {
+        int limit = dispatcherConfig.maxCompensatingThreads();
+        if (limit == 0) return false;
+        AtomicInteger counter = compensationCounter(kind);
+        while (true) {
+            int current = counter.get();
+            if (current >= limit) return false;
+            if (!counter.compareAndSet(current, current + 1)) continue;
+
+            ThreadPoolExecutor executor = dispatcherFor(kind);
+            synchronized (executor) {
+                int base = dispatcherConfig.parallelismFor(kind);
+                int target = Math.min(
+                        executor.getMaximumPoolSize(),
+                        Math.max(base, executor.getCorePoolSize()) + 1);
+                executor.setCorePoolSize(target);
+                executor.prestartCoreThread();
+            }
+            return true;
+        }
+    }
+
+    private void releaseCompensatingThread(ActorKind kind) {
+        AtomicInteger counter = compensationCounter(kind);
+        int remaining = counter.decrementAndGet();
+        if (remaining < 0) {
+            counter.incrementAndGet();
+            throw new IllegalStateException("dispatcher compensation accounting underflow for " + kind);
+        }
+        ThreadPoolExecutor executor = dispatcherFor(kind);
+        synchronized (executor) {
+            int base = dispatcherConfig.parallelismFor(kind);
+            int target = Math.max(base, base + remaining);
+            if (executor.getCorePoolSize() > target) executor.setCorePoolSize(target);
+        }
     }
 
     private static ScheduledThreadPoolExecutor newUntrustedWatchdog(ThreadFactory threadFactory) {
@@ -3311,21 +3468,25 @@ public final class ActorRuntime implements AutoCloseable {
         return executor;
     }
 
-    private static ExecutorService newDispatcher(
+    private static ThreadPoolExecutor newDispatcher(
             int parallelism,
             int readyQueueCapacity,
+            int maxCompensatingThreads,
             String threadPrefix) {
+        int maxThreads;
+        try {
+            maxThreads = Math.addExact(parallelism, maxCompensatingThreads);
+        } catch (ArithmeticException overflow) {
+            maxThreads = Integer.MAX_VALUE;
+        }
         ThreadPoolExecutor executor = new ThreadPoolExecutor(
                 parallelism,
-                parallelism,
-                0L,
+                maxThreads,
+                50L,
                 TimeUnit.MILLISECONDS,
-                // Fair queue locking avoids producer/consumer barging under
-                // sustained contention. Actor tasks themselves remain FIFO.
                 new ArrayBlockingQueue<>(readyQueueCapacity, true),
                 namedFactory(threadPrefix),
                 new ThreadPoolExecutor.AbortPolicy());
-        // Core workers are created lazily on first scheduled actor turn.
         return executor;
     }
 
