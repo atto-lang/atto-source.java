@@ -16,7 +16,7 @@ final class OwnershipAndClosureTest {
     @Test
     void lexicalClosureEscapesAndRetainsMutableCapturedState() throws Exception {
         String output = run("""
-                fnc makeCounter(): (():int) {
+                fnc makeCounter(): (() => int) {
                   let int count = 0;
                   return || -> {
                     count = count + 1;
@@ -322,7 +322,7 @@ final class OwnershipAndClosureTest {
 
                         fnc bad(): void {
                           let Box box = new Box();
-                          val (():int) read = || -> {
+                          val (() => int) read = || -> {
                             return box.value;
                           };
                           stdio.println(box.value);
