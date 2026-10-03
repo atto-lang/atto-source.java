@@ -52,7 +52,17 @@ public final class OresMutex {
                     IsolatePolicy.Capability.SHARED_MEMORY,
                     "SharedMutex.new");
         }
-        return new Shared<>(value);
+
+        Shared<T> shared = new Shared<>(value);
+        ActorRuntime runtime = ActorRuntime.currentActorRuntime();
+        if (runtime != null) {
+            if (!shared.bindToRuntime(runtime)) {
+                throw new WrongMutexDomainException(
+                        "new SharedMutex could not bind to its creating ActorRuntime");
+            }
+            shared.reconcileRuntimeAccounting();
+        }
+        return shared;
     }
 
     /**
@@ -340,6 +350,7 @@ public final class OresMutex {
          * two-phase contract.
          */
         private ActorRuntime owningRuntime;
+        private long runtimeAccountedBytes;
         private int pendingPublications;
         private boolean publishedToRuntime;
         private final Set<Object> activeDomains = ConcurrentHashMap.newKeySet();
@@ -617,14 +628,27 @@ public final class OresMutex {
             }
         }
 
-        private void validateBoundPayload() {
+        private void reconcileRuntimeAccounting() {
             ActorRuntime runtime;
+            long previous;
             synchronized (this) {
                 runtime = owningRuntime;
+                previous = runtimeAccountedBytes;
             }
-            if (runtime != null) {
-                runtime.validateBoundSharedMutexPayload(value);
+            if (runtime == null) return;
+
+            long next = runtime.reconcileBoundSharedMutexPayload(value, previous);
+            synchronized (this) {
+                if (owningRuntime != runtime) {
+                    throw new WrongMutexDomainException(
+                            "SharedMutex runtime changed during payload accounting");
+                }
+                runtimeAccountedBytes = next;
             }
+        }
+
+        private void validateBoundPayload() {
+            reconcileRuntimeAccounting();
         }
 
         private Guard<T> checkedGuardAfterAcquire(Object ownerDomain, boolean enforceOwnerDomain) {
