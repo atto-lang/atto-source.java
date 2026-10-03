@@ -66,14 +66,30 @@ public final class GpuRuntime {
 
         Object invoke(Invocation invocation);
 
-        default Object uploadArray(String elementAbiType, List<?> values) {
+        /**
+         * Legacy/untyped backend upload hook. Exact-ABI-aware backends should override the
+         * typed overload below; this hook remains as a compatibility bridge for existing
+         * backends while the typed GPU ABI is rolled out.
+         */
+        default Object uploadArray(List<?> values) {
             throw new GpuCapabilityUnavailableException(
                     "GPU backend '" + name() + "' does not support GpuArray uploads");
         }
 
-        default List<?> downloadArray(String elementAbiType, Object backendToken, long length) {
+        default Object uploadArray(String elementAbiType, List<?> values) {
+            return uploadArray(values);
+        }
+
+        /**
+         * Legacy/untyped backend download hook paired with uploadArray(List).
+         */
+        default List<?> downloadArray(Object backendToken, long length) {
             throw new GpuCapabilityUnavailableException(
                     "GPU backend '" + name() + "' does not support GpuArray downloads");
+        }
+
+        default List<?> downloadArray(String elementAbiType, Object backendToken, long length) {
+            return downloadArray(backendToken, length);
         }
 
         default Object openStream(String elementAbiType, Object arrayBackendToken, long length) {
