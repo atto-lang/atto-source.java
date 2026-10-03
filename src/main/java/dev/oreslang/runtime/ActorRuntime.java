@@ -591,7 +591,7 @@ public final class ActorRuntime implements AutoCloseable {
                                 + maxConcurrent));
             }
 
-            AtomicReference<CompletableFuture<?>> upstreamRef = new AtomicReference<>();
+            AtomicReference<CompletionStage<?>> upstreamRef = new AtomicReference<>();
             AtomicBoolean released = new AtomicBoolean();
             AtomicReference<OresFuture<OutboundHttpResponse>> resultRef = new AtomicReference<>();
             Runnable release = () -> {
@@ -602,8 +602,10 @@ public final class ActorRuntime implements AutoCloseable {
             };
 
             OresFuture<OutboundHttpResponse> result = new OresFuture<>(() -> {
-                CompletableFuture<?> upstream = upstreamRef.get();
-                if (upstream != null) upstream.cancel(true);
+                CompletionStage<?> upstream = upstreamRef.get();
+                if (upstream instanceof java.util.concurrent.Future<?> cancellable) {
+                    cancellable.cancel(true);
+                }
             });
             resultRef.set(result);
             inFlight.add(result);
@@ -613,7 +615,7 @@ public final class ActorRuntime implements AutoCloseable {
                 stage = Objects.requireNonNull(
                         transport.send(request),
                         "OutboundHttpTransport returned null");
-                upstreamRef.set(stage.toCompletableFuture());
+                upstreamRef.set(stage);
             } catch (Throwable failure) {
                 result.failFromRuntime(failure);
                 release.run();
