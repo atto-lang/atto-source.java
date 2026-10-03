@@ -189,6 +189,10 @@ final class NativeSocketBridge {
     static void setActorIoTimeout(
             NativeSocketHandle handle,
             int timeoutMillis) throws IOException {
+        if (timeoutMillis <= 0) {
+            throw new IllegalArgumentException(
+                    "actor I/O timeout must be positive and bounded");
+        }
         handle.withFdVoid(fd -> {
             setSoTimeout(fd, timeoutMillis);
             setSendTimeout(fd, timeoutMillis);
