@@ -1483,5 +1483,107 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void processSharedRuntimesReuseCarriersAndCloseIndependently() {
+        ActorRuntime first = ActorRuntime.processShared(
+                IsolatePolicy.developer(),
+                ActorRuntime.TurnExecutor.direct());
+        ActorRuntime second = ActorRuntime.processShared(
+                IsolatePolicy.developer(),
+                ActorRuntime.TurnExecutor.direct());
+        try {
+            assertTrue(first.usesProcessSharedDispatchers());
+            assertTrue(second.usesProcessSharedDispatchers());
+
+            String firstThread = first.executeRootTask(
+                    () -> Thread.currentThread().getName());
+            assertTrue(firstThread.startsWith("ores-process-shared-actor-dispatcher-"),
+                    firstThread);
+
+            first.close();
+
+            String secondThread = second.executeRootTask(
+                    () -> Thread.currentThread().getName());
+            assertTrue(secondThread.startsWith("ores-process-shared-actor-dispatcher-"),
+                    secondThread);
+        } finally {
+            try {
+                first.close();
+            } catch (IllegalStateException ignored) {
+                // A prior close already completed or reported its own teardown issue.
+            }
+            second.close();
+        }
+    }
+
+    @Test
+    void rootTaskCannotStarveSharedActorsOfEveryBaseCarrier() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                2,
+                1,
+                64,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.SECONDS.toNanos(5),
+                1,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch rootEntered = new CountDownLatch(1);
+            CountDownLatch releaseRoot = new CountDownLatch(1);
+            CountDownLatch actorRan = new CountDownLatch(1);
+            AtomicReference<Throwable> rootFailure = new AtomicReference<>();
+
+            Thread rootCaller = new Thread(() -> {
+                try {
+                    runtime.executeRootTask(() -> {
+                        rootEntered.countDown();
+                        try {
+                            releaseRoot.await();
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new RuntimeException(interrupted);
+                        }
+                        return null;
+                    });
+                } catch (Throwable failure) {
+                    rootFailure.set(failure);
+                }
+            }, "root-caller-test");
+            rootCaller.start();
+
+            assertTrue(rootEntered.await(2, TimeUnit.SECONDS));
+
+            var shared = runtime.<String>spawnSharedTrusted(
+                    IsolatePolicy.developer(),
+                    ignored -> (message, turn) -> actorRan.countDown());
+            shared.send("ping");
+
+            assertTrue(
+                    actorRan.await(2, TimeUnit.SECONDS),
+                    "a root/main task must leave shared carrier capacity for shared actors");
+
+            releaseRoot.countDown();
+            rootCaller.join(2_000);
+            assertFalse(rootCaller.isAlive());
+            assertNull(rootFailure.get());
+        }
+    }
+
+    @Test
+    void adversarialRootCannotSynchronouslyWaitOnSerializedActorTurn() {
+        try (ActorRuntime runtime = ActorRuntime.processShared(
+                IsolatePolicy.strictFaas(),
+                ActorRuntime.TurnExecutor.direct())) {
+            SecurityException denied = assertThrows(
+                    SecurityException.class,
+                    () -> runtime.executeRootTask(() -> runtime.invoke(
+                            ActorRuntime.ActorKind.PRIVATE,
+                            "ping",
+                            (message, turn) -> message)));
+            assertTrue(denied.getMessage().contains("cannot synchronously invoke"));
+        }
+    }
+
 
 }
