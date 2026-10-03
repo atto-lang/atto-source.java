@@ -88,7 +88,7 @@ final class ParserTest {
                 shared actor Account {
                   let balance = 100;
 
-                  pub fnc withdraw(int amount) => void {
+                  pub withdraw(int amount) : void {
                     self.balance = self.balance - amount;
                     return;
                   }
@@ -159,7 +159,7 @@ final class ParserTest {
                 shared actor Account {
                   let int balance = 100;
 
-                  pub fnc read() => int {
+                  pub read() : int {
                     return self.balance;
                   }
                 }
@@ -202,7 +202,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => Account {
+                      pub leak() : Account {
                         return self;
                       }
                     }
@@ -215,7 +215,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => &mut Account {
+                      pub leak() : &mut Account {
                         return &mut self;
                       }
                     }
@@ -228,7 +228,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc leak() => &mut Account {
+                      pub leak() : &mut Account {
                         val alias = &mut self;
                         return alias;
                       }
@@ -242,7 +242,7 @@ final class ParserTest {
                     shared actor Account {
                       let Array<int> items = [1, 2, 3];
 
-                      pub fnc leak() => Array<int> {
+                      pub leak() : Array<int> {
                         return self.items;
                       }
                     }
@@ -258,7 +258,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc current() => int {
+                      pub current() : int {
                         return self.balance;
                       }
                     }
@@ -275,7 +275,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc inspectSelf() => int {
+                      pub inspectSelf() : int {
                         return inspect(&self);
                       }
                     }
@@ -396,9 +396,9 @@ final class ParserTest {
 
         assertDoesNotThrow(() -> Parser.parse("""
                 define class Flow as
-                  pub stop() => int { return 1; }
-                  pub do() => int { return 2; }
-                  pub done() => int { return 3; }
+                  pub stop() : int { return 1; }
+                  pub do() : int { return 2; }
+                  pub done() : int { return 3; }
                 end
 
                 define interface FlowApi
