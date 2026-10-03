@@ -1147,11 +1147,58 @@ public final class TypeChecker {
                         typeOf(arguments.get(i), env, generics, self),
                         expected,
                         "actor constructor field " + field.name());
+                validateActorConstructionBoundaryType(
+                        expected,
+                        "actor constructor field '" + klass.name() + "." + field.name() + "'");
             } else if (field.initializer() == null) {
                 throw new IllegalArgumentException(
                         "actor constructor for " + klass.name() + " is missing field '" + field.name() + "'");
             }
         }
+    }
+
+    /**
+     * Source-level actor construction currently copies constructor data into the
+     * actor domain before behavior creation. Keep this surface deliberately
+     * data-only: live capabilities and source-class object identities must enter
+     * through normal mailbox transport or be constructed inside the actor.
+     */
+    private void validateActorConstructionBoundaryType(Type type, String where) {
+        if (type == Primitive.VOID || type == Unknown.INSTANCE
+                || type instanceof Generic || type instanceof Borrow
+                || type instanceof Function || type instanceof ClassNamespace) {
+            throw new IllegalArgumentException(
+                    where + " must be frozen data; capabilities, borrows, functions, and unresolved values "
+                            + "cannot be captured by actor construction");
+        }
+        if (type instanceof Primitive || type instanceof StringLiteral) return;
+        if (type instanceof ListType list) {
+            validateActorConstructionBoundaryType(list.element(), where + " element");
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                validateActorConstructionBoundaryType(tuple.elements().get(i), where + " tuple element " + i);
+            }
+            return;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                validateActorConstructionBoundaryType(option, where + " union member");
+            }
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Map.Entry<String, Type> member : record.members().entrySet()) {
+                validateActorConstructionBoundaryType(
+                        member.getValue(), where + " field '" + member.getKey() + "'");
+            }
+            return;
+        }
+
+        throw new IllegalArgumentException(
+                where + " cannot capture '" + type + "' directly; construct actor-owned objects/capabilities "
+                        + "inside the actor or pass them later through a supported mailbox entrypoint");
     }
 
     private void rejectUnsafeParallelActorFieldRead(
@@ -1377,18 +1424,12 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
-        if (named.name().equals("DynamicStruct")) {
-            if (named.arguments().size() != 1) {
-                throw new IllegalArgumentException(where + " requires DynamicStruct<T> with one value type");
-            }
-            validateActorCallableBoundaryType(
-                    named.arguments().getFirst(),
-                    actorKind,
-                    false,
-                    where + " value");
-            return;
-        }
         if (named.name().equals("SharedMutex")) {
+            if (returnPosition) {
+                throw new IllegalArgumentException(
+                        where + " cannot return SharedMutex<T> yet; live shared capabilities are accepted only "
+                                + "as shared-actor inputs until capability-return transport is explicit");
+            }
             if (actorKind == Ast.ActorKind.PRIVATE) {
                 throw new IllegalArgumentException(
                         where + " cannot use SharedMutex<T> with isoactor/private actors");
@@ -1401,33 +1442,34 @@ public final class TypeChecker {
             return;
         }
 
-        for (Type argument : named.arguments()) {
-            validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
-        }
-
-        // Built-in sum/container values are data-only when their arguments pass.
-        if (named.name().equals("Option") || named.name().equals("Result")
+        // The source interpreter transport presently serializes scalars,
+        // lists/tuples, records/maps, and explicitly handled SharedMutex input
+        // capabilities. Reject richer/opaque named values statically instead of
+        // relying on a late host-object rejection or accidentally transporting
+        // identity-bearing state.
+        if (named.name().equals("DynamicStruct")
+                || named.name().equals("Option")
+                || named.name().equals("Result")
                 || named.name().equals("OptionUnwrapError")) {
-            return;
+            throw new IllegalArgumentException(
+                    where + " uses " + named.name()
+                            + ", which does not yet have an explicit actor transport codec");
         }
 
         Ast.ClassDecl klass = findClass(named.name());
-        if (klass == null) {
-            // Runtime capability types (for example ActorId/ActorRef) are
-            // validated again by transport. Do not silently admit known
-            // mutable/suspending primitives above, but avoid rejecting opaque
-            // capability types solely because they have no source class body.
-            return;
-        }
-        if (klass.actorKind() != Ast.ActorKind.NONE) {
+        if (klass != null && klass.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
-                    where + " cannot transport an actor instance by value; pass an actor capability/reference");
+                    where + " cannot transport an actor instance by value; actor identities never cross as raw objects");
+        }
+        if (klass != null) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport source class '" + named.name()
+                            + "' by object identity; add an explicit frozen/message representation");
         }
 
-        if (!isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
-            throw new IllegalArgumentException(
-                    where + " contains state that is not safe to transport across an actor boundary");
-        }
+        throw new IllegalArgumentException(
+                where + " uses opaque capability/type '" + named.name()
+                        + "' without an explicit actor transport contract");
     }
 
     private boolean isSharedSafe(Type type, Set<Ast.ClassDecl> seen, Map<String, Type> genericBindings) {
