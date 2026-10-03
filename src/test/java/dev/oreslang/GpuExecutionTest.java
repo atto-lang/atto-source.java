@@ -708,6 +708,52 @@ final class GpuExecutionTest {
     }
 
     @Test
+    void simtIndexProofRespectsLexicalShadowing() {
+        IllegalArgumentException shadowed = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc bad(GpuArray<i32> mut out) => void {
+                          val u64 i = gpu.index;
+                          if (true) {
+                            let u64 i = 0;
+                            out[i] = 1;
+                          }
+                          return;
+                        }
+                        """));
+        assertTrue(shadowed.getMessage().contains("cannot prove this store race-free"));
+    }
+
+    @Test
+    void restrictIsConfinedToKernelAbiAndNotInternalDeviceHelpers() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                gpu fnc read(GpuArray<i32> values, u64 i) => i32 {
+                  return values[i];
+                }
+
+                gpu fnc outer(GpuArray<i32> values) => i32 {
+                  return read(values, gpu.index);
+                }
+                """);
+
+        String source = compilation.gpuProgram().source();
+        GpuKernelCompiler.GpuKernel read = compilation.gpuProgram().kernels().stream()
+                .filter(k -> k.sourceName().equals("read"))
+                .findFirst().orElseThrow();
+
+        String helperPrefix = "static inline int " + read.helperSymbol() + "(";
+        int helperStart = source.indexOf(helperPrefix);
+        assertTrue(helperStart >= 0);
+        int helperEnd = source.indexOf(") {", helperStart);
+        assertTrue(helperEnd > helperStart);
+        String helperSignature = source.substring(helperStart, helperEnd);
+
+        assertFalse(helperSignature.contains("restrict"),
+                "internal device helpers must not impose host-unenforceable restrict contracts");
+        assertTrue(source.contains("__global const int* restrict ores_v_values"),
+                "kernel entry ABI should retain restrict for launcher-enforced no-alias buffers");
+    }
+
+    @Test
     void workItemIntrinsicsAreGpuOnlyAndCurrentLaunchGeometryIsOneDimensional() {
         IllegalArgumentException host = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.compile("""
