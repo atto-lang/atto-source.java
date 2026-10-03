@@ -31,6 +31,28 @@ owned by the connection supervisor. The transferable object is one
 request/response stream capability. The same single-owner rules apply at stream
 granularity.
 
+## Oreslang ownership semantics
+
+Transport capabilities are affine/linear resources and integrate with
+`copy/take/share/borrow` as follows:
+
+- `copy socket` — compile-time error.
+- `share socket` — compile-time error, including for shared actors.
+- `take socket` — the only cross-actor ownership move.
+- `borrow socket` — allowed only within the current controlling actor/domain;
+  a borrow may not outlive the owner or cross an actor boundary.
+
+A successful actor spawn with `take` invalidates the supervisor-side value.
+The runtime ownership publication and the language move must be one transaction:
+either the target actor becomes the owner and the source value is consumed, or
+the spawn fails and the source remains supervisor-owned (or is explicitly
+closed). There must never be a state where both source and target are usable.
+
+Untrusted actors do not receive a general-purpose raw socket capability. They
+receive a narrowed, request-scoped HTTP capability after the supervisor has
+already admitted/parses the request. This preserves the absence of generic
+`NETWORK`, JNI, FFI, or native-handle authority.
+
 ## Shared actors
 
 Shared actors live in the shared memory domain, but transport ownership is still
