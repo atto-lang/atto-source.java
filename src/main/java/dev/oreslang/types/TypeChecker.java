@@ -49,6 +49,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    private Ast.ActorMethodKind currentActorMethodKind = Ast.ActorMethodKind.NONE;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -325,6 +326,16 @@ public final class TypeChecker {
         }
 
         for (Ast.MethodDecl method : klass.methods()) {
+            if (method.actorMethodKind() != Ast.ActorMethodKind.NONE && klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException("actor entrypoint '" + klass.name() + "." + method.name()
+                        + "' may only be declared on an actor class");
+            }
+            if (method.actorMethodKind() == Ast.ActorMethodKind.PARALLEL
+                    && klass.actorKind() == Ast.ActorKind.PRIVATE) {
+                throw new IllegalArgumentException("isoactor/private actor entrypoint '" + klass.name() + "." + method.name()
+                        + "' cannot be parallel; confined actor memory has one execution owner");
+            }
+
             Set<String> generics = new HashSet<>();
             if (!method.isStatic()) generics.addAll(classGenerics);
             for (String generic : method.genericParameters()) {
@@ -360,12 +371,30 @@ public final class TypeChecker {
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
             for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (method.isActorEntry()) {
+                for (Ast.Param param : method.parameters()) {
+                    validateActorCallableBoundaryType(
+                            resolveParam(param, generics, callableSelf),
+                            klass.actorKind(),
+                            false,
+                            "parameter '" + param.name() + "' of actor method '" + klass.name() + "." + method.name() + "'");
+                }
+                validateActorCallableBoundaryType(
+                        returns,
+                        klass.actorKind(),
+                        true,
+                        "return type of actor method '" + klass.name() + "." + method.name() + "'");
+            }
+
             Ast.ActorKind previousActorKind = currentActorKind;
+            Ast.ActorMethodKind previousActorMethodKind = currentActorMethodKind;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
+            currentActorMethodKind = method.isStatic() ? Ast.ActorMethodKind.NONE : method.actorMethodKind();
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
+                currentActorMethodKind = previousActorMethodKind;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -606,12 +635,10 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE
-                            && currentActorKind != Ast.ActorKind.NONE) {
+                    if (target.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
                                 "actor callable '" + target.name()
-                                        + "' cannot be synchronously invoked from another actor turn; "
-                                        + "use mailbox-oriented actor composition");
+                                        + "' must be invoked with 'spawn " + target.name() + "(...)'");
                     }
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
@@ -631,12 +658,10 @@ public final class TypeChecker {
                     && modules.containsKey(namespace.name())) {
                 Ast.FunctionDecl target = functions.get(namespace.name() + "." + qualifiedCall.member());
                 if (target != null) {
-                    if (target.actorKind() != Ast.ActorKind.NONE
-                            && currentActorKind != Ast.ActorKind.NONE) {
+                    if (target.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
                                 "actor callable '" + namespace.name() + "." + target.name()
-                                        + "' cannot be synchronously invoked from another actor turn; "
-                                        + "use mailbox-oriented actor composition");
+                                        + "' must be invoked with 'spawn " + namespace.name() + "." + target.name() + "(...)'");
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
@@ -734,6 +759,11 @@ public final class TypeChecker {
                         if (target == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
                         Ast.MethodDecl method = target.method();
                         Ast.ClassDecl owner = target.owner();
+                        if (method.isActorEntry()) {
+                            throw new IllegalArgumentException(
+                                    "actor method '" + owner.name() + "." + method.name()
+                                            + "' must be invoked through an ActorRef with spawn");
+                        }
                         Named ownerType = target.ownerType();
                         validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + owner.name() + "." + method.name());
                         List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
@@ -836,11 +866,18 @@ public final class TypeChecker {
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
                         Type pattern = classFieldType(field.owner(), field.field());
-                        return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
+                        Type resolvedFieldType = substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
+                        rejectUnsafeParallelActorFieldRead(member, field.field(), resolvedFieldType);
+                        return resolvedFieldType;
                     }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
                     if (methods.size() == 1) {
                         Ast.MethodDecl method = methods.getFirst();
+                        if (method.isActorEntry()) {
+                            throw new IllegalArgumentException(
+                                    "actor method '" + klass.name() + "." + method.name()
+                                            + "' is not an ordinary bound method; invoke it through ActorRef with spawn");
+                        }
                         if (!method.genericParameters().isEmpty()) {
                             throw new IllegalArgumentException(
                                     "generic method '" + klass.name() + "." + method.name()
@@ -930,6 +967,9 @@ public final class TypeChecker {
             }
             return nominal;
         }
+        if (expr instanceof Ast.SpawnExpr spawned) {
+            return typeOfSpawn(spawned.expression(), env, generics, self);
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) return named.arguments().getFirst();
@@ -985,6 +1025,154 @@ public final class TypeChecker {
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
+    }
+
+    private Type typeOfSpawn(Ast.Expr expression, Env env, Set<String> generics, Type self) {
+        if (!(expression instanceof Ast.CallExpr call)) {
+            throw new IllegalArgumentException("spawn requires an actor construction or actor callable invocation");
+        }
+
+        if (call.callee() instanceof Ast.NameExpr name) {
+            Ast.FunctionDecl function = findFunction(name.name());
+            if (function != null && function.actorKind() != Ast.ActorKind.NONE) {
+                String label = "actor callable " + function.name();
+                validateCallTypeArgumentMarker(call, function.genericParameters(), label);
+                Type result = checkGenericCallable(
+                        function.genericParameters(),
+                        function.parameters(),
+                        function.returnType(),
+                        call.arguments(),
+                        env, generics, self,
+                        null,
+                        explicitGenericBindings(function.genericParameters(), call.typeArguments(), generics, self, label),
+                        label);
+                return new Named("Future", List.of(result));
+            }
+
+            Ast.ClassDecl actorClass = findClass(name.name());
+            if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("actor construction does not accept call-site function type arguments");
+                }
+                Named actorType = nominalClassType(actorClass);
+                validateActorConstructorArguments(actorClass, actorType, call.arguments(), env, generics, self);
+                return new Named("ActorRef", List.of(actorType));
+            }
+        }
+
+        if (call.callee() instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace && modules.containsKey(namespace.name())) {
+                Ast.FunctionDecl function = functions.get(namespace.name() + "." + member.member());
+                if (function != null && function.actorKind() != Ast.ActorKind.NONE) {
+                    String label = "actor callable " + namespace.name() + "." + function.name();
+                    validateCallTypeArgumentMarker(call, function.genericParameters(), label);
+                    Type result = checkGenericCallable(
+                            function.genericParameters(),
+                            function.parameters(),
+                            function.returnType(),
+                            call.arguments(),
+                            env, generics, self,
+                            null,
+                            explicitGenericBindings(function.genericParameters(), call.typeArguments(), generics, self, label),
+                            label);
+                    return new Named("Future", List.of(result));
+                }
+            }
+
+            Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+            if (receiver instanceof Named actorRef
+                    && actorRef.name().equals("ActorRef")
+                    && actorRef.arguments().size() == 1
+                    && actorRef.arguments().getFirst() instanceof Named actorType) {
+                Ast.ClassDecl actorClass = findClass(actorType.name());
+                if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException("ActorRef target is not an actor class: " + actorType);
+                }
+                ResolvedMethod target = findMethodTarget(
+                        actorClass, actorType, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                if (target == null) {
+                    throw new IllegalArgumentException("no actor method '" + member.member()
+                            + "' with arity " + call.arguments().size() + " on " + actorClass.name());
+                }
+                Ast.MethodDecl method = target.method();
+                if (!method.isActorEntry()) {
+                    throw new IllegalArgumentException("ordinary actor method '" + actorClass.name() + "." + method.name()
+                            + "' is internal and cannot be called through ActorRef");
+                }
+                if (method.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException("actor method '" + actorClass.name() + "." + method.name()
+                            + "' is private");
+                }
+                String label = "actor method " + actorClass.name() + "." + method.name();
+                validateCallTypeArgumentMarker(call, method.genericParameters(), label);
+                Map<String, Type> bindings = new HashMap<>(classGenericBindings(target.owner(), target.ownerType()));
+                bindings.putAll(explicitGenericBindings(method.genericParameters(), call.typeArguments(), generics, self, label));
+                Type result = checkGenericCallable(
+                        method.genericParameters(),
+                        method.parameters(),
+                        method.returnType(),
+                        call.arguments(),
+                        env, generics, self,
+                        target.ownerType(),
+                        bindings,
+                        label);
+                return new Named("Future", List.of(result));
+            }
+        }
+
+        throw new IllegalArgumentException(
+                "spawn target must be an actor/isoactor callable, an actor class constructor, or an ActorRef actor method");
+    }
+
+    private void validateActorConstructorArguments(
+            Ast.ClassDecl klass,
+            Named nominal,
+            List<Ast.Expr> arguments,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        List<ResolvedField> fields = effectiveFieldTargets(klass, nominal, new LinkedHashSet<>());
+        if (arguments.size() > fields.size()) {
+            throw new IllegalArgumentException("actor constructor for " + klass.name() + " received too many positional fields");
+        }
+        for (int i = 0; i < fields.size(); i++) {
+            ResolvedField resolvedField = fields.get(i);
+            Ast.FieldDecl field = resolvedField.field();
+            if (i < arguments.size()) {
+                Type fieldPattern = classFieldType(resolvedField.owner(), field);
+                Type expected = substituteGenerics(
+                        fieldPattern,
+                        classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
+                requireAssignable(
+                        typeOf(arguments.get(i), env, generics, self),
+                        expected,
+                        "actor constructor field " + field.name());
+            } else if (field.initializer() == null) {
+                throw new IllegalArgumentException(
+                        "actor constructor for " + klass.name() + " is missing field '" + field.name() + "'");
+            }
+        }
+    }
+
+    private void rejectUnsafeParallelActorFieldRead(
+            Ast.MemberExpr member,
+            Ast.FieldDecl field,
+            Type fieldType) {
+        if (currentActorMethodKind != Ast.ActorMethodKind.PARALLEL) return;
+        if (!(member.receiver() instanceof Ast.NameExpr receiverName) || !receiverName.name().equals("self")) return;
+
+        boolean stableBinding = field.bindingKind() != Ast.BindingKind.LET;
+        boolean explicitLockHandle = fieldType instanceof Named named
+                && (named.name().equals("Mutex") || named.name().equals("SharedMutex"));
+        boolean immutableSharedValue = stableBinding
+                && isSharedSafe(fieldType, new LinkedHashSet<>(), Map.of());
+
+        if ((explicitLockHandle && stableBinding) || immutableSharedValue) return;
+
+        throw new IllegalArgumentException(
+                "parallel actor method cannot directly read mutable actor field '" + field.name()
+                        + "'; use an ordinary actor helper method, an immutable Mutex/SharedMutex handle, "
+                        + "or an exclusive actor method");
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -1129,6 +1317,13 @@ public final class TypeChecker {
             if (klass != null) {
                 ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                 if (field != null) {
+                    if (currentActorMethodKind == Ast.ActorMethodKind.PARALLEL
+                            && member.receiver() instanceof Ast.NameExpr receiverName
+                            && receiverName.name().equals("self")) {
+                        throw new IllegalArgumentException(
+                                "parallel actor method cannot directly mutate actor field '" + member.member()
+                                        + "'; use an ordinary actor helper method, Mutex/SharedMutex, or an exclusive actor method");
+                    }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
