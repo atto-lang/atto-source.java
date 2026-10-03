@@ -217,6 +217,10 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalArgumentException("maxCompensatingThreads must be >= 0");
             }
             if (maxActors <= 0) throw new IllegalArgumentException("maxActors must be > 0");
+            if (maxActors > 1_000_000) {
+                throw new IllegalArgumentException(
+                        "maxActors cannot exceed 1,000,000; use multiple supervised runtimes instead");
+            }
         }
 
         /**
@@ -854,9 +858,13 @@ public final class ActorRuntime implements AutoCloseable {
         private DispatcherGroup(DispatcherConfig config, String prefix) {
             this.config = Objects.requireNonNull(config);
             this.maxActorMemoryBytes = configuredProcessActorMemoryLimit();
-            int readyQueueCapacity = config.maxActors() == Integer.MAX_VALUE
-                    ? Integer.MAX_VALUE
-                    : config.maxActors() + 1;
+            int rootPermits = Math.max(1, config.sharedParallelism() - 1);
+            int readyQueueCapacity;
+            try {
+                readyQueueCapacity = Math.addExact(config.maxActors(), rootPermits);
+            } catch (ArithmeticException overflow) {
+                throw new IllegalArgumentException("dispatcher ready-queue capacity overflow", overflow);
+            }
             this.privateDispatcher = newDispatcher(
                     config.privateParallelism(),
                     readyQueueCapacity,
@@ -876,9 +884,7 @@ public final class ActorRuntime implements AutoCloseable {
                     namedFactory(prefix + "untrusted-watchdog-"));
             this.messageWatchdog = newUntrustedWatchdog(
                     namedFactory(prefix + "actor-turn-watchdog-"));
-            this.rootSlots = new Semaphore(
-                    Math.max(1, config.sharedParallelism() - 1),
-                    true);
+            this.rootSlots = new Semaphore(rootPermits, true);
         }
 
         private synchronized void reserveActor(ActorKind kind) {
