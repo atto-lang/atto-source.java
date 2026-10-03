@@ -196,6 +196,9 @@ public final class ActorRuntime implements AutoCloseable {
     private final Object runtimeLifecycleLock = new Object();
     private final Set<SyncCell<?>> syncCells = ConcurrentHashMap.newKeySet();
     private final Set<Shared<?>> sharedValues = ConcurrentHashMap.newKeySet();
+    /** Main + all shared actors inhabit this semantic memory slot. */
+    private final Object sharedMemorySlot = new Object();
+    private final MemorySlotSingletonRegistry slotSingletons;
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
@@ -235,6 +238,7 @@ public final class ActorRuntime implements AutoCloseable {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        this.slotSingletons = new MemorySlotSingletonRegistry(this);
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
                 dispatcherConfig.maxActors(),
@@ -248,6 +252,27 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    public MemorySlotSingletonRegistry singletons() {
+        return slotSingletons;
+    }
+
+    /**
+     * Semantic memory slot, independent of carrier thread identity.
+     * Main/host and every shared actor share one slot. Every private/isolated
+     * actor gets its own slot.
+     */
+    Object currentMemorySlotKey() {
+        ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
+        if (current == null) return sharedMemorySlot;
+        if (current.runtime() != this) {
+            throw new SecurityException(
+                    "cannot resolve a memory-slot singleton through another ActorRuntime");
+        }
+        return current.kind() == ActorKind.SHARED
+                ? sharedMemorySlot
+                : current.executionDomain();
+    }
 
     /**
      * Installs a host-owned hook invoked exactly once when an actor execution
@@ -2547,6 +2572,7 @@ public final class ActorRuntime implements AutoCloseable {
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
         sharedValues.clear();
         sharedMemoryBytes.set(0L);
+        slotSingletons.close();
 
         if (interrupted) Thread.currentThread().interrupt();
         if (!stillRunning.isEmpty() || interrupted) {
@@ -2670,6 +2696,15 @@ public final class ActorRuntime implements AutoCloseable {
             finalized = true;
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
+            if (kind == ActorKind.PRIVATE) {
+                try {
+                    slotSingletons.releaseSlot(executionDomain);
+                } catch (RuntimeException ignored) {
+                    // Registry removes/nulls slot state before running optional
+                    // cleanup, so reclamation remains deterministic even when
+                    // user cleanup reports failure.
+                }
+            }
             try {
                 actorExitHook.accept(executionDomain);
             } catch (VirtualMachineError | ThreadDeath fatal) {
