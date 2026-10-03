@@ -90,6 +90,47 @@ final class HttpActorTransportOwnershipTest {
     }
 
     @Test
+    void httpLeaseCannotCrossActorRuntimeBoundaries() {
+        try (ActorRuntime runtimeA = new ActorRuntime();
+             ActorRuntime runtimeB = new ActorRuntime()) {
+            var lease = runtimeA.leaseHttpTransport(null, new RecordingResponse());
+
+            SecurityException rejected = assertThrows(
+                    SecurityException.class,
+                    () -> runtimeB.<String>spawnPrivateWithHttp(
+                            IsolatePolicy.developer(),
+                            lease,
+                            ignored -> (message, turn) -> turn.self().stop()));
+
+            assertTrue(rejected.getMessage().contains("different ActorRuntime"));
+            assertTrue(lease.ownedBySupervisor());
+            assertFalse(lease.closed());
+        }
+    }
+
+    @Test
+    void compatibilitySpawnRollbackClosesNewLease() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            RecordingResponse response = new RecordingResponse();
+            Object capturedHostState = new Object();
+
+            assertThrows(
+                    SecurityException.class,
+                    () -> runtime.<String>spawnUntrusted(
+                            IsolatePolicy.untrustedActor(),
+                            ActorRuntime.UntrustedActorLimits.defaults(),
+                            null,
+                            response,
+                            ignored -> {
+                                capturedHostState.hashCode();
+                                return (message, turn) -> turn.self().stop();
+                            }));
+
+            assertEquals(1, response.closeCalls.get());
+        }
+    }
+
+    @Test
     void untrustedActorCannotReceiveReusableHttpLease() {
         try (ActorRuntime runtime = new ActorRuntime()) {
             var lease = runtime.leaseHttpTransport(
