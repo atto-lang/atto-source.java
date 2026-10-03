@@ -647,6 +647,23 @@ public final class TypeChecker {
         }
 
         if (expr instanceof Ast.CallExpr call) {
+            if (call.callee() instanceof Ast.MemberExpr symbolCall
+                    && symbolCall.receiver() instanceof Ast.NameExpr symbolNamespace
+                    && symbolNamespace.name().equals("Symbol")) {
+                if (symbolCall.member().equals("local")) {
+                    throw processEffectError(where,
+                            "actor-local Symbol construction 'Symbol.local(...)'");
+                }
+                if (!symbolCall.member().equals("process")
+                        && !symbolCall.member().equals("stable")) {
+                    throw processEffectError(where,
+                            "unknown Symbol factory member '" + symbolCall.member() + "'");
+                }
+                for (Ast.Expr arg : call.arguments()) {
+                    validateProcessOwnedExpr(processOwner, processClass, arg, locals, where);
+                }
+                return;
+            }
             if (call.callee() instanceof Ast.NameExpr name && !locals.contains(name.name())) {
                 Ast.FunctionDecl target = findFunction(name.name());
                 if (target != null) {
@@ -959,6 +976,14 @@ public final class TypeChecker {
             return isPureSingletonInitializer(created.arguments().getFirst(), initializedFields);
         }
         if (expr instanceof Ast.CallExpr call
+                && call.callee() instanceof Ast.MemberExpr member
+                && member.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Symbol")
+                && (member.member().equals("process") || member.member().equals("stable"))
+                && call.arguments().size() == 1) {
+            return isPureSingletonInitializer(call.arguments().getFirst(), initializedFields);
+        }
+        if (expr instanceof Ast.CallExpr call
                 && call.callee() instanceof Ast.NameExpr name
                 && name.name().equals("Some")
                 && call.arguments().size() == 1) {
@@ -1185,6 +1210,7 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process")) return new Named(name.name(), List.of());
+            if (name.name().equals("Symbol")) return new Named("$SymbolFactory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -1412,6 +1438,14 @@ public final class TypeChecker {
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             }
+            if (receiver instanceof Named named && named.name().equals("$SymbolFactory")) {
+                return switch (member.member()) {
+                    case "local", "process", "stable" ->
+                            new Function(List.of(Primitive.STRING), new Named("Symbol", List.of()));
+                    default -> throw new IllegalArgumentException(
+                            "unknown Symbol member '" + member.member() + "'");
+                };
+            }
             if (member.receiver() instanceof Ast.NameExpr name && name.name().equals("process")) return Unknown.INSTANCE;
             if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
 
@@ -1475,7 +1509,7 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Symbol does not accept type arguments");
                 }
                 if (created.arguments().size() != 1) {
-                    throw new IllegalArgumentException("new Symbol(...) expects exactly one String key");
+                    throw new IllegalArgumentException("new Symbol(...) expects exactly one UUID String");
                 }
                 Type keyType = typeOf(created.arguments().getFirst(), env, generics, self);
                 if (!isStringLike(keyType)) {
