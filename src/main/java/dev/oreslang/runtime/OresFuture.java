@@ -93,6 +93,21 @@ public final class OresFuture<T> extends CompletableFuture<T> {
     }
 
     @Override
+    public CompletableFuture<T> orTimeout(long timeout, java.util.concurrent.TimeUnit unit) {
+        throw new UnsupportedOperationException(
+                "OresFuture completion is runtime-owned; use an Oreslang timeout combinator");
+    }
+
+    @Override
+    public CompletableFuture<T> completeOnTimeout(
+            T value,
+            long timeout,
+            java.util.concurrent.TimeUnit unit) {
+        throw new UnsupportedOperationException(
+                "OresFuture completion is runtime-owned; use an Oreslang timeout combinator");
+    }
+
+    @Override
     public void obtrudeValue(T value) {
         throw new UnsupportedOperationException("OresFuture completion is runtime-owned");
     }
