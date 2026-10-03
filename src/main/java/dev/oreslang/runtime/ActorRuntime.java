@@ -930,6 +930,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicInteger privateActorCount = new AtomicInteger();
     private final AtomicInteger sharedActorCount = new AtomicInteger();
     private final AtomicInteger untrustedActorCount = new AtomicInteger();
+    private final AtomicInteger activeRootTasks = new AtomicInteger();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1093,9 +1094,12 @@ public final class ActorRuntime implements AutoCloseable {
             throw new CancellationException(
                     "interrupted while waiting for a shared/root execution lane");
         }
-        if (closed.get()) {
-            dispatcherGroup.rootSlots.release();
-            throw new IllegalStateException("actor runtime is closed");
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) {
+                dispatcherGroup.rootSlots.release();
+                throw new IllegalStateException("actor runtime is closed");
+            }
+            activeRootTasks.incrementAndGet();
         }
 
         CompletableFuture<T> completion = new CompletableFuture<>();
@@ -1122,6 +1126,15 @@ public final class ActorRuntime implements AutoCloseable {
                 Thread.interrupted();
                 ACTOR_CARRIER.remove();
                 dispatcherGroup.rootSlots.release();
+                synchronized (runtimeLifecycleLock) {
+                    int remaining = activeRootTasks.decrementAndGet();
+                    if (remaining < 0) {
+                        activeRootTasks.incrementAndGet();
+                        throw new IllegalStateException(
+                                "root task lifecycle accounting underflow");
+                    }
+                    runtimeLifecycleLock.notifyAll();
+                }
             }
         };
 
@@ -1130,6 +1143,11 @@ public final class ActorRuntime implements AutoCloseable {
         } catch (RejectedExecutionException rejected) {
             sharedRejectedTurns.incrementAndGet();
             dispatcherGroup.rootSlots.release();
+            synchronized (runtimeLifecycleLock) {
+                int remaining = activeRootTasks.decrementAndGet();
+                if (remaining < 0) activeRootTasks.incrementAndGet();
+                runtimeLifecycleLock.notifyAll();
+            }
             throw rejected;
         }
 
@@ -3734,6 +3752,26 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
+        boolean rootStillRunning = activeRootTasks.get() != 0;
+        if (!interrupted && rootStillRunning) {
+            synchronized (runtimeLifecycleLock) {
+                while (activeRootTasks.get() != 0) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) break;
+                    try {
+                        long millis = Math.max(
+                                1L,
+                                TimeUnit.NANOSECONDS.toMillis(remaining));
+                        runtimeLifecycleLock.wait(millis);
+                    } catch (InterruptedException waitInterrupted) {
+                        interrupted = true;
+                        break;
+                    }
+                }
+                rootStillRunning = activeRootTasks.get() != 0;
+            }
+        }
+
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
@@ -3741,7 +3779,7 @@ public final class ActorRuntime implements AutoCloseable {
         sharedMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || interrupted) {
+        if (!stillRunning.isEmpty() || rootStillRunning || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
                     if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
@@ -3750,8 +3788,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             throw new IllegalStateException(
-                    "ActorRuntime close did not observe full actor termination: "
-                            + stillRunning.size() + " actor(s) still running");
+                    "ActorRuntime close did not observe full guest termination: "
+                            + stillRunning.size() + " actor(s), "
+                            + activeRootTasks.get() + " root task(s) still running");
         }
         actors.clear();
         actorCount.set(0);
@@ -4209,15 +4248,21 @@ public final class ActorRuntime implements AutoCloseable {
 
         private void runBatch() {
             ACTOR_CARRIER.set(Boolean.TRUE);
+            boolean turnActive = beginTurn();
             try {
+                if (!turnActive) return;
                 turnExecutor.execute(this::runBatchEntered);
             } catch (Throwable failure) {
                 fail(failure);
-                scheduled.set(false);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
+                if (turnActive) endTurn();
+                scheduled.set(false);
+                if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
+                    schedule();
+                }
                 ACTOR_CARRIER.remove();
             }
         }
@@ -4228,10 +4273,7 @@ public final class ActorRuntime implements AutoCloseable {
             currentActor.set(this);
             CURRENT_ACTOR_EXECUTION.set(new ActorExecutionContext(
                     ActorRuntime.this, ref.id(), kind, policy, executionDomain));
-            boolean turnActive = beginTurn();
             try {
-                if (!turnActive) return;
-
                 ActorContext<M> context = new ActorContext<>() {
                     @Override public ActorRef<M> self() { return ref; }
                     @Override public ActorRuntime runtime() { return ActorRuntime.this; }
@@ -4314,19 +4356,12 @@ public final class ActorRuntime implements AutoCloseable {
                 if (failure instanceof ThreadDeath fatal) throw fatal;
                 if (failure instanceof LinkageError fatal) throw fatal;
             } finally {
-                if (turnActive) endTurn();
                 activeCarrier = null;
                 CURRENT_ACTOR_EXECUTION.remove();
                 currentActor.remove();
                 // Runtime watchdog interrupts are control-plane signals and
                 // must never leak into the next actor using this pooled carrier.
                 Thread.interrupted();
-                scheduled.set(false);
-
-                if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
-                    // Bounded batch/throughput handoff for dispatcher fairness.
-                    schedule();
-                }
             }
         }
 
