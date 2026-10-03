@@ -133,6 +133,8 @@ Sequence destructuring requires a returned tuple or array/list. Finite tuples ar
 
 ## Classes, receivers, multiple inheritance, and interfaces
 
+Class headers use `as` as the required body delimiter. The canonical form is `define class Name as ... end`; when `extends` or `implements` are present, `as` follows the complete class header.
+
 Methods omit `fnc`. Instance methods always have an implicit receiver named `self`.
 
 ```ores
