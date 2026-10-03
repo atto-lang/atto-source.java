@@ -11,7 +11,9 @@ define module http_wire
   }
 
   pub fnc supported_scheme(string scheme) => bool {
-    return scheme == "http" || scheme == "https";
+    // HTTPS becomes true only when the native TLS transport is implemented.
+    // Never silently send plaintext to port 443.
+    return scheme == "http";
   }
 
   pub fnc default_port(string scheme) => int {
