@@ -108,6 +108,18 @@ public final class OresSymbol {
         return internProcess(literal, true);
     }
 
+    /** Built-in protocol identity such as Symbol.iterator. */
+    public static OresSymbol wellKnown(String name, IsolatePolicy policy) {
+        requireTrusted(policy, "well-known Symbol");
+        String validated = validateKey(name);
+        if (validated.length() > MAX_LITERAL_NAME_LENGTH || !IDENTIFIER.matcher(validated).matches()) {
+            throw new IllegalArgumentException(
+                    "well-known Symbol name must be an identifier of at most "
+                            + MAX_LITERAL_NAME_LENGTH + " characters");
+        }
+        return internProcess("Symbol." + validated, true);
+    }
+
     private static OresSymbol internProcess(String key, boolean compilerLiteral) {
         String normalized = validateKey(key);
         OresSymbol existing = PROCESS_SYMBOLS.get(normalized);
@@ -392,9 +404,12 @@ public final class OresSymbol {
     @Override
     public String toString() {
         return switch (scope) {
-            case PROCESS -> IDENTIFIER.matcher(key).matches()
-                    ? ":" + key
-                    : "Symbol.process(\"" + escaped(key) + "\")";
+            case PROCESS -> key.startsWith("Symbol.")
+                    && IDENTIFIER.matcher(key.substring("Symbol.".length())).matches()
+                    ? key
+                    : IDENTIFIER.matcher(key).matches()
+                            ? ":" + key
+                            : "Symbol.process(\"" + escaped(key) + "\")";
             case STABLE -> "Symbol.stable(\"" + escaped(key) + "\")";
             case LOCAL -> "Symbol.local(\"" + escaped(key) + "\")";
         };
