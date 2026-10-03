@@ -52,6 +52,11 @@ public final class HttpTransportLease implements AutoCloseable {
     }
 
     @FunctionalInterface
+    public interface Operation<T> {
+        T run();
+    }
+
+    @FunctionalInterface
     public interface IoOperation<T> {
         T run() throws IOException;
     }
@@ -89,6 +94,26 @@ public final class HttpTransportLease implements AutoCloseable {
             owner = Owner.actor(target);
         } finally {
             gate.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Run one non-throwing transport metadata operation while proving actor
+     * ownership.
+     */
+    public <T> T withActorOperation(
+            ActorRuntime.ActorId actorId,
+            String operation,
+            Operation<T> action) {
+        Objects.requireNonNull(actorId, "actorId");
+        Objects.requireNonNull(operation, "operation");
+        Objects.requireNonNull(action, "action");
+        gate.readLock().lock();
+        try {
+            requireActorOwnerLocked(actorId, operation);
+            return action.run();
+        } finally {
+            gate.readLock().unlock();
         }
     }
 
