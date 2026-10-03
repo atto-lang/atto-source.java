@@ -1,5 +1,7 @@
 package dev.oreslang.ast;
 
+import dev.oreslang.symbol.SymbolNames;
+
 import java.util.List;
 
 public final class Ast {
@@ -337,17 +339,10 @@ public final class Ast {
      * through the bounded process symbol interner; untrusted isolates reject it.
      */
     public record Symbol(String name) {
-        public static final int MAX_NAME_LENGTH = 128;
+        public static final int MAX_NAME_LENGTH = SymbolNames.MAX_NAME_LENGTH;
 
         public Symbol {
-            if (name == null || name.isBlank()) throw new IllegalArgumentException("symbol name cannot be blank");
-            if (name.length() > MAX_NAME_LENGTH) {
-                throw new IllegalArgumentException("symbol name exceeds " + MAX_NAME_LENGTH + " characters");
-            }
-            if (!name.matches("[A-Za-z_][A-Za-z0-9_]*")) {
-                throw new IllegalArgumentException(
-                        "symbol name must be an identifier ([A-Za-z_][A-Za-z0-9_]*)");
-            }
+            name = SymbolNames.validate(name);
         }
     }
     public record NameExpr(String name) implements Expr { }
