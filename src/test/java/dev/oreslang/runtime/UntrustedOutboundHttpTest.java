@@ -206,6 +206,57 @@ final class UntrustedOutboundHttpTest {
     }
 
     @Test
+    void oversizedOutboundMetadataAndUrisNeverReachTransport() throws Exception {
+        AtomicInteger transportCalls = new AtomicInteger();
+        ActorRuntime.OutboundHttpTransport transport = request -> {
+            transportCalls.incrementAndGet();
+            return CompletableFuture.completedFuture(
+                    new ActorRuntime.OutboundHttpResponse(200, Map.of(), new byte[0]));
+        };
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.<String>spawnUntrusted(
+                    IsolatePolicy.untrustedActor(),
+                    ActorRuntime.UntrustedActorLimits.defaults(),
+                    null,
+                    null,
+                    transport,
+                    ignored -> (message, turn) -> {
+                        var http = turn.outboundHttp().orElseThrow();
+
+                        try {
+                            http.send(new ActorRuntime.OutboundHttpRequest(
+                                    "GET",
+                                    URI.create("https://example.test/" + "x".repeat(9_000)),
+                                    Map.of(),
+                                    new byte[0]));
+                            throw new AssertionError("expected oversized URI rejection");
+                        } catch (ActorRuntime.HttpRequestLimitExceededException expected) {
+                            // expected
+                        }
+
+                        try {
+                            http.send(new ActorRuntime.OutboundHttpRequest(
+                                    "GET",
+                                    URI.create("https://example.test"),
+                                    Map.of("X-Large", java.util.List.of("x".repeat(70_000))),
+                                    new byte[0]));
+                            throw new AssertionError("expected oversized header rejection");
+                        } catch (ActorRuntime.HttpRequestLimitExceededException expected) {
+                            // expected
+                        }
+
+                        turn.self().stop();
+                    });
+
+            ref.send("run");
+            assertTrue(ref.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty(), () -> "actor failed: " + ref.failure());
+            assertEquals(0, transportCalls.get());
+        }
+    }
+
+    @Test
     void configuredConcurrencyCannotExceedHardCeiling() {
         assertThrows(
                 IllegalArgumentException.class,
