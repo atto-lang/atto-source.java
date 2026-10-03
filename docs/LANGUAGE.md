@@ -342,10 +342,10 @@ val Result<int, String> parsed = Ok(123);
 val same = parsed.unwrap_safe();            // Ok(123)
 ```
 
-- `Option<T>.unwrap() =>T` returns the `Some` payload and panics on `None`.
-- `Option<T>.unwrap_safe() =>Result<T, OptionUnwrapError>` never panics for absence.
-- `Result<T,E>.unwrap() =>T` returns the `Ok` payload and panics on `Err`.
-- `Result<T,E>.unwrap_safe() =>Result<T,E>` never panics; it preserves the error-as-value carrier.
+- `Option<T>.unwrap(): T` returns the `Some` payload and panics on `None`.
+- `Option<T>.unwrap_safe(): Result<T, OptionUnwrapError>` never panics for absence.
+- `Result<T,E>.unwrap(): T` returns the `Ok` payload and panics on `Err`.
+- `Result<T,E>.unwrap_safe(): Result<T,E>` never panics; it preserves the error-as-value carrier.
 - `expect(String)` is the descriptive panicking form; `unwrap_or(T)` supplies a fallback.
 - `is_some()/is_none()` and `is_ok()/is_err()` inspect variants without extraction.
 
