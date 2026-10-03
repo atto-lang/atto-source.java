@@ -1734,6 +1734,11 @@ public final class TypeChecker {
             validateSingletonTransportExpr(conditional.whenTrue(), currentModule);
             validateSingletonTransportExpr(conditional.whenFalse(), currentModule);
         } else if (expr instanceof Ast.MemberExpr member) {
+            Ast.ClassDecl qualifiedSingletonClass = qualifiedSingletonClass(member);
+            if (qualifiedSingletonClass != null) {
+                throw new IllegalArgumentException("singleton class handles cannot be extracted; call and await "
+                        + qualifiedSingletonClass.name() + ".method(...) directly");
+            }
             if (member.receiver() instanceof Ast.MemberExpr exported
                     && isExternalSingletonProxyFieldMember(exported, currentModule)) {
                 Ast.NameExpr namespace = (Ast.NameExpr) exported.receiver();
@@ -1774,6 +1779,14 @@ public final class TypeChecker {
             validateSingletonTransportExpr(call.callee(), currentModule);
         }
         for (Ast.Expr argument : call.arguments()) validateSingletonTransportExpr(argument, currentModule);
+    }
+
+    private Ast.ClassDecl qualifiedSingletonClass(Ast.MemberExpr member) {
+        if (!(member.receiver() instanceof Ast.NameExpr namespace)) return null;
+        Ast.ModuleDecl module = modules.get(namespace.name());
+        if (module == null) return null;
+        Ast.ClassDecl klass = classes.get(module.name() + "." + member.member());
+        return klass != null && klass.singleton() ? klass : null;
     }
 
     private boolean isExternalSingletonProxyFieldMember(Ast.MemberExpr member, String currentModule) {
@@ -1832,6 +1845,17 @@ public final class TypeChecker {
         if (call.callee() instanceof Ast.MemberExpr method
                 && method.receiver() instanceof Ast.MemberExpr exported
                 && exported.receiver() instanceof Ast.NameExpr namespace) {
+            Ast.ClassDecl qualifiedSingletonClass = qualifiedSingletonClass(exported);
+            if (qualifiedSingletonClass != null) {
+                Ast.MethodDecl target = findMethod(
+                        qualifiedSingletonClass,
+                        method.member(),
+                        call.arguments().size(),
+                        new LinkedHashSet<>());
+                return target != null
+                        && target.visibility() == Ast.Visibility.PUBLIC
+                        && !target.isStatic();
+            }
             Ast.ModuleDecl owner = modules.get(namespace.name());
             if (owner == null || !owner.singleton() || owner.name().equals(currentModule)) return false;
             for (Ast.Decl decl : owner.declarations()) {
