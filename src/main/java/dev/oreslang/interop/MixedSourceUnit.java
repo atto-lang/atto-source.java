@@ -296,10 +296,11 @@ public final class MixedSourceUnit {
             if (keyword.equals("java") && word.equals("do")) {
                 int next = skipWhitespaceAndComments(source, i);
                 int nextEnd = identifierEnd(source, next);
+                int javaOpen = skipWhitespaceAndComments(source, nextEnd);
                 boolean followedByJava = nextEnd > next
                         && source.substring(next, nextEnd).equals("java")
-                        && nextEnd < source.length()
-                        && source.charAt(skipWhitespaceAndComments(source, nextEnd)) == '{';
+                        && javaOpen < source.length()
+                        && source.charAt(javaOpen) == '{';
 
                 if (awaitingConditionalDo && followedByJava) {
                     throw new IllegalArgumentException(
@@ -317,7 +318,7 @@ public final class MixedSourceUnit {
                 }
 
                 if (followedByJava) {
-                    int open = skipWhitespaceAndComments(source, nextEnd);
+                    int open = javaOpen;
                     int close = matchingBrace(source, open);
                     int blockEnd = consumeOptionalStatementSemicolon(source, close + 1);
                     islands.add(new Island(
