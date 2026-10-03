@@ -1211,15 +1211,43 @@ public final class TypeChecker {
         boolean stableBinding = field.bindingKind() != Ast.BindingKind.LET;
         boolean explicitLockHandle = fieldType instanceof Named named
                 && (named.name().equals("Mutex") || named.name().equals("SharedMutex"));
-        boolean immutableSharedValue = stableBinding
-                && isSharedSafe(fieldType, new LinkedHashSet<>(), Map.of());
+        boolean deeplyReadOnlyValue = stableBinding && isParallelReadOnlyFieldType(fieldType);
 
-        if ((explicitLockHandle && stableBinding) || immutableSharedValue) return;
+        if ((explicitLockHandle && stableBinding) || deeplyReadOnlyValue) return;
 
         throw new IllegalArgumentException(
                 "parallel actor method cannot directly read mutable actor field '" + field.name()
                         + "'; use an ordinary actor helper method, an immutable Mutex/SharedMutex handle, "
                         + "or an exclusive actor method");
+    }
+
+    private boolean isParallelReadOnlyFieldType(Type type) {
+        if (type instanceof Primitive primitive) return primitive != Primitive.VOID;
+        if (type instanceof StringLiteral) return true;
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) {
+                if (!isParallelReadOnlyFieldType(element)) return false;
+            }
+            return true;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) {
+                if (!isParallelReadOnlyFieldType(member)) return false;
+            }
+            return true;
+        }
+        if (type instanceof Union union) {
+            for (Type option : union.options()) {
+                if (!isParallelReadOnlyFieldType(option)) return false;
+            }
+            return true;
+        }
+
+        // Lists/arrays, source classes, DynamicStruct, Option/Result wrappers,
+        // actor references/capabilities, and unresolved named types are not
+        // assumed deeply immutable merely because their element/field types are
+        // otherwise sendable. PARALLEL code must synchronize their access.
+        return false;
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
