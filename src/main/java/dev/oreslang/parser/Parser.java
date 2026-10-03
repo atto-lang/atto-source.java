@@ -64,7 +64,7 @@ public final class Parser {
                 throw error(previous(), "expected module, class, or interface after 'define'");
             }
 
-            Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
+            Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers, false);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
             rootDeclarations.add(declaration);
         }
@@ -161,7 +161,7 @@ public final class Parser {
         throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
     }
 
-    private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
+    private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers, boolean insideModule) {
         if (match(ACTOR, ISOACTOR)) {
             Token actorToken = previous();
             boolean isolated = actorToken.type() == ISOACTOR;
@@ -177,8 +177,24 @@ public final class Parser {
             return parseActorClass(actorKind);
         }
         if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
-        if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
-        if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
+        if (match(FNC)) {
+            if (insideModule && !modifiers.isStatic) {
+                throw error(previous(), "module functions are static; declare 'static fnc'");
+            }
+            if (!insideModule && modifiers.isStatic) {
+                throw error(previous(), "'static fnc' is valid inside modules/classes, not at file scope");
+            }
+            return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, Ast.ActorKind.NONE, insideModule);
+        }
+        if (match(ROUTINE)) {
+            if (insideModule && !modifiers.isStatic) {
+                throw error(previous(), "module routines are static; declare 'static routine'");
+            }
+            if (!insideModule && modifiers.isStatic) {
+                throw error(previous(), "'static routine' is valid inside modules/classes, not at file scope");
+            }
+            return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, Ast.ActorKind.NONE, insideModule);
+        }
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
@@ -186,16 +202,21 @@ public final class Parser {
         return null;
     }
 
-    private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
-        return parseFunction(annotations, modifiers, kind, Ast.ActorKind.NONE);
+    private Ast.FunctionDecl parseFunction(
+            List<Ast.Annotation> annotations,
+            Modifiers modifiers,
+            Ast.CallableKind kind,
+            Ast.ActorKind actorKind) {
+        return parseFunction(annotations, modifiers, kind, actorKind, false);
     }
 
     private Ast.FunctionDecl parseFunction(
             List<Ast.Annotation> annotations,
             Modifiers modifiers,
             Ast.CallableKind kind,
-            Ast.ActorKind actorKind) {
-        if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
+            Ast.ActorKind actorKind,
+            boolean allowStatic) {
+        if (modifiers.isStatic && !allowStatic) throw error(previous(), "'static' is only valid for module/class callables");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
