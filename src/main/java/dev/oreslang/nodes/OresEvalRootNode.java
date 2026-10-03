@@ -753,6 +753,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
+            if (expr instanceof Ast.SuperExpr parentDispatch) {
+                Object receiver = env.lookup("self");
+                if (!(receiver instanceof OresObject object)) {
+                    throw new IllegalArgumentException("super.Parent.method(...) is only valid inside an instance method");
+                }
+                return new SuperFacade(object, parentDispatch.parentName());
+            }
             if (expr instanceof Ast.AssignExpr assignment) {
                 Object value = eval(assignment.value(), env);
                 if (assignment.target() instanceof Ast.NameExpr target) {
@@ -825,6 +832,14 @@ public final class OresEvalRootNode extends RootNode {
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
                     List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+                    if (receiver instanceof SuperFacade parentDispatch) {
+                        return invokeSuperMethod(
+                                parentDispatch.receiver(),
+                                parentDispatch.parentName(),
+                                methodCall.member(),
+                                args,
+                                env.singletonState);
+                    }
                     if (receiver instanceof OresObject object) {
                         return invokeMethod(object, methodCall.member(), args, env.singletonState);
                     }
@@ -1124,6 +1139,10 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("singleton object proxy members must be invoked directly and awaited: "
                         + proxy.module().name() + "." + proxy.fieldName() + "." + name + "(...)");
             }
+            if (receiver instanceof SuperFacade parentDispatch) {
+                throw new IllegalArgumentException("super." + parentDispatch.parentName()
+                        + "." + name + " must be invoked directly; parent methods cannot be extracted as bound values");
+            }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
                 return new BoundMethod(object, name, singletonState);
@@ -1133,6 +1152,53 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             throw new IllegalArgumentException("cannot access member '" + name + "' on " + receiver);
+        }
+
+        private Object invokeSuperMethod(
+                OresObject receiver,
+                String requestedParent,
+                String name,
+                List<Object> args,
+                SingletonState singletonState) {
+            Ast.ClassDecl dispatchClass = runtimeDispatchClass(receiver, singletonState);
+            Ast.TypeRef parentRef = resolveDirectRuntimeParent(dispatchClass, requestedParent);
+            if (parentRef.name().equals("Object") || parentRef.name().equals("List")) {
+                throw new IllegalArgumentException("built-in parent '" + parentRef.name()
+                        + "' does not expose Oreslang parent-method dispatch");
+            }
+            Ast.ClassDecl parent = findClass(parentRef.name());
+            if (parent == null) {
+                throw new IllegalArgumentException("unknown direct parent class " + parentRef.name()
+                        + " for " + dispatchClass.name());
+            }
+            Ast.MethodDecl method = findMethod(parent, name, args.size(), new LinkedHashSet<>());
+            if (method == null) {
+                throw new IllegalArgumentException("no parent method " + parent.name() + "." + name
+                        + " with arity " + args.size());
+            }
+            return callMethod(receiver, parent, method, args, singletonState);
+        }
+
+        private Ast.TypeRef resolveDirectRuntimeParent(Ast.ClassDecl child, String requestedName) {
+            List<Ast.TypeRef> exact = child.parents().stream()
+                    .filter(parent -> parent.name().equals(requestedName))
+                    .toList();
+            if (exact.size() == 1) return exact.getFirst();
+
+            List<Ast.TypeRef> simple = child.parents().stream()
+                    .filter(parent -> {
+                        int dot = parent.name().lastIndexOf('.');
+                        String simpleName = dot < 0 ? parent.name() : parent.name().substring(dot + 1);
+                        return simpleName.equals(requestedName);
+                    })
+                    .toList();
+            if (simple.size() == 1) return simple.getFirst();
+            if (simple.size() > 1) {
+                throw new IllegalArgumentException("super." + requestedName
+                        + " is ambiguous because more than one direct parent has that simple name");
+            }
+            throw new IllegalArgumentException("super." + requestedName
+                    + " is invalid for class " + child.name() + ": super dispatch may name only a direct parent");
         }
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args, SingletonState singletonState) {
@@ -1254,6 +1320,8 @@ public final class OresEvalRootNode extends RootNode {
          * a first-class callback. Direct receiver.method(...) calls allocate no
          * bound-method object.
          */
+        private record SuperFacade(OresObject receiver, String parentName) { }
+
         private final class BoundMethod implements Invokable {
             private final OresObject receiver;
             private final String methodName;
