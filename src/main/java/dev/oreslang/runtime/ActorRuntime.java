@@ -1013,6 +1013,17 @@ public final class ActorRuntime implements AutoCloseable {
     private void validatePrivateBehaviorCapture(ActorId owner, String fieldName, Object value) {
         if (value == null || isScalar(value) || value instanceof Class<?>) return;
 
+        if (value instanceof OresSymbol symbol) {
+            if (symbol.scope() != OresSymbol.Scope.LOCAL
+                    || !symbol.domainId().equals(owner.value())) {
+                throw new SecurityException(
+                        "private actor behavior captured a Symbol from another identity domain in " + fieldName);
+            }
+            // LOCAL Symbols are immutable actor-owned identities. They may be
+            // retained by their owner but never sent or promoted to static state.
+            return;
+        }
+
         if (value instanceof PrivateMemoryBlock block) {
             if (!block.owner().equals(owner)) {
                 throw new SecurityException(
