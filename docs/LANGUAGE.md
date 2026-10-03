@@ -288,7 +288,9 @@ Oreslang has a dedicated immutable `Symbol` value for finite protocol tags:
 val Symbol action = :put;
 ```
 
-A symbol is **not** a string alias and it is not an Erlang-style globally interned atom. The JVM runtime represents it as an ordinary bounded, identifier-shaped, garbage-collected value. Equal symbols compare by value; source/runtime correctness never depends on object identity or on a process-global intern table. This removes the atom-table exhaustion failure mode while keeping concise pattern tags.
+A symbol is **not** a string alias. In trusted execution it is a canonical, process-runtime interned identity: every occurrence of the same symbol name resolves to the same `Symbol` object across the main execution path and trusted actors that share the runtime heap. The registry is strongly rooted, so ordinary/automatic GC never reclaims symbols or changes their identity.
+
+Unlike Erlang's historically unbounded atom table, Oreslang's process symbol table is bounded. Symbol names are identifier-shaped and limited in length, and the runtime caps the total number of interned symbols. Adversarial/untrusted isolates do not participate in this registry and cannot receive symbol-bearing messages; convert a tag to an explicitly validated string or another sandbox-safe protocol value before crossing that boundary.
 
 Strings remain real strings, arrays/lists remain collections, and numeric code-point lists are never printed or reinterpreted as strings merely because their contents happen to look textual. Variable capitalization has no semantic connection to symbols.
 
