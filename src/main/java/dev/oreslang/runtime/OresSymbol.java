@@ -5,6 +5,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
@@ -42,11 +43,12 @@ public final class OresSymbol {
     public static final int MAX_LIVE_SYMBOLS = MAX_PROCESS_SYMBOLS;
 
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
-    private static final Object LOCK = new Object();
+    private static final Object PROCESS_INSERT_LOCK = new Object();
+    private static final Object STABLE_INSERT_LOCK = new Object();
     private static final Object LOCAL_REGISTRY_KEY = new Object();
     private static final UUID PROCESS_DOMAIN = UUID.randomUUID();
-    private static final Map<String, OresSymbol> PROCESS_SYMBOLS = new HashMap<>();
-    private static final Map<UUID, OresSymbol> STABLE_SYMBOLS = new HashMap<>();
+    private static final ConcurrentHashMap<String, OresSymbol> PROCESS_SYMBOLS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, OresSymbol> STABLE_SYMBOLS = new ConcurrentHashMap<>();
     private static final AtomicLong NEXT_PROCESS_ID = new AtomicLong(1L);
     private static final AtomicLong NEXT_STABLE_ID = new AtomicLong(1L);
     private static int dynamicProcessSymbols;
@@ -101,8 +103,14 @@ public final class OresSymbol {
 
     private static OresSymbol internProcess(String key, boolean compilerLiteral) {
         String normalized = validateKey(key);
-        synchronized (LOCK) {
-            OresSymbol existing = PROCESS_SYMBOLS.get(normalized);
+        OresSymbol existing = PROCESS_SYMBOLS.get(normalized);
+        if (existing != null) return existing;
+
+        // Misses are rare compared with protocol-tag reads. Serialize only
+        // insertion/capacity reservation so the common canonical lookup stays
+        // monitor-free across actor carrier threads.
+        synchronized (PROCESS_INSERT_LOCK) {
+            existing = PROCESS_SYMBOLS.get(normalized);
             if (existing != null) return existing;
             if (PROCESS_SYMBOLS.size() >= MAX_PROCESS_SYMBOLS) {
                 throw new IllegalStateException(
@@ -134,8 +142,11 @@ public final class OresSymbol {
     public static OresSymbol stable(String uuidKey, IsolatePolicy policy) {
         requireTrusted(policy, "Symbol.stable");
         UUID stableId = validateStableKey(uuidKey);
-        synchronized (LOCK) {
-            OresSymbol existing = STABLE_SYMBOLS.get(stableId);
+        OresSymbol existing = STABLE_SYMBOLS.get(stableId);
+        if (existing != null) return existing;
+
+        synchronized (STABLE_INSERT_LOCK) {
+            existing = STABLE_SYMBOLS.get(stableId);
             if (existing != null) return existing;
             if (STABLE_SYMBOLS.size() >= MAX_STABLE_SYMBOLS) {
                 throw new IllegalStateException(
@@ -239,21 +250,15 @@ public final class OresSymbol {
     }
 
     public static int processRegistryEntries() {
-        synchronized (LOCK) {
-            return PROCESS_SYMBOLS.size();
-        }
+        return PROCESS_SYMBOLS.size();
     }
 
     public static int stableRegistryEntries() {
-        synchronized (LOCK) {
-            return STABLE_SYMBOLS.size();
-        }
+        return STABLE_SYMBOLS.size();
     }
 
     public static int liveRegistryEntries() {
-        synchronized (LOCK) {
-            return PROCESS_SYMBOLS.size() + STABLE_SYMBOLS.size();
-        }
+        return Math.addExact(PROCESS_SYMBOLS.size(), STABLE_SYMBOLS.size());
     }
 
     private static long nextProcessId() {
