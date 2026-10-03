@@ -741,8 +741,10 @@ final class GpuExecutionTest {
                 .findFirst().orElseThrow();
 
         String helperPrefix = "static inline int " + read.helperSymbol() + "(";
-        int helperStart = source.indexOf(helperPrefix);
-        assertTrue(helperStart >= 0);
+        int prototypeStart = source.indexOf(helperPrefix);
+        assertTrue(prototypeStart >= 0);
+        int helperStart = source.indexOf(helperPrefix, prototypeStart + helperPrefix.length());
+        assertTrue(helperStart > prototypeStart, "expected both helper prototype and definition");
         int helperEnd = source.indexOf(") {", helperStart);
         assertTrue(helperEnd > helperStart);
         String helperSignature = source.substring(helperStart, helperEnd);
