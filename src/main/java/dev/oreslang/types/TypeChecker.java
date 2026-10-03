@@ -2108,6 +2108,13 @@ public final class TypeChecker {
                 for (Map.Entry<String, Type> inherited : inheritedShape.members().entrySet()) {
                     String key = inherited.getKey();
                     if (isMethodShapeKey(key)) {
+                        String inheritedName = methodNameFromKey(key);
+                        int inheritedArity = methodArityFromKey(key);
+                        if (findInheritableMethod(parent, inheritedName, inheritedArity, new LinkedHashSet<>()) == null) {
+                            // Private parent methods are lexical implementation
+                            // details, not members inherited into the child.
+                            continue;
+                        }
                         String previousOrigin = inheritedMethodOrigins.putIfAbsent(key, parent.name());
                         if (previousOrigin != null && !localMethodKeys.contains(key)) {
                             throw new IllegalArgumentException(
@@ -2154,10 +2161,44 @@ public final class TypeChecker {
         return marker > 0 ? key.substring(0, marker) : key;
     }
 
+    private int methodArityFromKey(String key) {
+        int marker = key.lastIndexOf("$arity");
+        if (marker <= 0) throw new IllegalArgumentException("invalid method-shape key '" + key + "'");
+        return Integer.parseInt(key.substring(marker + "$arity".length()));
+    }
+
     private String displayMethodKey(String key) {
         int marker = key.lastIndexOf("$arity");
         if (marker <= 0) return key;
         return key.substring(0, marker) + "/" + key.substring(marker + "$arity".length());
+    }
+
+    private Ast.MethodDecl findInheritableMethod(
+            Ast.ClassDecl klass,
+            String name,
+            int arity,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return null;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic()
+                    && method.visibility() == Ast.Visibility.PUBLIC
+                    && method.name().equals(name)
+                    && method.arity() == arity) {
+                seen.remove(klass);
+                return method;
+            }
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null) continue;
+            Ast.MethodDecl inherited = findInheritableMethod(parent, name, arity, seen);
+            if (inherited != null) {
+                seen.remove(klass);
+                return inherited;
+            }
+        }
+        seen.remove(klass);
+        return null;
     }
 
     private void validateInheritedMethodOverrides(
@@ -2171,7 +2212,7 @@ public final class TypeChecker {
             for (Ast.TypeRef parentRef : klass.parents()) {
                 Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
                 if (parent == null) continue;
-                Ast.MethodDecl inherited = findMethod(
+                Ast.MethodDecl inherited = findInheritableMethod(
                         parent,
                         local.name(),
                         local.arity(),
