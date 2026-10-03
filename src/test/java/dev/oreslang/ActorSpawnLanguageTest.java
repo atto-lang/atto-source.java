@@ -124,4 +124,37 @@ final class ActorSpawnLanguageTest {
         assertTrue(rendered.contains("42"));
         assertTrue(rendered.contains("ActorId"));
     }
+
+    @Test
+    void untrustedActorCannotSpawnChildren() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub actor fnc child() => int {
+                          return 1;
+                        }
+
+                        pub untrusted actor fnc sandbox() => void {
+                          val denied = spawn child();
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("untrusted actors cannot spawn child actors"));
+    }
+
+    @Test
+    void trustedActorMaySpawnWithoutSynchronouslyWaiting() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub actor fnc child() => int {
+                  return 1;
+                }
+
+                pub actor routine parent() => void {
+                  val pending = spawn child();
+                  val id = pending.id;
+                  return;
+                }
+                """)));
+    }
+
 }
