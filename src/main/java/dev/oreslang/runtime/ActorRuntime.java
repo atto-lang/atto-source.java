@@ -151,6 +151,12 @@ public final class ActorRuntime implements AutoCloseable {
         public static ActorId create() { return new ActorId(UUID.randomUUID()); }
     }
 
+    public static final class SharedActorMemoryLimitException extends IllegalStateException {
+        public SharedActorMemoryLimitException(String message) {
+            super(message);
+        }
+    }
+
     public static final class ActorTerminatedException extends IllegalStateException {
         private final ActorId actorId;
         private final ActorKind actorKind;
@@ -1479,6 +1485,22 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Compiler/interpreter hook for persistent source-level shared actor state.
+     * The estimate is logical/quota-oriented rather than a JVM layout promise.
+     * It is reconciled after construction and turns so retained state cannot
+     * evade the actor/runtime memory ceiling after mailbox bytes are released.
+     */
+    public void reconcileCurrentSharedActorState(Object state) {
+        ActorCell<?> cell = currentActor.get();
+        if (cell == null || cell.kind != ActorKind.SHARED) {
+            throw new IllegalStateException(
+                    "persistent shared actor state may only be reconciled from its owning shared actor turn");
+        }
+        long bytes = estimateFrozenBytes(state);
+        cell.reconcilePersistentSharedState(bytes);
+    }
+
     public boolean isAlive(ActorRef<?> ref) {
         Objects.requireNonNull(ref);
         if (!ref.ownedBy(this)) return false;
@@ -2540,6 +2562,14 @@ public final class ActorRuntime implements AutoCloseable {
 
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
+        if (value instanceof OresMutex.SharedState sharedState) {
+            long bytes = 24L;
+            for (Object child : sharedState.sharedStateChildren()) {
+                bytes = Math.addExact(bytes, estimateFrozenBytes(child, seen, depth + 1));
+            }
+            return bytes;
+        }
+
         long bytes = 24L;
         if (value instanceof List<?> list) {
             bytes = Math.addExact(bytes, 8L * list.size());
@@ -2680,6 +2710,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final AtomicInteger queuedMessages = new AtomicInteger();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
+        private long persistentSharedStateBytes;
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private final ReentrantReadWriteLock executionGate = new ReentrantReadWriteLock(true);
@@ -2750,6 +2781,11 @@ public final class ActorRuntime implements AutoCloseable {
             if (finalized || activeTurns != 0) return;
             finalized = true;
             drainMailboxReservations();
+            if (persistentSharedStateBytes > 0) {
+                long released = persistentSharedStateBytes;
+                persistentSharedStateBytes = 0;
+                releaseSharedRuntimeBytes(released);
+            }
             if (memorySlice != null) memorySlice.close();
             try {
                 actorExitHook.accept(executionDomain);
@@ -2809,6 +2845,41 @@ public final class ActorRuntime implements AutoCloseable {
                 long next = Math.max(0L, current - bytes);
                 sharedMailboxBytes.set(next);
                 releaseSharedRuntimeBytes(bytes);
+            }
+        }
+
+        private void reconcilePersistentSharedState(long bytes) {
+            if (bytes < 0) throw new IllegalArgumentException("persistent shared actor state cannot be negative");
+            synchronized (lifecycleLock) {
+                if (stopped.get() || finalized) throw terminated(ref);
+
+                long mailbox = sharedMailboxBytes.get();
+                long actorTotal;
+                try {
+                    actorTotal = Math.addExact(mailbox, bytes);
+                } catch (ArithmeticException overflow) {
+                    throw new SharedActorMemoryLimitException(
+                            "shared actor persistent state accounting overflow for " + ref.id());
+                }
+                if (actorTotal > policy.maxHeapBytes()) {
+                    throw new SharedActorMemoryLimitException(
+                            "shared actor persistent state limit exceeded for " + ref.id()
+                                    + ": state=" + bytes
+                                    + " mailbox=" + mailbox
+                                    + " limit=" + policy.maxHeapBytes());
+                }
+
+                long delta = bytes - persistentSharedStateBytes;
+                if (delta > 0) {
+                    try {
+                        reserveSharedRuntimeBytes(delta, "shared actor persistent state");
+                    } catch (IllegalStateException limit) {
+                        throw new SharedActorMemoryLimitException(limit.getMessage());
+                    }
+                } else if (delta < 0) {
+                    releaseSharedRuntimeBytes(-delta);
+                }
+                persistentSharedStateBytes = bytes;
             }
         }
 
