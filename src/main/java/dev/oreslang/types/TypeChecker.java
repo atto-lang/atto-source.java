@@ -557,11 +557,14 @@ public final class TypeChecker {
                     }
                     requireAssignable(index, Primitive.STRING, "DynamicStruct key");
                     targetType = dynamic.arguments().getFirst();
+                } else if (receiver instanceof Named map && map.name().equals("Map") && map.arguments().size() == 2) {
+                    requireAssignable(index, map.arguments().getFirst(), "Map key");
+                    targetType = map.arguments().get(1);
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list index");
                     if (receiver instanceof ListType list) targetType = list.element();
                     else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                    else throw new IllegalArgumentException("indexed assignment requires an array/list, tuple, or DynamicStruct");
+                    else throw new IllegalArgumentException("indexed assignment requires an array/list, tuple, Map, or DynamicStruct");
                 }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
