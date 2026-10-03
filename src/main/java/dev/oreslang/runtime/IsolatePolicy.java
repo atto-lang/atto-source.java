@@ -60,6 +60,10 @@ public record IsolatePolicy(
         if (maxHeapBytes < 16L * 1024 * 1024) throw new IllegalArgumentException("maxHeapBytes must be at least 16 MiB");
         if (maxMailboxMessages <= 0) throw new IllegalArgumentException("maxMailboxMessages must be positive");
         if (maxWallTime.isNegative() || maxWallTime.isZero()) throw new IllegalArgumentException("maxWallTime must be positive");
+        if (capabilities.contains(Capability.JAVA_SOURCE_INTEROP)
+                && !capabilities.contains(Capability.JAVA_INTEROP)) {
+            throw new IllegalArgumentException("JAVA_SOURCE_INTEROP requires JAVA_INTEROP");
+        }
         if (adversarial && capabilities.contains(Capability.THREAD_CREATE)) {
             throw new IllegalArgumentException("adversarial isolates cannot grant THREAD_CREATE");
         }
