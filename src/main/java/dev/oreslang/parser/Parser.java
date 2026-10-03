@@ -44,12 +44,21 @@ public final class Parser {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
+                Ast.ModuleStorage moduleStorage = Ast.ModuleStorage.ORDINARY;
+                if (match(GLOBAL)) moduleStorage = Ast.ModuleStorage.GLOBAL;
+                else if (match(SINGLETON)) moduleStorage = Ast.ModuleStorage.SINGLETON;
+
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (afterDefineAbstract || modifiers.visibility != Ast.Visibility.PRIVATE
+                            || modifiers.async || modifiers.nonLexical || modifiers.isStatic
+                            || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
-                    modules.add(parseModule(annotations));
+                    modules.add(parseModule(annotations, moduleStorage));
                     continue;
+                }
+                if (moduleStorage != Ast.ModuleStorage.ORDINARY) {
+                    throw error(previous(), "'global' and 'singleton' currently qualify module declarations");
                 }
                 if (match(CLASS)) {
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
@@ -127,13 +136,15 @@ public final class Parser {
         return consume(IDENT, "expected imported name").lexeme();
     }
 
-    private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
+    private Ast.ModuleDecl parseModule(
+            List<Ast.Annotation> annotations,
+            Ast.ModuleStorage storage) {
         String name = consume(IDENT, "expected flat module name").lexeme();
         if (check(DOT)) throw error(peek(), "modules cannot be nested or dotted");
         List<Ast.Decl> declarations = new ArrayList<>();
         while (!check(END) && !check(EOF)) declarations.add(parseModuleMember());
         consume(END, "expected 'end' to close module " + name);
-        return new Ast.ModuleDecl(name, annotations, declarations);
+        return new Ast.ModuleDecl(name, storage, annotations, declarations);
     }
 
     private Ast.Decl parseModuleMember() {
@@ -182,7 +193,7 @@ public final class Parser {
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
-        if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
+        if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
         return null;
     }
 
@@ -224,7 +235,7 @@ public final class Parser {
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
-                fields.add(parseField(mods.visibility));
+                fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (mods.isStatic) {
@@ -261,7 +272,7 @@ public final class Parser {
                 if (mods.visibility == Ast.Visibility.PUBLIC) {
                     throw error(peek(), "actor state fields are private; expose state through actor methods");
                 }
-                fields.add(parseField(mods.visibility));
+                fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
 
@@ -330,7 +341,9 @@ public final class Parser {
         return refs;
     }
 
-    private Ast.FieldDecl parseField(Ast.Visibility visibility) {
+    private Ast.FieldDecl parseField(
+            List<Ast.Annotation> annotations,
+            Ast.Visibility visibility) {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
@@ -345,10 +358,12 @@ public final class Parser {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
         consumeStatementTerminator("field declaration should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, initializer, annotations);
     }
 
-    private Ast.FieldDecl parseModuleBinding(Ast.Visibility visibility) {
+    private Ast.FieldDecl parseModuleBinding(
+            List<Ast.Annotation> annotations,
+            Ast.Visibility visibility) {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
@@ -360,7 +375,7 @@ public final class Parser {
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
         consumeStatementTerminator("module binding should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, initializer, annotations);
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
@@ -1266,7 +1281,7 @@ public final class Parser {
     private static boolean isMemberNameToken(Token.Type type) {
         return switch (type) {
             case IDENT,
-                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
+                    DEFINE, CLASS, MODULE, GLOBAL, SINGLETON, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN, WHEN,
                     NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
