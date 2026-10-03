@@ -897,26 +897,25 @@ gpu.num_groups(0)
 
 The parser reserves dimensions 0, 1, and 2, but the current automatic launch contract is
 intentionally 1-D, so dimensions 1 and 2 fail closed until explicit 2-D/3-D grid geometry
-is added.
+is added. `gpu.local_id`, `gpu.group_id`, `gpu.local_size`, and `gpu.num_groups`
+also fail closed for now because Oreslang has not yet defined an explicit local-size /
+work-group launch contract. Their spelling is reserved so that contract can be added
+without changing the language surface.
 
-When a kernel body uses a work-item intrinsic, its global extent is inferred without a
-fake serial loop:
+A **data-parallel host entrypoint** must currently:
 
-1. prefer the single mutable buffer parameter (the normal output-buffer case);
-2. otherwise, a single buffer parameter may drive a map-style kernel;
-3. if the launch driver is ambiguous, compilation fails instead of guessing.
+1. return `void`;
+2. use a work-item intrinsic directly in that callable; and
+3. expose exactly one mutable flat output buffer, whose length defines the 1-D global extent.
 
-Thus the example above launches one work-item per `out` element. A scalar-returning
-map kernel over one input buffer gets one result slot per input element:
+Thus the example above launches one work-item per `out` element. The compiler does not
+silently turn a scalar return type into an array of N results. A scalar-returning GPU
+function remains a one-work-item host entrypoint even if its device-helper body reads
+`gpu.index`; when called from another already-parallel GPU kernel, that same helper sees
+the caller's current work-item identity.
 
-```ores
-gpu fnc read(GpuArray<i32> values) => i32 {
-  return values[gpu.global_id(0)];
-}
-```
-
-A future explicit launch surface can generalize this to multi-buffer maps and 2-D/3-D
-grids without weakening the deterministic default.
+A future explicit launch surface can generalize this to multiple output buffers, explicit
+extents, and 2-D/3-D grids without weakening the deterministic default.
 
 ### Anonymous kernel blocks
 
