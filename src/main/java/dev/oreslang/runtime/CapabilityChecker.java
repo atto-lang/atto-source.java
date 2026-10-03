@@ -92,6 +92,9 @@ public final class CapabilityChecker {
             if (fn.actorKind() == Ast.ActorKind.SHARED) {
                 require(effective, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
             }
+            if (fn.gpu()) {
+                require(effective, IsolatePolicy.Capability.GPU, "gpu callable " + fn.name());
+            }
             checkCallableTypes(fn.parameters(), fn.returnType(), effective);
             checkStatements(fn.body(), effective);
         } finally {
@@ -160,6 +163,9 @@ public final class CapabilityChecker {
                     if (fn.actorKind() == Ast.ActorKind.SHARED) {
                         require(actorPolicy, IsolatePolicy.Capability.SHARED_MEMORY, "shared actor fnc " + fn.name());
                     }
+                    if (fn.gpu()) {
+                        require(actorPolicy, IsolatePolicy.Capability.GPU, "gpu callable " + module.name() + "." + fn.name());
+                    }
                     checkCallableTypes(fn.parameters(), fn.returnType(), actorPolicy);
                     checkStatements(fn.body(), actorPolicy);
                 } else if (declaration instanceof Ast.ClassDecl klass) {
@@ -219,6 +225,9 @@ public final class CapabilityChecker {
 
         if (type.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex<T>");
+        }
+        if (type.name().equals("GpuArray") || type.name().equals("GpuStream")) {
+            require(policy, IsolatePolicy.Capability.GPU, type.name() + "<T>");
         }
         String javaClass = javaImports.get(type.name());
         if (javaClass != null) {
@@ -303,6 +312,8 @@ public final class CapabilityChecker {
 
         if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
             require(policy, IsolatePolicy.Capability.STDOUT, "print");
+        } else if (expr instanceof Ast.NameExpr n && (n.name().equals("GpuArray") || n.name().equals("GpuStream"))) {
+            require(policy, IsolatePolicy.Capability.GPU, n.name());
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex");
         } else if (expr instanceof Ast.NameExpr n) {
@@ -344,6 +355,7 @@ public final class CapabilityChecker {
                 if (path.startsWith("polyglot.")) require(policy, IsolatePolicy.Capability.POLYGLOT, path);
                 if (path.startsWith("thread.")) require(policy, IsolatePolicy.Capability.THREAD_CREATE, path);
                 if (path.startsWith("process.spawn")) require(policy, IsolatePolicy.Capability.CHILD_PROCESS, path);
+                if (path.startsWith("GpuArray.") || path.startsWith("GpuStream.")) require(policy, IsolatePolicy.Capability.GPU, path);
             }
             checkExpr(m.receiver(), policy);
         } else if (expr instanceof Ast.BinaryExpr e) { checkExpr(e.left(), policy); checkExpr(e.right(), policy); }
