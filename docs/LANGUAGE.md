@@ -69,7 +69,7 @@ define module app as
 end
 ```
 
-Outside `X`, `X.f` is not an ordinary local `Foo`: it is a capability proxy. Its public method calls execute in the singleton owner actor and must be immediately awaited. Object fields, raw references, method extraction, and rebinding the proxy into an ordinary local are rejected. Other public singleton fields remain illegal.
+Outside `X`, `X.f` is not an ordinary local `Foo`: it is a capability proxy. Its public method calls execute in the singleton owner actor and must be immediately awaited. Object fields, raw references, method extraction, and rebinding the proxy into an ordinary local are rejected. Other public singleton fields remain illegal except immutable `pub val/const Symbol` identities; those scalar reads also cross the singleton mailbox and must be immediately awaited.
 
 Singleton state fields require explicit process-stable types because they form a process-lifetime hot-reload schema. Ordinary state initializers must be context-free: literals and pure expressions over already initialized stable singleton fields are allowed, while capability access, arbitrary function calls, `await`, mutation, and closures are not. The narrow exception is an exported immutable class-instance proxy initialized directly with a context-free `new Class(...)`. Type aliases are currently excluded from process state so redefining an alias cannot silently reinterpret an existing layout.
 
@@ -90,6 +90,36 @@ val bool collected = await process.collect_singleton(counter);
 ```
 
 `process.collect_singleton(counter)` requires `PROCESS_SINGLETON` and accepts the singleton module namespace itself, not a string or raw pointer. It closes admission to that singleton, drains calls that were already admitted, performs runtime cleanup, removes the process registry root, and completes only after reclamation is safe. Stale handles stay invalid. A later access creates a fresh singleton instance and reruns that singleton's initialization. This is user-controlled GC as a memory-safe lifecycle operation, not an unsafe `free`.
+
+## Symbols
+
+`Symbol` is an immutable identity value for protocol tags, dispatch keys, and other identity-bearing labels. It is semantically a value/handle, not permission to share a mutable heap pointer.
+
+```ores
+val Symbol ready = :ready;
+val Symbol stable = new Symbol("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+```
+
+Within the trusted process domain, equal live keys are canonical across the main process and trusted actors/threads. The runtime assigns a monotonic process-local id and never reuses an id; serialization uses the Symbol key rather than that process-local id. Ordinary symbols live in a weak interner, so automatic GC may reclaim a symbol after the last strong reference disappears.
+
+A universal/pinned symbol belongs in a singleton module:
+
+```ores
+define singleton module UniversalSymbols as
+  pub val Symbol request =
+      new Symbol("5d60d832-fc6a-4fa2-a551-1448c2df6bf2");
+end
+
+define module app as
+  pub fnc request_symbol() => Symbol {
+    return await UniversalSymbols.request;
+  }
+end
+```
+
+The singleton state cell is the strong semantic GC root. Ordinary GC does not destroy it. Trusted code can intentionally release that root with `await process.collect_singleton(UniversalSymbols)`; collection closes admission, drains admitted work, removes the singleton root, and only then makes the Symbol eligible for ordinary GC once no other references remain. This deliberately avoids a force-free Symbol API and therefore avoids use-after-free.
+
+Untrusted/adversarial actors and Graal isolates never gain the trusted process Symbol table. They cannot create trusted Symbols and cannot receive a Symbol through their mailbox, including one nested inside another message. Use a validated string or enum representation when a protocol value must cross that security boundary.
 
 ## Initialization lifecycle
 
