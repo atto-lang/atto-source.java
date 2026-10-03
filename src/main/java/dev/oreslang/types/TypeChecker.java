@@ -483,7 +483,8 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")
-                    || name.name().equals("net") || name.name().equals("http")) {
+                    || name.name().equals("net") || name.name().equals("http")
+                    || name.name().equals("native_net")) {
                 return new Named(name.name(), List.of());
             }
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
@@ -773,6 +774,8 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
+            Type nativeNetMember = builtinNativeNetMember(receiver, member.member());
+            if (nativeNetMember != null) return nativeNetMember;
             receiver = unwrapMutexGuard(receiver);
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -1105,7 +1108,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
+        if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
+                || named.name().equals("Future") || named.name().equals("NativeSocketHandle")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1175,7 +1179,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("Future") || named.name().equals("SharedMutex")
+                || named.name().equals("NativeSocketHandle")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -1285,6 +1290,32 @@ public final class TypeChecker {
             };
         }
         return null;
+    }
+
+    private Type builtinNativeNetMember(Type receiver, String member) {
+        if (!(deref(receiver) instanceof Named named) || !named.name().equals("native_net")) {
+            return null;
+        }
+        Type handle = new Named("NativeSocketHandle", List.of());
+        Type bytes = new ListType(Primitive.INT);
+        return switch (member) {
+            case "connect" -> new Function(
+                    List.of(Primitive.STRING, Primitive.INT, Primitive.INT),
+                    handle);
+            case "listen" -> new Function(
+                    List.of(Primitive.STRING, Primitive.INT, Primitive.INT, Primitive.BOOL),
+                    handle);
+            case "accept" -> new Function(List.of(handle), handle);
+            case "read", "write" -> new Function(
+                    List.of(handle, bytes, Primitive.INT, Primitive.INT),
+                    Primitive.INT);
+            case "close" -> new Function(List.of(handle), Primitive.VOID);
+            case "resolve_all" -> new Function(
+                    List.of(Primitive.STRING),
+                    new ListType(Primitive.STRING));
+            default -> throw new IllegalArgumentException(
+                    "unknown native_net member '" + member + "'");
+        };
     }
 
     private Type builtinMutexMember(Type receiver, String member) {
@@ -2098,6 +2129,13 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
                 }
                 yield new Named("Mutex", List.of(element));
+            }
+            case "NativeSocketHandle" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "NativeSocketHandle is an opaque capability type and takes no type arguments");
+                }
+                yield new Named("NativeSocketHandle", List.of());
             }
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
