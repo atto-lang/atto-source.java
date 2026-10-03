@@ -26,7 +26,7 @@ The guarantee is transitive and fail-closed.
 
 - total;
 - guaranteed to terminate;
-- non-throwing;
+- non-throwing, non-raising, or non-panicking;
 - allocation-free;
 - recursion-free;
 - immutable implementation syntax;
@@ -230,17 +230,21 @@ Pure callables cannot perform:
 
 A pure callable may construct or transform ordinary data representing a request, path, packet, query, log record, etc. It simply cannot execute the external effect.
 
-## Exceptions and divergence
+## Exceptions, trap control flow, and divergence
 
-Purity is separate from totality.
+Purity is separate from totality and from Oreslang's error-control channels.
 
-A deterministic guest-language exception may be thrown from a pure callable when constructing and throwing it performs no forbidden effect.
+A deterministic guest-language `throw` may occur in a pure callable when constructing and throwing it performs no forbidden external effect. A `trap` boundary may convert that throw into its explicit `[Option<[T]>, Option<TrapError>]` result without changing purity.
+
+`raise` and `panic` are distinct control effects. They bypass `trap` and unwind to the nearest `recover` boundary. They are not automatically impure merely because they alter control flow; purity depends on whether constructing/propagating the signal performs a forbidden external effect.
 
 A recursive `fnc` may also diverge and still be pure.
 
-The compiler should therefore track at least `throw` and `diverge` separately from forbidden external effects. Optimizations must not assume that `pure` means `nothrow` or `terminates`.
+The compiler must therefore track at least `throw`, `raise`, `panic`, and `diverge` separately from forbidden external effects. Optimizations must not assume that `pure` means `nothrow`, `noraises`, `nopanic`, or `terminates`.
 
-Host/FFI exceptions are not automatically trusted as deterministic/pure and remain covered by foreign-effect rules.
+See `docs/TRAP.md` for the trap/recover contract.
+
+Host/FFI failures are not automatically trusted as deterministic/pure and remain covered by foreign-effect rules.
 
 ## Java, JNI, native, and host interop
 
@@ -276,7 +280,9 @@ Initial effect kinds should include at least:
 | --- | --- | --- |
 | `local_mutation` | mutation of invocation-private storage | yes |
 | `allocation` | local allocation | yes |
-| `throw` | deterministic guest exception/control effect | yes |
+| `throw` | deterministic ordinary guest exception/control effect | yes |
+| `raise` | deliberate trap-bypassing unwind to `recover` | yes |
+| `panic` | invariant/runtime trap-bypassing unwind to `recover` | yes |
 | `diverge` | possible nontermination | yes |
 | `ambient_read` | read mutable/ambient runtime state | no |
 | `external_mutation` | mutate caller/global/shared reachable state | no |
@@ -495,17 +501,17 @@ Purity decisions based only on syntax are insufficient.
 
 ## Optimizer contract
 
-`pure` is useful compiler information, but it is only one prerequisite.
+`pure` is useful compiler information, but it is only one prerequisite. In particular, `pure` does not collapse Oreslang's `throw`, `raise`, `panic`, or `trap`/`recover` control-flow distinctions.
 
 A compiler may not infer any of the following from `pure` alone:
 
-- call elimination when the result is unused, because the call may throw or diverge;
+- call elimination when the result is unused, because the call may throw, raise, panic, or diverge;
 - memoization, because identity-bearing allocations may be returned;
 - common-subexpression elimination across identity-sensitive results;
-- arbitrary reordering, because exception/divergence ordering may change;
+- arbitrary reordering, because throw/raise/panic/divergence ordering may change;
 - speculative duplication, because cost/divergence behavior may change.
 
-Stronger optimizations require additional proven facts such as `nothrow`, termination, value semantics, identity irrelevance, and cost constraints.
+Stronger optimizations require additional proven facts such as `nothrow`, `noraises`, `nopanic`, termination, value semantics, identity irrelevance, and cost constraints.
 
 ## Compatibility with a future effect system
 
