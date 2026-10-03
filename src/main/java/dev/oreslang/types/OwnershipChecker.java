@@ -984,6 +984,18 @@ public final class OwnershipChecker {
         return result;
     }
 
+    private Ast.TypeRef resolvedFieldType(Ast.FieldDecl field, Map<String, Ast.TypeRef> bindings) {
+        Ast.TypeRef declared = field.type();
+        if (declared == null || declared.name().equals("$infer$")) {
+            if (field.initializer() instanceof Ast.LiteralExpr literal) {
+                declared = inferLiteralType(literal.value());
+            } else {
+                declared = Ast.TypeRef.inferred();
+            }
+        }
+        return substituteType(declared, bindings);
+    }
+
     private Ast.TypeRef substituteType(Ast.TypeRef type, Map<String, Ast.TypeRef> bindings) {
         if (type == null) return null;
         if (type.isBorrow()) {
