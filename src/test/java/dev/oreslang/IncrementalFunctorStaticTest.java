@@ -165,7 +165,7 @@ final class IncrementalFunctorStaticTest {
                       return x * 2;
                     }
 
-                    pub read() => int {
+                    pub read() : int {
                       return self.value;
                     }
                   end
