@@ -6,6 +6,7 @@ import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresSymbol;
+import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.types.OwnershipChecker;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
@@ -443,6 +444,24 @@ final class SymbolLifecycleTest {
                             "safe",
                             List.of(OresSymbol.process("nested-secret")))));
             assertTrue(transportDenied.getMessage().contains("Symbol"));
+        }
+    }
+
+    @Test
+    void adversarialSharedActorCannotReceiveLiveSharedMutableCapability() {
+        IsolatePolicy adversarialShared = IsolatePolicy.strictFaas()
+                .withCapabilities(IsolatePolicy.Capability.SHARED_MEMORY);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<Object> target = runtime.spawnShared(
+                    adversarialShared,
+                    factoryContext -> (message, turn) -> { });
+            OresMutex.Shared<Object> shared =
+                    OresMutex.shared((Object) OresSymbol.process("shared-symbol"));
+
+            SecurityException denied =
+                    assertThrows(SecurityException.class, () -> target.send(shared));
+            assertTrue(denied.getMessage().contains("adversarial"));
         }
     }
 
