@@ -45,7 +45,7 @@ public final class OresMain {
         }
 
         if (filename == null) {
-            System.err.println("usage: ores [--check] [--strict-isolate] [--mode=aot|jit|hybrid] [--platform=server|windows|macos|linux|android|ios] [--allow=CAP,...] <file.ores>");
+            System.err.println("usage: oreslang-compiler [--check] [--strict-isolate] [--mode=aot|jit|hybrid] [--platform=server|windows|macos|linux|android|ios] [--allow=CAP,...] <file.ores>");
             System.exit(2);
             return;
         }
