@@ -320,7 +320,7 @@ val conjugate = z.conj();
 
 Numeric widening is loss-aware; real values can widen toward complex values, but silent lossy narrowing is not performed.
 
-Dense vectors and matrices are immutable numeric values with contiguous primitive backing storage in the JVM implementation. Literal sugar lowers to the ordinary `vector(...)` and `matrix(...)` constructors:
+Dense vectors and matrices are immutable numeric values with contiguous primitive backing storage in the JVM implementation. The current dense backend has two honest storage domains: real `float`/f64 values and `complex`/complex128 values. Integer literals are promoted to real f64 values; exact `decimal` matrices are intentionally not silently coerced and require a future exact-arithmetic backend. Literal sugar lowers to the ordinary `vector(...)` and `matrix(...)` constructors:
 
 ```ores
 val a = matrix[[1.0, 2.0], [3.0, 4.0]];
@@ -333,7 +333,7 @@ val inv = a.inverse();
 val n = a.norm();
 ```
 
-`@` is reserved for linear-algebra multiplication. This avoids the common ambiguity between element-wise/scalar multiplication and matrix multiplication. Matrix shape compatibility is checked at runtime; numeric category compatibility is checked statically. The JVM runtime delegates dense kernels and decompositions to EJML while keeping Oreslang values immutable at the guest-language boundary.
+`@` is reserved for linear-algebra multiplication. This avoids the common ambiguity between element-wise/scalar multiplication and matrix multiplication. Matrix shape compatibility is checked at runtime; numeric category compatibility is checked statically. The JVM runtime delegates dense kernels and decompositions to EJML while keeping Oreslang values immutable at the guest-language boundary. Those values implement the runtime's immutable-guest-value contract, so trusted actors can transport them without copying mutable host objects; mailbox/memory quotas still charge their logical primitive-buffer footprint.
 
 The `math` facade contains constants and complex helpers:
 
