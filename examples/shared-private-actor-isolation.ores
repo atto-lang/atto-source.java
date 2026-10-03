@@ -79,7 +79,7 @@ isoactor PrivateCounter {
  *   let SharedMutex<CounterState> shared_count =
  *       SharedMutex.new(new CounterState());
  *
- *   pub fnc increment_shared() => void {
+ *   pub fnc increment_shared() : void {
  *     self.shared_count.with_lock(|counter| -> {
  *       counter.value = counter.value + 1;
  *       return;
