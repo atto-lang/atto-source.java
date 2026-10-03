@@ -13,6 +13,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -1781,5 +1782,31 @@ final class ActorRuntimeTest {
         }
     }
 
+
+    @Test
+    void actorCpuAccountingFollowsLogicalActorNotCarrierIdentity() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1, 1, 1, 4, TimeUnit.MILLISECONDS.toNanos(50), 64);
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            AtomicLong observedInside = new AtomicLong();
+            var ref = runtime.<Integer>spawnPrivate(context -> (message, turn) -> {
+                long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(15);
+                long value = 0;
+                while (System.nanoTime() - deadline < 0) {
+                    value ^= System.nanoTime();
+                    turn.checkpoint();
+                }
+                assertNotEquals(Long.MIN_VALUE, value);
+                observedInside.set(turn.cpuTimeNanos());
+                turn.self().stop();
+            });
+
+            ref.send(1);
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.cpuTimeNanos() > 0L,
+                    "native carrier CPU must be charged to the logical actor");
+            assertTrue(ref.cpuTimeNanos() >= observedInside.get());
+        }
+    }
 
 }
