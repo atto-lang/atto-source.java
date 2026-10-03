@@ -77,10 +77,35 @@ final class ParserTest {
     }
 
     @Test
-    void lexerRecognizesLambdaAndFatReturnArrows() {
-        var tokens = new Lexer("(int x) -> x + 1; fnc f(): int { return 1; }").scan();
+    void lexerRecognizesExecutableAndTypeArrows() {
+        var tokens = new Lexer("|| -> { return; }; type F = () => void;").scan();
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.ARROW));
         assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.FAT_ARROW));
+    }
+
+    @Test
+    void callableDeclarationSyntaxSeparatesCodeFromFunctionTypes() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc run(): (() => void) {
+                  return || -> {
+                    return;
+                  };
+                }
+
+                pub routine main = || -> void {
+                  val (() => void) callback = run();
+                  callback();
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                pub fnc bad() => void { return; }
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                type Bad = () -> void;
+                """));
     }
     @Test
     void parsesSharedActorAndAllowsMailboxOwnedStateMutation() {
