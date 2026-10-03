@@ -1035,3 +1035,19 @@ The same compiled program can target a secondary multi-threaded runtime because:
 - actor messages continue to cross actor boundaries only through the existing frozen/sendable contract.
 
 When explicit thread/task spawning is added, cross-thread transfer will require move semantics and a `Send`-equivalent capability; shared cross-thread references will additionally require a `Sync`-equivalent guarantee. Those marker traits are intentionally a future surface feature—the current source language has no ambient raw-thread API, so there is no unchecked escape hatch to bypass ownership.
+
+
+## Native core values and typed structs
+
+Guest-visible `List<T>`, `Map<K,V>`, object records, `DynamicStruct<T>`, typed structs, files, networking primitives, and thread primitives are Oreslang runtime values. Their storage and OS operations are implemented by the native runtime libraries rather than by `java.util`, `java.io`, `java.net`, or `java.lang.Thread`.
+
+```ores
+define struct Point as
+  pub let i64 x;
+  pub let i64 y;
+end
+
+val p = new Point(10, 20);
+```
+
+A typed struct is nominal and fixed-shape: it cannot gain fields at runtime. In v0 it is field-only and does not inherit or implement interfaces. Field mutation follows the normal `val`/`const`/`let` rules.

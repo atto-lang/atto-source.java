@@ -155,6 +155,7 @@ public final class Ast {
     public record ClassDecl(
             String name,
             boolean isAbstract,
+            boolean isStruct,
             ActorKind actorKind,
             List<String> genericParameters,
             List<TypeRef> parents,
@@ -168,14 +169,19 @@ public final class Ast {
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
         }
+        public ClassDecl(String name, boolean isAbstract, ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, List<MethodDecl> methods) {
+            this(name, isAbstract, false, actorKind, genericParameters, parents, interfaces, fields, methods);
+        }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, parents, interfaces, fields, methods);
+            this(name, isAbstract, false, ActorKind.NONE, genericParameters, parents, interfaces, fields, methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, List.of(), List.of(), fields, methods);
+            this(name, isAbstract, false, ActorKind.NONE, genericParameters, List.of(), List.of(), fields, methods);
         }
     }
 

@@ -17,7 +17,7 @@ top_level_item  = annotated_module_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
-                | interface_decl
+                | struct_decl\n                | interface_decl
                 | type_decl
                 | binding_decl ;
 
@@ -28,7 +28,7 @@ module_member   = actor_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
-                | interface_decl
+                | struct_decl\n                | interface_decl
                 | type_decl
                 | binding_decl ;
 
@@ -60,7 +60,10 @@ actor_method_decl
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
-                  { class_member } "end" ;
+                  "as" { class_member } "end" ;
+
+struct_decl     = "define" "struct" IDENT [ generic_params ]
+                  "as" { field_decl } "end" ;
 
 class_member    = field_decl
                 | method_decl

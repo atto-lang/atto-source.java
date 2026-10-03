@@ -149,16 +149,21 @@ public final class Parser {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
+            if (match(STRUCT)) {
+                if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                if (modifiers.nonLexical || modifiers.isStatic) throw error(previous(), "struct declarations do not accept nlex/static modifiers");
+                return parseStruct();
+            }
             if (match(INTERFACE)) {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class or interface after 'define'");
+            throw error(previous(), "expected class, struct, or interface after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
+        throw error(peek(), "expected function, routine, class, struct, interface, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
@@ -237,6 +242,30 @@ public final class Parser {
         }
         consume(END, "expected 'end' to close class " + name);
         return new Ast.ClassDecl(name, isAbstract, Ast.ActorKind.NONE, generics, parents, interfaces, fields, methods);
+    }
+
+
+    private Ast.ClassDecl parseStruct() {
+        String name = consume(IDENT, "expected struct name").lexeme();
+        List<String> generics = parseGenericParameters();
+        if (check(EXTENDS) || check(IMPLEMENTS) || check(IMPL)) {
+            throw error(peek(), "typed structs are fixed-shape values and cannot extend/implement nominal types");
+        }
+        consume(AS, "expected 'as' after struct header");
+        List<Ast.FieldDecl> fields = new ArrayList<>();
+        while (!check(END) && !check(EOF)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
+            Modifiers mods = parseModifiers();
+            if (!annotations.isEmpty()) throw error(peek(), "typed struct field annotations are not implemented yet");
+            if (mods.shared || mods.nonLexical || mods.isStatic || mods.isAbstract || mods.async) {
+                throw error(peek(), "typed struct members are fields only; shared/nlex/static/abstract/async modifiers are invalid");
+            }
+            if (!isBindingKind(peek().type())) throw error(peek(), "typed struct members must be field declarations");
+            fields.add(parseField(mods.visibility));
+        }
+        consume(END, "expected 'end' to close struct " + name);
+        return new Ast.ClassDecl(name, false, true, Ast.ActorKind.NONE, generics,
+                List.of(), List.of(), fields, List.of());
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -1161,7 +1190,7 @@ public final class Parser {
     private static boolean isMemberNameToken(Token.Type type) {
         return switch (type) {
             case IDENT,
-                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
+                    DEFINE, CLASS, STRUCT, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
