@@ -91,10 +91,12 @@ public final class OresContext implements AutoCloseable {
         schedulerSafepoints.incrementAndGet();
         ActorRuntime carrierRuntime = ActorRuntime.currentActorRuntime();
         if (carrierRuntime != null && carrierRuntime != actors) {
-            // Guest code can execute in a nested Truffle/polyglot context while
-            // an outer ActorRuntime owns the actual actor turn. Charge the
-            // carrier actor's fuel/deadline rather than an empty nested runtime.
             carrierRuntime.schedulerSafepoint();
+            return;
+        }
+        ActorRuntime rootRuntime = ActorRuntime.currentRootRuntime();
+        if (rootRuntime != null && rootRuntime != actors) {
+            rootRuntime.schedulerSafepoint();
             return;
         }
         actors.schedulerSafepoint();
