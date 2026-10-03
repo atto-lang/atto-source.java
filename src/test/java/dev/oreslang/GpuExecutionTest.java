@@ -213,7 +213,7 @@ final class GpuExecutionTest {
                 + "(ores_v_a, ores_v_b, __ores_error)"));
         assertTrue(kernel.helperSymbol().matches("ores_dev_math_add_a2_[0-9a-f]{12}"));
         assertTrue(kernel.kernelSymbol().matches("ores_kernel_math_add_a2_[0-9a-f]{12}"));
-        assertTrue(gpu.source().contains("#define ORES_GPU_ABI_VERSION 1"));
+        assertTrue(gpu.source().contains("#define ORES_GPU_ABI_VERSION 2"));
         assertTrue(gpu.manifest().startsWith("abi=" + GpuKernelCompiler.ABI_VERSION + "\n"));
         assertTrue(kernel.hiddenParameters().stream()
                 .anyMatch(p -> p.purpose() == GpuKernelCompiler.HiddenPurpose.RESULT));
