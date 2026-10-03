@@ -2687,7 +2687,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object behaviorInitLock = new Object();
         private int activeTurns;
         private boolean finalized;
-        private Behavior<M> behavior;
+        private volatile Behavior<M> behavior;
 
         private ActorCell(
                 ActorRef<M> ref,
@@ -2832,12 +2832,21 @@ public final class ActorRuntime implements AutoCloseable {
             if (kind != ActorKind.SHARED) {
                 throw new IllegalStateException("concurrent dispatcher reached non-shared actor");
             }
-            int desired = Math.min(
-                    dispatcherConfig.sharedParallelism(),
-                    Math.max(1, queuedMessages.get()));
+
             while (!stopped.get() && !closed.get()) {
                 int current = scheduledWorkers.get();
+                int queued = queuedMessages.get();
+                if (queued <= 0 || current >= dispatcherConfig.sharedParallelism()) return;
+
+                // queuedMessages counts work not yet claimed by a worker.
+                // Existing scheduledWorkers may already be executing turns, so
+                // target concurrency is active/in-flight workers plus queued
+                // work, capped by the shared dispatcher parallelism.
+                int desired = Math.min(
+                        dispatcherConfig.sharedParallelism(),
+                        current + queued);
                 if (current >= desired) return;
+
                 if (!scheduledWorkers.compareAndSet(current, current + 1)) continue;
                 try {
                     dispatcherFor(kind).execute(this::runConcurrentBatch);
