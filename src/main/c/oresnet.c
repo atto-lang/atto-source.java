@@ -187,6 +187,9 @@ static jlong register_socket_handle(JNIEnv *env, int fd) {
     }
 
     socket_slot_t *slot = &socket_registry[slot_index];
+    if (cookie == slot->cookie) {
+        cookie = cookie == SOCKET_HANDLE_COOKIE_MASK ? 1u : cookie + 1u;
+    }
     slot->fd = fd;
     slot->cookie = cookie;
     slot->refs = 0;
@@ -295,7 +298,7 @@ static int close_socket_handle(JNIEnv *env, jlong raw_handle) {
 
     fd = slot->fd;
     slot->active = 0;
-    slot->cookie = 0;
+    /* Preserve the revoked cookie so this slot can never immediately reuse it. */
     slot->closing = 1;
     if (slot->refs == 0) {
         slot->fd = -1;
