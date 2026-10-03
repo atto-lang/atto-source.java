@@ -105,7 +105,7 @@ val Symbol stable =
 val Symbol local = Symbol.local("request-tag");   // LOCAL, actor only
 ```
 
-`:ready` is syntax sugar for a trusted process Symbol. `Symbol.process(key)` is strongly canonical for the lifetime of the trusted OS-process runtime: the same key resolves to the same process identity across main execution, shared actors, and trusted isolated actors that participate in that process domain. Process symbols are deliberately bounded; dynamic unbounded input must not be blindly interned into this table.
+`:ready` is syntax sugar for a trusted process Symbol. `Symbol.process(key)` is strongly canonical for the lifetime of the trusted OS-process runtime: the same key resolves to the same process identity across main execution, shared actors, and trusted isolated actors that participate in that process domain. Process symbols are deliberately bounded; dynamic unbounded input must not be blindly interned into this table. A reserved slice of the fixed table is available only to compiler-known `:literal` tags so trusted dynamic interning cannot starve later static or hot-loaded protocol symbols.
 
 `Symbol.local(key)` belongs to the currently executing actor. It is canonical only inside that actor, cannot be serialized or sent to another actor, and its local interning table disappears with the actor cell. This is the preferred Symbol domain for dynamic labels that do not require process-wide identity.
 
