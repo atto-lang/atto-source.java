@@ -9,7 +9,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
-import dev.oreslang.runtime.NativeNetBuiltin;
+import dev.oreslang.net.NativeNetBuiltin;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.BuiltinCallable;
