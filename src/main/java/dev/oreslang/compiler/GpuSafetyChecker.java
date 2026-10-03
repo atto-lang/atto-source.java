@@ -367,6 +367,14 @@ public final class GpuSafetyChecker {
                 throw new IllegalArgumentException(
                         "the current automatic GPU launch contract is 1-D; use dimension 0 until explicit 2-D/3-D launch geometry is added");
             }
+            if (intrinsic.intrinsic() == Ast.GpuIntrinsic.LOCAL_ID
+                    || intrinsic.intrinsic() == Ast.GpuIntrinsic.GROUP_ID
+                    || intrinsic.intrinsic() == Ast.GpuIntrinsic.LOCAL_SIZE
+                    || intrinsic.intrinsic() == Ast.GpuIntrinsic.NUM_GROUPS) {
+                throw new IllegalArgumentException(
+                        "gpu." + intrinsic.intrinsic().name().toLowerCase()
+                                + " requires an explicit work-group/local-size launch contract, which is not defined yet");
+            }
             return;
         }
         if (expr instanceof Ast.LiteralExpr literal) {
