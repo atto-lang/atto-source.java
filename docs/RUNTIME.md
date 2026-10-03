@@ -46,7 +46,18 @@ Java imports are a two-key boundary. Source may name an explicit `java:` class, 
 
 The runtime uses Graal host lookup rather than guest-side `Class.forName`, disables host class loading, exposes only public **declared** members of explicitly allowlisted classes, and disables access inheritance. This prevents admitting one class from automatically exposing inherited reflection such as `Object.getClass()`.
 
-Private/memory-isolated actors have `JAVA_INTEROP` stripped from their effective policy. Java host objects are wrapped as host capabilities, are not ordinary Oreslang data, and are rejected from synchronized shared-state publication. Adversarial isolates cannot grant `JAVA_INTEROP` at all.
+Private/memory-isolated actors have both `JAVA_INTEROP` and
+`JAVA_SOURCE_INTEROP` stripped from their effective policy. Java host objects
+are wrapped as host capabilities, are not ordinary Oreslang data, and are
+rejected from synchronized shared-state publication. Adversarial isolates
+cannot grant either Java capability.
+
+`JAVA_SOURCE_INTEROP` requires `JAVA_INTEROP`, but it is intentionally a
+stronger trusted-host authority rather than a finer-grained sandbox permission.
+It covers `java { ... }`, `do java { ... }`, and Java-primary mixed source.
+Arbitrary inline Java compiles into the host JVM domain, so it is never admitted
+for adversarial/untrusted code. The direct `java:` import path remains the
+narrower class-allowlisted mechanism.
 
 Class-level interop blocks VM-control/reflection infrastructure (for example `Runtime`, `System`, `Class`, class loaders, reflection/invoke, script/compiler APIs, and JDK internals). Broad JDK families additionally require their corresponding Ores capabilities: filesystem, network, thread creation, native access, or process info. Third-party classes remain the embedder's responsibility: allowlisting one explicitly grants access to its public declared host surface.
 
