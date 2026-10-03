@@ -92,6 +92,7 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
+        private final IdentityHashMap<Ast.ClassDecl, String> singletonClassSchemas = new IdentityHashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
 
@@ -291,7 +292,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private ProcessSingletonRegistry.Handle<SingletonState> singletonHandle(Ast.ModuleDecl module) {
-            ProcessSingletonRegistry.requireBackendFor(context.graalIsolated());
+            requireProcessSingletonAccess("singleton module " + module.name());
             String key = singletonKey(module);
             // Do not cache handles per evaluator. A retryable initialization
             // failure replaces the registry cell; every access must resolve the
@@ -300,6 +301,103 @@ public final class OresEvalRootNode extends RootNode {
                     key,
                     context.isolatePolicy().maxWallTime(),
                     () -> initializeSingleton(module));
+        }
+
+        private void requireProcessSingletonAccess(String api) {
+            if (context.isolatePolicy().adversarial()) {
+                throw new SecurityException("untrusted/adversarial actors and isolates cannot access process singletons");
+            }
+            context.requireCapability(IsolatePolicy.Capability.PROCESS_SINGLETON, api);
+            ProcessSingletonRegistry.requireBackendFor(context.graalIsolated());
+        }
+
+        private CompletionStage<Object> invokeSingletonClass(
+                Ast.ClassDecl klass,
+                String methodName,
+                List<Object> args) {
+            ProcessSingletonRegistry.Handle<SingletonState> handle = singletonClassHandle(klass);
+            return handle.call(
+                    args,
+                    context.isolatePolicy().maxMailboxMessages(),
+                    context.actors().remainingCurrentActorWallTime(context.isolatePolicy().maxWallTime()),
+                    (state, frozenArgs) -> transactionalSingletonCall(state, working -> {
+                        String currentSchema = singletonClassSchema(klass);
+                        if (!working.schema.equals(currentSchema)) {
+                            throw new IllegalStateException("singleton class state schema changed for "
+                                    + klass.name()
+                                    + "; process-lifetime state cannot be reinterpreted without an explicit migration");
+                        }
+                        authorizeSingletonClassCodeGeneration(working, klass);
+                        Object value = working.fields.lookup("$instance");
+                        if (!(value instanceof OresObject object)
+                                || !object.classId.equals(runtimeClassId(klass))) {
+                            throw new IllegalStateException("singleton class instance identity changed for "
+                                    + klass.name());
+                        }
+                        Ast.MethodDecl method = findMethod(
+                                klass, methodName, frozenArgs.size(), new LinkedHashSet<>());
+                        if (method == null
+                                || method.visibility() != Ast.Visibility.PUBLIC
+                                || method.isStatic()) {
+                            throw new IllegalArgumentException("no public singleton method "
+                                    + klass.name() + "." + methodName
+                                    + " with arity " + frozenArgs.size());
+                        }
+                        return callMethod(object, klass, method, frozenArgs, working);
+                    }));
+        }
+
+        private ProcessSingletonRegistry.Handle<SingletonState> singletonClassHandle(Ast.ClassDecl klass) {
+            requireProcessSingletonAccess("singleton class " + klass.name());
+            return ProcessSingletonRegistry.getOrCreate(
+                    singletonClassKey(klass),
+                    context.isolatePolicy().maxWallTime(),
+                    () -> initializeSingletonClass(klass));
+        }
+
+        private SingletonState initializeSingletonClass(Ast.ClassDecl klass) {
+            SingletonState state = new SingletonState(
+                    singletonClassKey(klass),
+                    singletonClassSchema(klass),
+                    codeUnitDigest,
+                    context.codeGeneration());
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            Env bootstrap = new Env(null, state);
+            for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>())) {
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException("singleton class field has no bootstrap initializer: "
+                            + klass.name() + "." + field.name());
+                }
+                fields.put(field.name(), eval(field.initializer(), bootstrap));
+            }
+            state.fields.define(
+                    "$instance",
+                    new OresObject(runtimeClassId(klass), fields),
+                    Ast.BindingKind.VAL);
+            return state;
+        }
+
+        private String singletonClassKey(Ast.ClassDecl klass) {
+            String namespace = program.namespace();
+            String namespaceIdentity = namespace == null || namespace.isBlank() ? "<default>" : namespace;
+            return "ores:" + codeUnitId + ":" + namespaceIdentity
+                    + ":class:" + runtimeClassId(klass);
+        }
+
+        private String singletonClassSchema(Ast.ClassDecl klass) {
+            return singletonClassSchemas.computeIfAbsent(klass, ignored -> {
+                StringBuilder schema = new StringBuilder("class:")
+                        .append(runtimeClassId(klass)).append('{');
+                for (Ast.FieldDecl field : effectiveFields(klass, new LinkedHashSet<>()).stream()
+                        .sorted(Comparator.comparing(Ast.FieldDecl::name))
+                        .toList()) {
+                    schema.append(field.name())
+                            .append(':').append(field.bindingKind())
+                            .append(':').append(field.type())
+                            .append(';');
+                }
+                return schema.append('}').toString();
+            });
         }
 
         private SingletonState initializeSingleton(Ast.ModuleDecl module) {
@@ -366,7 +464,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void authorizeSingletonCodeGeneration(SingletonState state, Ast.ModuleDecl module) {
-            String digest = singletonCodeDigest(module);
+            authorizeSingletonCodeGeneration(state, module.name(), singletonCodeDigest(module));
+        }
+
+        private void authorizeSingletonClassCodeGeneration(SingletonState state, Ast.ClassDecl klass) {
+            authorizeSingletonCodeGeneration(state, klass.name(), codeUnitDigest);
+        }
+
+        private void authorizeSingletonCodeGeneration(
+                SingletonState state,
+                String displayName,
+                String digest) {
             long generation = context.codeGeneration();
 
             if (state.activeCodeDigest.equals(digest)) {
@@ -375,21 +483,21 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             context.requireCapability(IsolatePolicy.Capability.HOT_CODE_LOAD,
-                    "singleton hot reload for " + module.name());
+                    "singleton hot reload for " + displayName);
 
             if (state.activeGeneration > 0) {
                 if (generation == 0) {
                     throw new SecurityException("unversioned context cannot replace managed singleton code for "
-                            + module.name());
+                            + displayName);
                 }
                 if (generation < state.activeGeneration) {
                     throw new SecurityException("stale singleton generation " + generation
                             + " cannot replace active generation " + state.activeGeneration
-                            + " for " + module.name());
+                            + " for " + displayName);
                 }
                 if (generation == state.activeGeneration) {
                     throw new SecurityException("conflicting singleton code digest at generation " + generation
-                            + " for " + module.name());
+                            + " for " + displayName);
                 }
             }
 
@@ -604,6 +712,7 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 Ast.ClassDecl klass = findClass(name.name());
                 if (klass != null) {
+                    if (klass.singleton()) return new SingletonClassFacade(klass);
                     Ast.ModuleDecl owner = ownerModule(klass);
                     if (owner != null && owner.singleton()
                             && (env.singletonState == null
@@ -710,6 +819,10 @@ public final class OresEvalRootNode extends RootNode {
                         return new SingletonReply(
                                 invokeSingletonProxy(proxy, methodCall.member(), args));
                     }
+                    if (receiver instanceof SingletonClassFacade singletonClass) {
+                        return new SingletonReply(
+                                invokeSingletonClass(singletonClass.klass(), methodCall.member(), args));
+                    }
                     if (receiver instanceof ClassFacade klass) {
                         return invokeStaticFunction(klass.klass(), methodCall.member(), args, klass.localState());
                     }
@@ -749,6 +862,10 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.NewExpr created) {
                 Ast.ClassDecl klass = findClass(created.type().name());
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                if (klass.singleton()) {
+                    throw new IllegalArgumentException("singleton class '" + klass.name()
+                            + "' is bootstrapped once per process and cannot be constructed with new");
+                }
                 Ast.ModuleDecl owner = ownerModule(klass);
                 if (owner != null && owner.singleton()
                         && (env.singletonState == null
@@ -848,6 +965,10 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof SingletonObjectProxy proxy) {
                 throw new IllegalArgumentException("singleton object proxy members must be invoked directly and awaited: "
                         + proxy.module().name() + "." + proxy.fieldName() + "." + name + "(...)");
+            }
+            if (receiver instanceof SingletonClassFacade singletonClass) {
+                throw new IllegalArgumentException("singleton class members must be invoked directly and awaited: "
+                        + singletonClass.klass().name() + "." + name + "(...)");
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
@@ -999,6 +1120,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("classes inside singleton module '" + module.name()
                                 + "' are actor-private and cannot be accessed through its external proxy");
                     }
+                    if (klass.singleton()) return new SingletonClassFacade(klass);
                     return new ClassFacade(klass, facade.localState());
                 }
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
@@ -1494,6 +1616,7 @@ public final class OresEvalRootNode extends RootNode {
             String codeDigest) { }
     private record ModuleFacade(Ast.ModuleDecl module, SingletonState localState) { }
     private record ClassFacade(Ast.ClassDecl klass, SingletonState localState) { }
+    private record SingletonClassFacade(Ast.ClassDecl klass) { }
     private record SingletonObjectProxy(Ast.ModuleDecl module, String fieldName, Ast.ClassDecl klass) { }
     private record SingletonReply(CompletionStage<Object> stage) { }
     private record StdioFacade(OresContext context) {
