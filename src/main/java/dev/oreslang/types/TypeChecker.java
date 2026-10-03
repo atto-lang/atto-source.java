@@ -163,11 +163,14 @@ public final class TypeChecker {
                                 + "its functions already execute through the module state authority");
             }
             if (decl instanceof Ast.FieldDecl field
-                    && field.bindingKind() == Ast.BindingKind.LET
-                    && field.visibility() == Ast.Visibility.PUBLIC) {
+                    && field.visibility() == Ast.Visibility.PUBLIC
+                    && (field.bindingKind() != Ast.BindingKind.CONST
+                        || field.initializer() == null
+                        || !constant(field.initializer()))) {
                 throw new IllegalArgumentException(
-                        "mutable field '" + module.name() + "." + field.name()
-                                + "' must be private; expose mutation through serialized module functions");
+                        "public field '" + module.name() + "." + field.name()
+                                + "' on a global/singleton module must be a compile-time const; "
+                                + "owned mutable state stays private behind module functions");
             }
         }
     }
@@ -278,6 +281,12 @@ public final class TypeChecker {
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
                         fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
+                if (module.storage() == Ast.ModuleStorage.GLOBAL
+                        && signature instanceof Function callable) {
+                    signature = new Function(
+                            callable.parameters(),
+                            new Named("Future", List.of(callable.result())));
+                }
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
@@ -991,7 +1000,7 @@ public final class TypeChecker {
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
-                    return checkGenericCallable(
+                    Type result = checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
                             target.returnType(),
@@ -1000,6 +1009,10 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    Ast.ModuleDecl targetModule = modules.get(namespace.name());
+                    return targetModule != null && targetModule.storage() == Ast.ModuleStorage.GLOBAL
+                            ? new Named("Future", List.of(result))
+                            : result;
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
@@ -1056,6 +1069,41 @@ public final class TypeChecker {
                             label);
                 }
                 if (receiver instanceof Named named) {
+                    if ((named.name().equals("GlobalRef") || named.name().equals("SingletonRef"))
+                            && named.arguments().size() == 1
+                            && named.arguments().getFirst() instanceof Named targetType) {
+                        Ast.ModuleDecl targetModule = modules.get(targetType.name());
+                        if (targetModule == null) {
+                            throw new IllegalArgumentException(
+                                    named.name() + " target module not found: " + targetType.name());
+                        }
+                        Ast.FunctionDecl target = functions.get(
+                                targetModule.name() + "." + member.member());
+                        if (target == null) {
+                            throw new IllegalArgumentException(
+                                    "module '" + targetModule.name()
+                                            + "' has no function '" + member.member() + "'");
+                        }
+                        String label = named.name() + " " + targetModule.name() + "." + member.member();
+                        validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+                        Type result = checkGenericCallable(
+                                target.genericParameters(),
+                                target.parameters(),
+                                target.returnType(),
+                                call.arguments(),
+                                env, generics, self,
+                                null,
+                                explicitGenericBindings(
+                                        target.genericParameters(),
+                                        call.typeArguments(),
+                                        generics,
+                                        self,
+                                        label),
+                                label);
+                        return named.name().equals("GlobalRef")
+                                ? new Named("Future", List.of(result))
+                                : result;
+                    }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && member.member().equals("with_lock")) {
@@ -1125,7 +1173,18 @@ public final class TypeChecker {
                                 "generic callable '" + namespace.name() + "." + member.member()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), Set.of(), null);
+                    Type function = functionType(
+                            moduleFunction.parameters(),
+                            moduleFunction.returnType(),
+                            Set.of(),
+                            null);
+                    if (moduleNamespace.storage() == Ast.ModuleStorage.GLOBAL
+                            && function instanceof Function callable) {
+                        return new Function(
+                                callable.parameters(),
+                                new Named("Future", List.of(callable.result())));
+                    }
+                    return function;
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
@@ -1182,6 +1241,29 @@ public final class TypeChecker {
                 return dynamic.arguments().getFirst();
             }
             if (receiver instanceof Named named) {
+                if ((named.name().equals("GlobalRef") || named.name().equals("SingletonRef"))
+                        && named.arguments().size() == 1
+                        && named.arguments().getFirst() instanceof Named targetType) {
+                    Ast.ModuleDecl targetModule = modules.get(targetType.name());
+                    if (targetModule == null) {
+                        throw new IllegalArgumentException(
+                                named.name() + " target module not found: " + targetType.name());
+                    }
+                    Ast.FunctionDecl target = functions.get(
+                            targetModule.name() + "." + member.member());
+                    if (target == null || !target.genericParameters().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "unknown or generic module function '" + member.member()
+                                        + "' on " + targetModule.name());
+                    }
+                    Type function = functionType(target.parameters(), target.returnType(), Set.of(), null);
+                    if (named.name().equals("GlobalRef") && function instanceof Function callable) {
+                        return new Function(
+                                callable.parameters(),
+                                new Named("Future", List.of(callable.result())));
+                    }
+                    return function;
+                }
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
