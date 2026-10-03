@@ -429,6 +429,7 @@ public final class ProcessSingletonRegistry {
         private final BlockingQueue<Request> mailbox = new LinkedBlockingQueue<>(MAILBOX_CAPACITY);
         private final AtomicInteger queuedRequests = new AtomicInteger();
         private final AtomicBoolean started = new AtomicBoolean();
+        private final AtomicBoolean mailboxTurnPending = new AtomicBoolean();
         private final ReentrantLock accessLock = new ReentrantLock();
         private final Duration initializationWallTime;
         private volatile Supplier<?> stateFactory;
@@ -470,8 +471,18 @@ public final class ProcessSingletonRegistry {
                 ReplyFuture reply,
                 long deadlineNanos,
                 ErasedOperation operation) {
-            if (!initialized || terminalFailure != null || !accessLock.tryLock()) return false;
+            if (!initialized
+                    || terminalFailure != null
+                    || queuedRequests.get() != 0
+                    || !mailbox.isEmpty()
+                    || mailboxTurnPending.get()
+                    || !accessLock.tryLock()) return false;
             try {
+                // Recheck after acquiring the lock so an already-admitted
+                // mailbox turn cannot be overtaken by the direct fast path.
+                if (queuedRequests.get() != 0 || !mailbox.isEmpty() || mailboxTurnPending.get()) {
+                    return false;
+                }
                 Throwable failure = terminalFailure;
                 if (failure != null) {
                     reply.completeExceptionally(failure);
@@ -550,6 +561,7 @@ public final class ProcessSingletonRegistry {
                 Request request;
                 try {
                     request = mailbox.take();
+                    mailboxTurnPending.set(true);
                     releaseQueuedSlot();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
@@ -605,6 +617,7 @@ public final class ProcessSingletonRegistry {
                         restoreThreadLocal(CURRENT_REQUEST, previousRequest);
                     }
                 } finally {
+                    mailboxTurnPending.set(false);
                     accessLock.unlock();
                 }
             }
