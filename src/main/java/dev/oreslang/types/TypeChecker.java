@@ -1423,24 +1423,24 @@ public final class TypeChecker {
         }
         if (type instanceof Primitive || type instanceof StringLiteral) return;
         if (type instanceof ListType list) {
-            validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
+            validateActorCallableBoundaryType(list.element(), actorKind, returnPosition, where + " element");
             return;
         }
         if (type instanceof Tuple tuple) {
             for (int i = 0; i < tuple.elements().size(); i++) {
-                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i);
+                validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, returnPosition, where + " tuple element " + i);
             }
             return;
         }
         if (type instanceof Union union) {
             for (Type option : union.options()) {
-                validateActorCallableBoundaryType(option, actorKind, false, where + " union member");
+                validateActorCallableBoundaryType(option, actorKind, returnPosition, where + " union member");
             }
             return;
         }
         if (type instanceof Record record) {
             for (Map.Entry<String, Type> member : record.members().entrySet()) {
-                validateActorCallableBoundaryType(member.getValue(), actorKind, false, where + " field '" + member.getKey() + "'");
+                validateActorCallableBoundaryType(member.getValue(), actorKind, returnPosition, where + " field '" + member.getKey() + "'");
             }
             return;
         }
