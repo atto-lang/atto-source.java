@@ -286,7 +286,11 @@ public final class ActorRuntime implements AutoCloseable {
             return value;
         }
         if (value instanceof OresSymbol symbol) {
-            budget.addBytes(32L + 2L * symbol.key().length());
+            if (!symbol.sendable()) {
+                throw new IllegalArgumentException(
+                        "actor-local Symbol values cannot cross actor boundaries");
+            }
+            budget.addBytes(48L + 2L * symbol.key().length());
             return value;
         }
         if (value instanceof BigInteger integer) {
@@ -473,8 +477,9 @@ public final class ActorRuntime implements AutoCloseable {
 
     /**
      * Untrusted actors are a separate identity/security domain. They may receive
-     * string/enum representations of symbol keys, but never a live process-wide
-     * Symbol handle, including when nested in an otherwise Sendable graph.
+     * validated string/enum representations of symbol keys, but never a live
+     * Symbol value from any trusted domain, including when nested in an otherwise
+     * Sendable graph.
      */
     private static void rejectProcessSymbols(
             Object value,
@@ -483,7 +488,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value == null) return;
         if (value instanceof OresSymbol) {
             throw new SecurityException(
-                    "process-wide Symbol values cannot cross into an adversarial/untrusted actor");
+                    "Symbol values cannot cross into an adversarial/untrusted actor");
         }
         if (depth > MAX_FREEZE_DEPTH) return;
         if (value instanceof String
