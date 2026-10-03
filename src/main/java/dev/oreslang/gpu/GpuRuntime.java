@@ -113,6 +113,41 @@ public final class GpuRuntime {
         public Object backendToken() { return backendToken; }
     }
 
+    /** Opaque GPU-resident dense row-major matrix resource. */
+    public static final class MatrixHandle {
+        private final ArrayHandle array;
+        private final long rows;
+        private final long cols;
+
+        private MatrixHandle(ArrayHandle array, long rows, long cols) {
+            this.array = Objects.requireNonNull(array, "array");
+            if (rows < 0 || cols < 0) {
+                throw new IllegalArgumentException("GpuMatrix dimensions cannot be negative");
+            }
+            long length;
+            try {
+                length = Math.multiplyExact(rows, cols);
+            } catch (ArithmeticException overflow) {
+                throw new GpuTransferException("GpuMatrix dimensions overflow addressable length", overflow);
+            }
+            if (length != array.length) {
+                throw new GpuTransferException(
+                        "GpuMatrix shape " + rows + "x" + cols + " does not match backing length " + array.length);
+            }
+            this.rows = rows;
+            this.cols = cols;
+        }
+
+        public String backendName() { return array.backendName(); }
+        public String elementAbiType() { return array.elementAbiType(); }
+        public long length() { return array.length(); }
+        public long rows() { return rows; }
+        public long cols() { return cols; }
+
+        /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
+        public ArrayHandle arrayHandle() { return array; }
+    }
+
     /** Opaque GPU-resident sequential stream resource. */
     public static final class StreamHandle {
         private final Backend backend;
@@ -159,6 +194,17 @@ public final class GpuRuntime {
         return new ArrayHandle(backend, backendToken, elementAbiType, length);
     }
 
+    public static MatrixHandle adoptMatrix(
+            Backend backend, Object backendToken, String elementAbiType, long rows, long cols) {
+        long length;
+        try {
+            length = Math.multiplyExact(rows, cols);
+        } catch (ArithmeticException overflow) {
+            throw new GpuTransferException("GpuMatrix dimensions overflow addressable length", overflow);
+        }
+        return new MatrixHandle(new ArrayHandle(backend, backendToken, elementAbiType, length), rows, cols);
+    }
+
     public static StreamHandle adoptStream(
             Backend backend, Object backendToken, String elementAbiType, long lengthHint) {
         return new StreamHandle(backend, backendToken, elementAbiType, lengthHint);
@@ -189,6 +235,11 @@ public final class GpuRuntime {
         Object frozen = freezeValue(result, true);
         validateDeviceOwnership(frozen, backend);
         return frozen;
+    }
+
+    public ArrayHandle uploadArray(List<?> values) {
+        Objects.requireNonNull(values, "values");
+        return uploadArray(inferDeviceScalarType(values), values);
     }
 
     public ArrayHandle uploadArray(String elementAbiType, List<?> values) {
@@ -232,6 +283,76 @@ public final class GpuRuntime {
         return new ArrayList<>(list);
     }
 
+    public MatrixHandle uploadMatrix(List<?> rows) {
+        Objects.requireNonNull(rows, "rows");
+        List<Object> flat = flattenMatrix(rows);
+        return new MatrixHandle(uploadArray(flat), rows.size(), matrixColumnCount(rows));
+    }
+
+    public MatrixHandle uploadMatrix(String elementAbiType, List<?> rows) {
+        Objects.requireNonNull(rows, "rows");
+        List<Object> flat = flattenMatrix(rows);
+        return new MatrixHandle(uploadArray(elementAbiType, flat), rows.size(), matrixColumnCount(rows));
+    }
+
+    public List<?> downloadMatrix(MatrixHandle matrix) {
+        Objects.requireNonNull(matrix, "matrix");
+        if (matrix.rows > Integer.MAX_VALUE || matrix.cols > Integer.MAX_VALUE) {
+            throw new GpuTransferException(
+                    "GpuMatrix shape " + matrix.rows + "x" + matrix.cols + " is too large to materialize on the host");
+        }
+        List<?> flat = downloadArray(matrix.array);
+        int rowCount = (int) matrix.rows;
+        int colCount = (int) matrix.cols;
+        ArrayList<List<Object>> rows = new ArrayList<>(rowCount);
+        for (int row = 0; row < rowCount; row++) {
+            ArrayList<Object> values = new ArrayList<>(colCount);
+            int base = row * colCount;
+            for (int col = 0; col < colCount; col++) values.add(flat.get(base + col));
+            rows.add(values);
+        }
+        return new ArrayList<>(rows);
+    }
+
+    private static List<Object> flattenMatrix(List<?> rows) {
+        int columns = matrixColumnCount(rows);
+        ArrayList<Object> flat = new ArrayList<>();
+        for (int row = 0; row < rows.size(); row++) {
+            Object raw = rows.get(row);
+            if (!(raw instanceof List<?> values)) {
+                throw new GpuTransferException("GpuMatrix.from_cpu row " + row + " is not an Array/List");
+            }
+            if (values.size() != columns) {
+                throw new GpuTransferException(
+                        "GpuMatrix.from_cpu requires a rectangular matrix; row " + row
+                                + " has " + values.size() + " column(s), expected " + columns);
+            }
+            flat.addAll(values);
+        }
+        return flat;
+    }
+
+    private static int matrixColumnCount(List<?> rows) {
+        if (rows.isEmpty()) return 0;
+        Object first = rows.getFirst();
+        if (!(first instanceof List<?> firstRow)) {
+            throw new GpuTransferException("GpuMatrix.from_cpu row 0 is not an Array/List");
+        }
+        int columns = firstRow.size();
+        for (int row = 1; row < rows.size(); row++) {
+            Object raw = rows.get(row);
+            if (!(raw instanceof List<?> values)) {
+                throw new GpuTransferException("GpuMatrix.from_cpu row " + row + " is not an Array/List");
+            }
+            if (values.size() != columns) {
+                throw new GpuTransferException(
+                        "GpuMatrix.from_cpu requires a rectangular matrix; row " + row
+                                + " has " + values.size() + " column(s), expected " + columns);
+            }
+        }
+        return columns;
+    }
+
     public StreamHandle stream(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
         Object token = backendCall(array.backend, "openStream",
@@ -264,6 +385,41 @@ public final class GpuRuntime {
         return downloadArray(collect(stream));
     }
 
+    private static String inferDeviceScalarType(List<?> values) {
+        if (values.isEmpty()) {
+            throw new GpuTransferException(
+                    "cannot infer an exact GPU element type from an empty Array/List; use a typed GPU transfer path");
+        }
+
+        boolean sawBoolean = false;
+        boolean sawInteger = false;
+        boolean sawFloating = false;
+        boolean sawComplex = false;
+        for (Object value : values) {
+            if (value instanceof Boolean) sawBoolean = true;
+            else if (value instanceof ComplexValue) sawComplex = true;
+            else if (value instanceof Float || value instanceof Double || value instanceof BigDecimal) sawFloating = true;
+            else if (value instanceof Byte || value instanceof Short || value instanceof Integer
+                    || value instanceof Long || value instanceof BigInteger) sawInteger = true;
+            else throw new GpuTransferException(
+                    "cannot infer GPU element ABI type from " + (value == null ? "null" : value.getClass().getName()));
+        }
+
+        int families = (sawBoolean ? 1 : 0) + (sawComplex ? 1 : 0)
+                + ((sawInteger || sawFloating) ? 1 : 0);
+        if (families != 1) {
+            throw new GpuTransferException("GPU array/matrix transfer cannot mix boolean, numeric, and complex element families");
+        }
+        if (sawBoolean) return "bool";
+        if (sawComplex) {
+            if (sawInteger || sawFloating) {
+                throw new GpuTransferException("complex GPU transfer requires explicit complex values for every element");
+            }
+            return "complex128";
+        }
+        return sawFloating ? "f64" : "i64";
+    }
+
     private static String normalizeDeviceScalarType(String type) {
         Objects.requireNonNull(type, "elementAbiType");
         return switch (type.trim().toLowerCase(java.util.Locale.ROOT)) {
@@ -278,6 +434,8 @@ public final class GpuRuntime {
             case "u64", "uint" -> "u64";
             case "f32" -> "f32";
             case "f64", "float" -> "f64";
+            case "complex64" -> "complex64";
+            case "complex128", "complex" -> "complex128";
             default -> throw new GpuTransferException(
                     "unsupported exact GPU element ABI type '" + type + "'");
         };
@@ -298,6 +456,12 @@ public final class GpuRuntime {
 
     private static boolean validElement(String type, Object value) {
         if (type.equals("bool")) return value instanceof Boolean;
+        if (type.equals("complex64") || type.equals("complex128")) {
+            if (!(value instanceof ComplexValue complex)) return false;
+            if (!Double.isFinite(complex.real()) || !Double.isFinite(complex.imaginary())) return false;
+            if (type.equals("complex128")) return true;
+            return Math.abs(complex.real()) <= Float.MAX_VALUE && Math.abs(complex.imaginary()) <= Float.MAX_VALUE;
+        }
         if (!(value instanceof Number number)) return false;
 
         if (type.equals("f32") || type.equals("f64")) {
@@ -378,6 +542,10 @@ public final class GpuRuntime {
             }
             return;
         }
+        if (value instanceof MatrixHandle matrix) {
+            validateDeviceOwnership(matrix.array, expected);
+            return;
+        }
         if (value instanceof StreamHandle stream) {
             if (stream.backend != expected) {
                 throw new GpuTransferException(
@@ -424,7 +592,7 @@ public final class GpuRuntime {
                 || value instanceof Long || value instanceof Float || value instanceof Double
                 || value instanceof BigInteger || value instanceof BigDecimal || value instanceof Enum<?>
                 || value instanceof UUID || value instanceof ComplexValue
-                || value instanceof ArrayHandle || value instanceof StreamHandle) {
+                || value instanceof ArrayHandle || value instanceof MatrixHandle || value instanceof StreamHandle) {
             return value;
         }
 
