@@ -1190,18 +1190,19 @@ public final class OresNet {
             int connectTimeout = request.timeoutMillis > 0
                     ? request.timeoutMillis
                     : connectTimeoutMillis;
-            long fd = io(() -> NativeSocketBridge.connect(uri.host, uri.port, connectTimeout));
+            NativeSocketHandle handle =
+                    io(() -> NativeSocketBridge.connectHandle(uri.host, uri.port, connectTimeout));
             if (request.timeoutMillis > 0) {
-                ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, request.timeoutMillis));
+                ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, request.timeoutMillis));
             }
             try {
                 if (request.timeoutMillis > 0) {
-                    ioVoid(() -> NativeSocketBridge.setSoTimeout(fd, request.timeoutMillis));
+                    ioVoid(() -> NativeSocketBridge.setSoTimeout(handle, request.timeoutMillis));
                 }
 
                 byte[] wireRequest = encodeRequest(request, uri);
-                writeAll(fd, wireRequest);
-                byte[] wireResponse = readToEof(fd, MAX_RESPONSE_BYTES);
+                writeAll(handle, wireRequest);
+                byte[] wireResponse = readToEof(handle, MAX_RESPONSE_BYTES);
                 ParsedResponse parsed = parseResponse(wireResponse);
 
                 Object body = switch (handler.kind()) {
@@ -1220,7 +1221,7 @@ public final class OresNet {
                         request.uri,
                         HttpVersion.HTTP_1_1);
             } finally {
-                ioVoid(() -> NativeSocketBridge.close(fd));
+                ioVoid(() -> NativeSocketBridge.close(handle));
             }
         }
 
@@ -1253,21 +1254,21 @@ public final class OresNet {
             return result;
         }
 
-        private static void writeAll(long fd, byte[] bytes) {
+        private static void writeAll(NativeSocketHandle handle, byte[] bytes) {
             int offset = 0;
             while (offset < bytes.length) {
                 int at = offset;
-                int count = io(() -> NativeSocketBridge.write(fd, bytes, at, bytes.length - at));
+                int count = io(() -> NativeSocketBridge.write(handle, bytes, at, bytes.length - at));
                 if (count <= 0) throw new IllegalStateException("native send returned " + count);
                 offset += count;
             }
         }
 
-        private static byte[] readToEof(long fd, int limit) {
+        private static byte[] readToEof(NativeSocketHandle handle, int limit) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buffer = new byte[16 * 1024];
             while (true) {
-                int count = io(() -> NativeSocketBridge.read(fd, buffer, 0, buffer.length));
+                int count = io(() -> NativeSocketBridge.read(handle, buffer, 0, buffer.length));
                 if (count < 0) break;
                 if (out.size() + count > limit) {
                     throw new IllegalStateException("HTTP response exceeds " + limit + " bytes");
