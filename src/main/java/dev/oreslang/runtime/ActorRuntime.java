@@ -118,6 +118,11 @@ public final class ActorRuntime implements AutoCloseable {
         return CURRENT_ROOT_RUNTIME.get();
     }
 
+    public static boolean currentRootIsAdversarial() {
+        ActorRuntime runtime = CURRENT_ROOT_RUNTIME.get();
+        return runtime != null && runtime.policyCeiling.adversarial();
+    }
+
     public static IsolatePolicy currentActorPolicy() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.policy();
@@ -2927,6 +2932,18 @@ public final class ActorRuntime implements AutoCloseable {
             ActorKind kind,
             M message,
             Invocation<M, R> invocation) {
+        requireCallerRuntimeAffinity("invoke actor callables");
+        if (inActorExecution()) {
+            throw new IllegalStateException(
+                    "synchronous actor-callable invocation from an actor turn is forbidden; "
+                            + "use spawn/mailbox-oriented actor composition");
+        }
+        if (inRootExecution() && policyCeiling.adversarial()) {
+            throw new SecurityException(
+                    "adversarial root/main execution cannot synchronously invoke an actor; "
+                            + "use nonblocking spawn and continuation-based await");
+        }
+
         ActorSpawn<M, R> spawn = spawnInvocation(kind, message, invocation);
         IsolatePolicy policy = defaultSpawnPolicy();
 
