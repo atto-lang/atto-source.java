@@ -10,6 +10,7 @@ import dev.oreslang.types.Types.ListType;
 import dev.oreslang.types.Types.Named;
 import dev.oreslang.types.Types.Primitive;
 import dev.oreslang.types.Types.Record;
+import dev.oreslang.types.Types.SingletonClass;
 import dev.oreslang.types.Types.SingletonProxy;
 import dev.oreslang.types.Types.StringLiteral;
 import dev.oreslang.types.Types.Tuple;
@@ -126,7 +127,10 @@ public final class TypeChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module, fn);
                 else if (decl instanceof Ast.InitDecl init) checkInit(module, init);
-                else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
+                else if (decl instanceof Ast.ClassDecl klass) {
+                    if (klass.singleton()) validateSingletonClass(module, klass);
+                    checkClass(module.name(), klass);
+                }
                 else if (decl instanceof Ast.InterfaceDecl iface) checkInterface(iface);
                 else if (decl instanceof Ast.TypeAliasDecl alias) resolve(alias.target(), Set.copyOf(alias.genericParameters()), null);
                 else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(module, field);
@@ -412,6 +416,102 @@ public final class TypeChecker {
                     && !isPureSingletonInitializer(classField.initializer(), Set.of())) return false;
         }
         return true;
+    }
+
+    private void validateSingletonClass(Ast.ModuleDecl lexicalOwner, Ast.ClassDecl klass) {
+        if (lexicalOwner.singleton()) {
+            throw new IllegalArgumentException("singleton class '" + klass.name()
+                    + "' cannot be nested inside singleton module '" + lexicalOwner.name()
+                    + "'; choose one process-owned boundary");
+        }
+        if (klass.isAbstract()) {
+            throw new IllegalArgumentException("singleton class '" + klass.name() + "' cannot be abstract");
+        }
+        if (!klass.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException("singleton class '" + klass.name()
+                    + "' cannot be generic because one process instance needs one concrete storage schema");
+        }
+        if (!klass.parents().isEmpty()) {
+            throw new IllegalArgumentException("singleton class '" + klass.name()
+                    + "' cannot use inheritance until inherited process-state schemas are flattened explicitly");
+        }
+
+        Type self = nominalClassType(klass);
+        for (Ast.FieldDecl field : klass.fields()) {
+            if (field.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("singleton class field '" + klass.name() + "."
+                        + field.name() + "' must be private; expose synchronized access through methods");
+            }
+            if (field.type() == null) {
+                throw new IllegalArgumentException("singleton class field '" + klass.name() + "."
+                        + field.name() + "' requires an explicit process-stable type");
+            }
+            if (containsTypeAlias(field.type())) {
+                throw new IllegalArgumentException("singleton class field '" + klass.name() + "."
+                        + field.name() + "' cannot use type aliases in process-lifetime storage");
+            }
+            Type fieldType = resolve(field.type(), Set.of(), self);
+            if (!isProcessStableStateType(fieldType)) {
+                throw new IllegalArgumentException("singleton class field '" + klass.name() + "."
+                        + field.name() + "' is not process-stable: " + field.type());
+            }
+            if (field.initializer() == null) {
+                throw new IllegalArgumentException("singleton class field '" + klass.name() + "."
+                        + field.name() + "' requires a bootstrap initializer because new "
+                        + klass.name() + "(...) is forbidden");
+            }
+            if (!isPureSingletonInitializer(field.initializer(), Set.of())) {
+                throw new IllegalArgumentException("singleton class field '" + klass.name() + "."
+                        + field.name() + "' requires a deterministic context-free initializer");
+            }
+        }
+
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (method.isStatic()) {
+                throw new IllegalArgumentException("singleton class '" + klass.name()
+                        + "' cannot declare static fnc '" + method.name()
+                        + "'; use an ordinary class/module static helper instead");
+            }
+            if (method.isAbstract()) {
+                throw new IllegalArgumentException("singleton class method '" + klass.name() + "."
+                        + method.name() + "' cannot be abstract");
+            }
+            if (method.visibility() != Ast.Visibility.PUBLIC) continue;
+            if (method.async()) {
+                throw new IllegalArgumentException("singleton class method '" + klass.name() + "."
+                        + method.name() + "' cannot be async; synchronized singleton dispatch already returns Future<T>");
+            }
+            if (!method.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException("singleton class method '" + klass.name() + "."
+                        + method.name() + "' cannot be generic until Send constraints are explicit");
+            }
+            for (Ast.Param param : method.parameters()) {
+                if (param.mutable()) {
+                    throw new IllegalArgumentException("singleton class method '" + klass.name() + "."
+                            + method.name() + "' cannot accept mut transported parameters");
+                }
+                if (param.structural()) {
+                    throw new IllegalArgumentException("singleton class method '" + klass.name() + "."
+                            + method.name() + "' cannot use structural transported parameters");
+                }
+                Type parameter = resolveParam(param, Set.of(), self);
+                if (!isActorSendableType(parameter, false)) {
+                    throw new IllegalArgumentException("singleton class method '" + klass.name() + "."
+                            + method.name() + "' parameter '" + param.name() + "' is not statically Sendable");
+                }
+            }
+            Type result = resolve(method.returnType(), Set.of(), self);
+            if (!isActorSendableType(result, true)) {
+                throw new IllegalArgumentException("singleton class method '" + klass.name() + "."
+                        + method.name() + "' result is not statically Sendable");
+            }
+        }
+
+        // A standalone singleton class is process-owned even when declared in
+        // an ordinary module. Reuse the process-effect checker with its lexical
+        // owner; ordinary module bindings/helpers are therefore rejected while
+        // self and explicit singleton-service calls remain valid.
+        validateProcessOwnedClassEffects(lexicalOwner, klass);
     }
 
     private void validateSingletonProxyClass(
@@ -1169,6 +1269,9 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("class '" + classNamespace.name()
                             + "' is actor-private inside singleton module '" + owner.name() + "'");
                 }
+                if (classNamespace.singleton()) {
+                    return new SingletonClass(nominalClassType(classNamespace));
+                }
                 return new ClassNamespace(qualifiedClassName(classNamespace));
             }
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
@@ -1257,6 +1360,25 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                if (receiver instanceof SingletonClass singletonClass) {
+                    Ast.ClassDecl klass = findClass(singletonClass.target().name());
+                    if (klass == null || !klass.singleton()) {
+                        throw new IllegalArgumentException("unknown singleton class '" + singletonClass.target().name() + "'");
+                    }
+                    Ast.MethodDecl method = findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                    if (method == null || method.visibility() != Ast.Visibility.PUBLIC || method.isStatic()) {
+                        throw new IllegalArgumentException("no public singleton method '" + member.member()
+                                + "' with arity " + call.arguments().size() + " on " + klass.name());
+                    }
+                    for (int i = 0; i < call.arguments().size(); i++) {
+                        Type expected = resolveParam(method.parameters().get(i), Set.of(), singletonClass.target());
+                        validateLambdaArgument(call.arguments().get(i), expected, env, generics, self);
+                        requireAssignable(typeOf(call.arguments().get(i), env, generics, self), expected,
+                                "singleton class argument " + (i + 1));
+                    }
+                    Type result = resolve(method.returnType(), Set.of(), singletonClass.target());
+                    return new Named("Future", List.of(result));
+                }
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
@@ -1375,6 +1497,22 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("unknown singleton proxy member '" + member.member() + "'");
             }
 
+            if (receiver instanceof SingletonClass singletonClass) {
+                Ast.ClassDecl klass = findClass(singletonClass.target().name());
+                if (klass == null || !klass.singleton()) {
+                    throw new IllegalArgumentException("unknown singleton class '" + singletonClass.target().name() + "'");
+                }
+                if (findFieldType(klass, member.member(), new LinkedHashSet<>()) != null) {
+                    throw new IllegalArgumentException("singleton class fields are private; invoke a public method on "
+                            + klass.name());
+                }
+                if (!findMethodsByName(klass, member.member(), new LinkedHashSet<>()).isEmpty()) {
+                    throw new IllegalArgumentException("singleton class method values cannot be extracted; call and await "
+                            + klass.name() + "." + member.member() + "(...) directly");
+                }
+                throw new IllegalArgumentException("unknown singleton class member '" + member.member() + "'");
+            }
+
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
                 if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
@@ -1418,6 +1556,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.NewExpr created) {
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return new Named(created.type().name(), created.type().arguments().stream().map(a -> resolve(a, generics, self)).toList());
+            if (klass.singleton()) {
+                throw new IllegalArgumentException("singleton class '" + klass.name()
+                        + "' is bootstrapped once per process and cannot be constructed with new");
+            }
             String ownerName = classOwners.get(klass);
             Ast.ModuleDecl owner = ownerName == null ? null : modules.get(ownerName);
             if (owner != null && owner.singleton() && !owner.name().equals(env.moduleName)) {
@@ -1537,6 +1679,11 @@ public final class TypeChecker {
 
     private void validateSingletonTransportExpr(Ast.Expr expr, String currentModule) {
         if (expr instanceof Ast.NameExpr name) {
+            Ast.ClassDecl singletonClass = findClass(name.name());
+            if (singletonClass != null && singletonClass.singleton()) {
+                throw new IllegalArgumentException("singleton class handles cannot be extracted; call and await "
+                        + singletonClass.name() + ".method(...) directly");
+            }
             Ast.ModuleDecl module = modules.get(name.name());
             if (module != null && module.singleton() && !module.name().equals(currentModule)) {
                 throw new IllegalArgumentException("singleton module handles cannot be extracted; access and await "
@@ -1664,6 +1811,14 @@ public final class TypeChecker {
         }
         if (call.callee() instanceof Ast.MemberExpr member
                 && member.receiver() instanceof Ast.NameExpr namespace) {
+            Ast.ClassDecl singletonClass = findClass(namespace.name());
+            if (singletonClass != null && singletonClass.singleton()) {
+                Ast.MethodDecl method = findMethod(
+                        singletonClass, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                return method != null
+                        && method.visibility() == Ast.Visibility.PUBLIC
+                        && !method.isStatic();
+            }
             Ast.ModuleDecl owner = modules.get(namespace.name());
             if (owner == null || !owner.singleton() || owner.name().equals(currentModule)) return false;
             for (Ast.Decl decl : owner.declarations()) {
