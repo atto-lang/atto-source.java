@@ -67,6 +67,7 @@ public final class GpuKernelCompiler {
     public record GpuKernel(
             String module,
             String sourceName,
+            int arity,
             String helperSymbol,
             String kernelSymbol,
             KernelKind kind,
@@ -122,7 +123,8 @@ public final class GpuKernelCompiler {
                 if (!kernel.module().equals(module) || !kernel.sourceName().equals(sourceName)) continue;
                 if (match != null) {
                     throw new IllegalArgumentException(
-                            "ambiguous GPU kernel metadata for " + module + "." + sourceName);
+                            "ambiguous GPU kernel metadata for " + module + "." + sourceName
+                                    + "; specify arity");
                 }
                 match = kernel;
             }
@@ -131,6 +133,19 @@ public final class GpuKernelCompiler {
                         "GPU artifact has no kernel metadata for " + module + "." + sourceName);
             }
             return match;
+        }
+
+        public GpuKernel requireKernel(String module, String sourceName, int arity) {
+            for (GpuKernel kernel : kernels) {
+                if (kernel.module().equals(module)
+                        && kernel.sourceName().equals(sourceName)
+                        && kernel.arity() == arity) {
+                    return kernel;
+                }
+            }
+            throw new IllegalArgumentException(
+                    "GPU artifact has no kernel metadata for " + module + "." + sourceName
+                            + "/" + arity);
         }
 
         /** Deterministic launcher/cache contract paired with the generated device source. */
@@ -631,6 +646,7 @@ public final class GpuKernelCompiler {
         GpuKernel meta = new GpuKernel(
                 target.module,
                 target.sourceName,
+                target.parameters.size(),
                 target.helperSymbol,
                 target.kernelSymbol,
                 target.kind,
@@ -1798,6 +1814,7 @@ public final class GpuKernelCompiler {
         for (GpuKernel kernel : kernels) {
             out.append("kernel=").append(kernel.module()).append('|')
                     .append(kernel.sourceName()).append('|')
+                    .append(kernel.arity()).append('|')
                     .append(kernel.kernelSymbol()).append('|')
                     .append(kernel.helperSymbol()).append('|')
                     .append(kernel.kind()).append('|')
