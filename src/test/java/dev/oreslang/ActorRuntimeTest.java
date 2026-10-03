@@ -1623,5 +1623,49 @@ final class ActorRuntimeTest {
         }
     }
 
+    @Test
+    void closeTimeoutDoesNotBlockOnSharedCellHeldByUncooperativeTurn() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                64,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.SECONDS.toNanos(5),
+                1,
+                64);
+        ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config);
+        AtomicBoolean release = new AtomicBoolean();
+        CountDownLatch holdingCell = new CountDownLatch(1);
+
+        ActorRuntime.SyncCell<Integer> cell = runtime.syncCell(0);
+        var actor = runtime.<String>spawnSharedTrusted(
+                IsolatePolicy.developer(),
+                ignored -> (message, turn) -> cell.update(value -> {
+                    holdingCell.countDown();
+                    while (!release.get()) Thread.onSpinWait();
+                    return value + 1;
+                }));
+        actor.send("hold");
+        assertTrue(holdingCell.await(2, TimeUnit.SECONDS));
+
+        long started = System.nanoTime();
+        IllegalStateException timeout = assertThrows(
+                IllegalStateException.class,
+                runtime::close);
+        long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - started);
+
+        assertTrue(timeout.getMessage().contains("still running"));
+        assertTrue(
+                elapsedMillis < 2_000,
+                "close must respect its bounded guest-quiescence wait instead of blocking on SyncCell");
+
+        release.set(true);
+        assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+        assertDoesNotThrow(runtime::close);
+        assertTrue(cell.closed());
+    }
+
 
 }
