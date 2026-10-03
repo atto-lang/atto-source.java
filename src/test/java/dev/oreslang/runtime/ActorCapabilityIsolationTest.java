@@ -19,7 +19,7 @@ final class ActorCapabilityIsolationTest {
     void privateActorStaticallyDeniesReadonlySharingEvenUnderDeveloperPolicy() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 actor PrivateWorker {
-                  pub fnc attempt_share() => void {
+                  pub actor attempt_share() => void {
                     val shared = process.share_readonly(arr[1, 2, 3]);
                     stdio.println(shared);
                     return;
@@ -80,7 +80,7 @@ final class ActorCapabilityIsolationTest {
                 }
 
                 actor PrivateWorker {
-                  pub fnc run() => void {
+                  pub actor run() => void {
                     build_shared();
                     return;
                   }
@@ -106,7 +106,7 @@ final class ActorCapabilityIsolationTest {
                 end
 
                 actor PrivateWorker {
-                  pub fnc run() => void {
+                  pub actor run() => void {
                     Helpers.build_shared();
                     return;
                   }
@@ -235,7 +235,7 @@ final class ActorCapabilityIsolationTest {
                 }
 
                 actor PrivateWorker {
-                  pub fnc run() => void {
+                  pub actor run() => void {
                     val callback = build_shared;
                     callback();
                     return;
@@ -262,7 +262,7 @@ final class ActorCapabilityIsolationTest {
                 end
 
                 actor PrivateWorker {
-                  pub fnc run() => void {
+                  pub actor run() => void {
                     val callback = helpers.expose;
                     callback();
                     return;
@@ -290,7 +290,7 @@ final class ActorCapabilityIsolationTest {
                 end
 
                 actor PrivateWorker {
-                  pub fnc run() => void {
+                  pub actor run() => void {
                     val callback = Helpers.build_shared;
                     callback();
                     return;
