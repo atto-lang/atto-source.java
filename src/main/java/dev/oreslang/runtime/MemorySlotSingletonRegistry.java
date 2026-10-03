@@ -86,7 +86,7 @@ public final class MemorySlotSingletonRegistry implements AutoCloseable {
         return normalized;
     }
 
-    public static final class Handle<S> {
+    public static final class Handle<S> implements SandboxForbiddenCapability {
         private final MemorySlotSingletonRegistry registry;
         private final Cell cell;
 
