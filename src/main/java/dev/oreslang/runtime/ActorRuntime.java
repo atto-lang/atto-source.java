@@ -1058,6 +1058,10 @@ public final class ActorRuntime implements AutoCloseable {
                         IsolatePolicy.Capability.JAVA_INTEROP)
                 : policy;
         requireWithinCallerPolicy(effectivePolicy);
+        if (effectivePolicy.adversarial() && kind != ActorKind.PRIVATE) {
+            throw new SecurityException(
+                    "adversarial/untrusted actors must use a private isolated memory domain");
+        }
         if (kind == ActorKind.SHARED) {
             effectivePolicy.require(IsolatePolicy.Capability.SHARED_MEMORY, "shared actor spawn");
         }
@@ -1385,6 +1389,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
         boolean mailboxSlotTransferred = false;
         try {
+        if (cell.policy.adversarial()) {
+            requireAdversarialMailboxSafe(message, new IdentityHashMap<>(), 0);
+        }
         validateMessageGraph(message);
         requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
         requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
@@ -1895,6 +1902,76 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Absolute sandbox boundary for data entering an adversarial actor.
+     *
+     * Untrusted mailboxes may receive ordinary copied/frozen data and only
+     * explicitly exported Symbols. They may never receive process-global refs
+     * or live shared-memory capabilities.
+     */
+    private static void requireAdversarialMailboxSafe(
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null) return;
+
+        if (value instanceof OresSymbol symbol) {
+            if (!symbol.visibleToUntrusted()) {
+                throw new SecurityException(
+                        "Symbol is not exported to the untrusted boundary: " + symbol);
+            }
+            return;
+        }
+        if (value instanceof ProcessGlobalRegistry.Handle<?>) {
+            throw new SecurityException(
+                    "process-global references cannot cross into an untrusted actor; "
+                            + "send only copied/frozen result data");
+        }
+        if (value instanceof SyncCell<?> || value instanceof OresMutex.Shared<?>
+                || value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
+            throw new SecurityException(
+                    "live shared/mutable capabilities cannot cross into an untrusted actor");
+        }
+        if (isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+
+        if (value instanceof Shared<?> shared) {
+            // The private transport path unwraps/copies this immutable value;
+            // the Shared capability object itself never reaches the sandbox.
+            requireAdversarialMailboxSafe(shared.value(), visiting, depth + 1);
+            return;
+        }
+
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException(
+                    "cyclic values cannot cross the untrusted actor boundary");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) {
+                    requireAdversarialMailboxSafe(item, visiting, depth + 1);
+                }
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) {
+                    requireAdversarialMailboxSafe(item, visiting, depth + 1);
+                }
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    requireAdversarialMailboxSafe(entry.getKey(), visiting, depth + 1);
+                    requireAdversarialMailboxSafe(entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    requireAdversarialMailboxSafe(
+                            Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
+    }
+
     private static void validateMessageGraph(Object value) {
         validateMessageGraph(value, new IdentityHashMap<>(), 0, new long[]{0L});
     }
@@ -2327,6 +2404,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof OresSymbol symbol) return 48L + (long) symbol.key().length() * 2L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
     }
@@ -2378,6 +2456,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof OresSymbol symbol) return 48L + (long) symbol.key().length() * 2L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
@@ -2423,7 +2502,8 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || value instanceof OresSymbol;
     }
 
     @Override
