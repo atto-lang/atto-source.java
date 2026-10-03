@@ -20,6 +20,8 @@
 16. Singleton code replacement requires `HOT_CODE_LOAD`; managed hot-reload generations are monotonic and stale generations cannot roll behavior back.
 17. Process-owned singleton code cannot fall back into caller-local modules/imports or ambient `process`/`stdio` capabilities; such dependencies fail static checking until an explicit process-safe effect model exists.
 18. Ordinary module/file state is lifetime-scoped to the executing actor cell, or to the Graal context for non-actor/main execution.
+19. Process-singleton cells are strongly rooted and excluded from ordinary/automatic GC; only explicit singleton collection or process teardown releases them.
+20. Explicit singleton collection closes admission, drains previously admitted mailbox work, invalidates stale handles, performs cleanup, and removes the registry root before recreation is allowed.
 
 ## Deployment matrix
 
@@ -74,6 +76,14 @@ There is intentionally no ambient "process init" hook at file scope. Process-wid
 The public singleton transport surface is deliberately narrower than ordinary Oreslang APIs until explicit `Send` constraints exist: public singleton functions are non-generic, non-`async`, cannot accept structural parameters, and may use only statically sendable scalar/container/Option values. Borrows, class instances, functions/closures, unresolved/generic types, and other actor-local values are rejected. A by-value `mut` parameter is allowed: the caller value is frozen for transit and the receiving singleton receives a fresh actor-owned mutable copy. Runtime freezing remains the second line of defense.
 
 Hot reload preserves the same singleton actor and state when a new generation keeps the same declared field schema, so new function code can operate on existing process state. Singleton-owned object instances retain their state storage, but method dispatch is resolved against the currently authorized class generation; old class ASTs cannot pin stale behavior. A generation that changes the singleton field schema fails closed with a migration-required error; state is never silently reinterpreted. Changing singleton function code against live state requires the caller context to hold `HOT_CODE_LOAD`. `HotReloadManager` stamps contexts with a process-global monotonic generation number; an older generation cannot later roll the singleton's active behavior backward, and an unversioned context cannot replace code once managed generations are active. An explicit state-migration hook is intentionally a separate future language feature.
+
+### Memory lifetime and explicit collection
+
+Oreslang deliberately supports more than one lifetime strategy. Ordinary managed graphs may use automatic tracing/GC; affine owned values may be reclaimed deterministically when ownership ends; process runtime roots such as singleton cells are pinned. These strategies are complementary rather than competing collector modes.
+
+A normal actor/process GC request does **not** unroot a singleton. User code that intentionally wants to discard process state uses `await process.collect_singleton(ModuleName)`. The registry first stops accepting new calls, inserts a lifecycle barrier behind every already-admitted request, drains to that barrier, runs `AutoCloseable` cleanup for host-backed state when applicable, removes the strong registry root, then resolves the collection future. Old handles remain permanently stale, preventing use-after-free. Only a subsequent lookup can initialize a new instance.
+
+This separation is important: "collect the ordinary heap" is a performance/memory-management request, while "destroy this process singleton" is an application lifecycle decision. The latter is never inferred from reachability.
 
 
 ## Actor message freezing limits
