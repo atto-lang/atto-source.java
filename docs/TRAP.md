@@ -73,7 +73,13 @@ pub trap fnc load_user(UserId id): User {
 
 The body type-checks as though successful `return` statements return `User`.
 
-The call expression, however, has the trap ABI shape:
+The call expression has a compiler-owned nominal result type:
+
+```text
+TrapResult<User>
+```
+
+Its mandatory two-slot destructuring view is:
 
 ```text
 [
@@ -82,22 +88,26 @@ The call expression, however, has the trap ABI shape:
 ]
 ```
 
-Oreslang has one return value. The `[User]` above is the normalized success tuple used by the trap ABI, not language-level multiple return values.
+This distinction is deliberate. A raw structural tuple of two `Option` values would permit user code to fabricate invalid trap states. `TrapResult<T>` is compiler/runtime-owned and cannot be constructed with an ordinary tuple/list literal, object literal, unchecked cast, or user-defined constructor.
+
+Oreslang still has one return value. The `[User]` in the success projection is the normalized success bundle used by trap destructuring, not language-level multiple return values.
 
 For `void`:
 
 ```text
+TrapResult<void>
+  destructures as
 [
   Option<[]>,
   Option<TrapError>
 ]
 ```
 
-A successful void trap returns `Some([])` in the success slot.
+A successful void trap exposes `Some([])` in the success slot.
 
 ## Trap-result invariant
 
-Exactly one side is populated.
+Every `TrapResult<T>` has exactly one populated side.
 
 Success:
 
@@ -117,14 +127,16 @@ For `void` success:
 [Some([]), None]
 ```
 
-These states are invalid and must never be constructible by compiler lowering:
+These states are unrepresentable as `TrapResult<T>`:
 
 ```text
 [None, None]
 [Some(...), Some(...)]
 ```
 
-The implementation may use a more compact internal tagged representation, but the observable type/semantics must preserve this invariant.
+The runtime should store the value as a tagged success/error representation and synthesize the two Option projections for destructuring. Backends may choose a compact tagged ABI, but they may not expose a writable pair of independent option fields.
+
+A manually created ordinary tuple that happens to have the same visible element types is **not** a `TrapResult<T>` and is not implicitly assignable to one.
 
 ## Caller destructuring
 
@@ -168,9 +180,22 @@ user = None
 err  = Some(TrapError)
 ```
 
-This syntax does **not** mean the function has multiple return values. It is compiler-supported destructuring/lifting of the optional normalized success tuple.
+This syntax does **not** mean the function has multiple return values. It is compiler-supported destructuring/lifting of the optional normalized success bundle.
 
-If the declared return type itself is a tuple, that tuple remains one success value. The trap layer does not flatten the user's returned tuple.
+The parser/AST must therefore support a recursive destructuring pattern for this form. The current flat `DestructureStmt(List<DestructureBinding>)` representation is not sufficient; trap implementation must introduce a recursive pattern node rather than special-casing token text after parsing.
+
+If the declared return type itself is a tuple, that tuple remains one success value. The trap layer does not flatten the user's returned tuple:
+
+```ores
+pub trap fnc pair(): [int, String] {
+  return [7, "seven"];
+}
+
+[const [pair_value], const err] = pair();
+// pair_value : Option<[int, String]>
+```
+
+There is no ambiguity between the compiler-owned outer success bundle and a tuple returned by user code.
 
 ## `throw`: the trappable error channel
 
@@ -186,17 +211,20 @@ pub trap fnc foo(): String {
 }
 ```
 
-Conceptual lowering:
+Conceptual lowering uses an **internal throw-only boundary**, not a source-level broad `try/catch`:
 
-```ores
-fnc foo$trap_lowered(): [Option<[String]>, Option<TrapError>] {
-  try {
-    throw new Error("bad");
-  } catch (Error err) {
-    return [None, Some(TrapError.from(err))];
+```text
+foo$trap_lowered() : TrapResult<String> {
+  trap_boundary {
+    execute foo body
+  }
+  on ThrowSignal(err) {
+    return TrapResult.error(TrapError.from(err))
   }
 }
 ```
+
+The lowering must not be implemented as `catch (RuntimeException)`, `catch (Throwable)`, or another host-language catch that could accidentally intercept `RaiseSignal`, `PanicSignal`, cancellation, termination, or VM-fatal failures.
 
 A successful return:
 
@@ -307,6 +335,10 @@ The exact final surface syntax for typed/selective recovery may evolve independe
 
 A future/selective `recover` syntax may choose to recover only `raise`, only `panic`, or specific payload types. The semantic distinction must already exist in compiler metadata.
 
+A recover handler is **outside** the boundary it handles. If the handler executes another `raise` or `panic`, that new signal cannot be caught again by the same recover frame; it continues to the next matching outer recover boundary. This prevents self-recursive recovery loops.
+
+Recovery may explicitly convert a signal into ordinary control flow, including returning a value or deliberately issuing a new ordinary `throw`. That conversion is explicit; the runtime never silently downgrades `raise`/`panic` into `throw`.
+
 ## Interaction with explicit `try/catch`
 
 Ordinary `try/catch` handles the `throw` channel.
@@ -324,6 +356,51 @@ recover    -> raise / panic
 This separation prevents a broad local catch from accidentally swallowing a deliberate trap escape.
 
 A future explicit syntax may allow a recover block to classify or rethrow a raised/panicked signal.
+
+## Cleanup precedence: `defer` / `finally`
+
+Cleanup must not accidentally weaken a stronger in-flight control signal.
+
+The runtime uses this precedence when cleanup itself fails:
+
+```text
+fatal termination > panic > raise > throw > return/success
+```
+
+Rules:
+
+- a cleanup `throw` cannot replace an already-unwinding `raise` or `panic`; it is attached as a suppressed/secondary failure;
+- a cleanup `raise` may supersede an in-flight `throw`, but not an in-flight `panic`;
+- a cleanup `panic` supersedes an in-flight `throw` or `raise`;
+- fatal runtime termination/cancellation cannot be suppressed by user cleanup;
+- when two failures have the same precedence, preserve the original in-flight failure as primary and attach the later cleanup failure as suppressed;
+- all applicable cleanup still runs in the required LIFO/order semantics unless the execution domain is no longer capable of safely executing guest code.
+
+This makes trap bypass monotonic: once execution is unwinding as `raise` or `panic`, an incidental cleanup `throw` cannot turn it back into something an outer `trap` consumes.
+
+## Cancellation, budget exhaustion, and forced termination
+
+Scheduler/runtime control is **not** the ordinary throw channel.
+
+The following must bypass `try/catch` and `trap` and cannot be converted into `TrapError` merely because guest code surrounds work with a trap:
+
+- actor/task cancellation used to stop execution;
+- untrusted-actor fuel exhaustion;
+- untrusted-actor wall-clock lifetime expiration;
+- hard memory-budget enforcement;
+- isolate revocation/termination;
+- supervisor-forced shutdown;
+- process/VM fatal termination.
+
+Application-level cancellation represented deliberately as a normal guest `throw` is still trappable. Runtime-enforced cancellation is a separate internal control effect (for example `CancelSignal` / `TerminateSignal`) and must remain non-catchable by ordinary guest code unless a future capability explicitly permits cooperative cancellation handling.
+
+This rule is required so untrusted or buggy code cannot defeat resource limits with:
+
+```ores
+pub trap fnc keep_running_forever(): void {
+  // runtime cancellation must not become err=None/Some and then be ignored
+}
+```
 
 ## Error type
 
@@ -349,10 +426,13 @@ Bounds
 ForeignException
 Io
 Runtime
-Cancelled
 ```
 
-`Raised` and `Panic` are intentionally **not** ordinary `TrapErrorKind` values because they do not travel through the trap error slot. Their payloads belong to the recover/unwind channel.
+Runtime-enforced cancellation/termination is intentionally absent. `Raised` and `Panic` are also **not** ordinary `TrapErrorKind` values because they do not travel through the trap error slot.
+
+`TrapError` must be a guest-safe immutable value. It must not retain a raw Java `Throwable`, native pointer, file descriptor, actor capability, mutable host object, or other ambient authority. Host causes are normalized/redacted into guest-safe metadata before crossing the trap boundary. Cause/suppressed chains must be cycle-safe and bounded by runtime policy.
+
+The stack/source location is captured at the original throw/failure point, before trap conversion, so the error does not misleadingly appear to originate at the trap boundary itself.
 
 ## Returned Error objects remain data
 
@@ -395,6 +475,44 @@ or:
 ```
 
 A future explicit discard operator may be introduced, but silent discard is forbidden.
+
+Using the existing destructuring discard token `_` for the **error slot** is also rejected in v1:
+
+```ores
+[const results, _] = load_user(id); // ERROR in v1
+```
+
+The language may later add an unmistakably explicit `discard trap_error`/annotation if intentional loss is needed, but ordinary sequence destructuring must not become a loophole around mandatory error acknowledgement.
+
+## Async/await and futures
+
+`trap` must have defined asynchronous semantics because Oreslang already has `async` / `await`.
+
+For an async trap callable:
+
+```ores
+pub async trap fnc fetch(): Payload {
+  ...
+}
+```
+
+the call expression type is:
+
+```text
+Future<TrapResult<Payload>>
+```
+
+The trap boundary spans the complete asynchronous computation, including code resumed after suspension.
+
+- an ordinary `throw` before or after an `await` completes the future successfully with `TrapResult.error(...)`;
+- a `raise`/`panic` completes the future with its distinct non-trappable control signal;
+- awaiting that future re-emits the same `raise`/`panic` at the await site so a surrounding recover boundary can handle it;
+- a detached/unawaited task has no dynamic caller recover frame, so unrecovered `raise`/`panic` is routed to task supervision rather than fabricated into `TrapError`;
+- runtime cancellation of the future remains the non-trappable cancellation channel described above.
+
+This preserves the same semantics across suspension instead of making `trap` only cover the synchronous prefix of an async function.
+
+Generator/yield + `trap` is rejected until generator suspension semantics receive an equally explicit contract.
 
 ## Callable types and ABI
 
@@ -489,11 +607,15 @@ Recommended IR nodes/effects:
 
 ```text
 TrapBoundary
-Throw
-Raise
-Panic
+ThrowSignal
+RaiseSignal
+PanicSignal
+CancelSignal
+TerminateSignal
 RecoverBoundary
 ```
+
+These are language/runtime control signals, not an invitation to model every case as an arbitrary host exception class.
 
 The trap boundary must survive long enough for:
 
@@ -507,6 +629,10 @@ The trap boundary must survive long enough for:
 - native/AOT lowering.
 
 After semantics are fixed, a backend may implement the trap boundary with exception tables, tagged returns, CPS, setjmp-like native machinery, or another representation, provided observable behavior is identical.
+
+The current interpreter already has an internal `OresPanic` used by operations such as `Option.unwrap` / `Result.unwrap`, and current `try/catch` deliberately rethrows it. Implementation should preserve that useful behavior while replacing the ad-hoc Java-class distinction with explicit first-class panic/control metadata. In particular, ordinary Oreslang `try/catch` must never rely on a broad `RuntimeException` catch once these channels are implemented.
+
+Tail-call optimization must also preserve boundaries. A tail call from a trap callable to a potentially-throwing callee may not erase the caller's `TrapBoundary`. A recursive trap implementation may optimize the recursion only when the observable nearest trap/recover behavior and stack/error metadata contract remain unchanged.
 
 ## Optimizer rules
 
@@ -527,12 +653,16 @@ Foreign failures require explicit classification.
 
 Default fail-closed behavior:
 
-- an ordinary mapped foreign exception may enter the `throw` channel and therefore be trapped;
+- only an explicitly mapped, expected foreign exception class/category may enter the ordinary `throw` channel and therefore be trapped;
 - a foreign fatal/invariant condition must not automatically be mislabeled as a trappable throw;
 - unknown host failures are not silently swallowed;
+- Java `Error`-class VM failures (for example OOM/stack/VM linkage failures) are not blanket-converted to `TrapError`;
+- thread interruption/cancellation used by the scheduler is not blanket-converted to `TrapError`;
 - process-kill, VM corruption, hardware failure, or OS termination cannot be promised recoverable merely because source contains `trap`.
 
-Compiler/runtime-owned adapters must classify foreign failures into the correct Oreslang control effect.
+Compiler/runtime-owned adapters must classify foreign failures into the correct Oreslang control effect before they enter guest control flow.
+
+The runtime must use dedicated internal carrier types/tags for `ThrowSignal`, `RaiseSignal`, `PanicSignal`, cancellation, and termination. No generic `catch (RuntimeException)` / `catch (Throwable)` is allowed to define language semantics.
 
 Raw native crashes must never be described as ordinary `TrapError` unless the runtime actually isolated and converted them safely.
 
@@ -542,7 +672,9 @@ The same semantic channels apply inside actor execution.
 
 A `throw` leaving a trap actor helper/entrypoint becomes its trap error result.
 
-A `raise` or `panic` bypasses trap and unwinds to the nearest recover boundary in that execution domain.
+A `raise` or `panic` bypasses trap and unwinds to the nearest recover boundary **within that execution domain**.
+
+A recover boundary never implicitly spans an actor, isolate, process, or detached-task boundary. Those boundaries are supervision/transport boundaries, not shared call stacks. An unrecovered signal from a child domain is converted into the domain's typed exit/supervision outcome; the original mutable error object/capability is not smuggled into the parent. Safe immutable metadata may be reported according to policy.
 
 If unrecovered:
 
@@ -564,7 +696,11 @@ Proposed stable diagnostic families:
 - `E-TRAP-006`: compiler cannot classify foreign failure semantics;
 - `E-TRAP-007`: invalid trap result state exposed by compiler/runtime lowering;
 - `E-TRAP-008`: illegal attempt to treat `raise`/`panic` as ordinary trappable throw;
-- `E-TRAP-009`: missing/invalid recover metadata for a construct that requires it.
+- `E-TRAP-009`: missing/invalid recover metadata for a construct that requires it;
+- `E-TRAP-010`: attempt to forge/coerce a raw tuple into `TrapResult<T>`;
+- `E-TRAP-011`: attempt to discard the trap error slot;
+- `E-TRAP-012`: unsupported trap suspension form (for example generator/yield before specified);
+- `E-TRAP-013`: runtime cancellation/termination incorrectly classified as trappable.
 
 Diagnostics for propagated effects should identify the shortest useful path.
 
@@ -582,22 +718,23 @@ error[E-TRAP-008]: 'raise' bypasses trap and cannot be converted to TrapError
 ## Required compiler work
 
 1. reserve `trap`, `raise`, `panic`, and the recover boundary keyword/symbol;
-2. parse `trap` on `fnc`, `routine`, and instance methods;
+2. parse `trap` on `fnc`, `routine`, instance methods, and compatible interface/abstract slots;
 3. record trap contract in callable AST/symbol/type metadata;
-4. split compiler exception effects into `throw`, `raise`, and `panic`;
+4. split compiler control effects into `throw`, `raise`, `panic`, cancellation, termination, and divergence;
 5. represent `TrapBoundary` and `RecoverBoundary` explicitly in IR;
-6. type a trap call as the normalized two-slot Option result;
-7. implement Option-aware nested trap destructuring;
-8. reject silently discarded trap results;
-9. lower ordinary successful returns into the success slot;
-10. lower uncaught `throw` at the trap boundary into `TrapError`;
-11. ensure `raise` and `panic` bypass trap;
-12. preserve `defer` / `finally` cleanup on every unwind path;
-13. enforce callable/override/interface/callback trap compatibility;
-14. serialize trap and throw/raise/panic effect metadata across compiled units;
-15. classify Java/JNI/native failure mappings explicitly;
-16. harden optimizer/inliner/AOT/JIT passes against boundary erasure;
-17. integrate unrecovered raise/panic with actor/isolate/untrusted-actor termination/supervision policy.
+6. introduce nominal compiler-owned `TrapResult<T>` with a read-only two-slot destructuring projection;
+7. replace/extend flat destructuring AST with recursive destructuring patterns and implement Option-aware nested trap destructuring;
+8. reject silently discarded trap results and error-slot `_` discards;
+9. lower ordinary successful returns into the success variant;
+10. lower uncaught `throw` at the trap boundary into a guest-safe immutable `TrapError`;
+11. ensure `raise`, `panic`, cancellation, and termination bypass trap;
+12. preserve `defer` / `finally` cleanup and enforce monotonic cleanup precedence on every unwind path;
+13. define async `Future<TrapResult<T>>` lowering across suspension/await;
+14. enforce callable/override/interface/callback trap compatibility;
+15. serialize trap and throw/raise/panic/cancellation effect metadata across compiled units;
+16. classify Java/JNI/native failure mappings explicitly and remove broad host-exception catches from language semantics;
+17. harden optimizer/inliner/tail-call/AOT/JIT passes against boundary erasure;
+18. integrate unrecovered raise/panic/cancellation with task/actor/isolate/untrusted-actor termination/supervision policy.
 
 ## Required tests
 
@@ -618,7 +755,11 @@ error[E-TRAP-008]: 'raise' bypasses trap and cannot be converted to TrapError
 - trap callable through function value with compatible metadata;
 - interface/override preserving trap contract;
 - deterministic mapped foreign exception becomes trapped throw;
-- defer/finally executes before trapped throw result is produced.
+- defer/finally executes before trapped throw result is produced;
+- manually constructed two-Option tuple cannot masquerade as `TrapResult<T>`;
+- trap error stack points to the original throw site;
+- async trap catches a throw after an await;
+- awaited async raise/panic re-emits the same signal kind at the await site.
 
 ### Raise/panic escape
 
@@ -632,7 +773,11 @@ error[E-TRAP-008]: 'raise' bypasses trap and cannot be converted to TrapError
 - defer/finally runs while raise/panic unwinds;
 - optimizer/inlining does not change nearest trap/recover boundary;
 - JIT and AOT behavior match;
-- actor/isolate execution does not rewrite unrecovered raise/panic into the trap error slot.
+- actor/isolate execution does not rewrite unrecovered raise/panic into the trap error slot;
+- raise in a recover handler skips that same recover frame and reaches the next outer matching frame;
+- cleanup throw cannot downgrade an in-flight raise/panic;
+- cleanup raise can supersede throw but not panic;
+- cleanup panic supersedes throw/raise.
 
 ### Compile-fail
 
@@ -643,7 +788,10 @@ error[E-TRAP-008]: 'raise' bypasses trap and cannot be converted to TrapError
 - assign trap callable to incompatible non-trap callable type without explicit supported adaptation;
 - implement trap interface slot with incompatible non-trap callable;
 - attempt compiler lowering that routes raise/panic into `TrapError`;
-- foreign call whose failure classification is required but unknown.
+- foreign call whose failure classification is required but unknown;
+- `[const results, _] = trap_call()` error-slot discard;
+- raw tuple -> `TrapResult<T>` coercion/assignment;
+- trap + generator/yield until suspension semantics are specified.
 
 ### Adversarial
 
@@ -661,7 +809,12 @@ error[E-TRAP-008]: 'raise' bypasses trap and cannot be converted to TrapError
 - finally block that raises;
 - finally block that panics;
 - untrusted actor raise/panic during HTTP response ownership;
-- AOT exception-table optimization preserves exact boundary semantics.
+- AOT exception-table optimization preserves exact boundary semantics;
+- tail-call optimization cannot erase a trap boundary;
+- forced untrusted-actor cancellation/fuel exhaustion bypasses trap;
+- OOM/VM-fatal host failure is not converted to `TrapError`;
+- cause/suppressed chains are bounded and cycle-safe;
+- cross-actor/isolate signal handling reports supervision metadata without leaking raw host/guest capabilities.
 
 ## Implementation staging
 
