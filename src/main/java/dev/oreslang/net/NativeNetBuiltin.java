@@ -1,5 +1,6 @@
 package dev.oreslang.net;
 
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.BuiltinCallable;
 import dev.oreslang.runtime.BuiltinValue;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -155,9 +156,17 @@ public final class NativeNetBuiltin implements BuiltinValue {
     }
 
     private void admit(String operation) {
-        context.requireCapability(
-                IsolatePolicy.Capability.NETWORK,
-                "native_net." + operation);
+        String api = "native_net." + operation;
+        context.requireCapability(IsolatePolicy.Capability.NETWORK, api);
+
+        IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
+        boolean adversarial = context.isolatePolicy().adversarial()
+                || (actorPolicy != null && actorPolicy.adversarial());
+        if (adversarial) {
+            throw new SecurityException(
+                    "adversarial isolates cannot access raw native networking through "
+                            + api + "; use the bounded stateless HTTP surface");
+        }
     }
 
     private static void require(List<Object> args, int count, String operation) {
