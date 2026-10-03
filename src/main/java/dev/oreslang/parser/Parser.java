@@ -79,6 +79,7 @@ public final class Parser {
     private Ast.ImportDecl parseImport() {
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
+        java.util.Map<String, String> aliases = new java.util.LinkedHashMap<>();
         boolean wildcard = false;
         String namespace = null;
 
@@ -99,10 +100,10 @@ public final class Parser {
                 namespace = consume(IDENT, "expected import namespace").lexeme();
             } else if (match(LBRACE)) {
                 if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consumeImportName(kind)); while (match(COMMA));
+                do parseNamedImport(kind, names, aliases); while (match(COMMA));
                 consume(RBRACE, "expected '}' after imported names");
             } else {
-                names.add(consumeImportName(kind));
+                parseNamedImport(kind, names, aliases);
             }
         }
 
@@ -110,7 +111,24 @@ public final class Parser {
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
-        return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+        return new Ast.ImportDecl(kind, names, wildcard, namespace, path, aliases);
+    }
+
+    private void parseNamedImport(
+            Ast.ImportKind kind,
+            List<String> names,
+            java.util.Map<String, String> aliases) {
+        String importedName = consumeImportName(kind);
+        names.add(importedName);
+        if (match(AS)) {
+            String localName = consume(IDENT, "expected local alias after 'as'").lexeme();
+            if (localName.equals(importedName)) {
+                throw error(previous(), "import alias must differ from the imported name");
+            }
+            if (aliases.putIfAbsent(importedName, localName) != null) {
+                throw error(previous(), "duplicate import alias for '" + importedName + "'");
+            }
+        }
     }
 
     private String consumeImportName(Ast.ImportKind kind) {
@@ -1029,7 +1047,7 @@ public final class Parser {
 
     private Ast.Expr parseMultiplicative() {
         Ast.Expr expr = parseUnary();
-        while (match(STAR, SLASH, PERCENT)) {
+        while (match(STAR, SLASH, PERCENT, AT)) {
             String op = previous().lexeme();
             expr = new Ast.BinaryExpr(op, expr, parseUnary());
         }
@@ -1170,6 +1188,14 @@ public final class Parser {
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
         if (match(ACTOR)) return new Ast.NameExpr("actor");
+        if (check(IDENT) && (peek().lexeme().equals("matrix") || peek().lexeme().equals("vector"))
+                && checkNext(LBRACKET)) {
+            String constructor = advance().lexeme();
+            consume(LBRACKET, "expected '[' after " + constructor);
+            List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
+            consume(RBRACKET, "expected ']' after " + constructor + " literal");
+            return new Ast.CallExpr(new Ast.NameExpr(constructor), List.of(new Ast.ListExpr(items)));
+        }
         if (isReservedCallableName(peek().type())
                 && reservedCallableNameFollowedByInvocation(current)) {
             return new Ast.NameExpr(advance().lexeme());
