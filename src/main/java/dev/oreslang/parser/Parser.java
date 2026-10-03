@@ -320,19 +320,19 @@ public final class Parser {
 
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
-            parseAnnotations();
-            parseModifiers();
+            List<Ast.Annotation> memberAnnotations = parseAnnotations();
+            Modifiers memberModifiers = parseModifiers();
 
             if (match(FNC)) {
+                if (memberModifiers.isStatic || memberModifiers.nonLexical || memberModifiers.shared) {
+                    throw error(previous(), "interface function signatures do not accept static, nlex, or shared modifiers");
+                }
                 String memberName = consumeCallableName("expected interface function name");
                 List<String> memberGenerics = parseGenericParameters();
                 consume(LPAREN, "expected '(' after interface function name");
                 List<Ast.Param> params = parseParametersUntil(RPAREN);
                 consume(RPAREN, "expected ')' after interface parameters");
-                if (check(ARROW) || check(FAT_ARROW)) {
-                    throw error(peek(), "interface function declarations use ': ReturnType', not arrows");
-                }
-                Ast.TypeRef returns = match(COLON) ? parseTypeRef() : Ast.TypeRef.simple("void");
+                Ast.TypeRef returns = parseDeclaredReturnType(memberAnnotations, "interface function");
                 consumeMemberTerminator(terminator, "interface function signature should end with ';'");
                 members.add(new Ast.InterfaceFunctionDecl(memberName, memberGenerics, params, returns));
                 continue;
