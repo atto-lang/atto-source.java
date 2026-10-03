@@ -846,14 +846,53 @@ public final class OresEvalRootNode extends RootNode {
                                         return;
                                     }
 
+                                    Object result = null;
+                                    Throwable methodFailure = null;
                                     try {
-                                        Object result = callMethod(state, method, deliveredArgs);
-                                        completion.complete(ActorRuntime.freeze(result));
+                                        result = callMethod(state, method, deliveredArgs);
                                     } catch (Throwable failure) {
-                                        completion.completeExceptionally(failure);
+                                        methodFailure = failure;
+                                    }
+
+                                    try {
+                                        reconcileSourceActorState(state);
+                                    } catch (ActorRuntime.SharedActorMemoryLimitException quotaFailure) {
+                                        completion.completeExceptionally(quotaFailure);
+                                        throw quotaFailure;
+                                    }
+
+                                    if (methodFailure != null) {
+                                        completion.completeExceptionally(methodFailure);
+                                        if (methodFailure instanceof VirtualMachineError fatal) throw fatal;
+                                        if (methodFailure instanceof ThreadDeath fatal) throw fatal;
+                                        if (methodFailure instanceof LinkageError fatal) throw fatal;
+                                        return;
+                                    }
+
+                                    try {
+                                        completion.complete(ActorRuntime.freeze(result));
+                                    } catch (Throwable transportFailure) {
+                                        completion.completeExceptionally(transportFailure);
+                                        if (transportFailure instanceof VirtualMachineError fatal) throw fatal;
+                                        if (transportFailure instanceof ThreadDeath fatal) throw fatal;
+                                        if (transportFailure instanceof LinkageError fatal) throw fatal;
                                     }
                                 };
                             });
+
+            runtimeRef.termination().whenComplete((actorFailure, signalFailure) -> {
+                Throwable terminal = actorFailure != null ? actorFailure : signalFailure;
+                if (terminal == null) {
+                    terminal = new IllegalStateException(
+                            "actor " + klass.name() + " terminated before an outstanding invocation completed");
+                }
+                Throwable finalTerminal = terminal;
+                pending.forEach((id, completion) -> {
+                    if (pending.remove(id, completion)) {
+                        completion.completeExceptionally(finalTerminal);
+                    }
+                });
+            });
 
             return new SourceActorRef(this, klass, runtimeRef, pending, ids);
         }
@@ -881,7 +920,17 @@ public final class OresEvalRootNode extends RootNode {
             state.actorOwnerLock = state.actorStateLock;
             state.actorOwnerDomain = actorDomain;
             adoptActorOwnedValue(state, state.actorStateLock, actorDomain, new IdentityHashMap<>());
+            reconcileSourceActorState(state);
             return state;
+        }
+
+        private void reconcileSourceActorState(OresObject state) {
+            state.actorStateLock.lock();
+            try {
+                context.actors().reconcileCurrentSharedActorState(state);
+            } finally {
+                state.actorStateLock.unlock();
+            }
         }
 
         private void requireSynchronizedActorFieldAccess(
