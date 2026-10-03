@@ -77,6 +77,12 @@ public final class OresMatrix implements OresMutex.SharedState {
     public int cols() { return value.getNumCols(); }
     public boolean isComplex() { return complex; }
 
+    /** Conservative actor/mailbox quota footprint, independent of JVM object layout. */
+    public long logicalBytes() {
+        long elements = Math.multiplyExact((long) rows(), (long) cols());
+        return Math.addExact(64L, Math.multiplyExact(elements, complex ? 16L : 8L));
+    }
+
     public Object get(int row, int column) {
         checkBounds(row, column);
         double real = value.getReal(row, column);
@@ -132,7 +138,7 @@ public final class OresMatrix implements OresMutex.SharedState {
 
     public OresMatrix hermitian() {
         return complex
-                ? new OresMatrix(value.conjugate().transpose(), true, false)
+                ? new OresMatrix(value.transposeConjugate(), true, false)
                 : transpose();
     }
 
