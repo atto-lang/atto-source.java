@@ -156,7 +156,7 @@ Private actors reject explicit shared mutable cells. Shared actors may use synch
 
 - strings, bytes, byte slices and Unicode code points are distinct types; strings are not integer lists;
 - variables do not use capitalization to distinguish them from protocol tags;
-- `:name` symbols are immutable ordinary GC-able values with bounded identifier-shaped names; equal symbols compare by value, but there is deliberately no required process-global intern/atom table that remote input can exhaust;
+- `:name` symbols are immutable canonical identities in a bounded, strongly rooted trusted-process interner; ordinary GC never reclaims them, while adversarial/untrusted isolates are excluded from the registry and symbol-bearing transport;
 - mutable bindings are explicit (`let`) instead of overloading pattern-match syntax as reassignment;
 - receive pattern matching is local dispatch after FIFO dequeue, never an implicit mailbox scan;
 - no process dictionary / ambient actor-local key-value global;
@@ -182,7 +182,7 @@ Before actor/async v1 is declared stable:
 - [x] actor vs isolate distinction;
 - [ ] reconcile typed `Protocol<M>`, `try_send`, and typed `ask` from the Erlang-wart branch onto the dispatcher actor stack;
 - [x] parse and statically check dedicated `receive loop`, `try_receive loop`, channel send/receive, and `select` AST nodes;
-- [x] parse/type-check FIFO receive case patterns with typed captures and bounded GC-safe `Symbol` protocol tags;
+- [x] parse/type-check FIFO receive case patterns with typed captures and bounded, pinned trusted-process `Symbol` protocol tags;
 - [ ] wire actor `Protocol<M>` into source declarations so simple mailbox receive types no longer need explicit annotations and closed protocols can prove pattern exhaustiveness;
 - [ ] continuation lowering for executable source `async`, patterned actor receive/send/select suspension, and actor-frame state hoisting;
 - [ ] typed bounded channels plus atomic/fair select registration;
