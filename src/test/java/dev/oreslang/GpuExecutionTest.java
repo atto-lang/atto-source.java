@@ -744,7 +744,8 @@ final class GpuExecutionTest {
                 context.eval(source);
             }
 
-            GpuRuntime.Invocation invocation = assertNotNull(observed.get());
+            assertNotNull(observed.get());
+            GpuRuntime.Invocation invocation = observed.get();
             assertTrue(invocation.compiled());
             assertEquals("app.kernel", invocation.callable());
             assertEquals("app", invocation.kernel().module());
