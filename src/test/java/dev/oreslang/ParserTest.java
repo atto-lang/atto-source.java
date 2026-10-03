@@ -458,6 +458,30 @@ final class ParserTest {
     }
 
     @Test
+    void doubleColonMarksStaticModuleAndClassAccess() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module Math
+                  pub fnc one() : int {
+                    return 1;
+                  }
+
+                  define class Counter as
+                    pub static fnc twice(int value) : int {
+                      return value * 2;
+                    }
+                  end
+                end
+
+                pub fnc answer() : int {
+                  return Math::Counter::twice(Math::one());
+                }
+                """)));
+
+        var tokens = new Lexer("Math::one()").scan();
+        assertTrue(tokens.stream().anyMatch(t -> t.type() == Token.Type.DOUBLE_COLON));
+    }
+
+    @Test
     void namedFunctionDeclarationsAndExpressionsAreDistinct() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc declared() : int {
