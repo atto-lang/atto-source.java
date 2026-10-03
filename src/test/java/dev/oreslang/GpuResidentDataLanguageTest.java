@@ -66,6 +66,74 @@ final class GpuResidentDataLanguageTest {
     }
 
     @Test
+    void hostOrchestrationTypesRoundTripThroughGpuMatrix() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc upload(Array<Array<f64>> values) => GpuMatrix<f64> {
+                  return GpuMatrix.from_cpu(values);
+                }
+
+                fnc download(GpuMatrix<f64> values) => Array<Array<f64>> {
+                  return values.copy_to_cpu();
+                }
+
+                fnc rows(GpuMatrix<f64> values) => int {
+                  return values.rows();
+                }
+
+                fnc cols(GpuMatrix<f64> values) => int {
+                  return values.cols();
+                }
+                """)));
+    }
+
+    @Test
+    void hostMatrixOrchestrationExecutesThroughGpuRuntimeBackend() {
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "matrix-language-roundtrip"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+            @Override public Object uploadArray(java.util.List<?> values) { return java.util.List.copyOf(values); }
+            @Override public java.util.List<?> downloadArray(Object token, long length) { return (java.util.List<?>) token; }
+        });
+
+        assertDoesNotThrow(() -> {
+            try (Context context = Context.newBuilder(OresLanguage.ID)
+                    .allowAllAccess(false)
+                    .build()) {
+                context.eval(OresLanguage.ID, """
+                        pub routine main() => void {
+                          val cpu = [[1.0, 2.0], [3.0, 4.0]];
+                          val matrix = GpuMatrix.from_cpu(cpu);
+                          val r = matrix.rows();
+                          val c = matrix.cols();
+                          val n = matrix.length();
+                          let cpu_again = matrix.copy_to_cpu();
+                          cpu_again[0][0] = 99.0;
+                          return;
+                        }
+                        """);
+            }
+        });
+    }
+
+    @Test
+    void gpuMatrixFlatIndexingIsDeviceOnly() {
+        IllegalArgumentException hostFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(GpuMatrix<f32> values) => f32 {
+                          return values[0];
+                        }
+                        """)));
+        assertTrue(hostFailure.getMessage().contains("GpuMatrix flat indexing is GPU-only"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                gpu fnc first(GpuMatrix<f32> values) => f32 {
+                  return values[0];
+                }
+                """)));
+    }
+
+    @Test
     void gpuArrayIndexingIsDeviceOnly() {
         IllegalArgumentException hostFailure = assertThrows(
                 IllegalArgumentException.class,
