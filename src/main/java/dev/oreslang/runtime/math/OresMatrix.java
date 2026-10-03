@@ -1,6 +1,6 @@
 package dev.oreslang.runtime.math;
 
-import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.ImmutableGuestValue;
 import org.ejml.data.Complex_F64;
 import org.ejml.data.MatrixType;
 import org.ejml.simple.SimpleMatrix;
@@ -12,7 +12,7 @@ import java.util.List;
  * Immutable dense matrix value. EJML owns the primitive contiguous storage and
  * optimized kernels; Oreslang owns typing, actor-safety and language semantics.
  */
-public final class OresMatrix implements OresMutex.SharedState {
+public final class OresMatrix implements ImmutableGuestValue {
     private final SimpleMatrix value;
     private final boolean complex;
 
