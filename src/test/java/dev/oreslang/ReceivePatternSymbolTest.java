@@ -294,8 +294,11 @@ final class ReceivePatternSymbolTest {
             assertEquals(message, observed.get());
             assertNotSame(message, observed.get(), "private actor transport must isolate the aggregate");
             List<?> received = assertInstanceOf(List.class, observed.get());
-            assertSame(message.getFirst(), received.getFirst(),
-                    "trusted actor transport must preserve canonical Symbol identity");
+            OresSymbol sent = assertInstanceOf(OresSymbol.class, message.getFirst());
+            OresSymbol receivedTag = assertInstanceOf(OresSymbol.class, received.getFirst());
+            assertEquals(sent, receivedTag);
+            assertEquals(sent.id(), receivedTag.id(),
+                    "actor/isolate transport must preserve Symbol identity without requiring shared pointers");
         }
     }
 
