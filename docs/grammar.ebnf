@@ -182,7 +182,9 @@ object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
 
 literal         = INT_LITERAL | FLOAT_LITERAL | IMAG_LITERAL | STRING_LITERAL
+                | symbol_literal
                 | "true" | "false" ;
+symbol_literal  = ":" IDENT ;
 
 type_ref        = type_atom { "|" type_atom } ;
 
