@@ -13,7 +13,7 @@ A file's canonical Unix-style path is its code-unit identity and the base for re
 An `.ores` file is Oreslang by default. Use a `java { ... }` language island:
 
 ```ores
-pub fnc decorate(String value) => String {
+pub fnc decorate(String value) : String {
   return JavaHelper.decorate(value);
 }
 
@@ -31,7 +31,7 @@ Each `java { ... }` island currently declares exactly one top-level Java class, 
 The Java island may call exported Oreslang functions through the generated `Ores` facade in the same generated package:
 
 ```ores
-pub fnc twice(int value) => int {
+pub fnc twice(int value) : int {
   return value * 2;
 }
 
@@ -65,11 +65,11 @@ public final class MixedDemo {
   ores {
     import class ArrayList as JArrayList from "java:java.util.ArrayList";
 
-    pub fnc identity(JArrayList value) => JArrayList {
+    pub fnc identity(JArrayList value) : JArrayList {
       return value;
     }
 
-    pub fnc count(JArrayList value) => int {
+    pub fnc count(JArrayList value) : int {
       return value.size();
     }
   }
