@@ -65,11 +65,13 @@ public final class TypeChecker {
             if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
             if (imported.wildcard()) {
                 if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
+                rejectReservedSymbolName(imported.namespace(), "import namespace");
                 if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
                 importedValues.add(imported.namespace());
             } else {
                 if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
                 for (String name : imported.names()) {
+                    rejectReservedSymbolName(name, "imported name");
                     if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
                     if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
                 }
@@ -79,21 +81,35 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
+            rejectReservedSymbolName(module.name(), "module");
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
+                    rejectReservedSymbolName(fn.name(), fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectReservedSymbolName(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectReservedSymbolName(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectReservedSymbolName(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
+                } else if (decl instanceof Ast.FieldDecl field) {
+                    rejectReservedSymbolName(field.name(), "module binding");
                 }
             }
+        }
+    }
+
+    private static void rejectReservedSymbolName(String name, String kind) {
+        if ("Symbol".equals(name)) {
+            throw new IllegalArgumentException(
+                    kind + " name 'Symbol' is reserved for the built-in Symbol type/factory namespace");
         }
     }
 
@@ -476,6 +492,7 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof Ast.Symbol) return new Named("Symbol", List.of());
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
@@ -483,6 +500,7 @@ public final class TypeChecker {
             Env.Binding local = env.lookup(name.name());
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
+            if (name.name().equals("Symbol")) return new Named("$SymbolFactory", List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
@@ -627,6 +645,34 @@ public final class TypeChecker {
                             label);
                 }
             }
+            if (call.callee() instanceof Ast.MemberExpr symbolCall
+                    && symbolCall.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("Symbol")) {
+                if (call.typeArgumentsPresent()) {
+                    throw new IllegalArgumentException("Symbol factories do not accept call-site type arguments");
+                }
+                if (!(symbolCall.member().equals("local")
+                        || symbolCall.member().equals("process")
+                        || symbolCall.member().equals("stable"))) {
+                    throw new IllegalArgumentException(
+                            "unknown Symbol factory '" + symbolCall.member() + "'");
+                }
+                if (call.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "Symbol." + symbolCall.member() + " expects exactly one String key");
+                }
+                Type key = typeOf(call.arguments().getFirst(), env, generics, self);
+                if (!isStringLike(key)) {
+                    throw new IllegalArgumentException(
+                            "Symbol." + symbolCall.member() + " key must be a String");
+                }
+                if (symbolCall.member().equals("local") && currentActorKind == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "Symbol.local(...) is actor-local and may only be created inside actor execution");
+                }
+                return new Named("Symbol", List.of());
+            }
+
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -770,6 +816,14 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
+            if (receiver instanceof Named named && named.name().equals("$SymbolFactory")) {
+                return switch (member.member()) {
+                    case "local", "process", "stable" ->
+                            new Function(List.of(Primitive.STRING), new Named("Symbol", List.of()));
+                    default -> throw new IllegalArgumentException(
+                            "unknown Symbol member '" + member.member() + "'");
+                };
+            }
             receiver = unwrapMutexGuard(receiver);
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -837,6 +891,21 @@ public final class TypeChecker {
             throw new IllegalArgumentException("indexing requires an array/list or tuple");
         }
         if (expr instanceof Ast.NewExpr created) {
+            if (created.type().name().equals("Symbol")) {
+                if (!created.type().arguments().isEmpty() || created.type().inferArguments()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                if (created.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            "new Symbol(...) expects exactly one UUID String");
+                }
+                Type keyType = typeOf(created.arguments().getFirst(), env, generics, self);
+                if (!isStringLike(keyType)) {
+                    throw new IllegalArgumentException(
+                            "new Symbol(...) key must be a String");
+                }
+                return new Named("Symbol", List.of());
+            }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
             if (klass.actorKind() != Ast.ActorKind.NONE) {
@@ -1102,6 +1171,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        if (named.name().equals("Symbol") && named.arguments().isEmpty()) return;
+
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
@@ -1171,6 +1242,7 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.name().equals("Symbol")) return named.arguments().isEmpty();
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -2066,6 +2138,12 @@ public final class TypeChecker {
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
+            case "Symbol" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                yield new Named("Symbol", List.of());
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
@@ -2454,6 +2532,10 @@ public final class TypeChecker {
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Type type, Ast.BindingKind kind) {
+            if ("Symbol".equals(name)) {
+                throw new IllegalArgumentException(
+                        "binding name 'Symbol' is reserved for the built-in Symbol type/factory namespace");
+            }
             if (bindings.putIfAbsent(name, new Binding(type, kind)) != null) throw new IllegalArgumentException("duplicate binding '" + name + "'");
         }
         private Binding lookup(String name) {
