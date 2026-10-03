@@ -126,7 +126,7 @@ public final class OresNet {
                     String host = stringArg(args, 0, "net.InetAddress.getByName");
                     String[] values = io(() -> NativeSocketBridge.resolveAll(host));
                     if (values.length == 0) throw new IllegalStateException("DNS returned no addresses for " + host);
-                    yield new InetAddressValue(context, host, values[0]);
+                    return new InetAddressValue(context, host, values[0]);
                 };
                 case "getAllByName" -> (BuiltinCallable) args -> {
                     requireNetwork("net.InetAddress.getAllByName");
@@ -135,7 +135,7 @@ public final class OresNet {
                     String[] values = io(() -> NativeSocketBridge.resolveAll(host));
                     ArrayList<Object> result = new ArrayList<>(values.length);
                     for (String value : values) result.add(new InetAddressValue(context, host, value));
-                    yield result;
+                    return result;
                 };
                 default -> throw unknown("net.InetAddress", name);
             };
@@ -394,7 +394,8 @@ public final class OresNet {
             } else {
                 throw arity("Socket.connect", "1 or 2", args.size());
             }
-            fd = io(() -> NativeSocketBridge.connect(endpoint.host, endpoint.port, timeout));
+            final int connectTimeout = timeout;
+            fd = io(() -> NativeSocketBridge.connect(endpoint.host, endpoint.port, connectTimeout));
             connected = true;
             return OresNull.INSTANCE;
         }
@@ -726,11 +727,11 @@ public final class OresNet {
             return switch (name) {
                 case "newHttpClient" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "HttpClient.newHttpClient");
-                    yield new HttpClientValue(context, HttpVersion.HTTP_1_1, Redirect.NEVER, 0);
+                    return new HttpClientValue(context, HttpVersion.HTTP_1_1, Redirect.NEVER, 0);
                 };
                 case "newBuilder" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "HttpClient.newBuilder");
-                    yield new HttpClientBuilder(context);
+                    return new HttpClientBuilder(context);
                 };
                 case "Version" -> new EnumNamespace(Map.of(
                         "HTTP_1_1", HttpVersion.HTTP_1_1.name(),
@@ -790,7 +791,7 @@ public final class OresNet {
                     if (args.size() > 1) throw arity("HttpRequest.newBuilder", "0 or 1", args.size());
                     HttpRequestBuilder builder = new HttpRequestBuilder(context);
                     if (args.size() == 1) builder.uri = uriString(args.getFirst(), "HttpRequest.newBuilder");
-                    yield builder;
+                    return builder;
                 };
                 case "BodyPublishers" -> new BodyPublishers(context);
                 default -> throw unknown("HttpRequest", name);
@@ -828,15 +829,15 @@ public final class OresNet {
             return switch (name) {
                 case "noBody" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "BodyPublishers.noBody");
-                    yield new BodyPublisherValue(new byte[0]);
+                    return new BodyPublisherValue(new byte[0]);
                 };
                 case "ofString" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "BodyPublishers.ofString");
-                    yield new BodyPublisherValue(stringArg(args, 0, "BodyPublishers.ofString").getBytes(StandardCharsets.UTF_8));
+                    return new BodyPublisherValue(stringArg(args, 0, "BodyPublishers.ofString").getBytes(StandardCharsets.UTF_8));
                 };
                 case "ofByteArray" -> (BuiltinCallable) args -> {
                     requireArity(args, 1, "BodyPublishers.ofByteArray");
-                    yield new BodyPublisherValue(bytesArg(args.getFirst(), "BodyPublishers.ofByteArray"));
+                    return new BodyPublisherValue(bytesArg(args.getFirst(), "BodyPublishers.ofByteArray"));
                 };
                 case "ofFile", "ofInputStream", "fromPublisher", "concat" ->
                         unsupportedCallable("BodyPublishers." + name, "streaming publishers are not implemented yet");
@@ -872,15 +873,15 @@ public final class OresNet {
             return switch (name) {
                 case "ofString" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "BodyHandlers.ofString");
-                    yield new BodyHandlerValue(BodyKind.STRING);
+                    return new BodyHandlerValue(BodyKind.STRING);
                 };
                 case "ofByteArray" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "BodyHandlers.ofByteArray");
-                    yield new BodyHandlerValue(BodyKind.BYTE_ARRAY);
+                    return new BodyHandlerValue(BodyKind.BYTE_ARRAY);
                 };
                 case "discarding" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "BodyHandlers.discarding");
-                    yield new BodyHandlerValue(BodyKind.DISCARD);
+                    return new BodyHandlerValue(BodyKind.DISCARD);
                 };
                 case "ofFile", "ofInputStream", "ofLines", "fromSubscriber", "buffering", "replacing" ->
                         unsupportedCallable("BodyHandlers." + name, "streaming/file handlers are not implemented yet");
