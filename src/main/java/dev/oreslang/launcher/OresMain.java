@@ -7,6 +7,8 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -15,6 +17,25 @@ import java.util.Locale;
 
 public final class OresMain {
     private OresMain() { }
+
+    private static OutputStream forwardingStream(OutputStream delegate) {
+        return new OutputStream() {
+            @Override
+            public void write(int value) throws IOException {
+                delegate.write(value);
+            }
+
+            @Override
+            public void write(byte[] bytes, int offset, int length) throws IOException {
+                delegate.write(bytes, offset, length);
+            }
+
+            @Override
+            public void flush() throws IOException {
+                delegate.flush();
+            }
+        };
+    }
 
     public static void main(String[] args) throws Exception {
         boolean strict = false;
@@ -55,9 +76,13 @@ public final class OresMain {
             policy = policy.withCapabilities(additionalCapabilities.toArray(IsolatePolicy.Capability[]::new));
         }
 
+        // Graal's UNTRUSTED sandbox rejects the JVM's standard streams as
+        // direct guest sinks. Preserve normal CLI behavior through distinct
+        // forwarding streams so output is explicitly redirected while host
+        // ownership of System.out/System.err remains outside the guest.
         Context.Builder builder = policy.restrictedContextBuilder(profile)
-                .out(System.out)
-                .err(System.err);
+                .out(forwardingStream(System.out))
+                .err(forwardingStream(System.err));
         Source source = Source.newBuilder(OresLanguage.ID, new File(filename))
                 .mimeType(OresLanguage.MIME_TYPE)
                 .build();
