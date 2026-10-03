@@ -128,9 +128,10 @@ public final class GpuSafetyChecker {
                 || resolvedResult.name().equals("Array")
                 || resolvedResult.name().equals("List")
                 || resolvedResult.name().equals("GpuArray")
+                || resolvedResult.name().equals("GpuMatrix")
                 || resolvedResult.name().equals("GpuStream")) {
             throw new IllegalArgumentException("GPU callable '" + label
-                    + "' must return a scalar or void; write buffer results through an explicit mutable Array<T>/List<T>/GpuArray<T> parameter");
+                    + "' must return a scalar or void; write buffer results through an explicit mutable Array<T>/List<T>/GpuArray<T>/GpuMatrix<T> parameter");
         }
     }
 
@@ -168,12 +169,12 @@ public final class GpuSafetyChecker {
             case "void" -> {
                 if (!allowVoid) throw new IllegalArgumentException(where + " cannot be void");
             }
-            case "Array", "List", "GpuArray" -> {
+            case "Array", "List", "GpuArray", "GpuMatrix" -> {
                 if (type.inferArguments() || type.arguments().size() != 1) {
                     throw new IllegalArgumentException(where + " must use an explicit " + type.name() + "<T> element type");
                 }
                 Ast.TypeRef element = type.arguments().getFirst();
-                if (Set.of("Array", "List", "GpuArray", "GpuStream").contains(element.name())) {
+                if (Set.of("Array", "List", "GpuArray", "GpuMatrix", "GpuStream").contains(element.name())) {
                     throw new IllegalArgumentException(where + " cannot use nested buffer/stream layouts in the GPU ABI");
                 }
                 requireGpuType(module, element, false, resolving, where + " element");
