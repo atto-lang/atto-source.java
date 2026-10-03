@@ -4624,7 +4624,13 @@ public final class ActorRuntime implements AutoCloseable {
                                 : Long.MAX_VALUE;
                     }
                     @Override public long cpuTimeNanos() {
-                        return ref.cpuTimeNanos.get();
+                        long completed = ref.cpuTimeNanos.get();
+                        long active = ActorCell.this.activeCpuNanos();
+                        try {
+                            return Math.addExact(completed, active);
+                        } catch (ArithmeticException overflow) {
+                            return Long.MAX_VALUE;
+                        }
                     }
                     @Override public Duration remainingLifetime() {
                         return ActorCell.this.remainingLifetime();
