@@ -12,13 +12,14 @@ shared actor SharedCounter {
   let SharedMutex<CounterState> shared_count =
       SharedMutex.new(new CounterState());
 
-  pub fnc increment() => bool {
+  pub actor increment() => bool {
     self.local_count = self.local_count + 1;
 
     // Actor mailbox turns must never park a dispatcher carrier. Until actor
     // continuation lowering can suspend/resume an incomplete lock_async()
     // future, shared actors use nonblocking acquisition for explicit shared
-    // memory. Ordinary actor-owned state like local_count needs no mutex.
+    // memory. This entrypoint is serialized, so ordinary actor-owned state
+    // like local_count needs no mutex. Parallel entrypoints use synchronized helpers.
     val shared_count = self.shared_count;
     val maybe_guard = shared_count.try_lock();
 
@@ -32,11 +33,11 @@ shared actor SharedCounter {
     return true;
   }
 
-  pub fnc local_value() => int {
+  pub actor local_value() => int {
     return self.local_count;
   }
 
-  pub fnc actor_kind() => String {
+  pub actor actor_kind() => String {
     return actor_label(true);
   }
 }
@@ -49,16 +50,16 @@ shared actor SharedCounter {
 isoactor PrivateCounter {
   let int value = 10;
 
-  pub fnc increment() => void {
+  pub actor increment() => void {
     self.value = self.value + 1;
     return;
   }
 
-  pub fnc current() => int {
+  pub actor current() => int {
     return self.value;
   }
 
-  pub fnc actor_kind() => String {
+  pub actor actor_kind() => String {
     return actor_label(false);
   }
 }
@@ -79,7 +80,7 @@ isoactor PrivateCounter {
  *   let SharedMutex<CounterState> shared_count =
  *       SharedMutex.new(new CounterState());
  *
- *   pub fnc increment_shared() => void {
+ *   pub actor increment_shared() => void {
  *     self.shared_count.with_lock(|counter| -> {
  *       counter.value = counter.value + 1;
  *       return;
