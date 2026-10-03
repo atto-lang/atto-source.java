@@ -2563,8 +2563,8 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
-        if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
-            throw new IllegalArgumentException("actor-local mutex state cannot be frozen");
+        if (value instanceof OresMutex.Guard<?>) {
+            throw new IllegalArgumentException("MutexGuard state cannot be retained in persistent actor accounting");
         }
         if (value instanceof Shared<?> shared) return estimateFrozenBytes(shared.value(), seen, depth + 1);
 
