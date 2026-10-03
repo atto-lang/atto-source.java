@@ -100,6 +100,23 @@ final class MixedSourceInteropTest {
     }
 
     @Test
+    void ambiguousConditionalDoJavaIsRejected() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> MixedSourceUnit.parse("/tmp/ambiguous.ores", "ambiguous.ores", """
+                        pub fnc main(bool ready) => void {
+                          if ready; do java {
+                            System.out.println("ambiguous");
+                          }
+                          fi
+                          return;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("conditional delimiter separately"));
+    }
+
+    @Test
     void doJavaExecutesExactlyAtTheOresControlFlowPoint() throws Exception {
         Path source = temp.resolve("do-java.ores");
         Files.writeString(source, """
