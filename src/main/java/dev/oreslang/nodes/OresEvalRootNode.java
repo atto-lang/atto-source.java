@@ -701,6 +701,10 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "Thread.threadId");
                         return thread.threadId();
                     };
+                    case "cpuTimeNanos", "cpu_time_nanos" -> (Invokable) args -> {
+                        requireZero(args, "Thread.cpuTimeNanos");
+                        return thread.cpuTimeNanos();
+                    };
                     case "isVirtual", "is_virtual" -> (Invokable) args -> {
                         requireZero(args, "Thread.isVirtual");
                         return thread.isVirtual();
