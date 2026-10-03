@@ -4,6 +4,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -23,6 +25,11 @@ public final class OresThread {
     public enum State { NEW, RUNNABLE, TERMINATED }
 
     private static final AtomicLong NEXT_ID = new AtomicLong(1L);
+    private static final int MAX_PLATFORM_THREADS = Integer.getInteger(
+            "ores.thread.max-platform-threads",
+            Math.max(4, Runtime.getRuntime().availableProcessors() * 4));
+    private static final Semaphore PLATFORM_THREAD_SLOTS =
+            new Semaphore(MAX_PLATFORM_THREADS, true);
     private static final ThreadLocal<OresThread> CURRENT = new ThreadLocal<>();
 
     static {
@@ -33,6 +40,7 @@ public final class OresThread {
     private final Runnable target;
     private final AtomicReference<State> state = new AtomicReference<>(State.NEW);
     private final AtomicBoolean interrupted = new AtomicBoolean();
+    private final AtomicBoolean slotHeld = new AtomicBoolean();
     private final CompletableFuture<Void> terminated = new CompletableFuture<>();
     private volatile String name;
     private volatile Thread attachedJvmThread;
@@ -56,9 +64,19 @@ public final class OresThread {
         if (!state.compareAndSet(State.NEW, State.RUNNABLE)) {
             throw new IllegalThreadStateException("OresThread may only be started once");
         }
+        if (!PLATFORM_THREAD_SLOTS.tryAcquire()) {
+            state.set(State.TERMINATED);
+            RejectedExecutionException rejected = new RejectedExecutionException(
+                    "OresThread platform-thread ceiling reached: " + MAX_PLATFORM_THREADS);
+            failure = rejected;
+            terminated.completeExceptionally(rejected);
+            throw rejected;
+        }
+        slotHeld.set(true);
         try {
             nativeStart(this, name);
         } catch (Throwable startFailure) {
+            if (slotHeld.compareAndSet(true, false)) PLATFORM_THREAD_SLOTS.release();
             failure = startFailure;
             state.set(State.TERMINATED);
             terminated.completeExceptionally(startFailure);
@@ -84,6 +102,7 @@ public final class OresThread {
             attachedJvmThread = null;
             state.set(State.TERMINATED);
             CURRENT.remove();
+            if (slotHeld.compareAndSet(true, false)) PLATFORM_THREAD_SLOTS.release();
         }
     }
 
