@@ -141,6 +141,32 @@ final class GpuMatrixCompilerTest {
     }
 
     @Test
+    void matmulCallableCannotBeInvokedAsDeviceHelper() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+                () -> OresCompiler.compile("""
+                        gpu fnc inner(
+                          GpuMatrix<f32> a,
+                          GpuMatrix<f32> b,
+                          GpuMatrix<f32> mut out
+                        ) => void {
+                          out = a @ b;
+                          return;
+                        }
+
+                        gpu fnc outer(
+                          GpuMatrix<f32> a,
+                          GpuMatrix<f32> b,
+                          GpuMatrix<f32> mut out
+                        ) => void {
+                          inner(a, b, out);
+                          return;
+                        }
+                        """));
+
+        assertTrue(failure.getMessage().contains("kernel launch boundary"));
+    }
+
+    @Test
     void rejectsMatrixMultiplyOutsideGpuPlacement() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.parseAndTypeCheck("""
