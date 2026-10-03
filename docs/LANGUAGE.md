@@ -4,7 +4,7 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may contain multiple named modules. A module is a static namespace: exported static members are accessed with `::`, such as `math::add(1, 2)`. `.` remains instance/member access.
 
 ```ores
 define module math
@@ -15,7 +15,7 @@ end
 
 define module app
   pub fnc main() : void {
-    val answer = math.add(40, 2);
+    val answer = math::add(40, 2);
     stdio.println(answer);
     return;
   }
@@ -102,20 +102,45 @@ Only exported (`pub`) module members satisfy an adherence contract. `@AdheresTo(
 
 ## Functions and returns
 
-Functions use `fnc` and are private by default. `pub` exports them. Return statements are always explicit; a non-`void` function must return on every control-flow path.
+Functions use `fnc` and are private by default. `pub` exports them. Named functions have two intentionally distinct forms.
+
+A function **declaration** uses ordinary parameters and `:` for its return type:
 
 ```ores
-fnc add(int a, int b) : int {
+pub fnc add(int a, int b) : int {
   return a + b;
 }
+```
 
-@Ret<int>
-fnc answer() {
+A named function **expression binding** uses `=`, pipe parameters, and the slim arrow:
+
+```ores
+pub fnc answer = || -> int {
   return 42;
 }
 ```
 
-`@Ret<T>` and `=> T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+`@Ret<T>` may replace the explicit return type on a declaration:
+
+```ores
+@Ret<int>
+pub fnc answer() {
+  return 42;
+}
+```
+
+It is also valid on instance methods:
+
+```ores
+define class Answer as
+  @Ret<int>
+  pub value() {
+    return 42;
+  }
+end
+```
+
+If `@Ret<T>` and an explicit return type are both present, they must agree. Return statements are explicit; a non-`void` callable must return on every control-flow path. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
 
 Return types may be unions, homogeneous arrays, finite tuple types, or structural record types:
 
@@ -837,7 +862,7 @@ define class Counter as
   }
 end
 
-val doubled = Counter.twice(21);
+val doubled = Counter::twice(21);
 ```
 
 A static class function:
@@ -852,10 +877,12 @@ Static data fields are intentionally not part of v0.5 yet; `static` on a class b
 
 ## Function types, functors, and arrows
 
-The arrows have distinct jobs:
+The syntax has deliberately separate jobs:
 
-- `=>` declares the return type of a **named callable**.
-- `->` forms a **function type** or **lambda**.
+- `:` declares the return type of a named `fnc`/`routine` declaration or instance method.
+- `@Ret<T>` may supply that declared return type instead.
+- `->` belongs to function-expression bindings, function types, and lambdas.
+- `=>` is not valid callable-return syntax.
 
 Function aliases can use `typeof fnc`:
 
