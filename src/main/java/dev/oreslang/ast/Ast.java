@@ -106,6 +106,7 @@ public final class Ast {
     public record ClassDecl(
             String name,
             boolean isAbstract,
+            boolean singleton,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<TypeRef> interfaces,
@@ -119,8 +120,13 @@ public final class Ast {
             methods = List.copyOf(methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, genericParameters, List.of(), List.of(), fields, methods);
+            this(name, isAbstract, false, genericParameters, parents, interfaces, fields, methods);
+        }
+        public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
+                         List<FieldDecl> fields, List<MethodDecl> methods) {
+            this(name, isAbstract, false, genericParameters, List.of(), List.of(), fields, methods);
         }
     }
 
