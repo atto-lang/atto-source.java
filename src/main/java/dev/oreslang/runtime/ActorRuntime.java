@@ -467,6 +467,7 @@ public final class ActorRuntime implements AutoCloseable {
     public final class HttpRequestCapability {
         private final ActorId owner;
         private final HttpRequestTransport transport;
+        private final HttpTransportLease transportLease;
         private final long maxBytes;
         private final AtomicLong readBytes = new AtomicLong();
         private final AtomicLong metadataBytes = new AtomicLong();
@@ -478,9 +479,11 @@ public final class ActorRuntime implements AutoCloseable {
         private HttpRequestCapability(
                 ActorId owner,
                 HttpRequestTransport transport,
+                HttpTransportLease transportLease,
                 long maxBytes) {
             this.owner = Objects.requireNonNull(owner);
             this.transport = Objects.requireNonNull(transport);
+            this.transportLease = Objects.requireNonNull(transportLease);
             this.maxBytes = maxBytes;
         }
 
@@ -498,6 +501,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "HTTP request capability may only be used by its owning untrusted actor: " + operation);
             }
             cell.checkUntrustedBudget(1);
+            transportLease.assertActorOwner(owner, operation);
             return cell;
         }
 
@@ -506,7 +510,9 @@ public final class ActorRuntime implements AutoCloseable {
             String cached = cachedMethod.get();
             if (cached != null) return cached;
 
-            String method = Objects.requireNonNull(transport.method(), "HTTP request method");
+            String method = Objects.requireNonNull(
+                    transportLease.withActorIo(owner, "request.method", transport::method),
+                    "HTTP request method");
             if (!method.matches("[!#$%&'*+.^_|~0-9A-Za-z-]{1,32}")) {
                 throw new HttpRequestLimitExceededException(
                         "untrusted actor HTTP request method is invalid or too large");
@@ -521,7 +527,9 @@ public final class ActorRuntime implements AutoCloseable {
             String cached = cachedPath.get();
             if (cached != null) return cached;
 
-            String path = Objects.requireNonNull(transport.path(), "HTTP request path");
+            String path = Objects.requireNonNull(
+                    transportLease.withActorIo(owner, "request.path", transport::path),
+                    "HTTP request path");
             if (path.indexOf('\r') >= 0 || path.indexOf('\n') >= 0) {
                 throw new IllegalArgumentException("HTTP request path cannot contain CR/LF");
             }
@@ -551,7 +559,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             Optional<String> result = Objects.requireNonNull(
-                    transport.header(name),
+                    transportLease.withActorIo(
+                            owner,
+                            "request.header",
+                            () -> transport.header(name)),
                     "HTTP request header result");
             if (result.isEmpty()) {
                 chargeRequestMetadata(name.length());
@@ -605,7 +616,10 @@ public final class ActorRuntime implements AutoCloseable {
             target.limit(beforePosition + permitted);
             final int read;
             try {
-                read = transport.read(target);
+                read = transportLease.withActorIo(
+                        owner,
+                        "request.read",
+                        () -> transport.read(target));
             } finally {
                 target.limit(originalLimit);
             }
@@ -645,6 +659,7 @@ public final class ActorRuntime implements AutoCloseable {
     public final class HttpResponseCapability {
         private final ActorId owner;
         private final HttpResponseTransport transport;
+        private final HttpTransportLease transportLease;
         private final long maxBytes;
         private final AtomicLong writtenBytes = new AtomicLong();
         private final AtomicLong headerBytes = new AtomicLong();
@@ -656,9 +671,11 @@ public final class ActorRuntime implements AutoCloseable {
         private HttpResponseCapability(
                 ActorId owner,
                 HttpResponseTransport transport,
+                HttpTransportLease transportLease,
                 long maxBytes) {
             this.owner = Objects.requireNonNull(owner);
             this.transport = Objects.requireNonNull(transport);
+            this.transportLease = Objects.requireNonNull(transportLease);
             this.maxBytes = maxBytes;
         }
 
@@ -677,6 +694,7 @@ public final class ActorRuntime implements AutoCloseable {
                         "HTTP response capability may only be used by its owning untrusted actor: " + operation);
             }
             cell.checkUntrustedBudget(1);
+            transportLease.assertActorOwner(owner, operation);
             if (completed.get()) {
                 throw new IllegalStateException("HTTP response is already completed");
             }
@@ -694,7 +712,10 @@ public final class ActorRuntime implements AutoCloseable {
             if (!statusSet.compareAndSet(false, true)) {
                 throw new IllegalStateException("HTTP response status may be set only once");
             }
-            transport.status(statusCode);
+            transportLease.withActorIo(owner, "response.status", () -> {
+                transport.status(statusCode);
+                return null;
+            });
         }
 
         public void header(String name, String value) throws IOException {
@@ -734,7 +755,10 @@ public final class ActorRuntime implements AutoCloseable {
                         "untrusted actor HTTP response header-byte limit exceeded: "
                                 + MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES);
             }
-            transport.header(name, value);
+            transportLease.withActorIo(owner, "response.header", () -> {
+                transport.header(name, value);
+                return null;
+            });
         }
 
         /**
@@ -755,7 +779,10 @@ public final class ActorRuntime implements AutoCloseable {
             }
             responseStarted.set(true);
             int before = source.remaining();
-            int written = transport.write(source);
+            int written = transportLease.withActorIo(
+                    owner,
+                    "response.write",
+                    () -> transport.write(source));
             if (written < 0 || written > before || source.remaining() != before - written) {
                 throw new IllegalStateException(
                         "HTTP response transport violated ByteBuffer write contract");
@@ -767,14 +794,20 @@ public final class ActorRuntime implements AutoCloseable {
         public void flush() throws IOException {
             requireOwner("flush");
             responseStarted.set(true);
-            transport.flush();
+            transportLease.withActorIo(owner, "response.flush", () -> {
+                transport.flush();
+                return null;
+            });
         }
 
         public void complete() throws IOException {
             requireOwner("complete");
             responseStarted.set(true);
             if (completed.compareAndSet(false, true)) {
-                transport.complete();
+                transportLease.withActorIo(owner, "response.complete", () -> {
+                    transport.complete();
+                    return null;
+                });
             }
         }
 
@@ -2147,10 +2180,33 @@ public final class ActorRuntime implements AutoCloseable {
             HttpRequestTransport requestTransport,
             HttpResponseTransport responseTransport,
             BehaviorFactory<M> behaviorFactory) {
+        return spawnUntrusted(
+                policy,
+                limits,
+                requestTransport,
+                responseTransport,
+                null,
+                behaviorFactory);
+    }
+
+    /**
+     * Ownership-hardened HTTP handoff. The supplied lease starts supervisor-owned
+     * and is atomically transferred to the newly-created actor before it can run.
+     */
+    public <M> ActorRef<M> spawnUntrusted(
+            IsolatePolicy policy,
+            UntrustedActorLimits limits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            HttpTransportLease transportLease,
+            BehaviorFactory<M> behaviorFactory) {
         requireSupervisorContext("spawn untrusted actors");
         Objects.requireNonNull(policy);
         Objects.requireNonNull(limits);
         Objects.requireNonNull(behaviorFactory);
+        if ((requestTransport != null || responseTransport != null) && transportLease == null) {
+            transportLease = new HttpTransportLease();
+        }
         return spawnInternal(
                 ActorKind.UNTRUSTED,
                 policy,
@@ -2158,7 +2214,8 @@ public final class ActorRuntime implements AutoCloseable {
                 false,
                 limits,
                 requestTransport,
-                responseTransport);
+                responseTransport,
+                transportLease);
     }
 
     /** Compatibility path for trusted host callers. */
@@ -2362,7 +2419,7 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory,
             boolean trustedFactory) {
-        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null, null);
+        return spawnInternal(kind, policy, behaviorFactory, trustedFactory, null, null, null, null);
     }
 
     private <M> ActorRef<M> spawnInternal(
@@ -2372,7 +2429,8 @@ public final class ActorRuntime implements AutoCloseable {
             boolean trustedFactory,
             UntrustedActorLimits untrustedLimits,
             HttpRequestTransport requestTransport,
-            HttpResponseTransport responseTransport) {
+            HttpResponseTransport responseTransport,
+            HttpTransportLease suppliedTransportLease) {
         requireCallerRuntimeAffinity("spawn actors");
         ActorCell<?> callerCell = currentActor.get();
         if (callerCell != null && callerCell.kind == ActorKind.UNTRUSTED) {
@@ -2388,7 +2446,8 @@ public final class ActorRuntime implements AutoCloseable {
             throw new SecurityException("untrusted actor hard limits are required");
         }
         if (kind != ActorKind.UNTRUSTED
-                && (untrustedLimits != null || requestTransport != null || responseTransport != null)) {
+                && (untrustedLimits != null || requestTransport != null || responseTransport != null
+                        || suppliedTransportLease != null)) {
             throw new IllegalArgumentException(
                     "untrusted limits/HTTP capabilities may only be attached to UNTRUSTED actors");
         }
@@ -2419,9 +2478,20 @@ public final class ActorRuntime implements AutoCloseable {
             reserveActorSlot(kind);
 
             ActorCell<M> cell = null;
+            HttpTransportLease transportLease = suppliedTransportLease;
             try {
                 ActorId id = ActorId.create();
                 ActorRef<M> ref = new ActorRef<>(id, kind);
+                if (kind == ActorKind.UNTRUSTED
+                        && (requestTransport != null || responseTransport != null)) {
+                    if (transportLease == null) {
+                        transportLease = new HttpTransportLease();
+                    }
+                    transportLease.transferToActor(id);
+                } else if (transportLease != null) {
+                    throw new IllegalArgumentException(
+                            "HTTP transport lease requires an untrusted actor with request/response transport");
+                }
                 cell = new ActorCell<>(
                         ref,
                         kind,
@@ -2430,7 +2500,8 @@ public final class ActorRuntime implements AutoCloseable {
                         trustedFactory,
                         untrustedLimits,
                         requestTransport,
-                        responseTransport);
+                        responseTransport,
+                        transportLease);
                 actors.put(id, cell);
                 cell.armLifetimeLimit();
                 return ref;
@@ -2439,6 +2510,9 @@ public final class ActorRuntime implements AutoCloseable {
                     actors.remove(cell.ref.id(), cell);
                     if (cell.httpRequest != null) cell.httpRequest.cancelFromRuntime(failure);
                     if (cell.httpResponse != null) cell.httpResponse.abortFromRuntime(failure);
+                    if (cell.httpTransportLease != null) {
+                        cell.httpTransportLease.revokeFromActor(cell.ref.id());
+                    }
                     if (cell.memorySlice != null) cell.memorySlice.close();
                 }
                 releaseReservedActorSlot(kind);
@@ -4188,6 +4262,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final UntrustedActorLimits untrustedLimits;
         private final HttpRequestCapability httpRequest;
         private final HttpResponseCapability httpResponse;
+        private final HttpTransportLease httpTransportLease;
         private final AtomicLong fuelRemaining = new AtomicLong(Long.MAX_VALUE);
         private final long createdNanos;
         private final Duration hardLifetime;
@@ -4218,7 +4293,8 @@ public final class ActorRuntime implements AutoCloseable {
                 boolean trustedFactory,
                 UntrustedActorLimits untrustedLimits,
                 HttpRequestTransport requestTransport,
-                HttpResponseTransport responseTransport) {
+                HttpResponseTransport responseTransport,
+                HttpTransportLease httpTransportLease) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
@@ -4242,23 +4318,27 @@ public final class ActorRuntime implements AutoCloseable {
                         ? Long.MAX_VALUE
                         : createdNanos + lifetimeNanos;
                 this.fuelRemaining.set(untrustedLimits.fuelPerTurn());
+                this.httpTransportLease = httpTransportLease;
                 this.httpRequest = requestTransport == null
                         ? null
                         : new HttpRequestCapability(
                                 ref.id(),
                                 requestTransport,
+                                Objects.requireNonNull(httpTransportLease),
                                 untrustedLimits.maxHttpRequestBytes());
                 this.httpResponse = responseTransport == null
                         ? null
                         : new HttpResponseCapability(
                                 ref.id(),
                                 responseTransport,
+                                Objects.requireNonNull(httpTransportLease),
                                 untrustedLimits.maxHttpResponseBytes());
             } else {
                 this.hardLifetime = policy.maxWallTime();
                 this.deadlineNanos = Long.MAX_VALUE;
                 this.httpRequest = null;
                 this.httpResponse = null;
+                this.httpTransportLease = null;
             }
         }
 
@@ -4479,6 +4559,9 @@ public final class ActorRuntime implements AutoCloseable {
             }
             if (httpResponse != null) {
                 httpResponse.abortFromRuntime(ref.terminationCause.get());
+            }
+            if (httpTransportLease != null) {
+                httpTransportLease.revokeFromActor(ref.id());
             }
             if (memorySlice != null) {
                 // ActorMemorySlice.close() zeroes owned direct-memory blocks,
