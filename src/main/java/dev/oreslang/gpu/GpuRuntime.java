@@ -239,7 +239,8 @@ public final class GpuRuntime {
 
     public ArrayHandle uploadArray(List<?> values) {
         Objects.requireNonNull(values, "values");
-        return uploadArray(inferDeviceScalarType(values), values);
+        List<?> frozen = freezeArguments(values);
+        return uploadArray(inferDeviceScalarType(frozen), frozen);
     }
 
     public ArrayHandle uploadArray(String elementAbiType, List<?> values) {
@@ -664,5 +665,6 @@ public final class GpuRuntime {
 
     public static final class GpuTransferException extends GpuException {
         public GpuTransferException(String message) { super(message); }
+        public GpuTransferException(String message, Throwable cause) { super(message, cause); }
     }
 }
