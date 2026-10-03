@@ -8,9 +8,10 @@ import_spec     = "*" "as" IDENT
                 | "module" import_names
                 | "class" import_names
                 | "fnc" import_names ;
-import_names    = IDENT
-                | "{" IDENT { "," IDENT } "}"
+import_names    = import_name
+                | "{" import_name { "," import_name } "}"
                 | "*" "as" IDENT ;
+import_name     = IDENT [ "as" IDENT ] ;
 
 top_level_item  = annotated_module_decl
                 | actor_decl
@@ -149,7 +150,7 @@ logic_or        = equality { "|" equality } ;
 equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
-multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
+multiplicative  = unary { ( "*" | "/" | "%" | "@" ) unary } ;
 unary           = [ "!" | "-" | "+" | "await" ] postfix
                 | "&" [ "mut" ] unary ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
@@ -159,6 +160,8 @@ index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
 primary         = literal
+                | matrix_literal
+                | vector_literal
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
@@ -177,6 +180,8 @@ typed_legacy_lambda
 
 tuple_literal   = "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
+matrix_literal  = "matrix" "[" [ expression { "," expression } ] "]" ;
+vector_literal  = "vector" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
 object_field    = ( IDENT | STRING_LITERAL ) ":" expression ;
