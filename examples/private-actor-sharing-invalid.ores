@@ -3,14 +3,14 @@
 
 type SharedCounterCell = SharedMutex<int>;
 
-fnc make_shared_cell() => void {
+fnc make_shared_cell() : void {
   val shared = SharedMutex.new(10);
   stdio.println(shared.is_poisoned());
   return;
 }
 
 define class Helpers as
-  pub static fnc make_shared() => void {
+  pub static fnc make_shared() : void {
     val shared = SharedMutex.new(11);
     stdio.println(shared.is_poisoned());
     return;
