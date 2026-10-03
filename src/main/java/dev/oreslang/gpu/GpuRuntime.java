@@ -83,6 +83,14 @@ public final class GpuRuntime {
                     "GPU backend '" + name() + "' does not support GpuArray.zeros_like()");
         }
 
+        /**
+         * Stable identity used to enforce restrict/no-alias contracts. Backends that wrap the
+         * same allocation in multiple token objects must override this and return one shared key.
+         */
+        default Object bufferAliasKey(Object arrayBackendToken) {
+            return arrayBackendToken;
+        }
+
         default Object openStream(Object arrayBackendToken, long length) {
             return arrayBackendToken;
         }
@@ -214,6 +222,7 @@ public final class GpuRuntime {
         }
 
         Object result = backendCall(backend, "invoke(" + callable + ")", () -> backend.invoke(invocation));
+        validateCompiledResult(invocation, result);
         Object frozen = freezeValue(result, true);
         validateDeviceOwnership(frozen, backend);
         return frozen;
@@ -223,14 +232,21 @@ public final class GpuRuntime {
         if (!invocation.compiled()) return;
 
         GpuKernelCompiler.GpuKernel kernel = invocation.kernel();
-        List<?> arguments = invocation.arguments();
-        if (arguments.size() != kernel.parameters().size()) {
+        String expectedCallable = kernel.module() + "." + kernel.sourceName();
+        if (!invocation.callable().equals(expectedCallable)) {
             throw new GpuTransferException(
-                    "GPU callable '" + invocation.callable() + "' expects "
-                            + kernel.parameters().size() + " argument(s), got " + arguments.size());
+                    "compiled GPU invocation identity mismatch: callable '" + invocation.callable()
+                            + "' does not match kernel '" + expectedCallable + "'");
         }
 
-        Set<ArrayHandle> seenDeviceBuffers = Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        List<?> arguments = invocation.arguments();
+        if (arguments.size() != kernel.parameters().size() || arguments.size() != kernel.arity()) {
+            throw new GpuTransferException(
+                    "GPU callable '" + invocation.callable() + "' expects "
+                            + kernel.arity() + " argument(s), got " + arguments.size());
+        }
+
+        Set<Object> seenAliasKeys = new LinkedHashSet<>();
         for (int i = 0; i < kernel.parameters().size(); i++) {
             GpuKernelCompiler.GpuParameter parameter = kernel.parameters().get(i);
             Object argument = arguments.get(i);
@@ -250,12 +266,50 @@ public final class GpuRuntime {
             }
 
             if (argument instanceof ArrayHandle handle
-                    && kernel.launchPlan().enforceNoAliasBuffers()
-                    && !seenDeviceBuffers.add(handle)) {
-                throw new GpuTransferException(
-                        "GPU callable '" + invocation.callable()
-                                + "' received the same GpuArray for multiple restrict/no-alias buffer parameters");
+                    && kernel.launchPlan().enforceNoAliasBuffers()) {
+                Object aliasKey = backendCall(handle.backend, "bufferAliasKey",
+                        () -> handle.backend.bufferAliasKey(handle.backendToken));
+                if (aliasKey == null) {
+                    throw new GpuTransferException(
+                            "GPU backend '" + handle.backend.name()
+                                    + "' returned null bufferAliasKey for restrict/no-alias validation");
+                }
+                if (!seenAliasKeys.add(aliasKey)) {
+                    throw new GpuTransferException(
+                            "GPU callable '" + invocation.callable()
+                                    + "' received aliased GpuArray resources for multiple restrict/no-alias buffer parameters");
+                }
             }
+        }
+    }
+
+    private static void validateCompiledResult(Invocation invocation, Object result) {
+        if (!invocation.compiled()) return;
+        String resultType = invocation.kernel().resultType();
+        if (resultType.equals("void")) {
+            if (result != null) {
+                throw new GpuExecutionException(
+                        "GPU backend returned a value for void callable '" + invocation.callable() + "'", null);
+            }
+            return;
+        }
+        if (result == null) {
+            throw new GpuExecutionException(
+                    "GPU backend returned null for non-void callable '" + invocation.callable()
+                            + "' with result type " + resultType, null);
+        }
+        boolean valid = switch (resultType) {
+            case "bool", "Bool" -> result instanceof Boolean;
+            case "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "int", "uint" ->
+                    result instanceof Byte || result instanceof Short || result instanceof Integer
+                            || result instanceof Long || result instanceof BigInteger;
+            case "f32", "f64", "float" -> result instanceof Number;
+            default -> false;
+        };
+        if (!valid) {
+            throw new GpuTransferException(
+                    "GPU backend returned " + result.getClass().getName()
+                            + " for scalar result type " + resultType + " from '" + invocation.callable() + "'");
         }
     }
 
