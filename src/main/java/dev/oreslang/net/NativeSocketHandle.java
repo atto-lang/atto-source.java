@@ -24,7 +24,16 @@ final class NativeSocketHandle {
 
     private static final AtomicLong NEXT_GENERATION = new AtomicLong(1L);
 
-    private final long generation = NEXT_GENERATION.getAndIncrement();
+    private static long nextGeneration() {
+        long value = NEXT_GENERATION.getAndIncrement();
+        if (value <= 0) {
+            throw new IllegalStateException(
+                    "native socket handle generation space exhausted");
+        }
+        return value;
+    }
+
+    private final long generation = nextGeneration();
     private final ReentrantReadWriteLock gate = new ReentrantReadWriteLock(true);
     private long fd;
 
