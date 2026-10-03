@@ -2327,6 +2327,11 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
+        if (value instanceof ImmutableGuestValue immutable) {
+            long bytes = immutable.logicalBytes();
+            if (bytes < 0) throw new IllegalStateException("immutable guest value reported a negative quota footprint");
+            return bytes;
+        }
         return -1L;
     }
 
@@ -2378,6 +2383,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
         if (value instanceof UUID || value instanceof ActorId) return 40L;
         if (value instanceof Enum<?>) return 24L;
+        if (value instanceof ImmutableGuestValue immutable) return immutable.logicalBytes();
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
@@ -2422,7 +2428,8 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || value instanceof ImmutableGuestValue;
     }
 
     @Override
