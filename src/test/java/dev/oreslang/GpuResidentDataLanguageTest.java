@@ -56,7 +56,8 @@ final class GpuResidentDataLanguageTest {
                           const n = values.length();
                           const stream = values.stream();
                           const collected = stream.collect();
-                          const cpu_again = collected.copy_to_cpu();
+                          let cpu_again = collected.copy_to_cpu();
+                          cpu_again[0] = 99;
                           return;
                         }
                         """);
