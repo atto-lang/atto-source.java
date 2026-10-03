@@ -86,10 +86,17 @@ final class IsolationHotReloadTest {
             assertNotEquals(first.id(), second.id());
             assertNotEquals(first.sha256(), second.sha256());
             assertNotSame(first.context(), second.context());
-            assertEquals(second.id(), hot.active().id());
+            assertNull(hot.active(), "staged code must not become active before successful startup");
             assertEquals(2, hot.liveGenerations());
 
-            hot.retire(first.id());
+            first.start();
+            first.activate();
+            assertEquals(first.id(), hot.active().id());
+
+            second.start();
+            second.activate();
+            assertEquals(second.id(), hot.active().id());
+            assertTrue(first.closed(), "unpinned old generations should be reclaimed after the switch");
             assertEquals(1, hot.liveGenerations());
         }
     }
