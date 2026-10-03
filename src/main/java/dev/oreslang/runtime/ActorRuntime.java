@@ -975,14 +975,25 @@ public final class ActorRuntime implements AutoCloseable {
      * or hot-reload generations.
      */
     private static long configuredProcessActorMemoryLimit() {
-        long fallback = Runtime.getRuntime().maxMemory();
+        long maxHeap = Runtime.getRuntime().maxMemory();
+
+        // Actor-accounted memory must not be allowed to consume the entire JVM
+        // heap: scheduler queues, code, Truffle metadata, GC bookkeeping and
+        // ordinary host/runtime objects need headroom to make progress during
+        // pressure. The default therefore reserves 25% of the max heap.
+        long fallback = maxHeap - Math.max(1L, maxHeap / 4L);
         String configured = System.getProperty("ores.actor.process-memory-bytes");
-        if (configured == null || configured.isBlank()) return fallback;
+        if (configured == null || configured.isBlank()) return Math.max(1L, fallback);
         try {
             long parsed = Long.parseLong(configured);
             if (parsed <= 0) {
                 throw new IllegalArgumentException(
                         "ores.actor.process-memory-bytes must be positive");
+            }
+            if (parsed > maxHeap) {
+                throw new IllegalArgumentException(
+                        "ores.actor.process-memory-bytes cannot exceed JVM max heap "
+                                + maxHeap);
             }
             return parsed;
         } catch (NumberFormatException invalid) {
