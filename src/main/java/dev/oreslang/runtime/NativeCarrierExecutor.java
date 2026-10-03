@@ -77,6 +77,10 @@ public final class NativeCarrierExecutor {
         }
     }
 
+    static void ensureNativeLibraryLoaded() {
+        // Class initialization performs the one-time load.
+    }
+
     private static void loadNativeLibrary() {
         String explicit = System.getProperty("ores.thread.native.path");
         if (explicit != null && !explicit.isBlank()) {
