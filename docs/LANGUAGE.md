@@ -186,6 +186,8 @@ PROCESS and STABLE symbols are Copy/Sendable immutable values for trusted actors
 
 The `:name` source form is identifier-only and limited to 128 characters. Only the compiler/runtime literal path may consume the reserved literal capacity; arbitrary runtime strings cannot claim that reserve.
 
+Oreslang protocol symbols are exposed from the same namespace. `Symbol.iterator` is a well-known canonical PROCESS Symbol and is the identity named by a class method declared as `[Symbol.iterator]()`; it is not a separate stringly runtime convention.
+
 Symbols are deliberately unavailable to adversarial/untrusted execution domains. Static capability admission rejects symbol literals/types/factories under an adversarial policy, and runtime construction, decode, plus nested actor-message transport repeat that check as defense in depth. Untrusted code must use ordinary strings/UUIDs or another explicitly scoped data representation instead of sharing the trusted process symbol table.
 
 `Symbol` is a reserved built-in type/factory namespace. Modules, classes, type aliases, top-level bindings, imports, local bindings, parameters, and generic parameters cannot shadow it.
@@ -627,7 +629,7 @@ for (val item of values) {
 }
 ```
 
-Classes can expose a JavaScript-like iterator symbol:
+Classes can expose the well-known `Symbol.iterator` protocol identity:
 
 ```ores
 define class Bag as
@@ -636,6 +638,8 @@ define class Bag as
   }
 end
 ```
+
+`Symbol.iterator` is also a first-class `Symbol` value; the bracketed method syntax binds the method to that well-known identity.
 
 The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
 
