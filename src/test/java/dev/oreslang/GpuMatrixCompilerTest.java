@@ -80,6 +80,50 @@ final class GpuMatrixCompilerTest {
     }
 
     @Test
+    void complex64MatrixMultiplyUsesSemanticComplexProduct() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                gpu fnc matmul(
+                  GpuMatrix<complex64> a,
+                  GpuMatrix<complex64> b,
+                  GpuMatrix<complex64> mut out
+                ) => void {
+                  out = a @ b;
+                  return;
+                }
+                """);
+
+        String source = compilation.gpuProgram().source();
+        assertTrue(source.contains("static inline float2 ores_complex_mul_f32"));
+        assertTrue(source.contains("ores_complex_mul_f32("));
+        assertTrue(source.contains("__global const float2* restrict ores_v_a"));
+        assertTrue(source.contains("__global float2* restrict ores_v_out"));
+        assertFalse(compilation.gpuProgram().requiredExtensions().contains("cl_khr_fp64"));
+    }
+
+    @Test
+    void complex128MatrixMultiplyRequiresFp64AndUsesDouble2() {
+        OresCompiler.CompilationResult compilation = OresCompiler.compile("""
+                fnc host() => void {
+                  const kernel = gpu (
+                    GpuMatrix<complex128> a,
+                    GpuMatrix<complex128> b,
+                    GpuMatrix<complex128> mut out
+                  ) {
+                    out = a @ b;
+                    return;
+                  };
+                  return;
+                }
+                """);
+
+        String source = compilation.gpuProgram().source();
+        assertTrue(source.contains("static inline double2 ores_complex_mul_f64"));
+        assertTrue(source.contains("ores_complex_mul_f64("));
+        assertTrue(source.contains("#pragma OPENCL EXTENSION cl_khr_fp64 : enable"));
+        assertTrue(compilation.gpuProgram().requiredExtensions().contains("cl_khr_fp64"));
+    }
+
+    @Test
     void rejectsIntegerMatrixMultiplyUntilOverflowSemanticsAreSpecified() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
                 () -> OresCompiler.compile("""
@@ -93,7 +137,7 @@ final class GpuMatrixCompilerTest {
                         }
                         """));
 
-        assertTrue(failure.getMessage().contains("currently lowers f32/f64 matrices"));
+        assertTrue(failure.getMessage().contains("currently lowers f32/f64/complex64/complex128 matrices"));
     }
 
     @Test
