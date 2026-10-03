@@ -564,28 +564,6 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
-        private HttpRequestTransport requestTransport(
-                ActorId expectedOwner,
-                long expectedGeneration,
-                String operation) {
-            requireActorOwner(expectedOwner, expectedGeneration, operation);
-            if (requestTransport == null) {
-                throw new IllegalStateException("HTTP request transport is unavailable");
-            }
-            return requestTransport;
-        }
-
-        private HttpResponseTransport responseTransport(
-                ActorId expectedOwner,
-                long expectedGeneration,
-                String operation) {
-            requireActorOwner(expectedOwner, expectedGeneration, operation);
-            if (responseTransport == null) {
-                throw new IllegalStateException("HTTP response transport is unavailable");
-            }
-            return responseTransport;
-        }
-
         private void releaseFromActor(
                 ActorId expectedOwner,
                 long expectedGeneration,
