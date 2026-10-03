@@ -1977,17 +1977,11 @@ public final class ActorRuntime implements AutoCloseable {
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof SyncCell<?>) return;
         if (value instanceof OresMutex.Shared<?> sharedMutex) {
-            if (!out.add(sharedMutex)) return;
-            if (visiting.put(value, Boolean.TRUE) != null) return;
-            try {
-                collectSharedMutexes(
-                        sharedMutex.transportValue(),
-                        out,
-                        visiting,
-                        depth + 1);
-            } finally {
-                visiting.remove(value);
-            }
+            // The protected payload was already validated under the mutex permit
+            // in requireMutexTransport(). Nested SharedMutex values are forbidden
+            // there, so dereferencing transportValue() again here would add no
+            // information and would race legitimate protected mutation.
+            out.add(sharedMutex);
             return;
         }
         if (value instanceof Shared<?> shared) {
