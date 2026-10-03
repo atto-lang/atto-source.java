@@ -227,7 +227,7 @@ public final class ProcessGlobalRegistry {
      * Opaque process-global capability. This object is never the global state
      * pointer itself; it can only enqueue operations onto the single owner.
      */
-    public static final class Handle<S> {
+    public static final class Handle<S> implements SandboxForbiddenCapability {
         private final Cell cell;
 
         private Handle(Cell cell) {
