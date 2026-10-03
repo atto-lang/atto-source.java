@@ -1,11 +1,13 @@
 package dev.oreslang.nodes;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.exception.AbstractTruffleException;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.nodes.RootNode;
 import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
+import dev.oreslang.gpu.GpuRuntime;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
@@ -18,6 +20,7 @@ import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -104,6 +107,7 @@ public final class OresEvalRootNode extends RootNode {
         private final OresContext context;
         private final String codeUnitId;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
+        private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
@@ -208,7 +212,10 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.ModuleDecl module : program.modules()) {
                 modules.put(module.name(), module);
                 for (Ast.Decl decl : module.declarations()) {
-                    if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                    if (decl instanceof Ast.FunctionDecl fn) {
+                        index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
+                        functionOwners.put(fn, module.name());
+                    }
                     else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
                     else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
                 }
@@ -271,6 +278,19 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             List<?> normalized = normalizeFunctionArguments(fn, args);
+            if (fn.gpu()) {
+                String module = functionOwners.getOrDefault(fn, Parser.ROOT_MODULE);
+                String callable = module + "." + fn.name();
+                context.requireCapability(IsolatePolicy.Capability.GPU, "gpu callable " + callable);
+                try {
+                    return thawGpuValue(context.gpu().dispatch(
+                            callable,
+                            GpuRuntime.CallableKind.valueOf(fn.kind().name()),
+                            normalized));
+                } catch (GpuRuntime.GpuException failure) {
+                    throw new OresGuestException(failure.getMessage());
+                }
+            }
             if (fn.actorKind() == Ast.ActorKind.NONE) {
                 return callFunctionBody(fn, normalized);
             }
@@ -317,6 +337,34 @@ public final class OresEvalRootNode extends RootNode {
                         signal.value,
                         "function " + fn.name());
             }
+        }
+
+        private Object thawGpuValue(Object value) {
+            if (value instanceof GpuRuntime.ComplexValue complex) {
+                return new Complex(complex.real(), complex.imaginary());
+            }
+            if (value instanceof GpuRuntime.OptionValue option) {
+                return option.present()
+                        ? new OptionValue(true, thawGpuValue(option.value()))
+                        : new OptionValue(false, null);
+            }
+            if (value instanceof List<?> list) {
+                ArrayList<Object> thawed = new ArrayList<>(list.size());
+                for (Object item : list) thawed.add(thawGpuValue(item));
+                return thawed;
+            }
+            if (value instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, Object> thawed = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    thawed.put(thawGpuValue(entry.getKey()), thawGpuValue(entry.getValue()));
+                }
+                return Map.copyOf(thawed);
+            }
+            if (value instanceof Set<?> set) {
+                return set.stream().map(this::thawGpuValue)
+                        .collect(java.util.stream.Collectors.toUnmodifiableSet());
+            }
+            return value;
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
@@ -453,6 +501,8 @@ public final class OresEvalRootNode extends RootNode {
                     return new OptionValue(true, args.getFirst());
                 };
                 if (name.name().equals("None")) return new OptionValue(false, null);
+                if (name.name().equals("GpuArray")) return new GpuArrayFacade(context);
+                if (name.name().equals("GpuStream")) return new GpuStreamFacade(context);
                 if (name.name().equals("Ok")) return (Invokable) args -> {
                     requireOne(args, "Ok");
                     return new ResultValue(true, args.getFirst());
@@ -525,6 +575,12 @@ public final class OresEvalRootNode extends RootNode {
                         @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
                         list.set(i, value);
                         return value;
+                    }
+                    if (receiver instanceof GpuRuntime.ArrayHandle) {
+                        throw new IllegalArgumentException("GpuArray indexed mutation is GPU-only; CPU code must copy_to_cpu() first");
+                    }
+                    if (receiver instanceof GpuRuntime.StreamHandle) {
+                        throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
                     }
                     throw new IllegalArgumentException("indexed assignment requires a mutable array/list or DynamicStruct");
                 }
@@ -610,9 +666,18 @@ public final class OresEvalRootNode extends RootNode {
                 int i = Math.toIntExact(number.longValue());
                 if (receiver instanceof List<?> list) return list.get(i);
                 if (receiver instanceof Object[] array) return array[i];
+                if (receiver instanceof GpuRuntime.ArrayHandle) {
+                    throw new IllegalArgumentException("GpuArray indexing is GPU-only; CPU code must copy_to_cpu() first");
+                }
+                if (receiver instanceof GpuRuntime.StreamHandle) {
+                    throw new IllegalArgumentException("GpuStream is sequential and cannot be indexed");
+                }
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
             if (expr instanceof Ast.NewExpr created) {
+                if (created.type().name().equals("GpuArray") || created.type().name().equals("GpuStream")) {
+                    throw new IllegalArgumentException(created.type().name() + " is a core GPU resource type and cannot be constructed with new");
+                }
                 if (created.type().name().equals("DynamicStruct")) {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
@@ -739,6 +804,52 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "gc" -> (Invokable) actor::gc;
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
+                };
+            }
+            if (receiver instanceof GpuArrayFacade gpuArray) {
+                return switch (name) {
+                    case "from_cpu" -> (Invokable) gpuArray::fromCpu;
+                    default -> throw new IllegalArgumentException("unknown GpuArray core function " + name);
+                };
+            }
+            if (receiver instanceof GpuStreamFacade gpuStream) {
+                return switch (name) {
+                    case "from_array" -> (Invokable) gpuStream::fromArray;
+                    default -> throw new IllegalArgumentException("unknown GpuStream core function " + name);
+                };
+            }
+            if (receiver instanceof GpuRuntime.ArrayHandle array) {
+                return switch (name) {
+                    case "stream" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.stream");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.stream");
+                        return context.gpu().stream(array);
+                    };
+                    case "copy_to_cpu" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.copy_to_cpu");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.copy_to_cpu");
+                        return thawGpuValue(context.gpu().downloadArray(array));
+                    };
+                    case "length" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.length");
+                        return array.length();
+                    };
+                    default -> throw new IllegalArgumentException("unknown GpuArray member " + name);
+                };
+            }
+            if (receiver instanceof GpuRuntime.StreamHandle stream) {
+                return switch (name) {
+                    case "collect" -> (Invokable) args -> {
+                        requireZero(args, "GpuStream.collect");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.collect");
+                        return context.gpu().collect(stream);
+                    };
+                    case "copy_to_cpu" -> (Invokable) args -> {
+                        requireZero(args, "GpuStream.copy_to_cpu");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.copy_to_cpu");
+                        return thawGpuValue(context.gpu().downloadStream(stream));
+                    };
+                    default -> throw new IllegalArgumentException("unknown GpuStream member " + name);
                 };
             }
             if (receiver instanceof MutexFactory factory) {
@@ -1208,6 +1319,12 @@ public final class OresEvalRootNode extends RootNode {
         private List<?> iterableValues(Object value) {
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
+            if (value instanceof GpuRuntime.ArrayHandle) {
+                throw new IllegalArgumentException("GpuArray iteration is GPU-only; CPU code must copy_to_cpu() first");
+            }
+            if (value instanceof GpuRuntime.StreamHandle) {
+                throw new IllegalArgumentException("GpuStream consumption is GPU-only; CPU code must copy_to_cpu() first");
+            }
             if (value instanceof OresObject object) {
                 Ast.MethodDecl iterator = findMethod(object.klass, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iterator == null) throw new IllegalArgumentException("value has no [Symbol.iterator]()");
@@ -1552,7 +1669,13 @@ public final class OresEvalRootNode extends RootNode {
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
     }
 
-    private record Complex(double real, double imaginary) implements OresMutex.SharedState {
+    @SuppressWarnings("serial")
+    private static final class OresGuestException extends AbstractTruffleException {
+        private OresGuestException(String message) { super(message); }
+    }
+
+    private record Complex(double real, double imaginary) implements OresMutex.SharedState, GpuRuntime.Transferable {
+        @Override public Object freezeForGpu() { return new GpuRuntime.ComplexValue(real, imaginary); }
         @Override public Iterable<?> sharedStateChildren(){return List.of();}
         private Complex add(Complex o){return new Complex(real+o.real,imaginary+o.imaginary);}
         private Complex sub(Complex o){return new Complex(real-o.real,imaginary-o.imaginary);}
@@ -1672,9 +1795,33 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
     }
-    private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
+    private record OptionValue(boolean present, Object value) implements OresMutex.SharedState, GpuRuntime.Transferable {
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
+        @Override public Object freezeForGpu() {
+            return present ? new GpuRuntime.OptionValue(true, value) : new GpuRuntime.OptionValue(false, null);
+        }
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
+    }
+    private record GpuArrayFacade(OresContext context) {
+        private Object fromCpu(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.from_cpu");
+            requireOne(args, "GpuArray.from_cpu");
+            Object source = args.getFirst();
+            if (!(source instanceof List<?> list)) {
+                throw new IllegalArgumentException("GpuArray.from_cpu expects Array/List data");
+            }
+            return context.gpu().uploadArray(list);
+        }
+    }
+    private record GpuStreamFacade(OresContext context) {
+        private Object fromArray(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.from_array");
+            requireOne(args, "GpuStream.from_array");
+            if (!(args.getFirst() instanceof GpuRuntime.ArrayHandle array)) {
+                throw new IllegalArgumentException("GpuStream.from_array expects GpuArray");
+            }
+            return context.gpu().stream(array);
+        }
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
         @Override public Iterable<?> sharedStateChildren(){return List.of(value);}
