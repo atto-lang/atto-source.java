@@ -2281,9 +2281,11 @@ public final class ActorRuntime implements AutoCloseable {
                 behaviorFactory,
                 false,
                 limits,
-                new HttpTransportLimits(
-                        limits.maxHttpRequestBytes(),
-                        limits.maxHttpResponseBytes()),
+                (requestTransport != null || responseTransport != null)
+                        ? new HttpTransportLimits(
+                                limits.maxHttpRequestBytes(),
+                                limits.maxHttpResponseBytes())
+                        : null,
                 requestTransport,
                 responseTransport,
                 transportLease);
