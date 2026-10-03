@@ -121,8 +121,9 @@ public final class GpuRuntime {
 
         private MatrixHandle(ArrayHandle array, long rows, long cols) {
             this.array = Objects.requireNonNull(array, "array");
-            if (rows < 0 || cols < 0) {
-                throw new IllegalArgumentException("GpuMatrix dimensions cannot be negative");
+            if (rows <= 0 || cols <= 0) {
+                throw new GpuTransferException(
+                        "GpuMatrix dimensions must be positive; zero-dimension matrices are not supported by GPU ABI v3");
             }
             long length;
             try {
