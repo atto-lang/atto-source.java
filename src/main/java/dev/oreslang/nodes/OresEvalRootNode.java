@@ -13,6 +13,11 @@ import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.BuiltinCallable;
+import dev.oreslang.runtime.BuiltinValue;
+import dev.oreslang.runtime.NativeNetBuiltin;
+import dev.oreslang.runtime.NativeRuntimeBuiltins;
+import dev.oreslang.runtime.NativeValues;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -444,6 +449,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("List")) return new NativeRuntimeBuiltins.ListFactory(context);
+                if (name.name().equals("Map")) return new NativeRuntimeBuiltins.MapFactory(context);
+                if (name.name().equals("File")) return new NativeRuntimeBuiltins.FileFactory(context);
+                if (name.name().equals("thread")) return new NativeRuntimeBuiltins.ThreadNamespace(context);
+                if (name.name().equals("net") || name.name().equals("native_net")) return new NativeNetBuiltin(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -503,30 +513,49 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    if (receiver instanceof DynamicStructValue dynamic) {
-                        dynamic.fields.put(target.member(), value);
+                    if (receiver instanceof NativeValues.DynamicStructValue dynamic) {
+                        dynamic.putString(target.member(), value);
                         return value;
                     }
-                    throw new IllegalArgumentException("member assignment requires a class instance, DynamicStruct, or mutex guard");
+                    if (receiver instanceof NativeValues.StructValue struct) {
+                        Ast.ClassDecl structDecl = findClass(struct.typeName());
+                        if (structDecl == null || !structDecl.isStruct()) {
+                            throw new IllegalArgumentException("unknown struct type " + struct.typeName());
+                        }
+                        Ast.FieldDecl field = effectiveFields(structDecl, new LinkedHashSet<>()).stream()
+                                .filter(candidate -> candidate.name().equals(target.member()))
+                                .findFirst()
+                                .orElseThrow(() -> new IllegalArgumentException("unknown struct field " + target.member()));
+                        if (field.bindingKind() != Ast.BindingKind.LET) {
+                            throw new IllegalArgumentException("struct field '" + struct.typeName() + "."
+                                    + target.member() + "' is immutable");
+                        }
+                        struct.putString(target.member(), value);
+                        return value;
+                    }
+                    throw new IllegalArgumentException("member assignment requires a class instance, typed struct, DynamicStruct, or mutex guard");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    if (receiver instanceof DynamicStructValue dynamic) {
+                    if (receiver instanceof NativeValues.DynamicStructValue dynamic) {
                         if (!(index instanceof String key)) {
                             throw new IllegalArgumentException("DynamicStruct key must be a string");
                         }
-                        dynamic.fields.put(key, value);
+                        dynamic.putString(key, value);
+                        return value;
+                    }
+                    if (receiver instanceof NativeValues.MapValue map) {
+                        map.put(index, value);
                         return value;
                     }
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                     int i = Math.toIntExact(number.longValue());
-                    if (receiver instanceof List<?> raw) {
-                        @SuppressWarnings("unchecked") List<Object> list = (List<Object>) raw;
+                    if (receiver instanceof NativeValues.ListValue list) {
                         list.set(i, value);
                         return value;
                     }
-                    throw new IllegalArgumentException("indexed assignment requires a mutable array/list or DynamicStruct");
+                    throw new IllegalArgumentException("indexed assignment requires native List, Map, or DynamicStruct");
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -576,39 +605,36 @@ public final class OresEvalRootNode extends RootNode {
                         return klass.owner().invokeStaticFunction(klass.klass(), methodCall.member(), args);
                     }
                     Object callee = member(receiver, methodCall.member());
-                    if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
-                    return invokable.call(args);
+                    if (callee instanceof Invokable invokable) return invokable.call(args);
+                    if (callee instanceof BuiltinCallable builtin) return builtin.call(args);
+                    throw new IllegalArgumentException("value is not callable: " + callee);
                 }
                 Object callee = eval(call.callee(), env);
                 List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
-                if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
-                return invokable.call(args);
+                if (callee instanceof Invokable invokable) return invokable.call(args);
+                if (callee instanceof BuiltinCallable builtin) return builtin.call(args);
+                throw new IllegalArgumentException("value is not callable: " + callee);
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member());
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("DynamicStruct key must be a string");
-                    }
-                    if (!dynamic.fields.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown DynamicStruct key " + key);
-                    }
-                    return dynamic.fields.get(key);
+                if (receiver instanceof NativeValues.DynamicStructValue dynamic) {
+                    if (!(index instanceof String key)) throw new IllegalArgumentException("DynamicStruct key must be a string");
+                    return dynamic.getString(key);
                 }
-                if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("object/map key must be a string");
-                    }
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown object/map key " + key);
-                    }
-                    return map.get(key);
+                if (receiver instanceof NativeValues.RecordValue record) {
+                    if (!(index instanceof String key)) throw new IllegalArgumentException("record key must be a string");
+                    return record.getString(key);
                 }
+                if (receiver instanceof NativeValues.StructValue struct) {
+                    if (!(index instanceof String key)) throw new IllegalArgumentException("struct field key must be a string");
+                    return struct.getString(key);
+                }
+                if (receiver instanceof NativeValues.MapValue map) return map.get(index);
                 if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                 int i = Math.toIntExact(number.longValue());
-                if (receiver instanceof List<?> list) return list.get(i);
+                if (receiver instanceof NativeValues.ListValue list) return list.get(i);
                 if (receiver instanceof Object[] array) return array[i];
                 throw new IllegalArgumentException("value is not indexable: " + receiver);
             }
@@ -617,7 +643,16 @@ public final class OresEvalRootNode extends RootNode {
                     if (!created.arguments().isEmpty()) {
                         throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
                     }
-                    return new DynamicStructValue();
+                    return new NativeValues.DynamicStructValue(context);
+                }
+                if (created.type().name().equals("List") || created.type().name().equals("Array")) {
+                    NativeValues.ListValue result = new NativeValues.ListValue(context);
+                    for (Ast.Expr argument : created.arguments()) result.add(eval(argument, env));
+                    return result;
+                }
+                if (created.type().name().equals("Map")) {
+                    if (!created.arguments().isEmpty()) throw new IllegalArgumentException("Map<K,V> constructor takes no positional arguments");
+                    return new NativeValues.MapValue(context);
                 }
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
@@ -657,14 +692,19 @@ public final class OresEvalRootNode extends RootNode {
                 return value;
             }
             if (expr instanceof Ast.ListExpr list) {
-                ArrayList<Object> result = new ArrayList<>(list.elements().size());
+                NativeValues.ListValue result = new NativeValues.ListValue(context);
                 for (Ast.Expr item : list.elements()) result.add(eval(item, env));
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) {
+                Object[] result = new Object[tuple.elements().size()];
+                for (int i = 0; i < result.length; i++) result[i] = eval(tuple.elements().get(i), env);
+                return result;
+            }
             if (expr instanceof Ast.ObjectExpr object) {
                 boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
-                LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+                NativeValues.DynamicStructValue dynamic = dynamicKeys ? new NativeValues.DynamicStructValue(context) : null;
+                NativeValues.RecordValue record = dynamicKeys ? null : new NativeValues.RecordValue(context);
                 for (Ast.ObjectField field : object.fields()) {
                     String key;
                     if (field.isDynamic()) {
@@ -676,11 +716,13 @@ public final class OresEvalRootNode extends RootNode {
                     } else {
                         key = field.name();
                     }
-                    if (result.putIfAbsent(key, eval(field.value(), env)) != null) {
-                        throw new IllegalArgumentException("duplicate obj field " + key);
-                    }
+                    boolean duplicate = dynamicKeys ? dynamic.containsString(key) : record.containsString(key);
+                    if (duplicate) throw new IllegalArgumentException("duplicate obj field " + key);
+                    Object fieldValue = eval(field.value(), env);
+                    if (dynamicKeys) dynamic.putString(key, fieldValue);
+                    else record.initialize(key, fieldValue);
                 }
-                return dynamicKeys ? new DynamicStructValue(result) : Map.copyOf(result);
+                return dynamicKeys ? dynamic : record;
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
@@ -701,6 +743,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name) {
+            if (receiver instanceof BuiltinValue builtin) return builtin.member(name);
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host class " + host.className());
@@ -770,16 +813,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
                 return new BoundMethod(object.owner, object, name);
             }
-            if (receiver instanceof DynamicStructValue dynamic) {
-                if (!dynamic.fields.containsKey(name)) {
-                    throw new IllegalArgumentException("unknown DynamicStruct member " + name);
-                }
-                return dynamic.fields.get(name);
-            }
-            if (receiver instanceof Map<?, ?> map) {
-                if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
-                return map.get(name);
-            }
+            if (receiver instanceof NativeValues.DynamicStructValue dynamic) return dynamic.getString(name);
+            if (receiver instanceof NativeValues.RecordValue record) return record.getString(name);
+            if (receiver instanceof NativeValues.StructValue struct) return struct.getString(name);
             InteropLibrary foreign = InteropLibrary.getUncached(receiver);
             if (foreign.hasMembers(receiver)) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
@@ -1090,15 +1126,27 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export '" + name + "'");
         }
 
-        private OresObject instantiate(Ast.ClassDecl klass, List<Object> args) {
+        private Object instantiate(Ast.ClassDecl klass, List<Object> args) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalStateException("actor '" + klass.name()
                         + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
             }
             List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
             if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
-            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             Env env = new Env(null);
+            if (klass.isStruct()) {
+                NativeValues.StructValue struct = new NativeValues.StructValue(context, klass.name());
+                for (int i = 0; i < classFields.size(); i++) {
+                    Ast.FieldDecl field = classFields.get(i);
+                    Object value;
+                    if (i < args.size()) value = args.get(i);
+                    else if (field.initializer() != null) value = eval(field.initializer(), env);
+                    else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
+                    struct.initialize(field.name(), value);
+                }
+                return struct;
+            }
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             for (int i = 0; i < classFields.size(); i++) {
                 Ast.FieldDecl field = classFields.get(i);
                 Object value;
@@ -1206,6 +1254,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private List<?> iterableValues(Object value) {
+            if (value instanceof NativeValues.ListValue list) return list.interpreterView();
             if (value instanceof List<?> list) return list;
             if (value instanceof Object[] array) return List.of(array);
             if (value instanceof OresObject object) {
@@ -1335,7 +1384,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (int i = 0; i < fixed.length; i++) {
                     fixed[i] = shapeReturnedValue(declared.arguments().get(i), fixed[i], callable + " tuple[" + i + "]", resolving);
                 }
-                return java.util.Arrays.asList(fixed);
+                return fixed;
             }
 
             if (declared.isRecordType()) {
@@ -1349,22 +1398,23 @@ public final class OresEvalRootNode extends RootNode {
             if (declared.name().equals("Array") || declared.name().equals("List")) {
                 if (declared.arguments().size() != 1) return value;
                 List<?> items = asSequence(value);
-                ArrayList<Object> shaped = new ArrayList<>(items.size());
                 for (int i = 0; i < items.size(); i++) {
-                    shaped.add(shapeReturnedValue(declared.arguments().getFirst(), items.get(i), callable + "[" + i + "]", resolving));
+                    shapeReturnedValue(declared.arguments().getFirst(), items.get(i), callable + "[" + i + "]", resolving);
                 }
-                return shaped;
+                return value;
             }
 
             if (declared.name().equals("DynamicStruct")) {
-                if (declared.arguments().size() != 1 || !(value instanceof DynamicStructValue dynamic)) {
+                if (declared.arguments().size() != 1 || !(value instanceof NativeValues.DynamicStructValue dynamic)) {
                     throw returnTypeMismatch(callable, declared, value);
                 }
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
+                String[] keys = dynamic.keysSnapshot();
+                Object[] values = dynamic.valuesSnapshot();
+                for (int i = 0; i < keys.length; i++) {
                     shapeReturnedValue(
                             declared.arguments().getFirst(),
-                            entry.getValue(),
-                            callable + "[" + entry.getKey() + "]",
+                            values[i],
+                            callable + "[" + keys[i] + "]",
                             resolving);
                 }
                 return value;
@@ -1412,17 +1462,19 @@ public final class OresEvalRootNode extends RootNode {
                     + " but declared " + declared);
         }
 
-        private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
+        private List<?> asSequence(Object value) { if (value instanceof NativeValues.ListValue l) return l.interpreterView(); if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
         private Object destructureMember(Object value, String name) {
-            if (value instanceof DynamicStructValue dynamic) {
-                if (!dynamic.fields.containsKey(name)) {
-                    throw new IllegalArgumentException("object destructure missing member " + name);
-                }
-                return dynamic.fields.get(name);
+            if (value instanceof NativeValues.DynamicStructValue dynamic) {
+                if (!dynamic.containsString(name)) throw new IllegalArgumentException("object destructure missing member " + name);
+                return dynamic.getString(name);
             }
-            if (value instanceof Map<?, ?> map) {
-                if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
-                return map.get(name);
+            if (value instanceof NativeValues.RecordValue record) {
+                if (!record.containsString(name)) throw new IllegalArgumentException("object destructure missing member " + name);
+                return record.getString(name);
+            }
+            if (value instanceof NativeValues.StructValue struct) {
+                if (!struct.containsString(name)) throw new IllegalArgumentException("object destructure missing member " + name);
+                return struct.getString(name);
             }
             if (value instanceof OresObject object) {
                 if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
@@ -1513,6 +1565,10 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return;
             }
+            if (value instanceof NativeValues.ListValue list) {
+                for (Object item : list.snapshot()) releaseMutexGuardsInValue(item, failed, seen);
+                return;
+            }
             if (value instanceof List<?> list) {
                 for (Object item : list) releaseMutexGuardsInValue(item, failed, seen);
                 return;
@@ -1521,10 +1577,12 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
                 return;
             }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    releaseMutexGuardsInValue(entry.getKey(), failed, seen);
-                    releaseMutexGuardsInValue(entry.getValue(), failed, seen);
+            if (value instanceof NativeValues.DynamicStructValue
+                    || value instanceof NativeValues.RecordValue
+                    || value instanceof NativeValues.StructValue
+                    || value instanceof NativeValues.MapValue) {
+                for (Object child : ((OresMutex.SharedState) value).sharedStateChildren()) {
+                    releaseMutexGuardsInValue(child, failed, seen);
                 }
                 return;
             }
@@ -1559,14 +1617,6 @@ public final class OresEvalRootNode extends RootNode {
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
         private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
-    }
-
-    private static final class DynamicStructValue implements OresMutex.SharedState {
-        private final LinkedHashMap<String, Object> fields;
-        private DynamicStructValue() { this.fields = new LinkedHashMap<>(); }
-        private DynamicStructValue(Map<String, Object> initial) { this.fields = new LinkedHashMap<>(initial); }
-        @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
-        @Override public String toString() { return "DynamicStruct" + fields; }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
@@ -1642,12 +1692,16 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return true;
             }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    if (!runtimeSharedSafe(entry.getKey(), seen)
-                            || !runtimeSharedSafe(entry.getValue(), seen)) {
-                        return false;
-                    }
+            if (value instanceof NativeValues.ListValue list) {
+                for (Object item : list.snapshot()) if (!runtimeSharedSafe(item, seen)) return false;
+                return true;
+            }
+            if (value instanceof NativeValues.DynamicStructValue
+                    || value instanceof NativeValues.RecordValue
+                    || value instanceof NativeValues.StructValue
+                    || value instanceof NativeValues.MapValue) {
+                for (Object child : ((OresMutex.SharedState) value).sharedStateChildren()) {
+                    if (!runtimeSharedSafe(child, seen)) return false;
                 }
                 return true;
             }
