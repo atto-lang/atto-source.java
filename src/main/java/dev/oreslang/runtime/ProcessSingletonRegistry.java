@@ -510,6 +510,9 @@ public final class ProcessSingletonRegistry {
             synchronized (lifecycleLock) {
                 if (collectionRequested.get()) return collected;
                 if (terminalFailure != null) {
+                    synchronized (REGISTRY_LOCK) {
+                        CELLS.remove(key, this);
+                    }
                     collected.completeExceptionally(terminalFailure);
                     return collected;
                 }
