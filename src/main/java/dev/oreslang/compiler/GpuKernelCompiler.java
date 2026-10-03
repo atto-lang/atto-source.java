@@ -65,6 +65,7 @@ public final class GpuKernelCompiler {
             boolean enforceNoAliasBuffers) { }
 
     public record GpuKernel(
+            String module,
             String sourceName,
             String helperSymbol,
             String kernelSymbol,
@@ -114,6 +115,23 @@ public final class GpuKernelCompiler {
         }
 
         public boolean hasKernels() { return !kernels.isEmpty(); }
+
+        public GpuKernel requireKernel(String module, String sourceName) {
+            GpuKernel match = null;
+            for (GpuKernel kernel : kernels) {
+                if (!kernel.module().equals(module) || !kernel.sourceName().equals(sourceName)) continue;
+                if (match != null) {
+                    throw new IllegalArgumentException(
+                            "ambiguous GPU kernel metadata for " + module + "." + sourceName);
+                }
+                match = kernel;
+            }
+            if (match == null) {
+                throw new IllegalArgumentException(
+                        "GPU artifact has no kernel metadata for " + module + "." + sourceName);
+            }
+            return match;
+        }
 
         /** Deterministic launcher/cache contract paired with the generated device source. */
         public String manifest() {
@@ -611,6 +629,7 @@ public final class GpuKernelCompiler {
                 clampNegativeExtent,
                 enforceNoAlias);
         GpuKernel meta = new GpuKernel(
+                target.module,
                 target.sourceName,
                 target.helperSymbol,
                 target.kernelSymbol,
@@ -634,7 +653,7 @@ public final class GpuKernelCompiler {
      * output-buffer case); otherwise a single buffer parameter may drive a map-style kernel.
      */
     private WorkItemPlan findWorkItemPlan(Target target, Ast.TypeRef resultType) {
-        if (!containsWorkItemIntrinsic(target.body)) return null;
+        if (!containsTransitiveWorkItemIntrinsic(target, new HashSet<>())) return null;
 
         List<Ast.Param> buffers = target.parameters.stream()
                 .filter(param -> isBuffer(resolveAlias(param.type(), target.module)))
@@ -805,6 +824,21 @@ public final class GpuKernelCompiler {
                     || intrinsic.intrinsic() == Ast.GpuIntrinsic.GLOBAL_ID);
         }
         return expr instanceof Ast.NameExpr name && scope.isUnique(name.name());
+    }
+
+    private boolean containsTransitiveWorkItemIntrinsic(Target target, Set<Target> visiting) {
+        if (!visiting.add(target)) return false;
+        try {
+            if (containsWorkItemIntrinsic(target.body)) return true;
+            LinkedHashSet<Target> calls = new LinkedHashSet<>();
+            collectNamedCalls(target.module, target.body, calls);
+            for (Target callee : calls) {
+                if (containsTransitiveWorkItemIntrinsic(callee, visiting)) return true;
+            }
+            return false;
+        } finally {
+            visiting.remove(target);
+        }
     }
 
     private boolean containsWorkItemIntrinsic(List<Ast.Stmt> statements) {
@@ -1777,7 +1811,8 @@ public final class GpuKernelCompiler {
         out.append("backend=").append(backend).append('\n');
         requiredExtensions.stream().sorted().forEach(ext -> out.append("extension=").append(ext).append('\n'));
         for (GpuKernel kernel : kernels) {
-            out.append("kernel=").append(kernel.sourceName()).append('|')
+            out.append("kernel=").append(kernel.module()).append('|')
+                    .append(kernel.sourceName()).append('|')
                     .append(kernel.kernelSymbol()).append('|')
                     .append(kernel.helperSymbol()).append('|')
                     .append(kernel.kind()).append('|')
