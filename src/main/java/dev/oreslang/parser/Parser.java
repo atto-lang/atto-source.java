@@ -259,19 +259,34 @@ public final class Parser {
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "actor state cannot be static");
                 if (mods.visibility == Ast.Visibility.PUBLIC) {
-                    throw error(peek(), "actor state fields are private; expose state through actor methods");
+                    throw error(peek(), "actor state fields are private; expose state through actor entrypoints");
                 }
                 fields.add(parseField(mods.visibility));
                 continue;
             }
 
+            Ast.ActorMethodKind actorMethodKind = Ast.ActorMethodKind.NONE;
+            if (match(PARALLEL)) {
+                consume(ACTOR, "'parallel' actor method must be written 'parallel actor <method>(...)'");
+                actorMethodKind = Ast.ActorMethodKind.PARALLEL;
+            } else if (match(EXCLUSIVE)) {
+                consume(ACTOR, "'exclusive' actor method must be written 'exclusive actor <method>(...)'");
+                actorMethodKind = Ast.ActorMethodKind.EXCLUSIVE;
+            } else if (match(ACTOR)) {
+                actorMethodKind = Ast.ActorMethodKind.SERIAL;
+            }
+
             if (mods.isAbstract) throw error(peek(), "actor methods cannot be abstract");
             if (mods.isStatic) {
+                if (actorMethodKind != Ast.ActorMethodKind.NONE) {
+                    throw error(peek(), "static actor members cannot be mailbox entrypoints");
+                }
                 consume(FNC, "static actor functions must be declared with 'static fnc'");
-            } else {
-                match(FNC);
+            } else if (check(FNC)) {
+                throw error(peek(), "instance methods omit 'fnc'; actor entrypoints use 'actor <method>(...)'");
             }
-            methods.add(parseMethod(annotations, mods));
+
+            methods.add(parseMethod(annotations, mods, actorMethodKind));
         }
 
         consume(terminator, braceStyle
@@ -364,6 +379,13 @@ public final class Parser {
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
+        return parseMethod(annotations, mods, Ast.ActorMethodKind.NONE);
+    }
+
+    private Ast.MethodDecl parseMethod(
+            List<Ast.Annotation> annotations,
+            Modifiers mods,
+            Ast.ActorMethodKind actorMethodKind) {
         String name = parseMethodName();
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '(' after method name");
@@ -389,7 +411,7 @@ public final class Parser {
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
-                receiverType, generics, params, returnType, annotations, body);
+                actorMethodKind, receiverType, generics, params, returnType, annotations, body);
     }
 
     private String parseMethodName() {
@@ -1048,6 +1070,7 @@ public final class Parser {
             return new Ast.UnaryExpr(mutable ? "&mut" : "&", parseUnary());
         }
         if (match(AWAIT)) return new Ast.AwaitExpr(parseUnary());
+        if (match(SPAWN)) return new Ast.SpawnExpr(parseUnary());
         return parsePostfix();
     }
 
