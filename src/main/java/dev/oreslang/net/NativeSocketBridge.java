@@ -10,8 +10,12 @@ import java.nio.file.Path;
  * This class deliberately does not use java.net.Socket, ServerSocket,
  * SocketChannel, or java.net.http. All transport I/O crosses directly into the
  * platform socket API through liboresnet.
+ *
+ * Package-private by design: Oreslang Java interop must not be able to import
+ * the raw-fd JNI surface. Guest-facing networking goes through OresNet and
+ * opaque NativeSocketHandle instances.
  */
-public final class NativeSocketBridge {
+final class NativeSocketBridge {
     private static final String LIBRARY = "oresnet";
 
     static {
