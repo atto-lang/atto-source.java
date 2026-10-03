@@ -51,6 +51,17 @@ ORESLANG_DEFINE_DEBUG=false
 
 CLI definitions take precedence over environment definitions. A definition must target a real `const` declaration; overriding `val` or `let` is rejected.
 
+The compiler backend exposes the same path today for build diagnostics:
+
+```bash
+ORESLANG_BUILD_DEFINES=use_a=true \
+  oreslang-compiler --build-analysis app.ores
+
+oreslang-compiler --build-analysis --define=use_a=true app.ores
+```
+
+It prints retained and removed symbols. This is intentionally an analysis surface until the per-application artifact emitter is wired; it already consumes the same pruned AST that the emitter should consume.
+
 With `use_a=true`, the ternary reduces to `A.foo` before reachability. `B.foo` is not reachable, so module `B` disappears if it has no other retained declarations.
 
 The compiler API is:
