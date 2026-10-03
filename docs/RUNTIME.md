@@ -129,6 +129,14 @@ A private actor turn cannot create, snapshot, read, update, or close synchronize
 
 Actor failures are fail-stop in this layer. The actor ref retains the failure cause for diagnostics, queued reservations are drained, and later sends receive an `ActorTerminatedException` rather than silently targeting a dead mailbox.
 
+## Immutable numeric guest values
+
+Runtime-owned numeric aggregates such as `complex`, `Matrix<float|complex>`, and `Vector<float|complex>` are deeply immutable at the Oreslang boundary. Their backing numerical-library objects are private implementation details and are never exposed to guest code.
+
+Such values implement `ImmutableGuestValue`. Trusted actor transport may therefore retain the immutable value instead of deep-copying a primitive buffer on every message, while actor mailbox and memory accounting charges the value's conservative logical byte footprint. The marker is a runtime-owned contract: an implementation must not expose mutable backing state.
+
+This optimization does not grant Java host access and does not weaken adversarial-isolate policy. Arbitrary Java/reflection interop, if enabled separately, remains capability-gated and is not implied by importing or using the math facade.
+
 ## Private actor memory confinement
 
 A private actor is assigned an `ActorMemorySlice` when it is created. The slice is keyed by actor identity rather than by dispatcher thread because actor turns may migrate between worker threads.
