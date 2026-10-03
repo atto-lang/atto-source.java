@@ -946,9 +946,11 @@ public final class TypeChecker {
     }
 
     private void requireGpuResidentElementType(Type type, String where) {
-        if (type == Primitive.INT || type == Primitive.FLOAT || type == Primitive.BOOL) return;
+        if (type == Primitive.INT || type == Primitive.FLOAT
+                || type == Primitive.COMPLEX || type == Primitive.BOOL) return;
         throw new IllegalArgumentException(
-                where + " must be a concrete GPU scalar supported by the current device ABI (integer, float, or bool), got " + type);
+                where + " must be a concrete GPU scalar supported by the current device ABI "
+                        + "(integer, float, complex, or bool), got " + type);
     }
 
     private void rejectCoreGpuName(String name, String kind) {
