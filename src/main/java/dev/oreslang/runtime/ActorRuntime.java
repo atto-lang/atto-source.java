@@ -511,7 +511,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (cached != null) return cached;
 
             String method = Objects.requireNonNull(
-                    transportLease.withActorIo(owner, "request.method", transport::method),
+                    transportLease.withActorOperation(owner, "request.method", transport::method),
                     "HTTP request method");
             if (!method.matches("[!#$%&'*+.^_|~0-9A-Za-z-]{1,32}")) {
                 throw new HttpRequestLimitExceededException(
@@ -528,7 +528,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (cached != null) return cached;
 
             String path = Objects.requireNonNull(
-                    transportLease.withActorIo(owner, "request.path", transport::path),
+                    transportLease.withActorOperation(owner, "request.path", transport::path),
                     "HTTP request path");
             if (path.indexOf('\r') >= 0 || path.indexOf('\n') >= 0) {
                 throw new IllegalArgumentException("HTTP request path cannot contain CR/LF");
@@ -559,7 +559,7 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             Optional<String> result = Objects.requireNonNull(
-                    transportLease.withActorIo(
+                    transportLease.withActorOperation(
                             owner,
                             "request.header",
                             () -> transport.header(name)),
