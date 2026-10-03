@@ -233,6 +233,26 @@ val user = obj{name: "Ada", age: 37};
 stdio.println(user.name);
 ```
 
+Static object/map keys may be identifiers, reserved member keys such as
+`stop`/`do`/`done`, or strings written with either single or double
+quotes. Backticks make the key dynamic: the expression between the backticks
+must evaluate to a string.
+
+```ores
+val key = "score";
+val stats = obj{
+  stop: 1,
+  'do': 2,
+  "done": 3,
+  `key`: 4
+};
+```
+
+An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
+`T` is the joined value type. A `DynamicStruct<T>` can also be created
+directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
+only values assignable to `T`.
+
 Inline array:
 
 ```ores
