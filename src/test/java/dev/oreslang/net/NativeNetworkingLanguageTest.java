@@ -413,6 +413,25 @@ final class NativeNetworkingLanguageTest {
         server.join(5_000);
     }
 
+
+    @Test
+    void networkingImplementationKeepsProtocolEngineOutOfJava() throws Exception {
+        String source = java.nio.file.Files.readString(
+                java.nio.file.Path.of("src/main/java/dev/oreslang/net/OresNet.java"));
+        assertFalse(source.contains("java.net."));
+        assertFalse(source.contains("java.net.http"));
+        // Architectural end-state: HTTP wire parsing/serialization and URI
+        // redirect resolution belong below JNI in liboresnet, not in Java.
+        assertFalse(source.contains("parseResponse(byte[] wire)"),
+                "HTTP response parser must move to native liboresnet");
+        assertFalse(source.contains("decodeChunked(byte[] body)"),
+                "chunk framing must move to native liboresnet");
+        assertFalse(source.contains("encodeRequest(HttpRequestValue"),
+                "HTTP request serialization must move to native liboresnet");
+        assertFalse(source.contains("resolveRedirect(String base"),
+                "redirect URI resolution must move to native liboresnet");
+    }
+
     private static String evaluate(String program) throws Exception {
         IsolatePolicy policy = IsolatePolicy.developer()
                 .withCapabilities(IsolatePolicy.Capability.NETWORK);
