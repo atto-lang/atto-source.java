@@ -53,6 +53,23 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void gpuCapabilityIsDeniedByStrictPolicyAndExplicitlyGrantable() {
+        var program = TypeChecker.check(Parser.parse("""
+                fnc upload(Array<i32> values) => GpuArray<i32> {
+                  return GpuArray.from_cpu(values);
+                }
+                """));
+
+        SecurityException denied = assertThrows(SecurityException.class,
+                () -> CapabilityChecker.check(program, IsolatePolicy.strictFaas()));
+        assertTrue(denied.getMessage().contains("GPU"));
+
+        assertDoesNotThrow(() -> CapabilityChecker.check(
+                program,
+                IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.GPU)));
+    }
+
+    @Test
     void runtimeCapabilityCheckCannotBeBypassedByFacadeDispatch() throws Exception {
         IsolatePolicy noOutput = new IsolatePolicy(Set.of(), 64L * 1024 * 1024, 32, Duration.ofSeconds(5));
         Source source = Source.newBuilder(OresLanguage.ID, """
