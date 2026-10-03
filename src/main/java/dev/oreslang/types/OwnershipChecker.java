@@ -422,6 +422,26 @@ public final class OwnershipChecker {
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
             return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
         }
+        if (expr instanceof Ast.SpawnExpr spawned) {
+            if (spawned.expression() instanceof Ast.CallExpr call
+                    && call.callee() instanceof Ast.NameExpr name) {
+                Ast.ClassDecl actorClass = findClass(name.name());
+                if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+                    // Constructor arguments cross the actor boundary by value.
+                    checkCall(call, scope);
+                    Ast.TypeRef actorType = new Ast.TypeRef(
+                            actorClass.name(), List.of(), false);
+                    Ast.TypeRef actorRef = new Ast.TypeRef(
+                            "ActorRef", List.of(actorType), false);
+                    // ActorRef is a shareable runtime capability; reading it
+                    // does not transfer ownership of the actor itself.
+                    return new ValueInfo(actorRef, ValueKind.COPY, null);
+                }
+            }
+            ValueInfo result = checkExpr(spawned.expression(), scope, true);
+            Ast.TypeRef future = new Ast.TypeRef("Future", List.of(result.type), false);
+            return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
                 throw error("cannot await while holding a MutexGuard; release the guard before suspension");
@@ -956,6 +976,7 @@ public final class OwnershipChecker {
             scanExpr(e.receiver(), locals, outer, recursiveBinding, captures, write);
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.SpawnExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
