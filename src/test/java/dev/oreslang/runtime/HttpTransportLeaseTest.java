@@ -13,6 +13,21 @@ import static org.junit.jupiter.api.Assertions.*;
 final class HttpTransportLeaseTest {
 
     @Test
+    void transportLeaseCannotBeFrozenOrSentAsData() {
+        HttpTransportLease lease = new HttpTransportLease();
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(lease));
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var target = runtime.<Object>spawnPrivate(() -> (message, turn) -> { });
+            IllegalArgumentException error = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> target.send(lease));
+            assertTrue(error.getMessage().contains("capabil")
+                    || error.getMessage().contains("not Sendable"));
+        }
+    }
+
+    @Test
     void leaseHasExactlyOneControllingActorAndCannotBeTransferredTwice() {
         HttpTransportLease lease = new HttpTransportLease();
         ActorRuntime.ActorId first = ActorRuntime.ActorId.create();
