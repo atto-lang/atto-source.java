@@ -153,6 +153,27 @@ final class GpuRuntimeTest {
     }
 
     @Test
+    void zerosLikeAllocatesResidentOutputWithoutHostUpload() {
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "zeros-like"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+            @Override public Object uploadArray(List<?> values) { return List.copyOf(values); }
+            @Override public Object zeroArrayLike(Object token, long length) {
+                return java.util.Collections.nCopies(Math.toIntExact(length), 0L);
+            }
+            @Override public List<?> downloadArray(Object token, long length) { return (List<?>) token; }
+        });
+
+        GpuRuntime runtime = new GpuRuntime();
+        GpuRuntime.ArrayHandle source = runtime.uploadArray(List.of(7L, 8L, 9L));
+        GpuRuntime.ArrayHandle out = runtime.zerosLike(source);
+
+        assertEquals(source.backendName(), out.backendName());
+        assertEquals(source.length(), out.length());
+        assertEquals(List.of(0L, 0L, 0L), runtime.downloadArray(out));
+    }
+
+    @Test
     void streamCollectPreservesBackendAndConcreteCardinality() {
         GpuRuntime.installBackend(new TransferBackend("stream-test"));
         GpuRuntime runtime = new GpuRuntime();
