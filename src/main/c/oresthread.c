@@ -17,6 +17,7 @@
 #endif
 
 typedef struct ores_carrier_pool ores_carrier_pool;
+static uint64_t pthread_cpu_time_nanos(pthread_t pthread);
 
 typedef struct {
     ores_carrier_pool *pool;
@@ -34,6 +35,8 @@ struct ores_carrier_pool {
     int desired_threads;
     int started;
     int shutdown;
+    int attach_ready_count;
+    int attach_failures;
     pthread_mutex_t mutex;
     pthread_cond_t condition;
 };
@@ -73,6 +76,12 @@ static void *carrier_main(void *raw) {
 
     jint status = (*pool->jvm)->AttachCurrentThreadAsDaemon(
             pool->jvm, (void **)&env, &attach);
+
+    pthread_mutex_lock(&pool->mutex);
+    pool->attach_ready_count++;
+    if (status != JNI_OK || env == NULL) pool->attach_failures++;
+    pthread_cond_broadcast(&pool->condition);
+    pthread_mutex_unlock(&pool->mutex);
     if (status != JNI_OK || env == NULL) return NULL;
 
     (*env)->CallVoidMethod(env, pool->executor, pool->carrier_loop, (jint)arg->slot);
@@ -108,7 +117,8 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         jobject executor,
         jint max_threads,
         jint desired_threads,
-        jstring thread_prefix) {
+        jstring thread_prefix,
+        jlong stack_bytes) {
     (void)cls;
     if (executor == NULL || thread_prefix == NULL) {
         throw_illegal_state(env, "native carrier executor/prefix cannot be null");
@@ -116,6 +126,10 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
     }
     if (max_threads <= 0 || desired_threads <= 0 || desired_threads > max_threads) {
         throw_illegal_state(env, "invalid native carrier thread counts");
+        return 0;
+    }
+    if (stack_bytes < 262144) {
+        throw_illegal_state(env, "native carrier stack size must be at least 262144 bytes");
         return 0;
     }
 
@@ -170,19 +184,30 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         return 0;
     }
 
+    pthread_attr_t attr;
+    if (pthread_attr_init(&attr) != 0
+            || pthread_attr_setstacksize(&attr, (size_t)stack_bytes) != 0) {
+        (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
+        if (pthread_attr_init(&attr) == 0) pthread_attr_destroy(&attr);
+        free_pool(env, pool);
+        throw_illegal_state(env, "failed to configure native carrier stack size");
+        return 0;
+    }
+
     int created = 0;
     for (int i = 0; i < max_threads; i++) {
         pool->args[i].pool = pool;
         pool->args[i].slot = i;
         pool->args[i].name = copy_thread_name(prefix, i);
         if (pool->args[i].name == NULL
-                || pthread_create(&pool->threads[i], NULL, carrier_main, &pool->args[i]) != 0) {
+                || pthread_create(&pool->threads[i], &attr, carrier_main, &pool->args[i]) != 0) {
             pthread_mutex_lock(&pool->mutex);
             pool->shutdown = 1;
             pool->started = 1;
             pthread_cond_broadcast(&pool->condition);
             pthread_mutex_unlock(&pool->mutex);
             for (int j = 0; j < created; j++) pthread_join(pool->threads[j], NULL);
+            pthread_attr_destroy(&attr);
             (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
             free_pool(env, pool);
             throw_illegal_state(env, "pthread_create failed for Oreslang carrier");
@@ -191,6 +216,7 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
         created++;
     }
 
+    pthread_attr_destroy(&attr);
     (*env)->ReleaseStringUTFChars(env, thread_prefix, prefix);
     return (jlong)(intptr_t)pool;
 }
@@ -198,14 +224,20 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCreate(
 JNIEXPORT void JNICALL
 Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeStart(
         JNIEnv *env, jclass cls, jlong handle) {
-    (void)env;
     (void)cls;
     ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
     if (pool == NULL) return;
     pthread_mutex_lock(&pool->mutex);
     pool->started = 1;
     pthread_cond_broadcast(&pool->condition);
+    while (!pool->shutdown && pool->attach_ready_count < pool->max_threads) {
+        pthread_cond_wait(&pool->condition, &pool->mutex);
+    }
+    int failures = pool->attach_failures;
     pthread_mutex_unlock(&pool->mutex);
+    if (failures != 0) {
+        throw_illegal_state(env, "one or more native carrier pthreads failed to attach to the JVM");
+    }
 }
 
 JNIEXPORT void JNICALL
@@ -268,6 +300,24 @@ Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadId(
     (void)env;
     (void)cls;
     return (jlong)(uintptr_t)pthread_self();
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCurrentThreadCpuNanos(
+        JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    return (jlong)pthread_cpu_time_nanos(pthread_self());
+}
+
+JNIEXPORT jlong JNICALL
+Java_dev_oreslang_runtime_NativeCarrierExecutor_nativeCarrierCpuTimeNanos(
+        JNIEnv *env, jclass cls, jlong handle, jint slot) {
+    (void)env;
+    (void)cls;
+    ores_carrier_pool *pool = (ores_carrier_pool *)(intptr_t)handle;
+    if (pool == NULL || slot < 0 || slot >= pool->max_threads) return 0;
+    return (jlong)pthread_cpu_time_nanos(pool->threads[slot]);
 }
 
 
