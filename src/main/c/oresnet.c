@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,18 +17,35 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
 
-static int as_fd(jlong value) {
-    if (value < 0 || value > INT32_MAX) {
-        errno = EBADF;
-        return -1;
-    }
-    return (int)value;
-}
+#define SOCKET_HANDLE_SLOT_BITS 20u
+#define SOCKET_HANDLE_SLOT_MASK ((UINT64_C(1) << SOCKET_HANDLE_SLOT_BITS) - UINT64_C(1))
+#define SOCKET_HANDLE_COOKIE_MASK ((UINT64_C(1) << 43u) - UINT64_C(1))
+#define SOCKET_REGISTRY_MAX_SLOTS ((size_t)SOCKET_HANDLE_SLOT_MASK)
+
+typedef struct {
+    int fd;
+    uint64_t cookie;
+    uint32_t refs;
+    int active;
+    int closing;
+} socket_slot_t;
+
+typedef struct {
+    size_t slot_index;
+    int fd;
+} socket_borrow_t;
+
+static pthread_mutex_t socket_registry_lock = PTHREAD_MUTEX_INITIALIZER;
+static socket_slot_t *socket_registry = NULL;
+static size_t socket_registry_capacity = 0;
 
 static void throw_with_message(JNIEnv *env, const char *message) {
     jclass cls = (*env)->FindClass(env, "java/io/IOException");
@@ -41,6 +59,262 @@ static void throw_errno(JNIEnv *env, const char *operation) {
     int error = errno;
     snprintf(message, sizeof(message), "%s: %s", operation, strerror(error));
     throw_with_message(env, message);
+}
+
+
+static int random_cookie(uint64_t *cookie) {
+    uint64_t value = 0;
+#if defined(__linux__)
+    unsigned char *target = (unsigned char *)&value;
+    size_t offset = 0;
+    while (offset < sizeof(value)) {
+        ssize_t count = getrandom(target + offset, sizeof(value) - offset, 0);
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            return 0;
+        }
+        if (count == 0) {
+            errno = EIO;
+            return 0;
+        }
+        offset += (size_t)count;
+    }
+#elif defined(__APPLE__)
+    arc4random_buf(&value, sizeof(value));
+#else
+    int random_fd = open("/dev/urandom", O_RDONLY);
+    if (random_fd < 0) return 0;
+    unsigned char *target = (unsigned char *)&value;
+    size_t offset = 0;
+    while (offset < sizeof(value)) {
+        ssize_t count = read(random_fd, target + offset, sizeof(value) - offset);
+        if (count < 0) {
+            if (errno == EINTR) continue;
+            int saved = errno;
+            close(random_fd);
+            errno = saved;
+            return 0;
+        }
+        if (count == 0) {
+            close(random_fd);
+            errno = EIO;
+            return 0;
+        }
+        offset += (size_t)count;
+    }
+    close(random_fd);
+#endif
+    value &= SOCKET_HANDLE_COOKIE_MASK;
+    if (value == 0) value = 1;
+    *cookie = value;
+    return 1;
+}
+
+static int ensure_registry_capacity_locked(size_t needed) {
+    if (needed <= socket_registry_capacity) return 1;
+    if (needed > SOCKET_REGISTRY_MAX_SLOTS) {
+        errno = EMFILE;
+        return 0;
+    }
+
+    size_t next = socket_registry_capacity == 0 ? 1024u : socket_registry_capacity;
+    while (next < needed) {
+        if (next >= SOCKET_REGISTRY_MAX_SLOTS / 2u) {
+            next = SOCKET_REGISTRY_MAX_SLOTS;
+            break;
+        }
+        next *= 2u;
+    }
+
+    socket_slot_t *grown = realloc(socket_registry, next * sizeof(*grown));
+    if (grown == NULL) {
+        errno = ENOMEM;
+        return 0;
+    }
+    for (size_t i = socket_registry_capacity; i < next; i++) {
+        grown[i].fd = -1;
+        grown[i].cookie = 0;
+        grown[i].refs = 0;
+        grown[i].active = 0;
+        grown[i].closing = 0;
+    }
+    socket_registry = grown;
+    socket_registry_capacity = next;
+    return 1;
+}
+
+static jlong register_socket_handle(JNIEnv *env, int fd) {
+    uint64_t cookie;
+    if (!random_cookie(&cookie)) {
+        throw_errno(env, "socket capability random");
+        return -1;
+    }
+
+    pthread_mutex_lock(&socket_registry_lock);
+    size_t slot_index = socket_registry_capacity;
+    for (size_t i = 0; i < socket_registry_capacity; i++) {
+        if (!socket_registry[i].active
+                && !socket_registry[i].closing
+                && socket_registry[i].refs == 0) {
+            slot_index = i;
+            break;
+        }
+    }
+
+    if (slot_index == socket_registry_capacity) {
+        if (!ensure_registry_capacity_locked(socket_registry_capacity + 1u)) {
+            int saved = errno;
+            pthread_mutex_unlock(&socket_registry_lock);
+            errno = saved;
+            throw_errno(env, "socket capability registry");
+            return -1;
+        }
+        for (size_t i = 0; i < socket_registry_capacity; i++) {
+            if (!socket_registry[i].active
+                    && !socket_registry[i].closing
+                    && socket_registry[i].refs == 0) {
+                slot_index = i;
+                break;
+            }
+        }
+    }
+
+    if (slot_index >= socket_registry_capacity) {
+        pthread_mutex_unlock(&socket_registry_lock);
+        errno = EMFILE;
+        throw_errno(env, "socket capability registry");
+        return -1;
+    }
+
+    socket_slot_t *slot = &socket_registry[slot_index];
+    slot->fd = fd;
+    slot->cookie = cookie;
+    slot->refs = 0;
+    slot->active = 1;
+    slot->closing = 0;
+
+    uint64_t encoded = (cookie << SOCKET_HANDLE_SLOT_BITS) | (uint64_t)(slot_index + 1u);
+    pthread_mutex_unlock(&socket_registry_lock);
+    return (jlong)encoded;
+}
+
+static int decode_socket_handle(jlong raw_handle, size_t *slot_index, uint64_t *cookie) {
+    if (raw_handle <= 0) {
+        errno = EBADF;
+        return 0;
+    }
+    uint64_t encoded = (uint64_t)raw_handle;
+    uint64_t slot_id = encoded & SOCKET_HANDLE_SLOT_MASK;
+    uint64_t decoded_cookie = encoded >> SOCKET_HANDLE_SLOT_BITS;
+    if (slot_id == 0 || decoded_cookie == 0 || decoded_cookie > SOCKET_HANDLE_COOKIE_MASK) {
+        errno = EBADF;
+        return 0;
+    }
+    *slot_index = (size_t)(slot_id - 1u);
+    *cookie = decoded_cookie;
+    return 1;
+}
+
+static int borrow_socket(JNIEnv *env, jlong raw_handle, const char *operation, socket_borrow_t *borrow) {
+    size_t slot_index;
+    uint64_t cookie;
+    if (!decode_socket_handle(raw_handle, &slot_index, &cookie)) {
+        throw_errno(env, operation);
+        return 0;
+    }
+
+    pthread_mutex_lock(&socket_registry_lock);
+    if (slot_index >= socket_registry_capacity) {
+        pthread_mutex_unlock(&socket_registry_lock);
+        errno = EBADF;
+        throw_errno(env, operation);
+        return 0;
+    }
+
+    socket_slot_t *slot = &socket_registry[slot_index];
+    if (!slot->active || slot->closing || slot->cookie != cookie || slot->fd < 0) {
+        pthread_mutex_unlock(&socket_registry_lock);
+        errno = EBADF;
+        throw_errno(env, operation);
+        return 0;
+    }
+
+    slot->refs++;
+    borrow->slot_index = slot_index;
+    borrow->fd = slot->fd;
+    pthread_mutex_unlock(&socket_registry_lock);
+    return 1;
+}
+
+static void close_native_fd_best_effort(int fd) {
+    if (fd < 0) return;
+    while (close(fd) < 0 && errno == EINTR) { }
+}
+
+static void release_socket(socket_borrow_t *borrow) {
+    int fd_to_close = -1;
+    pthread_mutex_lock(&socket_registry_lock);
+    if (borrow->slot_index < socket_registry_capacity) {
+        socket_slot_t *slot = &socket_registry[borrow->slot_index];
+        if (slot->refs > 0) slot->refs--;
+        if (slot->closing && slot->refs == 0) {
+            fd_to_close = slot->fd;
+            slot->fd = -1;
+            slot->closing = 0;
+        }
+    }
+    pthread_mutex_unlock(&socket_registry_lock);
+    close_native_fd_best_effort(fd_to_close);
+}
+
+static int close_socket_handle(JNIEnv *env, jlong raw_handle) {
+    size_t slot_index;
+    uint64_t cookie;
+    if (!decode_socket_handle(raw_handle, &slot_index, &cookie)) {
+        throw_errno(env, "close");
+        return 0;
+    }
+
+    int fd;
+    int close_now = 0;
+    pthread_mutex_lock(&socket_registry_lock);
+    if (slot_index >= socket_registry_capacity) {
+        pthread_mutex_unlock(&socket_registry_lock);
+        errno = EBADF;
+        throw_errno(env, "close");
+        return 0;
+    }
+
+    socket_slot_t *slot = &socket_registry[slot_index];
+    if (!slot->active || slot->closing || slot->cookie != cookie || slot->fd < 0) {
+        pthread_mutex_unlock(&socket_registry_lock);
+        errno = EBADF;
+        throw_errno(env, "close");
+        return 0;
+    }
+
+    fd = slot->fd;
+    slot->active = 0;
+    slot->cookie = 0;
+    slot->closing = 1;
+    if (slot->refs == 0) {
+        slot->fd = -1;
+        slot->closing = 0;
+        close_now = 1;
+    }
+    pthread_mutex_unlock(&socket_registry_lock);
+
+    if (shutdown(fd, SHUT_RDWR) < 0 && errno != ENOTCONN && errno != EINVAL) {
+        /* Closing is still authoritative even when shutdown is unsupported. */
+    }
+    if (close_now) {
+        while (close(fd) < 0) {
+            if (errno == EINTR) continue;
+            throw_errno(env, "close");
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int validate_port(JNIEnv *env, jint port) {
