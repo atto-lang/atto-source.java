@@ -785,7 +785,7 @@ public final class TypeChecker {
                             new Function(List.of(), Primitive.STRING);
                     case "setName", "set_name" ->
                             new Function(List.of(Primitive.STRING), Primitive.VOID);
-                    case "threadId", "thread_id", "getId" ->
+                    case "threadId", "thread_id", "getId", "cpuTimeNanos", "cpu_time_nanos" ->
                             new Function(List.of(), Primitive.INT);
                     default -> throw new IllegalArgumentException(
                             "unknown Thread member '" + member.member() + "'");
