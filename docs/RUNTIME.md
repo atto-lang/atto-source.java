@@ -65,7 +65,7 @@ The runtime tracks outstanding singleton-to-singleton waits. If adding an edge w
 
 A singleton invocation is transactional only with respect to its own singleton state cell: mutations are made on a working copy and commit only after successful completion and deadline validation. A nested call to a different singleton is an independent serialized transaction. If singleton A calls singleton B successfully and A later fails, B's committed side effect is not rolled back. Cross-singleton atomicity therefore requires an explicit higher-level protocol (for example, compensation/saga or a future transaction coordinator) and is never implied by ordinary calls.
 
-Singleton fields are actor-owned. Process-lifetime fields require explicit, process-stable storage types and context-free initializers. Public scalar/container fields remain forbidden. A `pub val` or `pub const` class instance is permitted only as an exported singleton-object capability: callers receive a typed proxy, never the raw object, and public method calls are serialized through the singleton mailbox. Type aliases and context-dependent initialization (capability access, function calls, class construction, awaiting work, mutation, or closures) are rejected for singleton state. Candidate values are validated before commit, and the aggregate singleton state graph is revalidated after mutation. If a mutation would introduce a cycle, non-sendable value, excessive graph depth/node count/size, or another storage violation, the mutation is rolled back.
+Singleton fields are actor-owned. Process-lifetime fields require explicit, process-stable storage types and context-free initializers. Public scalar/container fields remain forbidden except immutable `pub val/const Symbol` identities. A singleton Symbol read is serialized through the owner mailbox and must be immediately awaited. A `pub val` or `pub const` class instance is permitted only as an exported singleton-object capability: callers receive a typed proxy, never the raw object, and public method calls are serialized through the singleton mailbox. Type aliases and context-dependent initialization (capability access, function calls, class construction, awaiting work, mutation, or closures) are rejected for singleton state. Candidate values are validated before commit, and the aggregate singleton state graph is revalidated after mutation. If a mutation would introduce a cycle, non-sendable value, excessive graph depth/node count/size, or another storage violation, the mutation is rolled back.
 
 ### Init lifecycle
 
@@ -85,6 +85,14 @@ A normal actor/process GC request does **not** unroot a singleton. User code tha
 
 This separation is important: "collect the ordinary heap" is a performance/memory-management request, while "destroy this process singleton" is an application lifecycle decision. The latter is never inferred from reachability.
 
+
+## Symbols
+
+`Symbol` is an immutable identity value, never a raw shared pointer. `:ready` is the compact identifier form; `new Symbol("stable-key")` accepts an explicit key such as a UUID. Trusted threads and actors in one process canonicalize the same live key to the same process-local handle. Handles use monotonically increasing ids that are not reused; the key, never the id, is the serialization/wire representation.
+
+The trusted symbol interner is weak. An ordinary symbol can therefore be reclaimed by automatic GC after every strong reference disappears. Storing a Symbol in a `singleton module` pins it transitively because singleton state is a process root. `await process.collect_singleton(SymbolModule)` safely removes that process root after admission closes and admitted work drains. The Symbol becomes GC-eligible only after any other live references also disappear; there is no unsafe force-free operation that can invalidate a live handle.
+
+Adversarial/untrusted actors and isolates do not join the trusted process symbol domain. Source-level creation is rejected under adversarial policy, and mailbox delivery rejects a Symbol even when nested in an otherwise Sendable graph. Cross that boundary using a validated string/enum key instead.
 
 ## Actor message freezing limits
 
