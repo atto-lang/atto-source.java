@@ -96,7 +96,7 @@ This separation is important: "collect the ordinary heap" is a performance/memor
 
 PROCESS and STABLE values are immutable and may cross trusted actor heaps without sharing mutable state. PROCESS handles use monotonically increasing process-local ids for efficient identity/debugging, but those ids are never serialized and are not reused as wire identity. Wire encoding carries scope + canonical key; LOCAL values are rejected before transport.
 
-The PROCESS/STABLE registries are strong rather than weak. This is intentional: process identity must not silently change because the host collector happened to run. Both registries are bounded so user-controlled dynamic input cannot create an unbounded Erlang-style atom table. Use LOCAL symbols, strings, enums, or another bounded application registry for unbounded/dynamic input.
+The PROCESS/STABLE registries are strong rather than weak. This is intentional: process identity must not silently change because the host collector happened to run. Both registries are bounded so user-controlled dynamic input cannot create an unbounded Erlang-style atom table. PROCESS additionally reserves part of its fixed capacity for compiler-known `:literal` tags, so repeated trusted `Symbol.process(...)` calls cannot starve later static/hot-loaded protocol symbols. Existing keys remain canonical across both entry paths. Use LOCAL symbols, strings, enums, or another bounded application registry for unbounded/dynamic input.
 
 A singleton may store PROCESS or STABLE Symbols as immutable state. Singleton collection releases the singleton state/binding root only; it does **not** delete a canonical PROCESS/STABLE Symbol or make its process id reusable. LOCAL Symbols are invalid in process-singleton storage.
 
