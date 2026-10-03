@@ -14,7 +14,7 @@ final class PolyglotFeatureTest {
     void executesNamespacesCollectionsAssignmentAndInheritedMethods() throws Exception {
         String program = """
                 define module math
-                  pub fnc add(int a, int b) => int { return a + b; }
+                  pub fnc add(int a, int b) : int { return a + b; }
                 end
 
                 define module model
@@ -26,7 +26,7 @@ final class PolyglotFeatureTest {
                 end
 
                 define module app
-                  pub fnc main() => void {
+                  pub fnc main() : void {
                     let answer = math.add(1, 2);
                     answer = answer + 4;
                     val values = arr[answer, 9];
@@ -61,7 +61,7 @@ final class PolyglotFeatureTest {
     void executesRepeatedUnderscoreDestructureDiscards() throws Exception {
         String program = """
                 define module app
-                  pub fnc main() => void {
+                  pub fnc main() : void {
                     [const foo, _, let bar] = (1, 200, 3);
                     [const z, _, let y] = (4, 500, 6);
                     [_, _, const tail] = (700, 800, 9);
