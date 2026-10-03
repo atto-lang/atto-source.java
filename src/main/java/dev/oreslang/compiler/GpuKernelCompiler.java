@@ -1061,6 +1061,10 @@ public final class GpuKernelCompiler {
             } else if (stmt instanceof Ast.ExprStmt expression) {
                 MatrixMatmul matmul = matrixMatmul(expression.expression(), env, module);
                 if (matmul != null) {
+                    if (!indent.equals("  ")) {
+                        throw new IllegalArgumentException(
+                                "GpuMatrix @ auto-SIMT assignment must be a direct top-level statement in the gpu callable");
+                    }
                     emitMatrixMatmul(out, module, matmul, env, indent);
                 } else {
                     out.append(indent).append(renderExpr(module, expression.expression(), env)).append(";\n");
@@ -1329,6 +1333,14 @@ public final class GpuKernelCompiler {
                 }
                 args.add(variableName(actualName.name()));
                 args.add(bufferLengthName(actualName.name()));
+                if (isMatrix(expectedType)) {
+                    if (!isMatrix(actualType)) {
+                        throw new IllegalArgumentException(
+                                "GpuMatrix helper parameter requires a GpuMatrix argument so shape metadata can be propagated");
+                    }
+                    args.add(matrixRowsName(actualName.name()));
+                    args.add(matrixColsName(actualName.name()));
+                }
             } else {
                 args.add(renderExpr(module, actual, env));
             }
