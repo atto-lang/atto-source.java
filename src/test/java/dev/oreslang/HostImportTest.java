@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
@@ -11,6 +12,7 @@ import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -129,6 +131,25 @@ final class HostImportTest {
                     import class Math as JMath from "java:java.lang.Math";
                     pub fnc main() => any { return JMath.getClass(); }
                     """));
+        }
+    }
+
+    @Test
+    void runtimePrivateActorPolicyAlsoStripsJavaInterop() throws Exception {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(IsolatePolicy.Capability.JAVA_INTEROP);
+
+        try (ActorRuntime runtime = new ActorRuntime(policy)) {
+            var ref = runtime.<String>spawnPrivate(factoryContext -> {
+                if (factoryContext.policy().allows(IsolatePolicy.Capability.JAVA_INTEROP)) {
+                    throw new AssertionError("private actor retained JAVA_INTEROP");
+                }
+                return (message, context) -> context.self().stop();
+            });
+
+            ref.send("check");
+            assertTrue(ref.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(ref.failure().isEmpty());
         }
     }
 
