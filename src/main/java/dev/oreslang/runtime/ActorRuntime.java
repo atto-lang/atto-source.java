@@ -75,6 +75,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final long MAX_UNTRUSTED_HTTP_RESPONSE_HEADER_BYTES = 64L * 1024L;
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
+    private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
 
     private record ActorExecutionContext(
             ActorRuntime runtime,
@@ -98,6 +99,14 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static boolean inActorExecution() {
         return CURRENT_ACTOR_EXECUTION.get() != null;
+    }
+
+    public static boolean inRootExecution() {
+        return CURRENT_ROOT_RUNTIME.get() != null;
+    }
+
+    public static ActorRuntime currentRootRuntime() {
+        return CURRENT_ROOT_RUNTIME.get();
     }
 
     public static IsolatePolicy currentActorPolicy() {
@@ -931,6 +940,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final AtomicInteger sharedActorCount = new AtomicInteger();
     private final AtomicInteger untrustedActorCount = new AtomicInteger();
     private final AtomicInteger activeRootTasks = new AtomicInteger();
+    private final Set<Thread> activeRootCarriers = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicLong privateMemoryBytes = new AtomicLong();
     private final AtomicLong sharedMemoryBytes = new AtomicLong();
@@ -1105,6 +1115,8 @@ public final class ActorRuntime implements AutoCloseable {
         CompletableFuture<T> completion = new CompletableFuture<>();
         Runnable carrierTask = () -> {
             ACTOR_CARRIER.set(Boolean.TRUE);
+            CURRENT_ROOT_RUNTIME.set(this);
+            activeRootCarriers.add(Thread.currentThread());
             try {
                 turnExecutor.execute(() -> {
                     try {
@@ -1124,6 +1136,8 @@ public final class ActorRuntime implements AutoCloseable {
             } finally {
                 // Never leak an actor/root control interrupt into a pooled carrier.
                 Thread.interrupted();
+                activeRootCarriers.remove(Thread.currentThread());
+                CURRENT_ROOT_RUNTIME.remove();
                 ACTOR_CARRIER.remove();
                 dispatcherGroup.rootSlots.release();
                 synchronized (runtimeLifecycleLock) {
@@ -2238,6 +2252,11 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronous actor-callable invocation from an actor turn is forbidden; "
                             + "use mailbox-oriented actor composition");
         }
+        if (inRootExecution() && policyCeiling.adversarial()) {
+            throw new SecurityException(
+                    "adversarial root/main execution cannot synchronously invoke an actor; "
+                            + "the strict Truffle turn is serialized, so use an async/sandbox actor boundary");
+        }
 
         IsolatePolicy policy = defaultSpawnPolicy();
         CompletableFuture<R> completion = new CompletableFuture<>();
@@ -2742,6 +2761,9 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         if (closed.get()) throw new CancellationException("actor runtime is closing");
+        if (CURRENT_ROOT_RUNTIME.get() == this && Thread.currentThread().isInterrupted()) {
+            throw new CancellationException("root/main execution interrupted");
+        }
         ActorCell<?> cell = currentActor.get();
         if (cell != null) {
             cell.throwIfControlStopped();
@@ -3728,6 +3750,9 @@ public final class ActorRuntime implements AutoCloseable {
             snapshot = List.copyOf(actors.values());
         }
         for (ActorCell<?> cell : snapshot) cell.stopFromRuntimeClose();
+        for (Thread rootCarrier : List.copyOf(activeRootCarriers)) {
+            rootCarrier.interrupt();
+        }
 
         if (firstClose && ownsDispatcherGroup) {
             // Dedicated/test runtimes own their physical carriers. Production
