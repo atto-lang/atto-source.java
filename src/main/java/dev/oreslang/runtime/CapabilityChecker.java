@@ -200,6 +200,9 @@ public final class CapabilityChecker {
         if (type.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex<T>");
         }
+        if (type.name().equals("Symbol")) {
+            requireTrustedSymbols(policy, "Symbol type");
+        }
         for (Ast.TypeRef argument : type.arguments()) checkType(argument, policy);
         if (type.isBorrow()) checkType(type.borrowedTarget(), policy);
 
@@ -270,7 +273,9 @@ public final class CapabilityChecker {
     }
 
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
-        if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
+        if (expr instanceof Ast.LiteralExpr literal && literal.value() instanceof Ast.Symbol) {
+            requireTrustedSymbols(policy, "symbol literal");
+        } else if (expr instanceof Ast.NameExpr n && n.name().equals("print")) {
             require(policy, IsolatePolicy.Capability.STDOUT, "print");
         } else if (expr instanceof Ast.NameExpr n && n.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex");
@@ -305,6 +310,7 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
                 if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
                 if (path.equals("SharedMutex") || path.startsWith("SharedMutex.")) require(policy, IsolatePolicy.Capability.SHARED_MEMORY, path);
+                if (path.equals("Symbol") || path.startsWith("Symbol.")) requireTrustedSymbols(policy, path);
                 if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
                 if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
                 if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
@@ -324,6 +330,7 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.ConditionalExpr e) { checkExpr(e.condition(), policy); checkExpr(e.whenTrue(), policy); checkExpr(e.whenFalse(), policy); }
         else if (expr instanceof Ast.IndexExpr e) { checkExpr(e.receiver(), policy); checkExpr(e.index(), policy); }
         else if (expr instanceof Ast.NewExpr e) {
+            if (e.type().name().equals("Symbol")) requireTrustedSymbols(policy, "new Symbol");
             checkType(e.type(), policy);
             for (Ast.Expr a : e.arguments()) checkExpr(a, policy);
         }
@@ -344,6 +351,13 @@ public final class CapabilityChecker {
             return parent == null ? null : parent + "." + m.member();
         }
         return null;
+    }
+
+    private static void requireTrustedSymbols(IsolatePolicy policy, String api) {
+        if (policy.adversarial()) {
+            throw new SecurityException(
+                    "Oreslang adversarial/untrusted isolate denies trusted Symbol identity required by " + api);
+        }
     }
 
     private static void require(IsolatePolicy policy, IsolatePolicy.Capability capability, String api) {
