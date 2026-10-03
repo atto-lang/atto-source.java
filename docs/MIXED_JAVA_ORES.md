@@ -12,6 +12,8 @@ A file's canonical Unix-style path is its code-unit identity and the base for re
 
 An `.ores` file is Oreslang by default. There are **two deliberately different Java forms**.
 
+`java` is treated as a contextual mixed-source keyword only in these brace forms; it is not being turned into a broad new Oreslang identifier ban. `do` is already a reserved Oreslang control-flow keyword.
+
 ### `java { ... }`: inert declarations
 
 `java { ... }` declares Java types. The block is compiled, but its presence does not execute Java code.
