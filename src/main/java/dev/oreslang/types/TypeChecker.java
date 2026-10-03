@@ -954,7 +954,8 @@ public final class TypeChecker {
                     label);
             Type message = new Tuple(
                     call.arguments().stream()
-                            .map(argument -> typeOf(argument, env, generics, self))
+                            .map(argument -> widenCollectionElement(
+                                    typeOf(argument, env, generics, self)))
                             .toList());
             return new Named("ActorSpawn", List.of(message, result));
         }
