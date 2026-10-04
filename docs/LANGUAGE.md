@@ -273,14 +273,16 @@ stdio.println(user.name);
 Structural record types remain available as **compile-time contracts**:
 
 ```ores
-fnc read_user(user: {name: String, age: int}): String {
+fnc read_user({name: String, age: int} user): String {
   return user.name;
 }
 ```
 
 A record type does not create an anonymous runtime object and cannot acquire new
 members dynamically. A statically declared class/struct-like value can satisfy a
-record/structural contract when its public shape matches.
+record/structural contract when its public shape matches. Record contracts use
+statically named member access/destructuring; arbitrary string-key indexing is not
+part of the record surface.
 
 Open-ended key/value data belongs to `Map<K,V>`. Dynamic key insertion is a
 container operation, not dynamic creation or mutation of an object's type/layout.
