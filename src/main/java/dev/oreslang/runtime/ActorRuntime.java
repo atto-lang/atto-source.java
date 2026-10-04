@@ -1209,6 +1209,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ThreadPoolExecutor untrustedDispatcher;
         private final ScheduledThreadPoolExecutor untrustedWatchdog;
         private final ScheduledThreadPoolExecutor messageWatchdog;
+        private final ScheduledThreadPoolExecutor actorTimerDriver;
         private final Semaphore rootSlots;
         private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
         private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
@@ -1255,6 +1256,10 @@ public final class ActorRuntime implements AutoCloseable {
                     namedFactory(prefix + "untrusted-watchdog-"));
             this.messageWatchdog = newUntrustedWatchdog(
                     namedFactory(prefix + "actor-turn-watchdog-"));
+            // Control-plane only: timer expiry completes futures/enqueues actor
+            // wakeups but never runs guest callbacks on this thread.
+            this.actorTimerDriver = newUntrustedWatchdog(
+                    namedFactory(prefix + "actor-timer-driver-"));
             this.rootSlots = new Semaphore(rootPermits, true);
         }
 
@@ -1337,6 +1342,7 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedDispatcher.shutdownNow();
             untrustedWatchdog.shutdownNow();
             messageWatchdog.shutdownNow();
+            actorTimerDriver.shutdownNow();
         }
     }
 
@@ -1401,6 +1407,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadPoolExecutor untrustedDispatcher;
     private final ScheduledThreadPoolExecutor untrustedWatchdog;
     private final ScheduledThreadPoolExecutor messageWatchdog;
+    private final ScheduledThreadPoolExecutor actorTimerDriver;
     private final AtomicInteger privateCompensatingThreads;
     private final AtomicInteger sharedCompensatingThreads;
     private final AtomicInteger untrustedCompensatingThreads;
@@ -1501,6 +1508,7 @@ public final class ActorRuntime implements AutoCloseable {
         this.untrustedDispatcher = dispatcherGroup.untrustedDispatcher;
         this.untrustedWatchdog = dispatcherGroup.untrustedWatchdog;
         this.messageWatchdog = dispatcherGroup.messageWatchdog;
+        this.actorTimerDriver = dispatcherGroup.actorTimerDriver;
         this.privateCompensatingThreads = dispatcherGroup.privateCompensatingThreads;
         this.sharedCompensatingThreads = dispatcherGroup.sharedCompensatingThreads;
         this.untrustedCompensatingThreads = dispatcherGroup.untrustedCompensatingThreads;
@@ -2282,6 +2290,12 @@ public final class ActorRuntime implements AutoCloseable {
          * awaited continuation becomes runnable and resumes first.
          */
         void suspendOn(CompletionStage<?> stage, ActorContinuation<M> continuation);
+
+        /**
+         * Create an actor-owned timer future. Timer-driver threads only complete
+         * the future; awaiting it resumes on an actor carrier under the lease.
+         */
+        OresFuture<Void> sleep(Duration delay);
 
         /** Remaining per-message execution fuel, or Long.MAX_VALUE for trusted actors. */
         long fuelRemaining();
@@ -4792,6 +4806,7 @@ public final class ActorRuntime implements AutoCloseable {
                 new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<ContinuationTask<M>> nextTickQueue =
                 new ConcurrentLinkedQueue<>();
+        private final Set<ScheduledFuture<?>> actorTimers = ConcurrentHashMap.newKeySet();
         private final AtomicInteger queuedMessages = new AtomicInteger();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
@@ -5051,6 +5066,10 @@ public final class ActorRuntime implements AutoCloseable {
             awaitSuspended.set(false);
             resumeQueue.clear();
             nextTickQueue.clear();
+            for (ScheduledFuture<?> timer : List.copyOf(actorTimers)) {
+                timer.cancel(false);
+            }
+            actorTimers.clear();
             behavior = null;
             if (httpRequest != null) {
                 httpRequest.cancelFromRuntime(ref.terminationCause.get());
@@ -5198,6 +5217,40 @@ public final class ActorRuntime implements AutoCloseable {
             throw ActorSuspendedSignal.INSTANCE;
         }
 
+        private OresFuture<Void> sleep(Duration delay) {
+            requireCurrentTurn("actor.sleep");
+            Objects.requireNonNull(delay, "delay");
+            if (delay.isNegative()) {
+                throw new IllegalArgumentException("actor sleep delay cannot be negative");
+            }
+            if (kind == ActorKind.UNTRUSTED
+                    && delay.compareTo(remainingLifetime()) > 0) {
+                throw new IllegalArgumentException(
+                        "untrusted actor timer cannot exceed remaining hard lifetime");
+            }
+
+            AtomicReference<ScheduledFuture<?>> handleRef = new AtomicReference<>();
+            OresFuture<Void> future = new OresFuture<>(() -> {
+                ScheduledFuture<?> handle = handleRef.get();
+                if (handle != null) handle.cancel(false);
+            });
+
+            long delayNanos;
+            try {
+                delayNanos = delay.toNanos();
+            } catch (ArithmeticException overflow) {
+                delayNanos = Long.MAX_VALUE;
+            }
+            ScheduledFuture<?> handle = actorTimerDriver.schedule(
+                    () -> future.completeFromRuntime(null),
+                    Math.max(0L, delayNanos),
+                    TimeUnit.NANOSECONDS);
+            handleRef.set(handle);
+            actorTimers.add(handle);
+            future.whenComplete((ignored, failure) -> actorTimers.remove(handle));
+            return future;
+        }
+
         private boolean hasRunnableWork() {
             if (stopped.get() || closed.get()) return false;
             if (!resumeQueue.isEmpty()) return true;
@@ -5317,6 +5370,9 @@ public final class ActorRuntime implements AutoCloseable {
                             CompletionStage<?> stage,
                             ActorContinuation<M> continuation) {
                         ActorCell.this.suspendOn(stage, continuation);
+                    }
+                    @Override public OresFuture<Void> sleep(Duration delay) {
+                        return ActorCell.this.sleep(delay);
                     }
                     @Override public long fuelRemaining() {
                         return kind == ActorKind.UNTRUSTED
