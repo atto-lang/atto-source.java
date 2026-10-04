@@ -5147,7 +5147,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private int maxControlEvents() {
-            return Math.max(8, Math.min(16_384, policy.maxMailboxMessages() * 2));
+            long doubled = Math.min(
+                    16_384L,
+                    Math.max(8L, (long) policy.maxMailboxMessages() * 2L));
+            return (int) doubled;
         }
 
         private boolean reserveControlEvent() {
@@ -5259,6 +5262,12 @@ public final class ActorRuntime implements AutoCloseable {
             });
             holder.set(delegate);
             timers.add(delegate);
+
+            // A sub-tick timer may fire before registration reaches this line.
+            // Do not retain an already-completed handle in the actor timer set.
+            if (delegate.isDone()) {
+                timers.remove(delegate);
+            }
             if (stopped.get() || closed.get()) {
                 timers.remove(delegate);
                 delegate.cancel();
