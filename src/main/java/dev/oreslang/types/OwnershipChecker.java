@@ -38,6 +38,7 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
+    private Ast.TypeRef currentGeneratorSent;
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -81,8 +82,14 @@ public final class OwnershipChecker {
         for (Ast.Param param : fn.parameters()) {
             scope.define(param.name(), stateForParam(param));
         }
-        checkBlock(fn.body(), scope, fn.returnType());
-        scope.close();
+        Ast.TypeRef previousGeneratorSent = currentGeneratorSent;
+        currentGeneratorSent = generatorSentType(fn.returnType());
+        try {
+            checkBlock(fn.body(), scope, generatorReturnType(fn.returnType()));
+        } finally {
+            currentGeneratorSent = previousGeneratorSent;
+            scope.close();
+        }
     }
 
     private void checkClass(Ast.ClassDecl klass) {
@@ -103,9 +110,31 @@ public final class OwnershipChecker {
                 }
             }
             for (Ast.Param param : method.parameters()) scope.define(param.name(), stateForParam(param));
-            checkBlock(method.body(), scope, method.returnType());
-            scope.close();
+            Ast.TypeRef previousGeneratorSent = currentGeneratorSent;
+            currentGeneratorSent = generatorSentType(method.returnType());
+            try {
+                checkBlock(method.body(), scope, generatorReturnType(method.returnType()));
+            } finally {
+                currentGeneratorSent = previousGeneratorSent;
+                scope.close();
+            }
         }
+    }
+
+    private static Ast.TypeRef generatorReturnType(Ast.TypeRef declared) {
+        if (declared != null && !declared.isBorrow() && declared.name().equals("Generator")) {
+            if (declared.arguments().size() == 3) return declared.arguments().get(1);
+            if (declared.arguments().size() == 1) return Ast.TypeRef.simple("void");
+        }
+        return declared;
+    }
+
+    private static Ast.TypeRef generatorSentType(Ast.TypeRef declared) {
+        if (declared != null && !declared.isBorrow() && declared.name().equals("Generator")) {
+            if (declared.arguments().size() == 3) return declared.arguments().get(2);
+            if (declared.arguments().size() == 1) return Ast.TypeRef.simple("void");
+        }
+        return null;
     }
 
     private VarState stateForParam(Ast.Param param) {
@@ -161,27 +190,6 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(returned.type)) {
                     throw error("MutexGuard values are lexical and cannot be returned from a function/routine");
                 }
-            }
-            return;
-        }
-        if (stmt instanceof Ast.YieldStmt yielded) {
-            if (mutexCriticalSectionDepth > 0) {
-                throw error("with_lock/recover critical-section callbacks cannot yield a value");
-            }
-            if (yielded.value() instanceof Ast.UnaryExpr unary
-                    && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
-                VarState owner = borrowOwner(unary.operand(), scope);
-                if (owner.origin == Origin.LOCAL) {
-                    throw error("cannot yield a borrow of local value '" + owner.debugName
-                            + "'; the generator consumer could outlive the borrow");
-                }
-                if (isActorConfinedBorrow(owner)) {
-                    throw error("actor-confined state cannot escape its mailbox turn through yield");
-                }
-            }
-            ValueInfo value = checkExpr(yielded.value(), scope, true);
-            if (containsMutexGuardType(value.type)) {
-                throw error("MutexGuard values are lexical and cannot be yielded from a generator");
             }
             return;
         }
@@ -473,6 +481,30 @@ public final class OwnershipChecker {
                 return new ValueInfo(Ast.TypeRef.simple("ActorRef"), ValueKind.MOVE_ONLY, null);
             }
             return awaitedValue;
+        }
+        if (expr instanceof Ast.YieldExpr yielded) {
+            if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
+                throw error("cannot yield while holding a MutexGuard; release the guard before generator suspension");
+            }
+            if (yielded.expression() instanceof Ast.UnaryExpr unary
+                    && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+                VarState owner = borrowOwner(unary.operand(), scope);
+                if (owner.origin == Origin.LOCAL) {
+                    throw error("cannot yield a borrow of local value '" + owner.debugName
+                            + "'; the generator consumer could outlive the borrow");
+                }
+                if (isActorConfinedBorrow(owner)) {
+                    throw error("actor-confined state cannot escape its mailbox turn through yield");
+                }
+            }
+            ValueInfo value = checkExpr(yielded.expression(), scope, true);
+            if (containsMutexGuardType(value.type)) {
+                throw error("MutexGuard values are lexical and cannot be yielded from a generator");
+            }
+            Ast.TypeRef resumed = currentGeneratorSent == null
+                    ? Ast.TypeRef.inferred()
+                    : currentGeneratorSent;
+            return new ValueInfo(resumed, kindOfType(resumed), null);
         }
         if (expr instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
@@ -903,8 +935,14 @@ public final class OwnershipChecker {
         }
 
         for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
-        for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
-        closure.close();
+        Ast.TypeRef previousGeneratorSent = currentGeneratorSent;
+        currentGeneratorSent = null;
+        try {
+            for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
+        } finally {
+            currentGeneratorSent = previousGeneratorSent;
+            closure.close();
+        }
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
 
@@ -929,8 +967,6 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
-            } else if (stmt instanceof Ast.YieldStmt yielded) {
-                scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.IfStmt s) {
@@ -988,6 +1024,7 @@ public final class OwnershipChecker {
             scanExpr(e.index(), locals, outer, recursiveBinding, captures, false);
         } else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) scanExpr(arg, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.AwaitExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
+        else if (expr instanceof Ast.YieldExpr e) scanExpr(e.expression(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.SpawnExpr e) scanExpr(e.call(), locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) scanExpr(item, locals, outer, recursiveBinding, captures, false);
