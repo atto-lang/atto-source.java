@@ -33,6 +33,14 @@ public final class CapabilityChecker {
                 } else if (declaration instanceof Ast.FieldDecl field) {
                     if (usesGpuType(field.type())) require(policy, IsolatePolicy.Capability.GPU, "GPU resource binding " + field.name());
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
+                } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                    // Type aliases are part of the capability surface. Without
+                    // this check, GpuArray/GpuStream authority can be hidden
+                    // behind an innocuous-looking alias and bypass admission.
+                    if (usesGpuType(alias.target())) {
+                        require(policy, IsolatePolicy.Capability.GPU,
+                                "GPU resource type alias " + module.name() + "." + alias.name());
+                    }
                 }
             }
         }
