@@ -56,11 +56,12 @@ public final class ActorFactoryCatalog {
      * Generation-scoped descriptor for a compiler-generated persistent actor
      * constructor.
      *
-     * <p>{@code inputType} names the generated hidden protocol-envelope ABI
-     * (the closed tagged union of all public actor methods), not a privileged
-     * source-level {@code receive(In)} method. {@code outputType} describes the
-     * group's emitted-output contract when one exists. The ABI digest covers
-     * the complete public protocol/constructor/domain contract.</p>
+     * <p>{@code inputType} names the actor's one admitted mailbox-message ABI,
+     * which is the effective source-level {@code receive(Message)} parameter.
+     * {@code outputType} describes the group's emitted-output contract when one
+     * exists. Reply/error channel types, constructor inputs, execution domain,
+     * and message type are covered by the factory ABI digest rather than a
+     * hidden method-name union.</p>
      */
     public record Descriptor(
             FactoryKey key,
@@ -73,7 +74,7 @@ public final class ActorFactoryCatalog {
         public Descriptor {
             Objects.requireNonNull(key, "key");
             Objects.requireNonNull(actorKind, "actorKind");
-            inputType = requirePart(inputType, "actor hidden protocol ABI type");
+            inputType = requirePart(inputType, "actor mailbox message ABI type");
             outputType = requirePart(outputType, "actor group output type");
             abiDigest = requirePart(abiDigest, "actor factory ABI digest");
             if (codeGeneration < 0) {
