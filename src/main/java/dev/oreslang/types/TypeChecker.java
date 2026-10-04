@@ -293,6 +293,8 @@ public final class TypeChecker {
             }
         }
 
+        if (klass.actorKind() != Ast.ActorKind.NONE) validateActorReceiveContract(klass);
+
         for (Ast.FieldDecl field : klass.fields()) {
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
@@ -346,7 +348,7 @@ public final class TypeChecker {
             boolean actorEndpoint = klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && method.visibility() == Ast.Visibility.PUBLIC
-                    && !method.name().equals("constructor");
+                    && method.name().equals("receive");
             if (klass.actorKind() != Ast.ActorKind.NONE
                     && method.isStatic()
                     && method.visibility() == Ast.Visibility.PUBLIC) {
@@ -406,6 +408,39 @@ public final class TypeChecker {
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
+        }
+    }
+
+    private void validateActorReceiveContract(Ast.ClassDecl klass) {
+        List<Ast.MethodDecl> publicInstance = klass.methods().stream()
+                .filter(method -> !method.isStatic()
+                        && method.visibility() == Ast.Visibility.PUBLIC
+                        && !method.name().equals("constructor"))
+                .toList();
+
+        if (publicInstance.size() != 1 || !publicInstance.getFirst().name().equals("receive")) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                            + "' must expose exactly one public mailbox ingress receive(message); "
+                            + "all other actor methods must be private");
+        }
+
+        Ast.MethodDecl receive = publicInstance.getFirst();
+        if (!receive.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name() + "' receive(message) cannot declare generic parameters");
+        }
+        if (receive.explicitReceiverType() != null) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name() + "' receive(message) must use implicit self");
+        }
+        if (receive.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name() + "' receive(message) must declare exactly one message parameter");
+        }
+        if (!receive.returnType().equals(Ast.TypeRef.simple("void"))) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name() + "' receive(message) must return void");
         }
     }
 
