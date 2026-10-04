@@ -14,7 +14,7 @@ import java.util.Set;
  */
 final class ReservedIdentifierValidator {
     private static final Set<String> RESERVED = Set.of(
-            "of", "is", "as", "actor", "isolate", "recover", "panic");
+            "of", "is", "as", "stop", "do", "done", "actor", "isolate", "recover", "panic");
 
     private ReservedIdentifierValidator() { }
 
@@ -37,7 +37,7 @@ final class ReservedIdentifierValidator {
 
     private static void declaration(Ast.Decl decl) {
         if (decl instanceof Ast.FunctionDecl fn) {
-            name(fn.name(), "callable");
+            if (!isCallableOnlyReserved(fn.name())) name(fn.name(), "callable");
             names(fn.genericParameters(), "generic parameter");
             parameters(fn.parameters());
             type(fn.returnType());
@@ -227,6 +227,10 @@ final class ReservedIdentifierValidator {
 
     private static void names(List<String> values, String context) {
         for (String value : values) name(value, context);
+    }
+
+    private static boolean isCallableOnlyReserved(String value) {
+        return "stop".equals(value) || "do".equals(value) || "done".equals(value);
     }
 
     private static void name(String value, String context) {
