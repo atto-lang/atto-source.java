@@ -101,7 +101,7 @@ final class ParserTest {
             IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                     () -> Parser.parse("""
                             define module app as
-                              pub routine main() => void {
+                              pub routine main() -> void {
                                 let int %s = 1;
                                 return;
                               }
