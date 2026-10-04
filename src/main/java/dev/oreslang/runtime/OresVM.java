@@ -51,6 +51,7 @@ final class OresVM {
     }
 
     private static final String VM_BINDING_ARG = "--ores-vm-binding=";
+    private static final String GENERATION_BINDING_ARG = "--ores-generation-binding=";
     private static final java.util.concurrent.ConcurrentMap<String, OresVM> VM_BINDINGS =
             new ConcurrentHashMap<>();
 
@@ -64,6 +65,9 @@ final class OresVM {
     private final ActorRuntime.DispatcherGroup dispatchers;
     private final boolean processVm;
     private final Set<HotReloadManager> hotReloadManagers = ConcurrentHashMap.newKeySet();
+    private final java.util.concurrent.ConcurrentMap<
+            String, ActorRuntime.ActorGenerationLeaseFactory> generationBindings =
+            new ConcurrentHashMap<>();
     private final AtomicBoolean shutdown = new AtomicBoolean();
 
     private OresVM(
@@ -109,12 +113,57 @@ final class OresVM {
         return vm;
     }
 
-    String[] bindApplicationArguments(String[] baseArguments) {
+    String[] bindApplicationArguments(
+            String[] baseArguments,
+            String generationBindingToken) {
         Objects.requireNonNull(baseArguments, "baseArguments");
         ensureRunning();
-        String[] bound = java.util.Arrays.copyOf(baseArguments, baseArguments.length + 1);
+        int extra = generationBindingToken == null ? 1 : 2;
+        String[] bound = java.util.Arrays.copyOf(baseArguments, baseArguments.length + extra);
         bound[baseArguments.length] = VM_BINDING_ARG + contextBindingToken;
+        if (generationBindingToken != null) {
+            if (!generationBindings.containsKey(generationBindingToken)) {
+                throw new SecurityException("unknown Oreslang generation binding");
+            }
+            bound[baseArguments.length + 1] =
+                    GENERATION_BINDING_ARG + generationBindingToken;
+        }
         return bound;
+    }
+
+    String registerGenerationBinding(
+            ActorRuntime.ActorGenerationLeaseFactory leaseFactory) {
+        Objects.requireNonNull(leaseFactory, "leaseFactory");
+        ensureRunning();
+        String token;
+        do {
+            token = UUID.randomUUID().toString();
+        } while (generationBindings.putIfAbsent(token, leaseFactory) != null);
+        return token;
+    }
+
+    void unregisterGenerationBinding(String token) {
+        if (token != null) generationBindings.remove(token);
+    }
+
+    ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory(
+            String[] applicationArguments) {
+        String token = null;
+        for (String argument : applicationArguments) {
+            if (argument.startsWith(GENERATION_BINDING_ARG)) {
+                token = argument.substring(GENERATION_BINDING_ARG.length());
+                break;
+            }
+        }
+        if (token == null) return null;
+
+        ActorRuntime.ActorGenerationLeaseFactory factory =
+                generationBindings.get(token);
+        if (factory == null || shutdown()) {
+            throw new SecurityException(
+                    "invalid or retired Oreslang generation binding");
+        }
+        return factory;
     }
 
     UUID id() {
@@ -152,6 +201,21 @@ final class OresVM {
             ActorRuntime.TurnExecutor turnExecutor) {
         ensureRunning();
         return ActorRuntime.attachToVm(this, policyCeiling, turnExecutor);
+    }
+
+    ActorRuntime newActorRuntime(
+            IsolatePolicy policyCeiling,
+            ActorRuntime.TurnExecutor turnExecutor,
+            ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory) {
+        ensureRunning();
+        if (generationLeaseFactory == null) {
+            return ActorRuntime.attachToVm(this, policyCeiling, turnExecutor);
+        }
+        return ActorRuntime.attachToVm(
+                this,
+                policyCeiling,
+                turnExecutor,
+                generationLeaseFactory);
     }
 
     /**
@@ -218,6 +282,7 @@ final class OresVM {
                 else firstFailure.addSuppressed(failure);
             }
         }
+        generationBindings.clear();
         dispatchers.shutdownNow();
         VM_BINDINGS.remove(contextBindingToken, this);
 
