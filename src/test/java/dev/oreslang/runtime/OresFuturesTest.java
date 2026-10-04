@@ -184,6 +184,21 @@ final class OresFuturesTest {
                 "ordinary child failure must not change sibling cancellation semantics");
     }
 
+
+    @Test
+    void cancellingHostCompletionStageBridgeDetachesRuntimeWaiter() throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        java.util.concurrent.CompletableFuture<Integer> bridge =
+                source.asCompletionStage().toCompletableFuture();
+
+        assertFalse(runtimeWaiters(source).isEmpty());
+        assertTrue(bridge.cancel(true));
+        assertTrue(runtimeWaiters(source).isEmpty(),
+                "cancelled host bridge must not remain rooted by the Ores Future");
+        assertFalse(source.isCancelled(),
+                "host observation cancellation must not cancel the runtime-owned producer");
+    }
+
     private static java.util.concurrent.ConcurrentLinkedQueue<?> runtimeWaiters(
             OresFuture<?> future) throws Exception {
         var field = OresFuture.class.getDeclaredField("waiters");
