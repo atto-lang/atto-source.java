@@ -766,6 +766,49 @@ public final class TypeChecker {
                             label);
                 }
                 if (receiver instanceof Named named) {
+                    if (named.name().equals("ActorRef") && named.arguments().size() == 1) {
+                        Type protocolType = named.arguments().getFirst();
+                        if (!(protocolType instanceof Named actorType)) {
+                            throw new IllegalArgumentException("ActorRef protocol must be a named actor/interface type");
+                        }
+                        Ast.ClassDecl actorClass = findClass(actorType.name());
+                        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef<" + actorType.name() + "> does not name a concrete actor class protocol");
+                        }
+                        ResolvedMethod target = findMethodTarget(
+                                actorClass,
+                                actorType,
+                                member.member(),
+                                call.arguments().size(),
+                                new LinkedHashSet<>());
+                        if (target == null
+                                || target.method().visibility() != Ast.Visibility.PUBLIC
+                                || target.method().name().equals("constructor")) {
+                            throw new IllegalArgumentException(
+                                    "no public actor protocol method '" + member.member()
+                                            + "' with arity " + call.arguments().size()
+                                            + " on " + actorClass.name());
+                        }
+                        Ast.MethodDecl method = target.method();
+                        if (!method.genericParameters().isEmpty() || call.typeArgumentsPresent()) {
+                            throw new IllegalArgumentException(
+                                    "actor protocol calls are statically specialized and do not accept method type arguments");
+                        }
+                        Map<String, Type> bindings = classGenericBindings(target.owner(), target.ownerType());
+                        Type result = checkGenericCallable(
+                                target.owner().genericParameters(),
+                                method.parameters(),
+                                method.returnType(),
+                                call.arguments(),
+                                env,
+                                generics,
+                                self,
+                                target.ownerType(),
+                                bindings,
+                                "actor protocol method " + target.owner().name() + "." + method.name());
+                        return new Named("Future", List.of(result));
+                    }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && (member.member().equals("lock")
@@ -973,42 +1016,111 @@ public final class TypeChecker {
                         "untrusted actors cannot spawn child actors; use bounded async I/O/Futures instead");
             }
             Ast.CallExpr call = spawned.call();
-            Ast.FunctionDecl target;
+            Ast.FunctionDecl callableTarget = null;
+            Ast.ClassDecl classTarget = null;
             String label;
-            if (call.callee() instanceof Ast.NameExpr functionName) {
-                target = findFunction(functionName.name());
-                label = "actor callable " + functionName.name();
+            if (call.callee() instanceof Ast.NameExpr targetName) {
+                callableTarget = findFunction(targetName.name());
+                classTarget = findClass(targetName.name());
+                label = "actor " + targetName.name();
             } else if (call.callee() instanceof Ast.MemberExpr qualified
                     && qualified.receiver() instanceof Ast.NameExpr namespace
                     && modules.containsKey(namespace.name())) {
-                target = functions.get(namespace.name() + "." + qualified.member());
-                label = "actor callable " + namespace.name() + "." + qualified.member();
+                callableTarget = functions.get(namespace.name() + "." + qualified.member());
+                classTarget = classes.get(namespace.name() + "." + qualified.member());
+                label = "actor " + namespace.name() + "." + qualified.member();
             } else {
                 throw new IllegalArgumentException(
-                        "spawn requires a direct actor fnc/routine call, optionally module-qualified");
+                        "spawn requires a direct actor class or actor fnc/routine call, optionally module-qualified");
             }
-            if (target == null) throw new IllegalArgumentException("spawn target is not a known callable");
-            if (target.actorKind() == Ast.ActorKind.NONE) {
+
+            if (callableTarget != null && classTarget != null) {
+                throw new IllegalArgumentException(label + " is ambiguous between a class and callable");
+            }
+
+            if (classTarget != null) {
+                if (classTarget.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "spawn target class '" + classTarget.name() + "' is not an actor class");
+                }
+                rejectActorDomainEscalation(currentActorKind, classTarget.actorKind(), classTarget.name());
+
+                Map<String, Type> classBindings;
+                if (classTarget.genericParameters().isEmpty()) {
+                    validateCallTypeArgumentMarker(call, List.of(), label);
+                    classBindings = Map.of();
+                } else {
+                    if (!call.typeArgumentsPresent() || call.typeArguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                label + " requires explicit actor class type arguments when spawned");
+                    }
+                    classBindings = explicitGenericBindings(
+                            classTarget.genericParameters(),
+                            call.typeArguments(),
+                            generics,
+                            self,
+                            label);
+                    if (classBindings.size() != classTarget.genericParameters().size()) {
+                        throw new IllegalArgumentException(label + " requires all actor class type arguments");
+                    }
+                }
+
+                Named actorType = new Named(
+                        qualifiedClassName(classTarget),
+                        classTarget.genericParameters().stream().map(classBindings::get).toList());
+
+                List<Ast.MethodDecl> constructors = classTarget.methods().stream()
+                        .filter(method -> !method.isStatic()
+                                && method.name().equals("constructor")
+                                && method.arity() == call.arguments().size())
+                        .toList();
+                if (constructors.size() > 1) {
+                    throw new IllegalArgumentException(
+                            "actor class '" + classTarget.name()
+                                    + "' has multiple constructors with arity " + call.arguments().size());
+                }
+                if (constructors.isEmpty()) {
+                    if (!call.arguments().isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "actor class '" + classTarget.name()
+                                        + "' has no constructor with arity " + call.arguments().size());
+                    }
+                } else {
+                    Ast.MethodDecl constructor = constructors.getFirst();
+                    checkGenericCallable(
+                            classTarget.genericParameters(),
+                            constructor.parameters(),
+                            constructor.returnType(),
+                            call.arguments(),
+                            env,
+                            generics,
+                            self,
+                            actorType,
+                            classBindings,
+                            "actor constructor " + classTarget.name());
+                }
+                return new Named("ActorRef", List.of(actorType));
+            }
+
+            if (callableTarget == null) {
+                throw new IllegalArgumentException("spawn target is not a known actor class or callable");
+            }
+            if (callableTarget.actorKind() == Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
-                        "spawn target '" + target.name() + "' is not declared with the actor keyword");
+                        "spawn target '" + callableTarget.name() + "' is not declared with the actor keyword");
             }
-            if (currentActorKind == Ast.ActorKind.PRIVATE
-                    && target.actorKind() == Ast.ActorKind.SHARED) {
-                throw new IllegalArgumentException(
-                        "isoactor/private actor code cannot spawn shared actor callable '"
-                                + target.name()
-                                + "' because that would escalate into the SHARED_MEMORY domain");
-            }
-            validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+            rejectActorDomainEscalation(currentActorKind, callableTarget.actorKind(), callableTarget.name());
+            label = "actor callable " + callableTarget.name();
+            validateCallTypeArgumentMarker(call, callableTarget.genericParameters(), label);
             Type result = checkGenericCallable(
-                    target.genericParameters(),
-                    target.parameters(),
-                    target.returnType(),
+                    callableTarget.genericParameters(),
+                    callableTarget.parameters(),
+                    callableTarget.returnType(),
                     call.arguments(),
                     env, generics, self,
                     null,
                     explicitGenericBindings(
-                            target.genericParameters(),
+                            callableTarget.genericParameters(),
                             call.typeArguments(),
                             generics,
                             self,
@@ -1262,6 +1374,23 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " cannot use writable SharedMutex<T>; actor boundaries admit data, ActorRef capabilities, and explicit read-only external-state capabilities only");
         }
+        if (named.name().equals("ActorRef")) {
+            if (named.arguments().size() != 1) {
+                throw new IllegalArgumentException(where + " requires ActorRef<ActorOrProtocol>");
+            }
+            Type protocol = named.arguments().getFirst();
+            if (!(protocol instanceof Named protocolNamed)) {
+                throw new IllegalArgumentException(where + " has an invalid ActorRef protocol type");
+            }
+            Ast.ClassDecl actorClass = findClass(protocolNamed.name());
+            Ast.InterfaceDecl actorInterface = findInterface(protocolNamed.name());
+            if ((actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE)
+                    && actorInterface == null) {
+                throw new IllegalArgumentException(
+                        where + " ActorRef protocol must name an actor class or interface");
+            }
+            return;
+        }
 
         for (Type argument : named.arguments()) {
             validateActorCallableBoundaryType(argument, actorKind, false, where + " type argument");
@@ -1429,6 +1558,20 @@ public final class TypeChecker {
         return null;
     }
 
+    private static void rejectActorDomainEscalation(
+            Ast.ActorKind caller,
+            Ast.ActorKind target,
+            String targetName) {
+        if (caller == Ast.ActorKind.PRIVATE && target == Ast.ActorKind.SHARED) {
+            throw new IllegalArgumentException(
+                    "isoactor/private actor code cannot spawn shared actor '" + targetName
+                            + "' because that would escalate into the SHARED_MEMORY domain");
+        }
+        if (caller == Ast.ActorKind.UNTRUSTED) {
+            throw new IllegalArgumentException("untrusted actors cannot spawn child actors");
+        }
+    }
+
     private Type builtinActorHandleMember(Type receiver, String member) {
         if (!(receiver instanceof Named named)) return null;
         if (named.name().equals("ActorSpawn") && named.arguments().size() == 1) {
@@ -1450,7 +1593,8 @@ public final class TypeChecker {
                         "unknown ActorSpawn member '" + member + "'");
             };
         }
-        if (named.name().equals("ActorRef") && named.arguments().isEmpty()) {
+        if (named.name().equals("ActorRef")
+                && (named.arguments().isEmpty() || named.arguments().size() == 1)) {
             return switch (member) {
                 case "id" -> new Named("ActorId", List.of());
                 case "is_alive" -> {
@@ -1460,9 +1604,27 @@ public final class TypeChecker {
                     }
                     yield new Function(List.of(), Primitive.BOOL);
                 }
-                default -> throw new IllegalArgumentException(
-                        "unknown ActorRef member '" + member
-                                + "'; one-shot actor callables expose identity/control, not an application mailbox");
+                default -> {
+                    if (named.arguments().size() == 1) {
+                        Type protocol = named.arguments().getFirst();
+                        if (protocol instanceof Named protocolNamed) {
+                            Ast.ClassDecl actorClass = findClass(protocolNamed.name());
+                            if (actorClass != null) {
+                                List<Ast.MethodDecl> methods =
+                                        findMethodsByName(actorClass, member, new LinkedHashSet<>());
+                                if (methods.stream().anyMatch(method ->
+                                        method.visibility() == Ast.Visibility.PUBLIC
+                                                && !method.name().equals("constructor"))) {
+                                    throw new IllegalArgumentException(
+                                            "actor protocol method '" + actorClass.name() + "." + member
+                                                    + "' is not a first-class value; invoke it directly through the ActorRef");
+                                }
+                            }
+                        }
+                    }
+                    throw new IllegalArgumentException(
+                            "unknown ActorRef member '" + member + "'");
+                }
             };
         }
         return null;
@@ -2340,8 +2502,24 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
                 yield new Named("Future", List.of(element));
+            }
+            case "ActorRef" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("ActorRef requires exactly one explicit actor/protocol type argument");
+                }
+                Type protocol = resolve(ref.arguments().getFirst(), generics, self);
+                if (!(protocol instanceof Named namedProtocol)) {
+                    throw new IllegalArgumentException("ActorRef protocol must resolve to a named actor/interface type");
+                }
+                Ast.ClassDecl actorClass = findClass(namedProtocol.name());
+                Ast.InterfaceDecl actorInterface = findInterface(namedProtocol.name());
+                if ((actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE)
+                        && actorInterface == null) {
+                    throw new IllegalArgumentException(
+                            "ActorRef protocol must name an actor class or interface, got " + namedProtocol.name());
+                }
+                yield new Named("ActorRef", List.of(protocol));
             }
             case "SharedMutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
