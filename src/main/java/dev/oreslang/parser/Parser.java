@@ -1235,7 +1235,7 @@ public final class Parser {
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
-                    VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
+                    VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, ARR -> true;
             default -> false;
         };
     }
@@ -1267,7 +1267,6 @@ public final class Parser {
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
-        if (match(OBJ)) return parseObjectLiteral();
         if (match(ARR)) {
             consume(LBRACKET, "expected '[' after arr");
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
@@ -1299,29 +1298,6 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
-    }
-
-    private Ast.ObjectExpr parseObjectLiteral() {
-        consume(LBRACE, "expected '{' after obj");
-        List<Ast.ObjectField> fields = new ArrayList<>();
-        if (!check(RBRACE)) {
-            do {
-                Ast.ObjectField field;
-                if (match(BACKTICK)) {
-                    Ast.Expr key = parseExpression();
-                    consume(BACKTICK, "expected closing backtick after dynamic object key");
-                    consume(COLON, "expected ':' after dynamic object key");
-                    field = Ast.ObjectField.dynamic(key, parseExpression());
-                } else {
-                    String name = consumeStaticObjectKeyName("expected object field name");
-                    consume(COLON, "expected ':' after object field name");
-                    field = Ast.ObjectField.named(name, parseExpression());
-                }
-                fields.add(field);
-            } while (match(COMMA));
-        }
-        consume(RBRACE, "expected '}' after obj literal");
-        return new Ast.ObjectExpr(fields);
     }
 
     private Ast.LambdaExpr parseLambda(boolean nonLexical) {
