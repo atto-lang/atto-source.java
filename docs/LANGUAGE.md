@@ -137,7 +137,7 @@ fnc answer() {
 }
 ```
 
-`@Ret<T>` and `: T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+`@Ret<T>` and `: T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, statically declared class/struct value, or another aggregate.
 
 Return types may be unions, homogeneous arrays, finite tuple types, or structural record types:
 
@@ -152,8 +152,13 @@ fnc fixed(): [int, bool, string] {
   return [3, true, "yes"];
 }
 
+define class NamedResult as
+  pub val int foo;
+  pub val string bar;
+end
+
 fnc named(): {foo: int, bar: string} {
-  return obj{foo: 5, bar: "x"};
+  return new NamedResult(5, "x");
 }
 ```
 
@@ -244,36 +249,19 @@ define class Names extends List as
 end
 ```
 
-Inline object and array literals are values, not classes, and cannot be inherited from.
+Array literals are values, not classes, and cannot be inherited from. Object values come from statically declared class/struct shapes rather than anonymous object literals.
 
 ## Inline values
 
-Structural inline object:
+Oreslang intentionally has no anonymous `obj{...}` value syntax and no
+`DynamicStruct<T>` type. Runtime object shapes must be statically discoverable
+so the same source can be compiled ahead of time without runtime shape creation.
 
-```ores
-val user = obj{name: "Ada", age: 37};
-stdio.println(user.name);
-```
-
-Static object/map keys may be identifiers, reserved member keys such as
-`stop`/`do`/`done`, or strings written with either single or double
-quotes. Backticks make the key dynamic: the expression between the backticks
-must evaluate to a string.
-
-```ores
-val key = "score";
-val stats = obj{
-  stop: 1,
-  'do': 2,
-  "done": 3,
-  `key`: 4
-};
-```
-
-An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
-`T` is the joined value type. A `DynamicStruct<T>` can also be created
-directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
-only values assignable to `T`.
+Use a declared class/struct when the fields are part of the program's object
+model. Structural record types such as `{foo: int, bar: string}` remain valid
+as compile-time contracts and can be satisfied by compatible declared shapes.
+Open-ended keyed data belongs to `Map<K,V>`; adding a map entry does not create
+or mutate an object type.
 
 Inline array:
 
@@ -756,20 +744,24 @@ fnc c(y Foo): void {
 }
 ```
 
-All three may accept:
+All three may accept a statically declared compatible shape:
 
 ```ores
-val branded = obj{
-  marker: "brand",
-  markerBrand: "marking/branding"
-};
+define class Branded as
+  pub val string marker;
+  pub val string markerBrand;
+end
 
-a(branded);
-b(branded);
-c(branded);
+fnc demo(): void {
+  val branded = new Branded("brand", "marking/branding");
+  a(branded);
+  b(branded);
+  c(branded);
+  return;
+}
 ```
 
-Without one of those explicit structural opt-ins, passing that object to a nominal `Foo` parameter is a compile-time error.
+Without one of those explicit structural opt-ins, passing that class/struct value to a nominal `Foo` parameter is a compile-time error.
 
 `structural` is a contextual keyword, so existing identifiers named `structural` remain legal elsewhere.
 
