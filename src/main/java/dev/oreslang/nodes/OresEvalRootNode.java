@@ -255,11 +255,12 @@ public final class OresEvalRootNode extends RootNode {
                                 + "the ordinary JVM interpreter must not execute hostile guest code");
             };
 
-            List<?> normalized = normalizeFunctionArguments(fn, evaluated);
+            Ast.FunctionDecl actorFn = fn;
+            List<?> normalized = normalizeFunctionArguments(actorFn, evaluated);
             return context.actors().spawnInvocation(
                     runtimeKind,
                     normalized,
-                    (delivered, actorContext) -> callFunctionBody(fn, delivered));
+                    (delivered, actorContext) -> callFunctionBody(actorFn, delivered));
         }
 
         private ActorRuntime.ActorRef<Object> spawnActorClass(
