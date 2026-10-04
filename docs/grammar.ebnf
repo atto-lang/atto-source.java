@@ -42,7 +42,7 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
 
-init_decl       = "init" "routine" "(" ")" "=>" "void" block ;
+init_decl       = "init" "routine" "(" ")" ("->" | ":") "void" block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -267,7 +267,7 @@ struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_
    - Multiple concrete trait methods with the same name/arity require an explicit class override.
    - v0 trait composition is module-local so flattening cannot silently change a
      trait method's lexical module environment.
-   - "init routine() => void { ... }" is a lifecycle declaration, not an ordinary
+   - "init routine() -> void { ... }" is a lifecycle declaration, not an ordinary
      callable. At file/root or ordinary-module scope it runs once per actor-local
      module state. Inside a singleton module it runs exactly once when the
      process singleton state cell is first created. Classes cannot declare it.
