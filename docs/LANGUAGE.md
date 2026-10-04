@@ -602,10 +602,11 @@ forbidden:
 ```
 
 Actor fields are private mailbox-owned state. `let` actor fields may mutate
-during the actor's exclusive turn without a lock. Constructor inputs and the
-single `receive` message parameter are checked at actor boundaries; unsafe
-borrows, guards, futures, and domain-incompatible shared-mutable capabilities
-are rejected. `receive` itself returns `void`.
+during the actor's exclusive turn without a lock. Constructor inputs and every
+public protocol method parameter/return are checked at actor boundaries; unsafe
+borrows, guards, futures, actor instances-by-value, and domain-incompatible
+shared-mutable capabilities are rejected. A method named `receive` has no
+special source-language status.
 
 A constructor is runtime-only initialization, not a mailbox endpoint. Actor
 constructors are non-public, non-static, non-generic, non-suspending, return
@@ -616,9 +617,11 @@ forbidden; actor identity/state must be created by the actor runtime.
 
 Code outside an actor never receives the mutable actor object. A concrete actor
 spawn returns an `ActorRef<ActorClass>`. That reference is a capability for
-identity/lifecycle operations permitted by policy and bounded mailbox enqueue
-through `send(message)`; it does not expose actor-owned fields, `receive`, or
-private helper methods.
+identity/lifecycle operations permitted by policy and typed public protocol
+calls such as `worker.run(...)`. Each protocol call lowers to one bounded
+runtime-private mailbox request and returns `Future<T>` for a source result
+`T`. Raw `send`, `receive`, or mailbox access is not part of the source
+actor-class API.
 
 Generated/runtime actor factories remain useful as launch adapters for actor
 groups, configured factory catalogs, hot loading, and dependency injection.
@@ -626,12 +629,12 @@ They execute under the target actor context and must be capture-safe. This
 runtime factory concept is distinct from source `actor fnc`/`actor routine`,
 which are one-shot spawned callables.
 
-The persistent-actor ABI is the actor kind, constructor contract, message
-contract (and optional explicit Reply/Error schemas), capability manifest, and
-generation-pinned mailbox behavior. ActorGroup/ActorMailman routing therefore
-sends bounded mailbox messages through `ActorRef.send`; actors may also emit
-bounded group output, one logical serialized mailman consumes the group's
-outbox, and supervisors remain responsible for lifecycle/restart policy.
+The persistent-actor ABI is the actor kind, constructor contract, complete
+public protocol shape, capability manifest, and generation-pinned hidden
+mailbox dispatcher. ActorGroup/ActorMailman routing therefore invokes bounded
+typed actor protocol operations; actors may also emit bounded group output, one
+logical serialized mailman consumes the group's outbox, and supervisors remain
+responsible for lifecycle/restart policy.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
