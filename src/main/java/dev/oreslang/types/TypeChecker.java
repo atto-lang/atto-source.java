@@ -85,15 +85,25 @@ public final class TypeChecker {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
+                    rejectReservedActorTypeName(klass.name(), "class");
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
+                    rejectReservedActorTypeName(iface.name(), "interface");
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, module.name());
                 } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    rejectReservedActorTypeName(alias.name(), "type alias");
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private static void rejectReservedActorTypeName(String name, String kind) {
+        if (name.equals("Actor") || name.equals("IsoActor") || name.equals("UntrustedActor")) {
+            throw new IllegalArgumentException(
+                    kind + " '" + name + "' uses a compiler-intrinsic actor base name");
         }
     }
 
@@ -293,8 +303,6 @@ public final class TypeChecker {
             }
         }
 
-        if (klass.actorKind() != Ast.ActorKind.NONE) validateActorReceiveContract(klass);
-
         for (Ast.FieldDecl field : klass.fields()) {
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
@@ -348,13 +356,22 @@ public final class TypeChecker {
             boolean actorEndpoint = klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && method.visibility() == Ast.Visibility.PUBLIC
-                    && method.name().equals("receive");
-            if (klass.actorKind() != Ast.ActorKind.NONE
-                    && method.isStatic()
-                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                    && !method.name().equals("constructor");
+            if (klass.actorKind() != Ast.ActorKind.NONE && method.isStatic()) {
                 throw new IllegalArgumentException(
-                        "actor static helper '" + klass.name() + "." + method.name()
-                                + "' cannot be public; public actor API is mailbox-dispatched");
+                        "actor class '" + klass.name()
+                                + "' cannot declare static function '" + method.name()
+                                + "'; actor code must remain inside the actor ownership/effect domain");
+            }
+            if (actorEndpoint && !method.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "public actor protocol method '" + klass.name() + "." + method.name()
+                                + "' cannot declare generic parameters");
+            }
+            if (actorEndpoint && method.explicitReceiverType() != null) {
+                throw new IllegalArgumentException(
+                        "public actor protocol method '" + klass.name() + "." + method.name()
+                                + "' must use implicit self");
             }
 
             for (Ast.Param param : method.parameters()) {
@@ -408,39 +425,6 @@ public final class TypeChecker {
             if (!assignable(actual, expected)) {
                 throw new IllegalArgumentException("class '" + klass.name() + "' does not implement interface '" + interfaceRef.name() + "': expected " + expected + " but got " + actual);
             }
-        }
-    }
-
-    private void validateActorReceiveContract(Ast.ClassDecl klass) {
-        List<Ast.MethodDecl> publicInstance = klass.methods().stream()
-                .filter(method -> !method.isStatic()
-                        && method.visibility() == Ast.Visibility.PUBLIC
-                        && !method.name().equals("constructor"))
-                .toList();
-
-        if (publicInstance.size() != 1 || !publicInstance.getFirst().name().equals("receive")) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name()
-                            + "' must expose exactly one public mailbox ingress receive(message); "
-                            + "all other actor methods must be private");
-        }
-
-        Ast.MethodDecl receive = publicInstance.getFirst();
-        if (!receive.genericParameters().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) cannot declare generic parameters");
-        }
-        if (receive.explicitReceiverType() != null) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) must use implicit self");
-        }
-        if (receive.parameters().size() != 1) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) must declare exactly one message parameter");
-        }
-        if (!receive.returnType().equals(Ast.TypeRef.simple("void"))) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) must return void");
         }
     }
 
@@ -723,6 +707,10 @@ public final class TypeChecker {
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
                     && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
                     && factoryCall.member().equals("new")) {
+                if (factory.name().equals("SharedMutex") && currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actor code cannot create writable SharedMutex state; actor mutation is limited to self-owned state");
+                }
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
@@ -775,9 +763,13 @@ public final class TypeChecker {
                 if (receiver instanceof Named named) {
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
-                            && member.member().equals("with_lock")) {
+                            && (member.member().equals("lock")
+                                || member.member().equals("try_lock")
+                                || member.member().equals("lock_async")
+                                || member.member().equals("with_lock")
+                                || member.member().equals("recover"))) {
                         throw new IllegalArgumentException(
-                                "actor code cannot use blocking SharedMutex.with_lock(); use try_lock() or await lock_async()");
+                                "actor code cannot acquire writable SharedMutex state; external shared state is read-only from actor code");
                     }
                     if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
                             && named.arguments().size() == 1
@@ -1254,16 +1246,8 @@ public final class TypeChecker {
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
         if (named.name().equals("SharedMutex")) {
-            if (actorKind == Ast.ActorKind.PRIVATE) {
-                throw new IllegalArgumentException(
-                        where + " cannot use SharedMutex<T> with isoactor/private actors");
-            }
-            if (named.arguments().size() != 1
-                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
-                throw new IllegalArgumentException(
-                        where + " requires SharedMutex<T> to contain shared-safe owned data");
-            }
-            return;
+            throw new IllegalArgumentException(
+                    where + " cannot use writable SharedMutex<T>; actor boundaries admit data, ActorRef capabilities, and explicit read-only external-state capabilities only");
         }
 
         for (Type argument : named.arguments()) {
@@ -1532,10 +1516,13 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("SharedMutex")) {
             if (named.name().equals("SharedMutex")
                     && currentActorKind != Ast.ActorKind.NONE
-                    && (member.equals("lock") || member.equals("with_lock"))) {
+                    && (member.equals("lock")
+                        || member.equals("try_lock")
+                        || member.equals("lock_async")
+                        || member.equals("with_lock")
+                        || member.equals("recover"))) {
                 throw new IllegalArgumentException(
-                        "actor code cannot use blocking SharedMutex." + member
-                                + "(); use try_lock() or await lock_async()");
+                        "actor code cannot acquire writable SharedMutex state; external shared state is read-only from actor code");
             }
             Type guard = new Named("MutexGuard", List.of(element));
             return switch (member) {
