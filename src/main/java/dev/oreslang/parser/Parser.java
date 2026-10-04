@@ -349,7 +349,7 @@ public final class Parser {
         }
         consume(END, "expected 'end' to close class " + name);
         if (actorKind != Ast.ActorKind.NONE) {
-            validateActorReceiveContract(name, methods, actorProtocolTypes);
+            validateActorReceiveContract(name, methods, parents, actorProtocolTypes);
         }
         return new Ast.ClassDecl(
                 name, isAbstract, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
@@ -408,7 +408,7 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
-        validateActorReceiveContract(name, methods, actorProtocolTypes);
+        validateActorReceiveContract(name, methods, parents, actorProtocolTypes);
         return new Ast.ClassDecl(
                 name, false, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
     }
@@ -521,15 +521,17 @@ public final class Parser {
     private void validateActorReceiveContract(
             String actorName,
             List<Ast.MethodDecl> methods,
+            List<Ast.TypeRef> nonIntrinsicParents,
             List<Ast.TypeRef> actorProtocolTypes) {
         List<Ast.MethodDecl> receives = methods.stream()
                 .filter(method -> !method.isStatic()
                         && method.visibility() == Ast.Visibility.PUBLIC
                         && method.name().equals("receive"))
                 .toList();
-        if (receives.size() != 1) {
+        if (receives.size() > 1) {
             throw error(previous(),
-                    "actor '" + actorName + "' must implement exactly one public receive(message) method");
+                    "actor '" + actorName
+                            + "' may declare only one public receive(message): void ingress");
         }
         long otherPublic = methods.stream()
                 .filter(method -> !method.isStatic()
@@ -539,7 +541,16 @@ public final class Parser {
                 .count();
         if (otherPublic != 0) {
             throw error(previous(),
-                    "actor '" + actorName + "' may expose only the public receive(message) mailbox ingress");
+                    "actor '" + actorName
+                            + "' may expose only the public receive(message) mailbox ingress");
+        }
+        if (receives.isEmpty()) {
+            if (nonIntrinsicParents.isEmpty()) {
+                throw error(previous(),
+                        "actor '" + actorName
+                                + "' must declare one public receive(message): void ingress");
+            }
+            return; // effective inherited receive is checked after class linking.
         }
 
         if (actorProtocolTypes.size() == 3) {
