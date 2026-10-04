@@ -97,7 +97,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
+            validateContainer(module);
+            if (modules.putIfAbsent(module.name(), module) != null) {
+                throw new IllegalArgumentException("duplicate module/namespace container '" + module.name() + "'");
+            }
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
@@ -112,6 +115,17 @@ public final class TypeChecker {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private void validateContainer(Ast.ModuleDecl container) {
+        if (!container.isNamespace()) return;
+        for (Ast.Decl declaration : container.declarations()) {
+            if (declaration instanceof Ast.TypeAliasDecl || declaration instanceof Ast.InterfaceDecl) continue;
+            if (declaration instanceof Ast.ClassDecl klass && klass.actorKind() == Ast.ActorKind.NONE) continue;
+            throw new IllegalArgumentException(
+                    "namespace '" + container.name()
+                            + "' is type-only; allowed members are type aliases, interfaces, concrete classes, and abstract classes");
         }
     }
 
@@ -132,7 +146,7 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
-            checkModuleAdherence(module);
+            if (!module.isNamespace()) checkModuleAdherence(module);
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
                 else if (decl instanceof Ast.ClassDecl klass) checkClass(module.name(), klass);
@@ -167,6 +181,9 @@ public final class TypeChecker {
     }
 
     private Record moduleShape(Ast.ModuleDecl module) {
+        if (module.isNamespace()) {
+            throw new IllegalArgumentException("namespace '" + module.name() + "' is type-only and has no runtime module shape");
+        }
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.Decl decl : module.declarations()) {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
@@ -519,7 +536,14 @@ public final class TypeChecker {
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
-            if (moduleNamespace != null) return moduleShape(moduleNamespace);
+            if (moduleNamespace != null) {
+                if (moduleNamespace.isNamespace()) {
+                    throw new IllegalArgumentException(
+                            "namespace '" + name.name() + "' is type-only; qualify a declared type such as '"
+                                    + name.name() + ".TypeName' instead of using the namespace as a value");
+                }
+                return moduleShape(moduleNamespace);
+            }
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
@@ -856,7 +880,13 @@ public final class TypeChecker {
                 if (dynamic.arguments().size() != 1) {
                     throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
                 }
-                return dynamic.arguments().getFirst();
+                Type value = dynamic.arguments().getFirst();
+                return switch (member.member()) {
+                    case "get" -> new Function(List.of(Primitive.STRING), new Named("Option", List.of(value)));
+                    case "has_key" -> new Function(List.of(Primitive.STRING), Primitive.BOOL);
+                    case "get_or" -> new Function(List.of(Primitive.STRING, value), value);
+                    default -> value;
+                };
             }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
@@ -1152,6 +1182,11 @@ public final class TypeChecker {
         if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
             if (dynamic.arguments().size() != 1) {
                 throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
+            }
+            if (member.member().equals("get") || member.member().equals("has_key") || member.member().equals("get_or")) {
+                throw new IllegalArgumentException(
+                        "DynamicStruct method name '" + member.member()
+                                + "' is reserved for map-style lookup; use bracket assignment for a data key with that name");
             }
             return dynamic.arguments().getFirst();
         }
