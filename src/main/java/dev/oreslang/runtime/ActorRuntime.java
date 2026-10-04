@@ -2242,8 +2242,21 @@ public final class ActorRuntime implements AutoCloseable {
                 CURRENT_ROOT_RUNTIME.remove();
                 ACTOR_CARRIER.remove();
 
-                if (suspendedThisTurn.get() && !completion.isDone()) {
+                if (suspendedThisTurn.get()) {
                     phase.set(SUSPENDED);
+
+                    // Cancellation/deadline/runtime-close may have settled the
+                    // logical task after the suspension decision but before
+                    // SUSPENDED became visible. Re-check after publication so a
+                    // canceled task cannot remain stranded or be resurrected.
+                    if (completion.isDone()) {
+                        if (phase.compareAndSet(SUSPENDED, FINISHED)) {
+                            detachAwaitRegistration();
+                            releaseRootTask(this);
+                        }
+                        return;
+                    }
+
                     // Already-settled Futures still create a later scheduler
                     // turn: their waiter only filled resumeEnvelope while this
                     // carrier was unwinding.
@@ -2340,6 +2353,9 @@ public final class ActorRuntime implements AutoCloseable {
                 int observed = phase.get();
                 if (observed == FINISHED) return;
                 if (observed == RUNNING) {
+                    completeFailure(
+                            new CancellationException(
+                                    "root/main execution cancelled by runtime close"));
                     Thread running = carrier;
                     if (running != null) running.interrupt();
                     return;
