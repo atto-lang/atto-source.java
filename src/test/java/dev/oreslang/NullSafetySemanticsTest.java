@@ -1,6 +1,7 @@
 package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.types.TypeChecker;
@@ -9,6 +10,7 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -84,6 +86,90 @@ final class NullSafetySemanticsTest {
                         }
                         """)));
         assertTrue(resultVoid.getMessage().contains("Result payloads"));
+    }
+
+    @Test
+    void voidIsOnlyAReturnMarkerNeverAValueType() {
+        IllegalArgumentException parameter = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc bad(void value): void {
+                          return;
+                        }
+                        """)));
+        assertTrue(parameter.getMessage().contains("cannot use void as a value type"));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(Array<void> values): void {
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad([int, void] values): void {
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad({value: void} values): void {
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc bad(int | void value): void {
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException argument = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc side_effect(): void {
+                          return;
+                        }
+
+                        fnc consume(any value): void {
+                          return;
+                        }
+
+                        fnc bad(): void {
+                          consume(side_effect());
+                          return;
+                        }
+                        """)));
+        assertTrue(argument.getMessage().contains("cannot use void as a value type"));
+
+        IllegalArgumentException listElement = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc side_effect(): void {
+                          return;
+                        }
+
+                        fnc bad(): void {
+                          val values = [1, side_effect()];
+                          return;
+                        }
+                        """)));
+        assertTrue(listElement.getMessage().contains("list element"));
+    }
+
+    @Test
+    void actorTransportRejectsRawNullWithoutThrowingNullPointerException() {
+        IllegalArgumentException direct = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(null));
+        assertTrue(direct.getMessage().contains("null"));
+
+        ArrayList<Object> nested = new ArrayList<>();
+        nested.add("ok");
+        nested.add(null);
+        IllegalArgumentException nestedFailure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(nested));
+        assertTrue(nestedFailure.getMessage().contains("null"));
     }
 
     @Test
