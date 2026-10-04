@@ -63,7 +63,7 @@ Singleton fields are actor-owned. Process-lifetime fields require explicit, proc
 
 ### Init lifecycle
 
-Field/binding initializers run before lifecycle init. A file/root or ordinary-module `init routine() => void` belongs to actor-local state and runs once for that actor-local scope. A singleton-module init belongs to the process singleton cell and runs exactly once when that cell is created. It is not rerun on hot reload.
+Field/binding initializers run before lifecycle init. A file/root or ordinary-module `init routine() -> void` belongs to actor-local state and runs once for that actor-local scope. A singleton-module init belongs to the process singleton cell and runs exactly once when that cell is created. It is not rerun on hot reload.
 
 There is intentionally no ambient "process init" hook at file scope. Process-wide initialization must be owned by a singleton module so state, authority, serialization, and hot-reload behavior have one explicit lifecycle owner. Singleton init is deterministic/context-free and cannot depend on the first caller's capabilities or actor-local state.
 
