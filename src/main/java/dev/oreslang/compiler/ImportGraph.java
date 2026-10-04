@@ -61,7 +61,23 @@ final class ImportGraph {
         Set<String> available = programs.keySet();
         for (Map.Entry<String, Ast.Program> entry : programs.entrySet()) {
             String importer = entry.getKey();
+            Set<String> localImportNames = new LinkedHashSet<>();
             for (Ast.ImportDecl imported : entry.getValue().imports()) {
+                if (imported.wildcard()) {
+                    if (!localImportNames.add(imported.namespace())) {
+                        throw new IllegalArgumentException(
+                                "duplicate local import name '" + imported.namespace() + "' in '" + importer + "'");
+                    }
+                } else {
+                    for (String exportedName : imported.names()) {
+                        String localName = imported.localName(exportedName);
+                        if (!localImportNames.add(localName)) {
+                            throw new IllegalArgumentException(
+                                    "duplicate local import name '" + localName + "' in '" + importer + "'");
+                        }
+                    }
+                }
+
                 String targetId = resolveImportUnitId(importer, imported, available);
                 if (targetId == null) continue; // package resolver owns non-relative imports.
                 Ast.Program target = programs.get(targetId);
@@ -98,6 +114,12 @@ final class ImportGraph {
                     matches++;
                 } else if (kind == Ast.ImportKind.CLASS
                         && decl instanceof Ast.ClassDecl klass
+                        && klass.actorKind() == Ast.ActorKind.NONE
+                        && klass.name().equals(name)) {
+                    matches++;
+                } else if (kind == Ast.ImportKind.ACTOR
+                        && decl instanceof Ast.ClassDecl klass
+                        && klass.actorKind() != Ast.ActorKind.NONE
                         && klass.name().equals(name)) {
                     matches++;
                 } else if (kind == Ast.ImportKind.ALL) {
