@@ -342,8 +342,43 @@ public final class TypeChecker {
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+
+            boolean actorEndpoint = klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic()
+                    && method.visibility() == Ast.Visibility.PUBLIC
+                    && !method.name().equals("constructor");
+            if (klass.actorKind() != Ast.ActorKind.NONE
+                    && method.isStatic()
+                    && method.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "actor static helper '" + klass.name() + "." + method.name()
+                                + "' cannot be public; public actor API is mailbox-dispatched");
+            }
+
+            for (Ast.Param param : method.parameters()) {
+                Type parameterType = resolveParam(param, generics, callableSelf);
+                if (actorEndpoint) {
+                    validateActorCallableBoundaryType(
+                            parameterType,
+                            klass.actorKind(),
+                            false,
+                            "parameter '" + param.name() + "' of actor method '"
+                                    + module + "." + klass.name() + "." + method.name() + "'");
+                }
+                env.define(
+                        param.name(),
+                        parameterType,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
             Type returns = resolve(method.returnType(), generics, callableSelf);
+            if (actorEndpoint) {
+                validateActorCallableBoundaryType(
+                        returns,
+                        klass.actorKind(),
+                        true,
+                        "return type of actor method '"
+                                + module + "." + klass.name() + "." + method.name() + "'");
+            }
             Ast.ActorKind previousActorKind = currentActorKind;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             try {
@@ -840,21 +875,11 @@ public final class TypeChecker {
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
-                    if (methods.size() == 1) {
-                        Ast.MethodDecl method = methods.getFirst();
-                        if (!method.genericParameters().isEmpty()) {
-                            throw new IllegalArgumentException(
-                                    "generic method '" + klass.name() + "." + method.name()
-                                            + "' must be specialized by a direct call; polymorphic bound-method values are not supported yet");
-                        }
-                        ResolvedMethod target = findMethodTarget(klass, named, member.member(), method.arity(), new LinkedHashSet<>());
-                        if (target == null) throw new IllegalArgumentException("cannot resolve method owner for '" + member.member() + "'");
-                        Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
-                        memberGenerics.addAll(method.genericParameters());
-                        Type signature = functionType(method.parameters(), method.returnType(), memberGenerics, target.ownerType());
-                        return substituteGenerics(signature, classGenericBindings(target.owner(), target.ownerType()));
+                    if (!methods.isEmpty()) {
+                        throw new IllegalArgumentException(
+                                "instance method '" + klass.name() + "." + member.member()
+                                        + "' is not a first-class value; invoke it directly through its receiver");
                     }
-                    if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
                 }
             }
             return Unknown.INSTANCE;
