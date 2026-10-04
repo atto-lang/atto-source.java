@@ -132,11 +132,12 @@ public final class IncrementalCompiler {
     }
 
     private static String abiDigest(Ast.Program program) {
-        StringBuilder abi = new StringBuilder("ores-abi-v1\n");
-        abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
+        StringBuilder abi = new StringBuilder("ores-abi-v2\n");
+        abi.append("package=path-derived\n");
 
         for (Ast.ModuleDecl module : program.modules()) {
-            abi.append("module ").append(module.name()).append('\n');
+            abi.append(module.isNamespace() ? "namespace " : "module ")
+                    .append(module.name()).append('\n');
             for (Ast.Annotation annotation : module.annotations()) {
                 if (annotation.name().equals("AdheresTo")) {
                     abi.append(" module-annotation AdheresTo:");
@@ -309,7 +310,6 @@ public final class IncrementalCompiler {
     }
 
     private static String packageId(String unitId, Ast.Program program) {
-        if (program.namespace() != null) return program.namespace();
         String id = unitId;
         if (id.endsWith(".ores")) id = id.substring(0, id.length() - ".ores".length());
         return id;
