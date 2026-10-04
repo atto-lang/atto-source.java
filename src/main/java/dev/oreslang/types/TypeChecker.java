@@ -174,7 +174,15 @@ public final class TypeChecker {
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
                         fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
-                mergeMember(members, fn.name(), signature, "module " + module.name());
+
+                // Only concretely reifiable fnc declarations become raw
+                // function-valued namespace members. Routines remain
+                // direct-call-only, and generic fnc values still require
+                // direct-call specialization because polymorphic function
+                // values are not implemented.
+                if (fn.kind() == Ast.CallableKind.FNC && fn.genericParameters().isEmpty()) {
+                    mergeMember(members, fn.name(), signature, "module " + module.name());
+                }
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
                         signature,
