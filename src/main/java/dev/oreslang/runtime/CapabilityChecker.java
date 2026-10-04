@@ -183,7 +183,8 @@ public final class CapabilityChecker {
         return switch (kind) {
             case PRIVATE -> parent.withoutCapabilities(
                     IsolatePolicy.Capability.SHARED_MEMORY,
-                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY);
+                    IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
+                    IsolatePolicy.Capability.GC_CONTROL);
             case UNTRUSTED -> IsolatePolicy.untrustedActor();
             default -> parent;
         };
