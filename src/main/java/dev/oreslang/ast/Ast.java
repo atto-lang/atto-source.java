@@ -370,7 +370,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, StructInitExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -405,6 +405,13 @@ public final class Ast {
 
     public record NewExpr(TypeRef type, List<Expr> arguments) implements Expr {
         public NewExpr { arguments = List.copyOf(arguments); }
+    }
+
+    public record StructInitExpr(TypeRef type, List<ObjectField> fields) implements Expr {
+        public StructInitExpr {
+            fields = List.copyOf(fields);
+            if (type == null) throw new IllegalArgumentException("named struct initializer requires a type");
+        }
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
