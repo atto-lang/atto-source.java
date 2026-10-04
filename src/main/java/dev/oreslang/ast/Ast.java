@@ -244,7 +244,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
             IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
@@ -274,11 +274,6 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
-    public record YieldStmt(Expr value) implements Stmt {
-        public YieldStmt {
-            if (value == null) throw new IllegalArgumentException("yield requires a value");
-        }
-    }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
 
@@ -310,7 +305,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, SpawnExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, YieldExpr, SpawnExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -348,6 +343,11 @@ public final class Ast {
     }
 
     public record AwaitExpr(Expr expression) implements Expr { }
+    public record YieldExpr(Expr expression) implements Expr {
+        public YieldExpr {
+            if (expression == null) throw new IllegalArgumentException("yield requires a value");
+        }
+    }
     public record SpawnExpr(CallExpr call) implements Expr { }
 
     public record ListExpr(List<Expr> elements) implements Expr {
