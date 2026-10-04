@@ -233,9 +233,6 @@ public final class TypeChecker {
             if (fn.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException("trap cannot wrap actor entry points; actor failures belong to supervision");
             }
-            if (resolve(fn.returnType(), Set.copyOf(fn.genericParameters()), null) == Primitive.VOID) {
-                throw new IllegalArgumentException("trap currently requires a non-void result so its success channel is Option<T>");
-            }
         }
         if (fn.name().equals("init")) {
             Ast.TypeRef initReturn = fn.returnType();
@@ -1859,11 +1856,9 @@ public final class TypeChecker {
     }
 
     private Type trapResult(Type raw) {
-        if (raw == Primitive.VOID) {
-            throw new IllegalArgumentException("trap currently requires a non-void result");
-        }
+        Type success = raw == Primitive.VOID ? new Tuple(List.of()) : raw;
         return new Tuple(List.of(
-                new Named("Option", List.of(raw)),
+                new Named("Option", List.of(success)),
                 new Named("Option", List.of(new Named("Exception", List.of())))));
     }
 
