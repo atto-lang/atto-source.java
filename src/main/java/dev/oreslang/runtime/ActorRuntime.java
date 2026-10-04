@@ -137,6 +137,15 @@ public final class ActorRuntime implements AutoCloseable {
         return Boolean.TRUE.equals(ACTOR_CARRIER.get());
     }
 
+    /**
+     * True on any VM carrier capable of running Ores guest work: root tasks,
+     * control/mailman turns, or actor turns. The older actor-named predicate is
+     * retained for compatibility.
+     */
+    public static boolean isOresCarrierThread() {
+        return Boolean.TRUE.equals(ACTOR_CARRIER.get());
+    }
+
     public static boolean inActorExecution() {
         return CURRENT_ACTOR_EXECUTION.get() != null;
     }
