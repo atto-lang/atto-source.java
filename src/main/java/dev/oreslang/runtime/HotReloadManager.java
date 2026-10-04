@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -171,7 +172,28 @@ public final class HotReloadManager implements AutoCloseable {
         ensureOpen();
         validateStageInput(name, sourceText);
         OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText);
+        return stage(name, digest(sourceText), sourceText, null);
+    }
+
+    /**
+     * Validates an opaque actor implementation against an exact public ABI
+     * contract before allocating a runnable generation.
+     *
+     * <p>Private implementation structure is intentionally irrelevant. Only the
+     * declared actor boundary and the execution-domain isolation policy are
+     * trusted by the VM.
+     */
+    public synchronized Generation loadActor(
+            String name,
+            String sourceText,
+            ActorHotLoadContract contract) {
+        ensureOpen();
+        validateStageInput(name, sourceText);
+        Objects.requireNonNull(contract, "contract");
+        var program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        contract.verify(program);
+        validateActorExecutionDomain(contract);
+        return stage(name, digest(sourceText), sourceText, contract);
     }
 
     /**
@@ -184,10 +206,30 @@ public final class HotReloadManager implements AutoCloseable {
         Objects.requireNonNull(unit, "unit");
         validateStageInput(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), null);
     }
 
-    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+    /**
+     * Contract-checked actor hot load using an already compiled unit.
+     */
+    public synchronized Generation loadActor(
+            IncrementalCompiler.CompiledUnit unit,
+            ActorHotLoadContract contract) {
+        ensureOpen();
+        Objects.requireNonNull(unit, "unit");
+        Objects.requireNonNull(contract, "contract");
+        validateStageInput(unit.unitId(), unit.sourceText());
+        CapabilityChecker.check(unit.program(), guestPolicy);
+        contract.verify(unit.program());
+        validateActorExecutionDomain(contract);
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), contract);
+    }
+
+    private Generation stage(
+            String codeUnitId,
+            String sourceDigest,
+            String sourceText,
+            ActorHotLoadContract actorContract) {
         enforceGenerationQuota(codeUnitId);
 
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
@@ -225,7 +267,8 @@ public final class HotReloadManager implements AutoCloseable {
                     executionProfile,
                     executionDomain,
                     guestPolicy,
-                    generationBindingToken);
+                    generationBindingToken,
+                    actorContract);
             generations.put(id, generation);
             boundGeneration.set(generation);
             return generation;
@@ -244,6 +287,19 @@ public final class HotReloadManager implements AutoCloseable {
         Generation generation = load(name, sourceText);
         // Never hold the manager monitor across guest evaluation. Actor startup
         // may acquire/release generation leases on different carrier threads.
+        generation.start();
+        activate(generation);
+        return generation;
+    }
+
+    /**
+     * Contract-checks, starts, and atomically activates opaque actor code.
+     */
+    public Generation loadActorAndStart(
+            String name,
+            String sourceText,
+            ActorHotLoadContract contract) {
+        Generation generation = loadActor(name, sourceText, contract);
         generation.start();
         activate(generation);
         return generation;
@@ -434,6 +490,23 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
+    private void validateActorExecutionDomain(ActorHotLoadContract contract) {
+        switch (contract.isolation()) {
+            case ISOACTOR -> {
+                if (executionDomain != ExecutionDomain.ISOLATED_JIT) {
+                    throw new SecurityException(
+                            "isoactor hot-loaded code requires the ISOLATED_JIT execution domain");
+                }
+            }
+            case UNTRUSTED -> {
+                if (executionDomain != ExecutionDomain.UNTRUSTED_JIT) {
+                    throw new SecurityException(
+                            "untrusted actor hot-loaded code requires the UNTRUSTED_JIT execution domain");
+                }
+            }
+        }
+    }
+
     private void validateStageInput(String codeUnitId, String sourceText) {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(sourceText, "sourceText");
@@ -569,6 +642,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionDomain executionDomain;
         private final IsolatePolicy guestPolicy;
         private final String generationBindingToken;
+        private final ActorHotLoadContract actorContract;
         private final AtomicReference<GenerationState> state =
                 new AtomicReference<>(GenerationState.STAGED);
         private final AtomicInteger pins = new AtomicInteger();
@@ -584,7 +658,8 @@ public final class HotReloadManager implements AutoCloseable {
                 ExecutionProfile executionProfile,
                 ExecutionDomain executionDomain,
                 IsolatePolicy guestPolicy,
-                String generationBindingToken) {
+                String generationBindingToken,
+                ActorHotLoadContract actorContract) {
             this.owner = owner;
             this.id = id;
             this.codeUnitId = codeUnitId;
@@ -596,6 +671,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.guestPolicy = guestPolicy;
             this.generationBindingToken =
                     Objects.requireNonNull(generationBindingToken, "generationBindingToken");
+            this.actorContract = actorContract;
         }
 
         public long id() { return id; }
@@ -606,6 +682,12 @@ public final class HotReloadManager implements AutoCloseable {
         public ExecutionProfile executionProfile() { return executionProfile; }
         public ExecutionDomain executionDomain() { return executionDomain; }
         public IsolatePolicy guestPolicy() { return guestPolicy; }
+        public Optional<ActorHotLoadContract> actorContract() {
+            return Optional.ofNullable(actorContract);
+        }
+        public Optional<String> actorAbiDigest() {
+            return actorContract().map(ActorHotLoadContract::abiDigest);
+        }
         public GenerationState state() { return state.get(); }
         public int pinCount() { return pins.get(); }
         public boolean started() {
