@@ -36,6 +36,10 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
     private record Failure(Throwable failure) { }
     private record Cancelled(CancellationException failure) { }
 
+    interface RuntimeWaiterRegistration {
+        boolean cancel();
+    }
+
     private static final class Waiter<T> {
         private final BiConsumer<? super T, ? super Throwable> callback;
         private final AtomicBoolean claimed = new AtomicBoolean();
@@ -119,14 +123,15 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
      * Futures used as reactive sources, where many subscriptions may observe the
      * same already-completed producer.</p>
      */
-    void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
+    RuntimeWaiterRegistration whenCompleteRuntime(
+            BiConsumer<? super T, ? super Throwable> callback) {
         Objects.requireNonNull(callback, "callback");
         Waiter<T> waiter = new Waiter<>(callback);
 
         Object observed = state.get();
         if (observed != PENDING) {
             notifyWaiter(waiter, observed);
-            return;
+            return () -> false;
         }
 
         waiters.add(waiter);
@@ -139,6 +144,8 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
             waiters.remove(waiter);
             notifyWaiter(waiter, observed);
         }
+
+        return () -> cancelRuntimeWaiter(waiter);
     }
 
     @Override
