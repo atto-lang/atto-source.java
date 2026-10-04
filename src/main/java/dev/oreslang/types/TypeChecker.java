@@ -1770,6 +1770,9 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         where + " ActorRef protocol must name an actor class or interface");
             }
+            actorRefMessageType(
+                    protocolNamed,
+                    where + " ActorRef<" + protocolNamed.name() + ">");
             return;
         }
 
@@ -3028,6 +3031,9 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(
                             "ActorRef protocol must name an actor class or interface, got " + namedProtocol.name());
                 }
+                actorRefMessageType(
+                        namedProtocol,
+                        "ActorRef<" + namedProtocol.name() + ">");
                 yield new Named("ActorRef", List.of(protocol));
             }
             case "SharedMutex" -> {
