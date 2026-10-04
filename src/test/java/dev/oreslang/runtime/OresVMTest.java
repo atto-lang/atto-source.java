@@ -143,6 +143,15 @@ final class OresVMTest {
     }
 
     @Test
+    void onlyUntrustedHotLoadDomainUsesSpawnedGraalIsolate() {
+        assertFalse(HotReloadManager.ExecutionDomain.TRUSTED_JIT.spawnedIsolate());
+        assertFalse(HotReloadManager.ExecutionDomain.TRUSTED_ISOACTOR_JIT.spawnedIsolate());
+        assertFalse(HotReloadManager.ExecutionDomain.AOT_INTERPRETED.spawnedIsolate());
+        assertTrue(HotReloadManager.ExecutionDomain.UNTRUSTED_JIT.spawnedIsolate());
+        assertTrue(HotReloadManager.ExecutionDomain.UNTRUSTED_JIT.untrusted());
+    }
+
+    @Test
     void untrustedHotLoadDomainIsFailClosedAndMarkedForSpawnedIsolate() {
         OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
         try {
