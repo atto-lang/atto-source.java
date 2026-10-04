@@ -346,10 +346,10 @@ final class FutureLanguageTest {
     @Test
     void compilerKnownAsyncProtocolTypeNamesCannotBeShadowed() {
         for (String declaration : java.util.List.of(
-                "define class Awaitable as end",
-                "define interface Future<T> as { fnc nope() => void; }",
+                "define class Awaitable end",
+                "define interface Future<T> { fnc nope() => void; }",
                 "type ActorSpawn = int;",
-                "define class ActorRef as end")) {
+                "define class ActorRef end")) {
             IllegalArgumentException failure = assertThrows(
                     IllegalArgumentException.class,
                     () -> TypeChecker.check(Parser.parse(
@@ -377,7 +377,7 @@ final class FutureLanguageTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define class Worker as
+                        define class Worker
                           pub async run() => int {
                             return 1;
                           }
