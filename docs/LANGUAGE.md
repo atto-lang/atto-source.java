@@ -558,7 +558,7 @@ The distinction is **reifiability**:
 
 - a named `fnc` is a first-class callable value. It may be stored in a `Fnc<...>` binding, passed as a callback, or returned when its type matches;
 - a `routine` is direct-call-only. `run_app()` is valid, but evaluating `run_app` as a value is a compile-time error;
-- an instance/actor method is likewise direct-call-only. `worker.process(x)` is valid, but `worker.process` is not a bound-method value;
+- an instance/actor method is likewise direct-call-only. This also applies when the receiver is typed through a nominal interface or an `@Structural` contract: `worker.process(x)` is valid, but `worker.process` is not a bound-method value;
 - `static fnc` and lambdas are reifiable first-class callables.
 
 When a callback must invoke a routine or instance method, make the closure explicit:
