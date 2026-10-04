@@ -161,4 +161,85 @@ final class PatternMatchingTest {
             OresSymbol.revokeFromUntrusted(visible, trusted);
         }
     }
+    @Test
+    void classPatternsExposeOnlyPublicFields() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, """
+                define class Box as
+                  pub val int shown;
+                  private val int hidden;
+                end
+
+                pub fnc main() : void {
+                  val Box box = new Box(7, 99);
+                  switch box {
+                    Box(val shown) -> {
+                      stdio.println(shown);
+                    }
+                    _ -> {
+                      stdio.println(-1);
+                    }
+                  }
+                  return;
+                }
+                """, "public-class-pattern.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertEquals("7", output.toString(StandardCharsets.UTF_8).trim());
+
+        IllegalArgumentException privateArity = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          pub val int shown;
+                          private val int hidden;
+                        end
+
+                        fnc reveal(Box box) : int {
+                          switch box {
+                            Box(val shown, val hidden) -> {
+                              return hidden;
+                            }
+                            _ -> {
+                              return 0;
+                            }
+                          }
+                        }
+                        """)));
+        assertTrue(privateArity.getMessage().contains("public field"));
+    }
+
+    @Test
+    void objectPatternCannotReadPrivateField() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Secret as
+                          pub val int shown;
+                          private val int hidden;
+                        end
+
+                        fnc reveal(Secret secret) : int {
+                          switch secret {
+                            { hidden: val value } -> {
+                              return value;
+                            }
+                            _ -> {
+                              return 0;
+                            }
+                          }
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("member"));
+    }
+
+
 }
