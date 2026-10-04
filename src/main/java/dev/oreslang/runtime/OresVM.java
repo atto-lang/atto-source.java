@@ -265,6 +265,10 @@ final class OresVM {
         return hotReloadManagers.size();
     }
 
+    int generationBindingCount() {
+        return generationBindings.size();
+    }
+
     ActorRuntime.DispatcherGroup dispatcherGroup() {
         ensureRunning();
         return dispatchers;
