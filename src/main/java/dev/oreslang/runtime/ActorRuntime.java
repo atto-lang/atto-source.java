@@ -5719,6 +5719,11 @@ public final class ActorRuntime implements AutoCloseable {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
             }
+            // Remove the actor from its runtime before releasing the code
+            // generation. The final lease may make a draining generation
+            // reclaimable and close its Polyglot Context; context teardown must
+            // therefore observe this actor as already retired.
+            unregisterActor(this);
             try {
                 generationLease.close();
             } catch (VirtualMachineError | ThreadDeath fatal) {
@@ -5726,7 +5731,6 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable leaseFailure) {
                 ref.terminationCause.compareAndSet(null, leaseFailure);
             }
-            unregisterActor(this);
             lifecycleLock.notifyAll();
         }
 
