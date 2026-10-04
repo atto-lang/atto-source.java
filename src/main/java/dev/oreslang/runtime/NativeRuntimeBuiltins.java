@@ -61,7 +61,7 @@ public final class NativeRuntimeBuiltins {
             context.requireCapability(IsolatePolicy.Capability.FILESYSTEM_READ, "File.read_text");
             try (FileValue file = new FileValue(context,
                     NativeCoreBridge.fileOpen(string(args.getFirst(), "File.read_text path"), "r"), "r")) {
-                return new String(file.readBytes(Integer.MAX_VALUE), StandardCharsets.UTF_8);
+                return new String(file.readWholeFileBounded(), StandardCharsets.UTF_8);
             } catch (IOException failure) {
                 throw new IllegalStateException("File.read_text: " + failure.getMessage(), failure);
             }
@@ -94,36 +94,64 @@ public final class NativeRuntimeBuiltins {
             context.registerNativeResource(this);
         }
 
-        private long handle() {
+        private synchronized long handle() {
             if (handle == 0L) throw new IllegalStateException("File is closed");
             return handle;
         }
 
-        byte[] readBytes(int maxBytes) throws IOException {
+        synchronized byte[] readBytes(int maxBytes) throws IOException {
             context.requireCapability(IsolatePolicy.Capability.FILESYSTEM_READ, "File.read");
             return NativeCoreBridge.fileRead(handle(), maxBytes);
         }
 
-        int write(byte[] bytes) throws IOException {
+        synchronized int write(byte[] bytes) throws IOException {
             context.requireCapability(IsolatePolicy.Capability.FILESYSTEM_WRITE, "File.write");
             return NativeCoreBridge.fileWrite(handle(), bytes, 0, bytes.length);
         }
 
-        void flush() throws IOException {
+        synchronized void flush() throws IOException {
             context.requireCapability(IsolatePolicy.Capability.FILESYSTEM_WRITE, "File.flush");
             NativeCoreBridge.fileFlush(handle());
+        }
+
+        synchronized long seek(long offset, int whence) throws IOException {
+            return NativeCoreBridge.fileSeek(handle(), offset, whence);
+        }
+
+        synchronized long size() throws IOException {
+            return NativeCoreBridge.fileSize(handle());
+        }
+
+        synchronized byte[] readWholeFileBounded() throws IOException {
+            context.requireCapability(IsolatePolicy.Capability.FILESYSTEM_READ, "File.read_text");
+            long size = size();
+            int limit = maxWholeFileReadBytes(context);
+            if (size > limit) {
+                throw new IllegalStateException(
+                        "File.read_text refuses " + size + " bytes; whole-file read limit is "
+                                + limit + " bytes for this isolate");
+            }
+            return NativeCoreBridge.fileRead(handle(), limit);
         }
 
         @Override public Object member(String name) {
             return switch (name) {
                 case "read_text" -> (BuiltinCallable) args -> {
                     NativeValues.requireArity(args, 0, "File.read_text");
-                    try { return new String(readBytes(Integer.MAX_VALUE), StandardCharsets.UTF_8); }
+                    try { return new String(readWholeFileBounded(), StandardCharsets.UTF_8); }
                     catch (IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
                 };
                 case "read_bytes" -> (BuiltinCallable) args -> {
                     if (args.size() > 1) throw new IllegalArgumentException("File.read_bytes expects 0 or 1 arguments");
-                    int limit = args.isEmpty() ? Integer.MAX_VALUE : Math.toIntExact(number(args.getFirst(), "File.read_bytes max"));
+                    int policyLimit = maxWholeFileReadBytes(context);
+                    int limit = args.isEmpty()
+                            ? policyLimit
+                            : Math.toIntExact(number(args.getFirst(), "File.read_bytes max"));
+                    if (limit < 0 || limit > policyLimit) {
+                        throw new IllegalArgumentException(
+                                "File.read_bytes max must be between 0 and " + policyLimit
+                                        + " bytes for this isolate");
+                    }
                     try {
                         byte[] bytes = readBytes(limit);
                         NativeValues.ListValue result = new NativeValues.ListValue(context);
@@ -156,12 +184,12 @@ public final class NativeRuntimeBuiltins {
                     if (args.size() < 1 || args.size() > 2) throw new IllegalArgumentException("File.seek expects offset and optional whence");
                     long offset = number(args.get(0), "File.seek offset");
                     int whence = args.size() == 1 ? 0 : Math.toIntExact(number(args.get(1), "File.seek whence"));
-                    try { return NativeCoreBridge.fileSeek(handle(), offset, whence); }
+                    try { return seek(offset, whence); }
                     catch (IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
                 };
                 case "size" -> (BuiltinCallable) args -> {
                     NativeValues.requireArity(args, 0, "File.size");
-                    try { return NativeCoreBridge.fileSize(handle()); }
+                    try { return size(); }
                     catch (IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
                 };
                 case "flush" -> (BuiltinCallable) args -> {
@@ -180,7 +208,7 @@ public final class NativeRuntimeBuiltins {
             };
         }
 
-        @Override public void close() {
+        @Override public synchronized void close() {
             long current = handle;
             if (current == 0L) return;
             handle = 0L;
@@ -216,6 +244,12 @@ public final class NativeRuntimeBuiltins {
                 default -> throw new IllegalArgumentException("unknown native thread member " + name);
             };
         }
+    }
+
+    private static int maxWholeFileReadBytes(OresContext context) {
+        long heapBound = Math.max(8L * 1024L, context.isolatePolicy().maxHeapBytes() / 8L);
+        long hardBound = 64L * 1024L * 1024L;
+        return (int) Math.min(Integer.MAX_VALUE, Math.min(heapBound, hardBound));
     }
 
     private static void requireFileCapabilities(OresContext context, String mode, String api) {
