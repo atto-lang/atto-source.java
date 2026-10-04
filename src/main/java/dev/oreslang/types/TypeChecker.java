@@ -277,6 +277,11 @@ public final class TypeChecker {
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
                         fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
+                if (module.storage() == Ast.ModuleStorage.GLOBAL && signature instanceof Function callable) {
+                    signature = new Function(
+                            callable.parameters(),
+                            new Named("Future", List.of(callable.result())));
+                }
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
@@ -1979,9 +1984,14 @@ public final class TypeChecker {
         }
 
         Named patternType = nominalClassType(klass);
-        List<ResolvedField> fields = effectiveFieldTargets(klass, patternType, new LinkedHashSet<>());
+        List<ResolvedField> fields = effectiveFieldTargets(klass, patternType, new LinkedHashSet<>())
+                .stream()
+                .filter(field -> !injectedField(field.field()))
+                .toList();
         if (arguments.size() > fields.size()) {
-            throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
+            throw new IllegalArgumentException(
+                    "constructor for " + klass.name()
+                            + " received too many positional fields; injected fields are not constructor arguments");
         }
 
         Map<String, Type> bindings = new HashMap<>();
@@ -2235,6 +2245,16 @@ public final class TypeChecker {
                     rejectStaticClassGenericReferences(branch.body(), classGenerics, klass, method);
                 }
                 rejectStaticClassGenericReferences(conditional.elseBody(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.SwitchStmt switched) {
+                rejectStaticClassGenericReferences(switched.subject(), classGenerics, klass, method);
+                for (Ast.SwitchClause clause : switched.clauses()) {
+                    rejectStaticClassGenericReferences(
+                            clause.pattern(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(
+                            clause.guard(), classGenerics, klass, method);
+                    rejectStaticClassGenericReferences(
+                            clause.body(), classGenerics, klass, method);
+                }
             } else if (statement instanceof Ast.TryStmt attempted) {
                 rejectStaticClassGenericReferences(attempted.body(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(attempted.catchBody(), classGenerics, klass, method);
@@ -2249,6 +2269,36 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(loop.condition(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.update(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
+            }
+        }
+    }
+
+    private void rejectStaticClassGenericReferences(
+            Ast.Pattern pattern,
+            Set<String> classGenerics,
+            Ast.ClassDecl klass,
+            Ast.MethodDecl method) {
+        if (pattern == null) return;
+        if (pattern instanceof Ast.TypePattern typed) {
+            rejectStaticClassGenericReference(typed.type(), classGenerics, klass, method);
+            return;
+        }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            for (Ast.Pattern child : sequence.elements()) {
+                rejectStaticClassGenericReferences(child, classGenerics, klass, method);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.ObjectPattern object) {
+            for (Ast.ObjectPatternField field : object.fields()) {
+                rejectStaticClassGenericReferences(
+                        field.pattern(), classGenerics, klass, method);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.VariantPattern variant) {
+            for (Ast.Pattern child : variant.arguments()) {
+                rejectStaticClassGenericReferences(child, classGenerics, klass, method);
             }
         }
     }
