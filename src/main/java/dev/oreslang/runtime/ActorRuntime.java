@@ -64,6 +64,25 @@ import java.util.function.UnaryOperator;
  * shared actors may coordinate through explicitly synchronized shared cells.
  */
 public final class ActorRuntime implements AutoCloseable {
+
+    /**
+     * Internal lifetime pin acquired for every actor born inside a hot-loaded
+     * code generation. It is intentionally not part of the guest actor API.
+     */
+    @FunctionalInterface
+    interface ActorGenerationLease {
+        void close();
+    }
+
+    @FunctionalInterface
+    interface ActorGenerationLeaseFactory {
+        ActorGenerationLease acquire();
+    }
+
+    private static final ActorGenerationLease NO_GENERATION_LEASE = () -> { };
+    private static final ActorGenerationLeaseFactory NO_GENERATION_LEASE_FACTORY =
+            () -> NO_GENERATION_LEASE;
+
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
@@ -1428,6 +1447,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
     private final OresVM vm;
+    private final ActorGenerationLeaseFactory generationLeaseFactory;
     private final DispatcherGroup dispatcherGroup;
     private final boolean ownsVm;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
@@ -1484,6 +1504,7 @@ public final class ActorRuntime implements AutoCloseable {
                 dispatcherConfig,
                 turnExecutor,
                 OresVM.dedicated(dispatcherConfig),
+                NO_GENERATION_LEASE_FACTORY,
                 true);
     }
 
@@ -1502,11 +1523,25 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             TurnExecutor turnExecutor) {
         Objects.requireNonNull(vm, "vm");
+        return attachToVm(
+                vm,
+                policyCeiling,
+                turnExecutor,
+                NO_GENERATION_LEASE_FACTORY);
+    }
+
+    static ActorRuntime attachToVm(
+            OresVM vm,
+            IsolatePolicy policyCeiling,
+            TurnExecutor turnExecutor,
+            ActorGenerationLeaseFactory generationLeaseFactory) {
+        Objects.requireNonNull(vm, "vm");
         return new ActorRuntime(
                 policyCeiling,
                 vm.dispatcherGroup().config(),
                 turnExecutor,
                 vm,
+                Objects.requireNonNull(generationLeaseFactory, "generationLeaseFactory"),
                 false);
     }
 
@@ -1534,11 +1569,14 @@ public final class ActorRuntime implements AutoCloseable {
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
             OresVM vm,
+            ActorGenerationLeaseFactory generationLeaseFactory,
             boolean ownsVm) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
         this.vm = Objects.requireNonNull(vm);
+        this.generationLeaseFactory =
+                Objects.requireNonNull(generationLeaseFactory, "generationLeaseFactory");
         this.dispatcherGroup = vm.dispatcherGroup();
         this.ownsVm = ownsVm;
         if (dispatcherGroup.config() != dispatcherConfig
@@ -1570,7 +1608,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
-    public OresVM vm() { return vm; }
+    OresVM vm() { return vm; }
     public boolean usesProcessSharedDispatchers() { return vm.processVm(); }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -3240,9 +3278,15 @@ public final class ActorRuntime implements AutoCloseable {
             }
 
             ActorCell<M> cell = null;
+            ActorGenerationLease generationLease = null;
             try {
                 reserveActorSlot(kind);
                 runtimeReserved = true;
+                generationLease = generationLeaseFactory.acquire();
+                if (generationLease == null) {
+                    throw new IllegalStateException(
+                            "actor generation lease factory returned null");
+                }
                 ActorId id = ActorId.create();
                 ActorRef<M> ref = new ActorRef<>(id, kind);
                 cell = new ActorCell<>(
@@ -3255,7 +3299,8 @@ public final class ActorRuntime implements AutoCloseable {
                         untrustedLimits,
                         requestTransport,
                         responseTransport,
-                        outboundTransport);
+                        outboundTransport,
+                        generationLease);
                 actors.put(id, cell);
                 if (groupState != null) {
                     groupState.commitActor(id);
@@ -3278,6 +3323,9 @@ public final class ActorRuntime implements AutoCloseable {
                     } else if (groupReserved) {
                         groupState.abortActorReservation();
                     }
+                }
+                if (generationLease != null) {
+                    generationLease.close();
                 }
                 if (runtimeReserved) releaseReservedActorSlot(kind);
                 throw failure;
@@ -5353,6 +5401,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicLong sharedInboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
+        private final ActorGenerationLease generationLease;
         private int activeTurns;
         private boolean finalized;
         private volatile boolean logicalTurnSuspended;
@@ -5375,13 +5424,16 @@ public final class ActorRuntime implements AutoCloseable {
                 UntrustedActorLimits untrustedLimits,
                 HttpRequestTransport requestTransport,
                 HttpResponseTransport responseTransport,
-                OutboundHttpTransport outboundTransport) {
+                OutboundHttpTransport outboundTransport,
+                ActorGenerationLease generationLease) {
             this.ref = ref;
             this.kind = kind;
             this.groupHandle = groupHandle;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
+            this.generationLease =
+                    Objects.requireNonNull(generationLease, "generationLease");
             this.inboxCapacity = groupHandle == null
                     ? policy.maxMailboxMessages()
                     : Math.min(
@@ -5645,6 +5697,13 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable ignored) {
                 // Actor termination must still complete. Runtime cleanup hooks
                 // are best-effort and retryable by the process collector.
+            }
+            try {
+                generationLease.close();
+            } catch (VirtualMachineError | ThreadDeath fatal) {
+                throw fatal;
+            } catch (Throwable leaseFailure) {
+                ref.terminationCause.compareAndSet(null, leaseFailure);
             }
             unregisterActor(this);
             lifecycleLock.notifyAll();
