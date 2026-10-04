@@ -576,7 +576,7 @@ public final class Parser {
 
     private Ast.TypeRef parseTypeRef() {
         if (check(AMP)) {
-            throw error(peek(), "pointer-style '&' borrow types are not part of Oreslang; use ordinary parameters, 'mut Type name', or contextual 'take Type name'");
+            throw error(peek(), "pointer-style '&' borrow types are not part of Oreslang; use ordinary parameters, canonical 'Type mut name', or contextual 'take Type name'");
         }
         if (match(STRING)) return Ast.TypeRef.stringLiteral(previous().lexeme());
 
@@ -1054,7 +1054,15 @@ public final class Parser {
                         mode = Ast.ParamMode.TAKE;
                     }
                     Ast.TypeRef type = parseTypeRef();
-                    if (match(MUT)) throw error(previous(), "put mut before the lambda parameter type: 'mut Type name'");
+                    if (match(MUT)) {
+                        if (mode == Ast.ParamMode.TAKE) {
+                            throw error(previous(), "a take lambda parameter owns its value and cannot also be a temporary mut reference");
+                        }
+                        if (mode == Ast.ParamMode.MUT) {
+                            throw error(previous(), "duplicate mut on lambda parameter; canonical spelling is 'Type mut name'");
+                        }
+                        mode = Ast.ParamMode.MUT;
+                    }
                     String name = consume(IDENT, "expected lambda parameter name").lexeme();
                     params.add(new Ast.Param(type, name, false, mode));
                 }
