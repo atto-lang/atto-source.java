@@ -738,8 +738,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                Ast.MethodDecl method = findMethod(object.klass, name, 0, new LinkedHashSet<>());
-                if (method != null || !findMethodsByName(object.klass, name, new LinkedHashSet<>()).isEmpty()) {
+                if (hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
                     throw new IllegalArgumentException(
                             "instance method '" + object.klass.name() + "." + name
                                     + "' is not a first-class value; invoke it directly through its receiver");
@@ -1018,6 +1017,26 @@ public final class OresEvalRootNode extends RootNode {
             for (Ast.FieldDecl field : klass.fields()) result.put(field.name(), field);
             seen.remove(klass);
             return List.copyOf(result.values());
+        }
+
+        private boolean hasInstanceMethodNamed(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) throw new IllegalArgumentException("inheritance cycle involving " + klass.name());
+            for (Ast.MethodDecl method : klass.methods()) {
+                if (!method.isStatic() && method.name().equals(name)) {
+                    seen.remove(klass);
+                    return true;
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object") || parentRef.name().equals("List")) continue;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent != null && hasInstanceMethodNamed(parent, name, seen)) {
+                    seen.remove(klass);
+                    return true;
+                }
+            }
+            seen.remove(klass);
+            return false;
         }
 
         private Ast.MethodDecl findMethod(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
