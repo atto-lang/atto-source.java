@@ -46,6 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -1379,6 +1380,8 @@ public final class ActorRuntime implements AutoCloseable {
             new DispatcherGroup(DispatcherConfig.defaults(), "ores-process-");
 
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
+    private final Map<ActorGroupId, ActorGroupRuntime<?>> actorGroups = new ConcurrentHashMap<>();
+    private final AtomicLong nextActorGroupGeneration = new AtomicLong();
     private final AtomicInteger actorCount = new AtomicInteger();
     private final AtomicInteger privateActorCount = new AtomicInteger();
     private final AtomicInteger sharedActorCount = new AtomicInteger();
@@ -1398,6 +1401,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final DispatcherGroup dispatcherGroup;
     private final boolean ownsDispatcherGroup;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
+    private volatile BiConsumer<ActorGroupId, Throwable> actorGroupFailureHook =
+            (ignoredGroup, ignoredFailure) -> { };
     private final ThreadPoolExecutor privateDispatcher;
     private final ThreadPoolExecutor sharedDispatcher;
     private final ThreadPoolExecutor untrustedDispatcher;
@@ -1521,6 +1526,171 @@ public final class ActorRuntime implements AutoCloseable {
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     public boolean usesProcessSharedDispatchers() { return !ownsDispatcherGroup; }
     public int maxActors() { return dispatcherConfig.maxActors(); }
+
+    /**
+     * Define one runtime-owned actor group. The group always owns exactly one
+     * logical mailman; omitting a custom mailman installs a default draining
+     * mailman rather than leaving the outbox without a consumer.
+     */
+    public <Out> ActorGroupRef<Out> defineActorGroup(
+            ActorKind kind,
+            ActorGroupConfig.GroupPolicy policy,
+            ActorMailman<Out> mailman) {
+        requireSupervisorContext("define actor groups");
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(policy, "policy");
+        if (policy.actorKind() != kind) {
+            throw new IllegalArgumentException(
+                    "actor group policy kind " + policy.actorKind()
+                            + " does not match requested kind " + kind);
+        }
+        ActorMailman<Out> effectiveMailman = mailman == null
+                ? new ActorMailman<>() {
+                    @Override
+                    public void receiveMail(
+                            ActorMail<Out> ignored,
+                            ActorGroupContext<Out> ignoredGroup) {
+                        // Deliberately drain. Applications that require routing
+                        // install an explicit ActorMailman.
+                    }
+                }
+                : mailman;
+
+        synchronized (runtimeLifecycleLock) {
+            if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+            ActorGroupId id = ActorGroupId.create(nextActorGroupGeneration.getAndIncrement());
+            UUID capabilityNonce = UUID.randomUUID();
+            ActorGroupRuntime<Out> group = new ActorGroupRuntime<>(
+                    this, id, kind, policy, capabilityNonce, effectiveMailman);
+            if (actorGroups.putIfAbsent(id, group) != null) {
+                throw new IllegalStateException("actor group id collision: " + id);
+            }
+            return group.ref();
+        }
+    }
+
+    public <Out> ActorGroupRef<Out> defineActorGroup(
+            ActorKind kind,
+            ActorGroupConfig.GroupPolicy policy) {
+        return defineActorGroup(kind, policy, null);
+    }
+
+    public void setActorGroupFailureHook(
+            BiConsumer<ActorGroupId, Throwable> failureHook) {
+        requireSupervisorContext("install actor-group failure hook");
+        this.actorGroupFailureHook = Objects.requireNonNull(failureHook, "failureHook");
+    }
+
+    void executeActorGroupMailman(ActorKind kind, Runnable turn) {
+        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(turn, "turn");
+        if (closed.get()) throw new IllegalStateException("actor runtime is closed");
+        dispatcherFor(kind).execute(turn);
+    }
+
+    void onActorGroupMailmanFailure(ActorGroupId id, Throwable failure) {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(failure, "failure");
+        ActorGroupRuntime<?> group = actorGroups.get(id);
+        if (group != null) group.stop();
+        actorGroupFailureHook.accept(id, failure);
+    }
+
+    private ActorGroupRuntime<?> resolveActorGroup(ActorGroupHandle<?> handle) {
+        Objects.requireNonNull(handle, "actor group handle");
+        ActorGroupRuntime<?> group = actorGroups.get(handle.id());
+        if (group == null || !group.authenticates(handle)) {
+            throw new SecurityException("invalid or stale ActorGroupHandle " + handle.id());
+        }
+        if (group.stopped()) {
+            throw new IllegalStateException("actor group " + handle.id() + " is stopped");
+        }
+        return group;
+    }
+
+    private ActorGroupRuntime<?> resolveActorGroup(ActorGroupRef<?> ref) {
+        Objects.requireNonNull(ref, "actor group ref");
+        if (!ref.ownedBy(this)) {
+            throw new IllegalArgumentException("ActorGroupRef belongs to a different ActorRuntime");
+        }
+        ActorGroupRuntime<?> group = actorGroups.get(ref.id());
+        if (group == null || !group.authenticates(ref)) {
+            throw new SecurityException("invalid or stale ActorGroupRef " + ref.id());
+        }
+        if (group.stopped()) {
+            throw new IllegalStateException("actor group " + ref.id() + " is stopped");
+        }
+        return group;
+    }
+
+    /**
+     * Canonical grouped spawn path for compiler/runtime integration.
+     * Every source-level spawn must supply a non-null group capability.
+     */
+    public <M, Out> ActorRef<M> spawnInGroup(
+            ActorGroupRef<Out> group,
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory) {
+        resolveActorGroup(group);
+        return spawnInGroup(group.handle(), kind, policy, behaviorFactory);
+    }
+
+    public <M, Out> ActorRef<M> spawnInGroup(
+            ActorGroupHandle<Out> group,
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(group, "group");
+        if (kind == ActorKind.UNTRUSTED) {
+            throw new SecurityException(
+                    "UNTRUSTED actors require spawnUntrustedInGroup so hard limits cannot be omitted");
+        }
+        return spawnInternal(
+                kind, policy, behaviorFactory, false,
+                null, null, null, null, group);
+    }
+
+    public <M, Out> ActorRef<M> spawnUntrustedInGroup(
+            ActorGroupRef<Out> group,
+            IsolatePolicy policy,
+            UntrustedActorLimits limits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            OutboundHttpTransport outboundTransport,
+            BehaviorFactory<M> behaviorFactory) {
+        resolveActorGroup(group);
+        return spawnUntrustedInGroup(
+                group.handle(),
+                policy,
+                limits,
+                requestTransport,
+                responseTransport,
+                outboundTransport,
+                behaviorFactory);
+    }
+
+    public <M, Out> ActorRef<M> spawnUntrustedInGroup(
+            ActorGroupHandle<Out> group,
+            IsolatePolicy policy,
+            UntrustedActorLimits limits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            OutboundHttpTransport outboundTransport,
+            BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(group, "group");
+        requireSupervisorContext("spawn untrusted actors");
+        return spawnInternal(
+                ActorKind.UNTRUSTED,
+                policy,
+                behaviorFactory,
+                false,
+                limits,
+                requestTransport,
+                responseTransport,
+                outboundTransport,
+                group);
+    }
 
     /**
      * Installs a host-owned hook invoked exactly once when an actor execution
@@ -2274,6 +2444,25 @@ public final class ActorRuntime implements AutoCloseable {
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
 
+        /**
+         * Restricted actor-side group capability. UNTRUSTED actors never receive
+         * a spawn-capable group handle. Legacy host actors may be ungrouped.
+         */
+        default Optional<ActorGroupHandle<?>> group() { return Optional.empty(); }
+
+        /** Runtime identity is observable without exposing mutable group state. */
+        default Optional<ActorGroupId> groupId() {
+            return group().map(ActorGroupHandle::id);
+        }
+
+        /**
+         * Append one immutable/copy-isolated value to this actor's group outbox.
+         * This is the runtime lowering target for Oreslang `emit`.
+         */
+        default void emit(Object output) {
+            throw new IllegalStateException("actor is not attached to an ActorGroup");
+        }
+
         /** Present only for an UNTRUSTED actor explicitly bound to one HTTP request. */
         Optional<HttpRequestCapability> httpRequest();
 
@@ -2802,6 +2991,18 @@ public final class ActorRuntime implements AutoCloseable {
             }
             return;
         }
+        if (value instanceof ActorGroupRef<?>) {
+            throw new SecurityException(
+                    "private actor behavior cannot capture ActorGroupRef control-plane authority in " + fieldName);
+        }
+        if (value instanceof ActorGroupHandle<?> handle) {
+            ActorGroupRuntime<?> group = resolveActorGroup(handle);
+            if (group.kind() != ActorKind.PRIVATE) {
+                throw new SecurityException(
+                        "private actor behavior can retain only PRIVATE ActorGroupHandle values in " + fieldName);
+            }
+            return;
+        }
         if (value instanceof ActorRef<?> ref) {
             if (!ref.ownedBy(this)) {
                 throw new SecurityException(
@@ -2872,6 +3073,28 @@ public final class ActorRuntime implements AutoCloseable {
             HttpRequestTransport requestTransport,
             HttpResponseTransport responseTransport,
             OutboundHttpTransport outboundTransport) {
+        return spawnInternal(
+                kind,
+                policy,
+                behaviorFactory,
+                trustedFactory,
+                untrustedLimits,
+                requestTransport,
+                responseTransport,
+                outboundTransport,
+                null);
+    }
+
+    private <M> ActorRef<M> spawnInternal(
+            ActorKind kind,
+            IsolatePolicy policy,
+            BehaviorFactory<M> behaviorFactory,
+            boolean trustedFactory,
+            UntrustedActorLimits untrustedLimits,
+            HttpRequestTransport requestTransport,
+            HttpResponseTransport responseTransport,
+            OutboundHttpTransport outboundTransport,
+            ActorGroupHandle<?> groupHandle) {
         requireCallerRuntimeAffinity("spawn actors");
         ActorCell<?> callerCell = currentActor.get();
         if (callerCell != null && callerCell.kind == ActorKind.UNTRUSTED) {
@@ -2880,6 +3103,14 @@ public final class ActorRuntime implements AutoCloseable {
         Objects.requireNonNull(kind);
         Objects.requireNonNull(policy);
         Objects.requireNonNull(behaviorFactory);
+        ActorGroupRuntime<?> groupState = groupHandle == null
+                ? null
+                : resolveActorGroup(groupHandle);
+        if (groupState != null && groupState.kind() != kind) {
+            throw new SecurityException(
+                    "actor kind " + kind + " cannot join " + groupState.kind()
+                            + " actor group " + groupState.id());
+        }
         if (kind != ActorKind.UNTRUSTED) {
             requireWithinCeiling(policy);
         }
@@ -2918,15 +3149,24 @@ public final class ActorRuntime implements AutoCloseable {
 
         synchronized (runtimeLifecycleLock) {
             if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-            reserveActorSlot(kind);
+            boolean groupReserved = false;
+            boolean runtimeReserved = false;
+            boolean groupCommitted = false;
+            if (groupState != null) {
+                groupState.reserveActor();
+                groupReserved = true;
+            }
 
             ActorCell<M> cell = null;
             try {
+                reserveActorSlot(kind);
+                runtimeReserved = true;
                 ActorId id = ActorId.create();
                 ActorRef<M> ref = new ActorRef<>(id, kind);
                 cell = new ActorCell<>(
                         ref,
                         kind,
+                        groupHandle,
                         effectivePolicy,
                         behaviorFactory,
                         trustedFactory,
@@ -2935,6 +3175,11 @@ public final class ActorRuntime implements AutoCloseable {
                         responseTransport,
                         outboundTransport);
                 actors.put(id, cell);
+                if (groupState != null) {
+                    groupState.commitActor(id);
+                    groupCommitted = true;
+                    groupReserved = false;
+                }
                 cell.armLifetimeLimit();
                 return ref;
             } catch (RuntimeException | Error failure) {
@@ -2945,7 +3190,14 @@ public final class ActorRuntime implements AutoCloseable {
                     if (cell.outboundHttp != null) cell.outboundHttp.cancelFromRuntime(failure);
                     if (cell.memorySlice != null) cell.memorySlice.close();
                 }
-                releaseReservedActorSlot(kind);
+                if (groupState != null) {
+                    if (groupCommitted && cell != null) {
+                        groupState.removeActor(cell.ref.id());
+                    } else if (groupReserved) {
+                        groupState.abortActorReservation();
+                    }
+                }
+                if (runtimeReserved) releaseReservedActorSlot(kind);
                 throw failure;
             }
         }
@@ -3194,7 +3446,49 @@ public final class ActorRuntime implements AutoCloseable {
                 throw new IllegalStateException("actor count accounting underflow");
             }
             dispatcherGroup.releaseActor(cell.kind);
+            if (cell.groupHandle != null) {
+                ActorGroupRuntime<?> group = actorGroups.get(cell.groupHandle.id());
+                if (group != null) group.removeActor(cell.ref.id());
+            }
         }
+    }
+
+    private void emitFromActor(ActorCell<?> cell, Object output) {
+        Objects.requireNonNull(cell, "cell");
+        if (cell.groupHandle == null) {
+            throw new IllegalStateException(
+                    "actor " + cell.ref.id() + " has no ActorGroup; source actors must be grouped");
+        }
+        ActorGroupRuntime<?> group = resolveActorGroup(cell.groupHandle);
+        if (!group.containsActor(cell.ref.id())) {
+            throw new SecurityException(
+                    "actor " + cell.ref.id() + " is not a member of actor group " + group.id());
+        }
+
+        validateMessageGraph(output);
+        requireOwnedActorRefs(output, new IdentityHashMap<>(), 0);
+
+        if (cell.kind == ActorKind.UNTRUSTED) {
+            cell.checkUntrustedBudget(1);
+            try {
+                estimatePrivateTransportBytes(
+                        output,
+                        new IdentityHashMap<>(),
+                        0,
+                        cell.untrustedLimits.maxMailboxReturnBytes());
+            } catch (IllegalStateException tooLarge) {
+                throw new IllegalStateException(
+                        "untrusted actor outbox payload exceeds "
+                                + cell.untrustedLimits.maxMailboxReturnBytes()
+                                + " bytes; stream large HTTP responses through context.httpResponse()",
+                        tooLarge);
+            }
+        }
+
+        Object prepared = cell.kind.memoryIsolated()
+                ? isolateCopy(output)
+                : freezeForTransport(output);
+        group.emit(cell.ref, prepared);
     }
 
     public <T> SyncCell<T> syncCell(T initialValue) {
@@ -3447,6 +3741,7 @@ public final class ActorRuntime implements AutoCloseable {
         boolean mailboxSlotTransferred = false;
         try {
         validateMessageGraph(message);
+        requireActorGroupCapabilityTransport(cell, message, new IdentityHashMap<>(), 0);
         requireMutexTransport(cell, message, new IdentityHashMap<>(), 0);
         requireOwnedActorRefs(message, new IdentityHashMap<>(), 0);
         long runtimeRemaining = Math.max(0L, policyCeiling.maxHeapBytes() - actorMemoryBytes());
@@ -3595,6 +3890,66 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalStateException("actor runtime is closed");
         }
         return shared;
+    }
+
+    private void requireActorGroupCapabilityTransport(
+            ActorCell<?> target,
+            Object value,
+            IdentityHashMap<Object, Boolean> visiting,
+            int depth) {
+        requireGraphDepth(depth);
+        if (value == null || isScalar(value)
+                || value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.Recipient<?>) return;
+        if (value instanceof ActorGroupRef<?>) {
+            throw new SecurityException(
+                    "ActorGroupRef is control-plane authority and cannot cross actor inboxes");
+        }
+        if (value instanceof ActorGroupHandle<?> handle) {
+            ActorGroupRuntime<?> group = resolveActorGroup(handle);
+            if (target.kind == ActorKind.UNTRUSTED) {
+                throw new SecurityException(
+                        "untrusted actors cannot receive spawn-capable ActorGroupHandle values");
+            }
+            if (group.kind() != target.kind) {
+                throw new SecurityException(
+                        "actor-group handle domain " + group.kind()
+                                + " cannot enter " + target.kind + " actor inbox");
+            }
+            return;
+        }
+        if (value instanceof Shared<?> shared) {
+            requireActorGroupCapabilityTransport(
+                    target, shared.value(), visiting, depth + 1);
+            return;
+        }
+        if (visiting.put(value, Boolean.TRUE) != null) {
+            throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
+        }
+        try {
+            if (value instanceof List<?> list) {
+                for (Object item : list) {
+                    requireActorGroupCapabilityTransport(target, item, visiting, depth + 1);
+                }
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) {
+                    requireActorGroupCapabilityTransport(target, item, visiting, depth + 1);
+                }
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    requireActorGroupCapabilityTransport(target, entry.getKey(), visiting, depth + 1);
+                    requireActorGroupCapabilityTransport(target, entry.getValue(), visiting, depth + 1);
+                }
+            } else if (value.getClass().isArray()) {
+                int length = Array.getLength(value);
+                for (int i = 0; i < length; i++) {
+                    requireActorGroupCapabilityTransport(
+                            target, Array.get(value, i), visiting, depth + 1);
+                }
+            }
+        } finally {
+            visiting.remove(value);
+        }
     }
 
     private void requireMutexTransport(
@@ -4015,7 +4370,12 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "ActorSpawn is local control state and cannot cross actor boundaries");
         }
+        if (value instanceof ActorGroupRef<?>) {
+            throw new IllegalArgumentException(
+                    "ActorGroupRef is supervisor/control-plane state and cannot cross actor boundaries");
+        }
         if (value == null || isScalar(value)
+                || value instanceof ActorGroupHandle<?>
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof ActorRuntime.Recipient<?>
                 || value instanceof Shared<?>
@@ -4811,6 +5171,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final class ActorCell<M> {
         private final ActorRef<M> ref;
         private final ActorKind kind;
+        private final ActorGroupHandle<?> groupHandle;
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
@@ -4858,6 +5219,7 @@ public final class ActorRuntime implements AutoCloseable {
         private ActorCell(
                 ActorRef<M> ref,
                 ActorKind kind,
+                ActorGroupHandle<?> groupHandle,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
                 boolean trustedFactory,
@@ -4867,6 +5229,7 @@ public final class ActorRuntime implements AutoCloseable {
                 OutboundHttpTransport outboundTransport) {
             this.ref = ref;
             this.kind = kind;
+            this.groupHandle = groupHandle;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
@@ -5402,6 +5765,18 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public ActorKind kind() { return kind; }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
+                    }
+                    @Override public Optional<ActorGroupHandle<?>> group() {
+                        if (kind == ActorKind.UNTRUSTED) return Optional.empty();
+                        return Optional.ofNullable(groupHandle);
+                    }
+                    @Override public Optional<ActorGroupId> groupId() {
+                        return groupHandle == null
+                                ? Optional.empty()
+                                : Optional.of(groupHandle.id());
+                    }
+                    @Override public void emit(Object output) {
+                        ActorRuntime.this.emitFromActor(ActorCell.this, output);
                     }
                     @Override public Optional<HttpRequestCapability> httpRequest() {
                         return Optional.ofNullable(httpRequest);
