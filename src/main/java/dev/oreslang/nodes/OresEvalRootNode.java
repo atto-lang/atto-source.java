@@ -1299,6 +1299,21 @@ public final class OresEvalRootNode extends RootNode {
             return codeUnitId + "::" + module.name();
         }
 
+        private String statefulModuleSchema(Ast.ModuleDecl module) {
+            StringBuilder schema = new StringBuilder(module.name()).append('|');
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field)
+                        || field.bindingKind() == Ast.BindingKind.CONST) continue;
+                schema.append(field.name())
+                        .append(':')
+                        .append(field.bindingKind())
+                        .append(':')
+                        .append(field.type())
+                        .append(';');
+            }
+            return schema.toString();
+        }
+
         private ModuleState initializeStatefulModule(Ast.ModuleDecl module) {
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             Env env = new Env(null);
@@ -1310,22 +1325,52 @@ public final class OresEvalRootNode extends RootNode {
                                     + module.name() + "." + field.name());
                 }
                 Object value = eval(field.initializer(), env);
-                fields.put(field.name(), value);
+                if (field.bindingKind() != Ast.BindingKind.CONST) {
+                    fields.put(field.name(), value);
+                }
                 env.define(field.name(), value, field.bindingKind());
             }
-            return new ModuleState(module, fields);
+            return new ModuleState(
+                    module.name(),
+                    statefulModuleSchema(module),
+                    fields);
+        }
+
+        private void requireCompatibleStatefulModule(
+                ModuleState state,
+                Ast.ModuleDecl implementationModule) {
+            String currentSchema = statefulModuleSchema(implementationModule);
+            if (!state.moduleName.equals(implementationModule.name())
+                    || !state.schema.equals(currentSchema)) {
+                throw new IllegalStateException(
+                        "stateful module schema changed for "
+                                + implementationModule.name()
+                                + "; explicit state migration is required before hot reload");
+            }
         }
 
         private Object callStatefulModuleFunction(
                 ModuleState state,
+                Ast.ModuleDecl implementationModule,
                 Ast.FunctionDecl fn,
                 List<?> args) {
+            requireCompatibleStatefulModule(state, implementationModule);
             List<?> normalized = normalizeFunctionArguments(fn, args);
             Env env = new Env(null, fn.nonLexical());
 
-            for (Ast.Decl decl : state.module.declarations()) {
+            for (Ast.Decl decl : implementationModule.declarations()) {
                 if (!(decl instanceof Ast.FieldDecl field)) continue;
-                Object value = state.fields.get(field.name());
+                Object value;
+                if (field.bindingKind() == Ast.BindingKind.CONST) {
+                    value = eval(field.initializer(), env);
+                } else {
+                    value = state.fields.get(field.name());
+                    if (value == null && !state.fields.containsKey(field.name())) {
+                        throw new IllegalStateException(
+                                "stateful module field missing from persisted state: "
+                                        + implementationModule.name() + "." + field.name());
+                    }
+                }
                 env.define(field.name(), value, field.bindingKind());
             }
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -1337,17 +1382,21 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             Object result = null;
+            boolean succeeded = false;
             try {
                 executeBlock(fn.body(), env);
+                succeeded = true;
             } catch (ReturnSignal signal) {
                 result = shapeReturnedValue(
                         fn.returnType(),
                         signal.value,
-                        "module function " + state.module.name() + "." + fn.name());
-            } finally {
-                // Only LET module fields can change. The entire operation runs
-                // under the global owner or slot-singleton cell lock.
-                for (Ast.Decl decl : state.module.declarations()) {
+                        "module function " + implementationModule.name() + "." + fn.name());
+                succeeded = true;
+            }
+
+            if (succeeded) {
+                LinkedHashMap<String, Object> replacements = new LinkedHashMap<>();
+                for (Ast.Decl decl : implementationModule.declarations()) {
                     if (!(decl instanceof Ast.FieldDecl field)
                             || field.bindingKind() != Ast.BindingKind.LET) continue;
                     Object updated = env.lookup(field.name());
@@ -1355,7 +1404,14 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalStateException(
                                 "module field disappeared during execution: " + field.name());
                     }
-                    state.fields.put(field.name(), updated);
+                    replacements.put(field.name(), updated);
+                }
+
+                Runnable publish = () -> replacements.forEach(state.fields::put);
+                if (implementationModule.storage() == Ast.ModuleStorage.GLOBAL) {
+                    ProcessGlobalRegistry.commitIfActive(publish);
+                } else {
+                    publish.run();
                 }
             }
             return result;
@@ -1470,7 +1526,7 @@ public final class OresEvalRootNode extends RootNode {
                             yield (Invokable) args -> handle.call(
                                     args,
                                     (state, delivered) ->
-                                            callStatefulModuleFunction(state, fn, delivered));
+                                            callStatefulModuleFunction(state, module, fn, delivered));
                         }
                         case SINGLETON -> {
                             MemorySlotSingletonRegistry.Handle<ModuleState> handle =
@@ -1478,7 +1534,7 @@ public final class OresEvalRootNode extends RootNode {
                             yield (Invokable) args -> handle.call(
                                     args,
                                     (state, delivered) ->
-                                            callStatefulModuleFunction(state, fn, delivered));
+                                            callStatefulModuleFunction(state, ref.module(), fn, delivered));
                         }
                     };
                 }
@@ -1487,6 +1543,14 @@ public final class OresEvalRootNode extends RootNode {
                         && field.visibility() == Ast.Visibility.PUBLIC) {
                     // Mutable public state is rejected statically. Public
                     // const/val reads still execute through the owning authority.
+                    if (field.bindingKind() == Ast.BindingKind.CONST) {
+                        if (field.initializer() == null) {
+                            throw new IllegalArgumentException(
+                                    "module const has no initializer: "
+                                            + module.name() + "." + name);
+                        }
+                        return eval(field.initializer(), new Env(null));
+                    }
                     return switch (module.storage()) {
                         case ORDINARY -> {
                             if (field.initializer() == null) {
@@ -1498,10 +1562,16 @@ public final class OresEvalRootNode extends RootNode {
                         }
                         case GLOBAL -> globalHandle(module).call(
                                 List.of(),
-                                (state, ignored) -> state.fields.get(field.name()));
+                                (state, ignored) -> {
+                                    requireCompatibleStatefulModule(state, module);
+                                    return state.fields.get(field.name());
+                                });
                         case SINGLETON -> singletonHandle(module).call(
                                 List.of(),
-                                (state, ignored) -> state.fields.get(field.name()));
+                                (state, ignored) -> {
+                                    requireCompatibleStatefulModule(state, module);
+                                    return state.fields.get(field.name());
+                                });
                     };
                 }
             }
@@ -1995,11 +2065,16 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private static final class ModuleState {
-        private final Ast.ModuleDecl module;
+        private final String moduleName;
+        private final String schema;
         private final LinkedHashMap<String, Object> fields;
 
-        private ModuleState(Ast.ModuleDecl module, LinkedHashMap<String, Object> fields) {
-            this.module = Objects.requireNonNull(module);
+        private ModuleState(
+                String moduleName,
+                String schema,
+                LinkedHashMap<String, Object> fields) {
+            this.moduleName = Objects.requireNonNull(moduleName);
+            this.schema = Objects.requireNonNull(schema);
             this.fields = Objects.requireNonNull(fields);
         }
     }
