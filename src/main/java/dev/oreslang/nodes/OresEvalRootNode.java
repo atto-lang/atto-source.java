@@ -350,10 +350,6 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
-            if (stmt instanceof Ast.YieldStmt) {
-                throw new IllegalStateException(
-                        "yield reached the recursive evaluator without generator-frame lowering");
-            }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
             if (stmt instanceof Ast.IfStmt ifStmt) {
@@ -561,6 +557,10 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.SpawnExpr spawned) {
                 return spawnFunction(spawned.call(), env);
+            }
+            if (expr instanceof Ast.YieldExpr) {
+                throw new IllegalStateException(
+                        "yield reached the recursive evaluator without generator-frame lowering");
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
