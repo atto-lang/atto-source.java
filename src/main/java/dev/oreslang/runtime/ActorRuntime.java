@@ -5530,6 +5530,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final Object executionDomain = new Object();
         private final ActorGenerationLease generationLease;
         private int activeTurns;
+        private boolean finalizing;
         private boolean finalized;
         private volatile boolean logicalTurnSuspended;
         /**
@@ -5782,8 +5783,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void finalizeStopLocked() {
-            if (finalized || activeTurns != 0) return;
-            finalized = true;
+            if (finalized || finalizing || activeTurns != 0) return;
+            finalizing = true;
+            try {
             if (!ref.readiness().isDone()) {
                 Throwable cause = ref.terminationCause.get();
                 ref.failReady(cause != null
@@ -5837,8 +5839,14 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable leaseFailure) {
                 ref.terminationCause.compareAndSet(null, leaseFailure);
             }
+            // Publish finalized only after runtime registry/accounting teardown
+            // and generation release have completed.
+            finalized = true;
             ref.finalization.complete(null);
-            lifecycleLock.notifyAll();
+            } finally {
+                finalizing = false;
+                lifecycleLock.notifyAll();
+            }
         }
 
         private boolean finalized() {
