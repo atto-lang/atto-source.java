@@ -104,7 +104,7 @@ public final class OwnershipChecker {
             }
             boolean actorBoundary = klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
-                    && (method.visibility() == Ast.Visibility.PUBLIC
+                    && (method.name().equals("receive")
                         || method.name().equals("constructor"));
             for (Ast.Param param : method.parameters()) {
                 scope.define(
@@ -675,42 +675,31 @@ public final class OwnershipChecker {
             if (concreteReceiver != null
                     && concreteReceiver.name().equals("ActorRef")
                     && concreteReceiver.arguments().size() == 1) {
-                Ast.TypeRef protocol = concreteReceiver.arguments().getFirst();
-                Ast.ClassDecl actorClass = findClass(protocol.name());
-                if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
-                    ResolvedMethod actorTarget = findMethodTarget(
-                            actorClass,
-                            protocol,
-                            member.member(),
-                            call.arguments().size(),
-                            new LinkedHashSet<>());
-                    if (actorTarget != null
-                            && actorTarget.method().visibility() == Ast.Visibility.PUBLIC
-                            && !actorTarget.method().name().equals("constructor")) {
-                        Ast.MethodDecl method = actorTarget.method();
-                        Map<String, Ast.TypeRef> ownerBindings = genericBindings(
-                                actorTarget.owner().genericParameters(),
-                                actorTarget.ownerType().arguments());
-                        CallSignature signature = specializeCall(
-                                actorTarget.owner().genericParameters(),
-                                List.of(),
-                                method.parameters(),
-                                method.returnType(),
-                                call,
-                                scope,
-                                ownerBindings);
-                        checkArguments(
-                                call.arguments(),
-                                signature.parameters(),
-                                scope,
-                                "actor protocol method " + actorTarget.owner().name() + "." + method.name());
-                        Ast.TypeRef future = new Ast.TypeRef(
-                                "Future",
-                                List.of(signature.result()),
-                                false);
-                        return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
+                return switch (member.member()) {
+                    case "send" -> {
+                        if (call.arguments().size() != 1) {
+                            throw error("ActorRef.send expects exactly one message");
+                        }
+                        ValueInfo message = checkExpr(call.arguments().getFirst(), scope, true);
+                        if (containsMutexGuardType(message.type)) {
+                            throw error("guard-bearing values cannot cross an actor mailbox boundary");
+                        }
+                        yield new ValueInfo(Ast.TypeRef.simple("void"), ValueKind.COPY, null);
                     }
-                }
+                    case "is_alive" -> {
+                        if (!call.arguments().isEmpty()) {
+                            throw error("ActorRef.is_alive expects no arguments");
+                        }
+                        yield new ValueInfo(Ast.TypeRef.simple("bool"), ValueKind.COPY, null);
+                    }
+                    case "receive" -> throw error(
+                            "actor receive(message) is runtime-owned; use ActorRef.send(message)");
+                    case "mailbox" -> throw error(
+                            "ActorRef is not an application mailbox object; use send(message)");
+                    default -> throw error(
+                            "unknown ActorRef operation '" + member.member()
+                                    + "'; ActorRef exposes send(message), id, and lifecycle operations");
+                };
             }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
