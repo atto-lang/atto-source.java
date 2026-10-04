@@ -95,7 +95,7 @@ final class SecureJitHotReloadDomainTest {
     }
 
     @Test
-    void activationDrainsPinnedOldGenerationAndReclaimsAfterLeaseRelease() {
+    void activationDrainsPinnedOldGenerationAndReclaimsAfterLeaseRelease() throws Exception {
         try (HotReloadManager hot = new HotReloadManager(
                 IsolatePolicy.developer(),
                 ExecutionProfile.serverJit())) {
@@ -120,17 +120,13 @@ final class SecureJitHotReloadDomainTest {
 
             lease.close();
 
-            // Reclamation is VM CONTROL-plane maintenance, not work performed
-            // inline by the lease-releasing actor/request thread.
             long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
-            while ((!first.closed() || hot.liveGenerations() != 1)
-                    && System.nanoTime() < deadline) {
-                Thread.onSpinWait();
+            while (!first.closed() && System.nanoTime() < deadline) {
+                Thread.sleep(1);
             }
             assertTrue(first.closed(),
-                    "final lease release must eventually close the draining generation");
-            assertEquals(1, hot.liveGenerations(),
-                    "closed generation must also be removed from VM ownership");
+                    "control-plane generation reclamation must complete after the final lease release");
+            assertEquals(1, hot.liveGenerations());
             assertEquals(HotReloadManager.GenerationState.ACTIVE, second.state());
         }
     }
