@@ -6,6 +6,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <stdint.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,6 +65,12 @@ static int restore_fd_flags(int fd, int original_flags, int prior_error) {
     return 0;
 }
 
+static int64_t monotonic_millis(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0) return -1;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
 static int connect_one(int fd, const struct sockaddr *address, socklen_t length, jint timeout_ms) {
     if (timeout_ms < 0) {
         errno = EINVAL;
@@ -96,9 +103,31 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
     poll_fd.fd = fd;
     poll_fd.events = POLLOUT;
 
-    do {
-        result = poll(&poll_fd, 1, timeout_ms);
-    } while (result < 0 && errno == EINTR);
+    int64_t start_ms = monotonic_millis();
+    if (start_ms < 0) {
+        int saved = errno;
+        if (restore_fd_flags(fd, original_flags, saved) < 0) return -1;
+        return -1;
+    }
+    int64_t deadline_ms = start_ms + timeout_ms;
+
+    while (true) {
+        int64_t now_ms = monotonic_millis();
+        if (now_ms < 0) {
+            int saved = errno;
+            if (restore_fd_flags(fd, original_flags, saved) < 0) return -1;
+            return -1;
+        }
+        int64_t remaining_ms = deadline_ms - now_ms;
+        if (remaining_ms <= 0) {
+            if (restore_fd_flags(fd, original_flags, ETIMEDOUT) < 0) return -1;
+            return -1;
+        }
+
+        result = poll(&poll_fd, 1, (int)remaining_ms);
+        if (result >= 0) break;
+        if (errno != EINTR) break;
+    }
 
     if (result == 0) {
         if (restore_fd_flags(fd, original_flags, ETIMEDOUT) < 0) return -1;
@@ -670,6 +699,10 @@ Java_dev_oreslang_net_NativeSocketBridge_getSoTimeout(JNIEnv *env, jclass cls, j
         throw_errno(env, "getsockopt(SO_RCVTIMEO)");
         return -1;
     }
-    long millis = value.tv_sec * 1000L + value.tv_usec / 1000L;
+    int64_t millis = (int64_t)value.tv_sec * 1000 + value.tv_usec / 1000;
+    if (millis < 0 || millis > INT32_MAX) {
+        throw_with_message(env, "SO_TIMEOUT value is out of range");
+        return -1;
+    }
     return (jint)millis;
 }
