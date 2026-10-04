@@ -46,22 +46,44 @@ Import paths are part of the AST/compiler contract; filesystem/package resolutio
 
 ### Hot-load entry export
 
-Foreign/hot-loaded code may expose one explicit code-unit entrypoint without introducing ordinary default imports:
+Foreign/hot-loaded code may expose one explicit code-unit entrypoint without introducing JavaScript-style default exports:
 
 ```ores
-export entry actor Worker;
+export entry Worker;
 
-define actor Worker {
-  pub receive(ActorMessage message): void {
-    // runtime-owned mailbox turn
-    return;
+define actor Worker as
+  pub run(request: Request): Response {
+    return self.handle(request);
   }
-}
+
+  private handle(request: Request): Response {
+    // ...
+  }
+end
 ```
 
-The general marker is `export entry <kind> <Name>;`, where `<kind>` is `actor`, `class`, `module`, or `fnc`. A code unit may declare at most one entry marker. The target must be a local top-level declaration of the declared kind; actor/class mismatches fail closed, and a `fnc` entry must be public.
+`export entry Worker;` is deliberately **untyped loader metadata**. The target
+declaration still carries its real type: it may be one top-level class/actor,
+one public top-level non-actor `fnc`/`routine`, or one named module. The
+compiler rejects missing targets, nested entry markers, actor-callable entries,
+and names that are ambiguous across declaration kinds.
 
-This entry marker is loader metadata, not a JavaScript-style default export. Normal Oreslang source still imports by explicit kind/name, and `import Foo from "./plugin"` remains invalid. A hot loader may resolve the entry marker when the embedding protocol intentionally asks for the artifact's canonical entrypoint.
+Code that intentionally wants another unit's canonical entry can say:
+
+```ores
+import entry Plugin from "./worker.ores";
+```
+
+or equivalently:
+
+```ores
+import entry as Plugin from "./worker.ores";
+```
+
+There may be at most one entry marker per code unit. `import entry` resolves
+that marker; it does not mean "import a default export". Ordinary source imports
+remain explicit by declaration kind/name, so `import Foo from "./plugin"`
+remains invalid.
 
 ### Circular imports and file initialization
 
