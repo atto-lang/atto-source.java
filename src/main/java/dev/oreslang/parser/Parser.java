@@ -109,6 +109,8 @@ public final class Parser {
     private Ast.ImportDecl parseImport() {
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
+        java.util.Map<String, String> aliases = new java.util.LinkedHashMap<>();
+        java.util.Set<String> localNames = new java.util.LinkedHashSet<>();
         boolean wildcard = false;
         String namespace = null;
 
@@ -120,19 +122,25 @@ public final class Parser {
         } else {
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
+            else if (match(ACTOR)) kind = Ast.ImportKind.ACTOR;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
-            else throw error(peek(), "expected module, class, fnc, or * after import");
+            else throw error(peek(),
+                    "imports are named by kind; expected module, class, actor, fnc, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
                 consume(AS, "wildcard import requires 'as <namespace>'");
                 namespace = consume(IDENT, "expected import namespace").lexeme();
+            } else if (match(LPAREN)) {
+                if (check(RPAREN)) throw error(peek(), "import selection cannot be empty");
+                do parseImportName(names, aliases, localNames, true); while (match(COMMA));
+                consume(RPAREN, "expected ')' after imported names");
             } else if (match(LBRACE)) {
                 if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consume(IDENT, "expected imported name").lexeme()); while (match(COMMA));
+                do parseImportName(names, aliases, localNames, true); while (match(COMMA));
                 consume(RBRACE, "expected '}' after imported names");
             } else {
-                names.add(consume(IDENT, "expected imported name").lexeme());
+                parseImportName(names, aliases, localNames, false);
             }
         }
 
@@ -140,7 +148,31 @@ public final class Parser {
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
-        return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+        return new Ast.ImportDecl(kind, names, wildcard, namespace, path, aliases);
+    }
+
+    private void parseImportName(
+            List<String> names,
+            java.util.Map<String, String> aliases,
+            java.util.Set<String> localNames,
+            boolean allowColonAlias) {
+        String importedName = consume(IDENT, "expected imported name").lexeme();
+        if (names.contains(importedName)) {
+            throw error(previous(), "duplicate imported export '" + importedName + "'");
+        }
+
+        String localName = importedName;
+        if (match(AS)) {
+            localName = consume(IDENT, "expected local alias after 'as'").lexeme();
+        } else if (allowColonAlias && match(COLON)) {
+            localName = consume(IDENT, "expected local alias after ':'").lexeme();
+        }
+
+        if (!localNames.add(localName)) {
+            throw error(previous(), "duplicate local import name '" + localName + "'");
+        }
+        names.add(importedName);
+        if (!localName.equals(importedName)) aliases.put(importedName, localName);
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
