@@ -36,12 +36,13 @@ visibility      = [ "pub" | "private" ] ;
 callable_modifier = "abstract" | "async" | "nlex" ;
 method_modifier   = "abstract" | "async" ;
 
-callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
+callable_decl   = { annotation } visibility { callable_modifier } callable_kind callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 callable_kind   = "fnc" | "routine" ;
+callable_name   = IDENT | "stop" | "do" | "done" ;
 
 actor_callable_decl
-                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
@@ -78,7 +79,7 @@ method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list 
 explicit_receiver = "self" type_ref ;
 
 static_function_decl
-                = { annotation } visibility "static" [ "async" ] "fnc" IDENT [ generic_params ]
+                = { annotation } visibility "static" [ "async" ] "fnc" callable_name [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 interface_decl  = visibility "interface" IDENT [ generic_params ]
@@ -231,6 +232,10 @@ stmt_terminator   = ";" | SAFE_STRUCTURAL_BOUNDARY ;
 member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 
 (* Semantic restrictions:
+   - stop/do/done are globally reserved tokens. They are invalid as binding,
+     parameter, type, class, module, namespace, or ordinary member identifiers.
+     They are allowed only as callable names/invocations and as object/map keys
+     (plus naturally inside strings/comments).
    - Single- and double-quoted object keys are equivalent static string keys.
      Reserved stop/do/done are legal static object/map/member keys.
    - A backtick-delimited object key evaluates its enclosed expression at
