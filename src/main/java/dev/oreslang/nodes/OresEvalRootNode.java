@@ -405,6 +405,13 @@ public final class OresEvalRootNode extends RootNode {
                 return callFunctionBodyRaw(fn, normalized);
             }
 
+            if (ActorRuntime.inActorExecution()) {
+                throw new IllegalArgumentException(
+                        "actor callable '" + fn.name()
+                                + "' cannot be synchronously invoked from another actor turn; "
+                                + "use mailbox-oriented actor composition");
+            }
+
             ActorRuntime.ActorKind runtimeKind = switch (fn.actorKind()) {
                 case NONE -> throw new AssertionError("non-actor callable reached actor lowering");
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
