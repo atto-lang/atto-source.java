@@ -470,7 +470,8 @@ public final class TreeShaker {
                 for (Ast.Decl declaration : module.declarations()) {
                     declarations.add(rewriteDeclaration(module.name(), declaration));
                 }
-                modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), declarations));
+                modules.add(new Ast.ModuleDecl(
+                        module.name(), module.storage(), module.annotations(), declarations));
             }
             return new Ast.Program(program.namespace(), program.imports(), modules);
         }
@@ -504,7 +505,8 @@ public final class TreeShaker {
                         field.visibility(),
                         field.bindingKind(),
                         field.type(),
-                        initializer);
+                        initializer,
+                        field.annotations());
             }
             if (declaration instanceof Ast.ClassDecl klass) {
                 List<Ast.FieldDecl> fields = new ArrayList<>();
@@ -605,6 +607,19 @@ public final class TreeShaker {
                 }
                 if (branches.isEmpty()) return elseBody;
                 return List.of(new Ast.IfStmt(branches, elseBody));
+            }
+            if (statement instanceof Ast.SwitchStmt switched) {
+                Ast.Expr subject = rewriteExpression(switched.subject(), module, locals);
+                List<Ast.SwitchClause> clauses = new ArrayList<>();
+                for (Ast.SwitchClause clause : switched.clauses()) {
+                    LinkedHashMap<String, Object> clauseLocals = new LinkedHashMap<>(locals);
+                    addPatternLocals(clause.pattern(), clauseLocals);
+                    clauses.add(new Ast.SwitchClause(
+                            clause.pattern(),
+                            rewriteExpression(clause.guard(), module, clauseLocals),
+                            rewriteStatements(clause.body(), module, clauseLocals)));
+                }
+                return List.of(new Ast.SwitchStmt(subject, clauses));
             }
             if (statement instanceof Ast.TryStmt tried) {
                 LinkedHashMap<String, Object> catchLocals = new LinkedHashMap<>(locals);
@@ -921,6 +936,14 @@ public final class TreeShaker {
                         scanStatements(module, branch.body(), new LinkedHashSet<>(locals));
                     }
                     scanStatements(module, conditional.elseBody(), new LinkedHashSet<>(locals));
+                } else if (statement instanceof Ast.SwitchStmt switched) {
+                    scanExpression(module, switched.subject(), locals);
+                    for (Ast.SwitchClause clause : switched.clauses()) {
+                        LinkedHashSet<String> clauseLocals = new LinkedHashSet<>(locals);
+                        addPatternLocals(clause.pattern(), clauseLocals);
+                        scanExpression(module, clause.guard(), clauseLocals);
+                        scanStatements(module, clause.body(), clauseLocals);
+                    }
                 } else if (statement instanceof Ast.TryStmt tried) {
                     scanStatements(module, tried.body(), new LinkedHashSet<>(locals));
                     LinkedHashSet<String> catchLocals = new LinkedHashSet<>(locals);
@@ -941,6 +964,58 @@ public final class TreeShaker {
                     scanExpression(module, loop.update(), loopLocals);
                     scanStatements(module, loop.body(), new LinkedHashSet<>(loopLocals));
                 }
+            }
+        }
+
+        private static void addPatternLocals(
+                Ast.Pattern pattern,
+                Map<String, Object> locals) {
+            if (pattern instanceof Ast.BindingPattern binding) {
+                locals.put(binding.name(), UNKNOWN);
+                return;
+            }
+            if (pattern instanceof Ast.TypePattern typed && typed.bindingName() != null) {
+                locals.put(typed.bindingName(), UNKNOWN);
+                return;
+            }
+            if (pattern instanceof Ast.SequencePattern sequence) {
+                for (Ast.Pattern child : sequence.elements()) addPatternLocals(child, locals);
+                return;
+            }
+            if (pattern instanceof Ast.ObjectPattern object) {
+                for (Ast.ObjectPatternField field : object.fields()) {
+                    addPatternLocals(field.pattern(), locals);
+                }
+                return;
+            }
+            if (pattern instanceof Ast.VariantPattern variant) {
+                for (Ast.Pattern child : variant.arguments()) addPatternLocals(child, locals);
+            }
+        }
+
+        private static void addPatternLocals(
+                Ast.Pattern pattern,
+                Set<String> locals) {
+            if (pattern instanceof Ast.BindingPattern binding) {
+                locals.add(binding.name());
+                return;
+            }
+            if (pattern instanceof Ast.TypePattern typed && typed.bindingName() != null) {
+                locals.add(typed.bindingName());
+                return;
+            }
+            if (pattern instanceof Ast.SequencePattern sequence) {
+                for (Ast.Pattern child : sequence.elements()) addPatternLocals(child, locals);
+                return;
+            }
+            if (pattern instanceof Ast.ObjectPattern object) {
+                for (Ast.ObjectPatternField field : object.fields()) {
+                    addPatternLocals(field.pattern(), locals);
+                }
+                return;
+            }
+            if (pattern instanceof Ast.VariantPattern variant) {
+                for (Ast.Pattern child : variant.arguments()) addPatternLocals(child, locals);
             }
         }
 
