@@ -682,6 +682,10 @@ public final class TypeChecker {
                     && factoryCall.member().equals("new")) {
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
+                if (factory.name().equals("RwLock") && currentActorKind != Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "actors cannot create external RwLock state; receive an explicit read capability through the mailbox");
+                }
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
                 if (element instanceof Borrow) {
                     throw new IllegalArgumentException(
