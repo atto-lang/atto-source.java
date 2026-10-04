@@ -54,7 +54,7 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /** Result of one resumable task turn. */
-    public sealed interface Step<T> permits Done, Await { }
+    public sealed interface Step<T> permits Done, Await, TailAwait { }
 
     /** The async task has produced its final value. */
     public record Done<T>(T value) implements Step<T> { }
@@ -68,6 +68,14 @@ public final class OresScheduler implements AutoCloseable {
             Objects.requireNonNull(future, "future");
         }
     }
+
+    /**
+     * Proper async tail transfer. The compiler has already replaced the
+     * current logical frame. The scheduler still treats this as an await
+     * boundary so execution can resume only after the current guest turn has
+     * fully unwound and control has returned through dispatch.
+     */
+    public record TailAwait<T>() implements Step<T> { }
 
     /**
      * Input delivered to a compiler-generated state machine when it starts or
@@ -241,6 +249,10 @@ public final class OresScheduler implements AutoCloseable {
 
     public static <T> Step<T> await(OresFuture<?> future) {
         return new Await<>(Objects.requireNonNull(future, "future"));
+    }
+
+    public static <T> Step<T> tailAwait() {
+        return new TailAwait<>();
     }
 
     /**
@@ -433,6 +445,11 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                if (step instanceof TailAwait<?>) {
+                    armTailAwait();
+                    return;
+                }
+
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
@@ -475,6 +492,22 @@ public final class OresScheduler implements AutoCloseable {
                 });
             } catch (RuntimeException | Error registrationFailure) {
                 failTerminal(registrationFailure);
+            }
+        }
+
+        /**
+         * Tail transfer publishes a synthetic resume only after moving the task
+         * to WAITING. scheduleReadyResume() is suppressed while this turn still
+         * owns the execution lease, so afterCarrierTurn() is the earliest point
+         * at which the replacement frame can be dispatched.
+         */
+        private void armTailAwait() {
+            if (!phase.compareAndSet(RUNNING, WAITING)) {
+                return;
+            }
+            if (!pendingResume.compareAndSet(null, Resume.completed(null, null))) {
+                failTerminal(new IllegalStateException(
+                        "tail-await attempted to publish more than one resume"));
             }
         }
 
