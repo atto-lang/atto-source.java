@@ -124,12 +124,16 @@ final class RoutineAndLoopTest {
                 pub interface Foo extends Bar {
                 }
 
+                define class Branded as
+                  pub val 'marking/branding' markerBrand;
+                end
+
                 fnc structural(@Structural Foo value): String {
                   return value.markerBrand;
                 }
 
                 fnc main(): void {
-                  val branded = obj{markerBrand: "marking/branding"};
+                  val branded = new Branded("marking/branding");
                   stdio.println(structural(branded));
                   return;
                 }
@@ -140,12 +144,16 @@ final class RoutineAndLoopTest {
                   markerBrand: 'marking/branding'
                 }
 
+                define class Branded as
+                  pub val 'marking/branding' markerBrand;
+                end
+
                 fnc nominal(Foo value): String {
                   return "ok";
                 }
 
                 fnc main(): void {
-                  val branded = obj{markerBrand: "marking/branding"};
+                  val branded = new Branded("marking/branding");
                   stdio.println(nominal(branded));
                   return;
                 }
