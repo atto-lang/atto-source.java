@@ -619,11 +619,9 @@ final class ActorRuntimeTest {
 
             ref.send("read");
             assertTrue(checked.await(2, TimeUnit.SECONDS));
-            assertInstanceOf(IllegalStateException.class, observed.get());
-            assertTrue(observed.get().getMessage().contains("private actors cannot access synchronized shared memory"));
+            assertInstanceOf(SecurityException.class, observed.get());
         }
     }
-
     @Test
     void privateAndSharedMemoryCompeteForOneParentCeiling() throws Exception {
         IsolatePolicy parent = new IsolatePolicy(
@@ -752,13 +750,12 @@ final class ActorRuntimeTest {
                     () -> ref.send(foreignShared));
             assertTrue(sharedFailure.getMessage().contains("different ActorRuntime"));
 
-            IllegalArgumentException cellFailure = assertThrows(
-                    IllegalArgumentException.class,
+            SecurityException cellFailure = assertThrows(
+                    SecurityException.class,
                     () -> ref.send(foreignCell));
-            assertTrue(cellFailure.getMessage().contains("different ActorRuntime"));
+            assertTrue(cellFailure.getMessage().contains("SyncCell"));
         }
     }
-
     @Test
     void privateActorsCopyForeignReadonlyValuesInsteadOfRetainingRuntimeHandle() throws Exception {
         try (ActorRuntime left = new ActorRuntime();
@@ -1748,7 +1745,7 @@ final class ActorRuntimeTest {
     }
 
     @Test
-    void closeTimeoutDoesNotBlockOnSharedCellHeldByUncooperativeTurn() throws Exception {
+    void uncooperativeActorCannotAcquireSyncCellBeforeCloseTimeout() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(
                 1,
                 1,
@@ -1760,18 +1757,24 @@ final class ActorRuntimeTest {
                 64);
         ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config);
         AtomicBoolean release = new AtomicBoolean();
-        CountDownLatch holdingCell = new CountDownLatch(1);
+        CountDownLatch checked = new CountDownLatch(1);
+        AtomicReference<Throwable> observed = new AtomicReference<>();
 
         ActorRuntime.SyncCell<Integer> cell = runtime.syncCell(0);
         var actor = runtime.<String>spawnSharedTrusted(
                 IsolatePolicy.developer(),
-                ignored -> (message, turn) -> cell.update(value -> {
-                    holdingCell.countDown();
+                ignored -> (message, turn) -> {
+                    try {
+                        cell.update(value -> value + 1);
+                    } catch (Throwable failure) {
+                        observed.set(failure);
+                    }
+                    checked.countDown();
                     while (!release.get()) Thread.onSpinWait();
-                    return value + 1;
-                }));
+                });
         actor.send("hold");
-        assertTrue(holdingCell.await(2, TimeUnit.SECONDS));
+        assertTrue(checked.await(2, TimeUnit.SECONDS));
+        assertInstanceOf(SecurityException.class, observed.get());
 
         long started = System.nanoTime();
         IllegalStateException timeout = assertThrows(
@@ -1781,15 +1784,11 @@ final class ActorRuntimeTest {
                 System.nanoTime() - started);
 
         assertTrue(timeout.getMessage().contains("still running"));
-        assertTrue(
-                elapsedMillis < 2_000,
-                "close must respect its bounded guest-quiescence wait instead of blocking on SyncCell");
+        assertTrue(elapsedMillis < 2_000);
 
         release.set(true);
         assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
         assertDoesNotThrow(runtime::close);
         assertTrue(cell.closed());
     }
-
-
 }
