@@ -1,7 +1,16 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
-source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+source          = [ source_namespace_qualifier ] { import_decl } { top_level_item } EOF ;
+source_namespace_qualifier
+                = "namespace" IDENT ";" ;
+
+namespace_block = ( "define" | "declare" ) "namespace" IDENT "as" namespace_body ;
+namespace_body  = "{" { namespace_member } "}"
+                | { namespace_member } "end" ;
+namespace_member
+                = class_decl
+                | interface_decl
+                | type_decl ;
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
@@ -12,7 +21,8 @@ import_names    = IDENT [ "as" IDENT ]
                 | "{" IDENT { "," IDENT } "}"
                 | "*" "as" IDENT ;
 
-top_level_item  = annotated_module_decl
+top_level_item  = namespace_block
+                | annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
