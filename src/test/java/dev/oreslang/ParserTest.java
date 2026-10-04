@@ -299,8 +299,8 @@ final class ParserTest {
                 shared actor Account {
                   let int balance = 100;
 
-                  pub fnc receive() => int {
-                    return self.balance;
+                  pub receive(int message): void {
+                    return;
                   }
                 }
 
@@ -336,70 +336,39 @@ final class ParserTest {
 
 
     @Test
-    void actorSelfAndMutableActorStateCannotEscapeMailboxTurn() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    shared actor Account {
-                      let balance = 100;
+    void actorReceiveCannotReturnActorState() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared actor Account {
+                  let int balance = 100;
 
-                      pub fnc receive() => Account {
-                        return self;
-                      }
-                    }
-                    """));
-            OwnershipChecker.check(typed);
-        });
+                  pub receive(int message): Account {
+                    return self;
+                  }
+                }
+                """));
 
-        assertThrows(IllegalArgumentException.class, () -> {
-            Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    shared actor Account {
-                      let balance = 100;
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                shared actor Account {
+                  let Array<int> items = [1, 2, 3];
 
-                      pub fnc receive() => &mut Account {
-                        return &mut self;
-                      }
-                    }
-                    """));
-            OwnershipChecker.check(typed);
-        });
-
-        assertThrows(IllegalArgumentException.class, () -> {
-            Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    shared actor Account {
-                      let balance = 100;
-
-                      pub fnc receive() => &mut Account {
-                        val alias = &mut self;
-                        return alias;
-                      }
-                    }
-                    """));
-            OwnershipChecker.check(typed);
-        });
-
-        assertThrows(IllegalArgumentException.class, () -> {
-            Ast.Program typed = TypeChecker.check(Parser.parse("""
-                    shared actor Account {
-                      let Array<int> items = [1, 2, 3];
-
-                      pub fnc receive() => Array<int> {
-                        return self.items;
-                      }
-                    }
-                    """));
-            OwnershipChecker.check(typed);
-        });
+                  pub receive(int message): Array<int> {
+                    return self.items;
+                  }
+                }
+                """));
     }
 
     @Test
-    void actorMayReturnCopyLikeStateButCannotPassSelfBorrowToOrdinaryFunction() {
+    void actorMayReadCopyLikeStateInsideReceiveButCannotPassSelfBorrowToOrdinaryFunction() {
         assertDoesNotThrow(() -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc receive() => int {
-                        return self.balance;
+                      pub receive(int delta): void {
+                        val current = self.balance;
+                        self.balance = current + delta;
+                        return;
                       }
                     }
                     """));
@@ -415,8 +384,9 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc receive() => int {
-                        return inspect(&self);
+                      pub receive(int message): void {
+                        val observed = inspect(&self);
+                        return;
                       }
                     }
                     """));
@@ -430,11 +400,13 @@ final class ParserTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                   let value = 1;
+                  pub receive(int message): void { return; }
                 }
 
                 shared actor Child extends Parent {
-                  pub fnc receive() => int {
-                    return self.value;
+                  pub receive(int message): void {
+                    self.value = self.value + message;
+                    return;
                   }
                 }
                 """)));
@@ -442,15 +414,18 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 isoactor Parent {
                   let value = 1;
+                  pub receive(int message): void { return; }
                 }
 
                 shared actor Child extends Parent {
+                  pub receive(int message): void { return; }
                 }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 shared actor Child extends Object {
                   let value = 1;
+                  pub receive(int message): void { return; }
                 }
                 """)));
     }
