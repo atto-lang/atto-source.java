@@ -133,6 +133,7 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
+            validateModuleValueNamespace(module);
             checkModuleAdherence(module);
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
@@ -143,6 +144,34 @@ public final class TypeChecker {
                     resolve(alias.target(), aliasGenerics, null);
                 }
                 else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+            }
+        }
+    }
+
+    private void validateModuleValueNamespace(Ast.ModuleDecl module) {
+        Map<String, String> categories = new LinkedHashMap<>();
+        for (Ast.Decl decl : module.declarations()) {
+            String name;
+            String category;
+            if (decl instanceof Ast.FunctionDecl fn) {
+                name = fn.name();
+                category = fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "fnc";
+            } else if (decl instanceof Ast.ClassDecl klass) {
+                name = klass.name();
+                category = "class";
+            } else if (decl instanceof Ast.FieldDecl field) {
+                name = field.name();
+                category = "binding";
+            } else {
+                continue; // interfaces and aliases occupy the type namespace
+            }
+
+            String previous = categories.putIfAbsent(name, category);
+            if (previous != null && !previous.equals(category)) {
+                throw new IllegalArgumentException(
+                        "module value member '" + module.name() + "." + name
+                                + "' is ambiguous between " + previous + " and " + category
+                                + "; callable/class/binding names share one runtime value namespace");
             }
         }
     }
@@ -174,7 +203,15 @@ public final class TypeChecker {
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
                         fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
-                mergeMember(members, fn.name(), signature, "module " + module.name());
+
+                // Only concretely reifiable fnc declarations become raw
+                // function-valued namespace members. Routines remain
+                // direct-call-only, and generic fnc values still require
+                // direct-call specialization because polymorphic function
+                // values are not implemented.
+                if (fn.kind() == Ast.CallableKind.FNC && fn.genericParameters().isEmpty()) {
+                    mergeMember(members, fn.name(), signature, "module " + module.name());
+                }
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
                         signature,
