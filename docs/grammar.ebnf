@@ -279,7 +279,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Option payload access requires an exhaustive match with exactly one
      Some(binding) arm and one None arm. There is no unchecked unwrap form.
    - Option<T> is Copy iff T is Copy. Some(value) owns its payload; a non-Copy
-     payload is moved into the option. match borrows by default, match take(...)
+     payload is moved into the option. match borrows by default, match rt take(...)
      consumes, and match copy(...) requires a proven Copy option.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" and "take" are contextual in parameter position, not globally reserved.
