@@ -629,6 +629,9 @@ public final class OwnershipChecker {
                     if (isRwGuardType(receiverType)) {
                         Ast.TypeRef element = receiverType.arguments().getFirst();
                         if (member.member().equals("value") && call.arguments().isEmpty()) {
+                            if (isCopyType(element)) {
+                                return new ValueInfo(element, ValueKind.COPY, null);
+                            }
                             return new ValueInfo(
                                     Ast.TypeRef.borrowed(element, false),
                                     ValueKind.IMM_BORROW,
@@ -1528,7 +1531,7 @@ public final class OwnershipChecker {
                 && (type.name().equals("RwReadGuard") || type.name().equals("RwWriteGuard"));
     }
 
-    private static boolean isRwGuardValueCall(Ast.Expr expr, Scope scope) {
+    private boolean isRwGuardValueCall(Ast.Expr expr, Scope scope) {
         if (!(expr instanceof Ast.CallExpr call)
                 || !call.arguments().isEmpty()
                 || !(call.callee() instanceof Ast.MemberExpr member)
@@ -1537,7 +1540,9 @@ public final class OwnershipChecker {
             return false;
         }
         VarState state = scope.lookup(receiver.name());
-        return state != null && isRwGuardType(state.type);
+        return state != null
+                && isRwGuardType(state.type)
+                && !isCopyType(state.type.arguments().getFirst());
     }
 
     private static boolean containsMutexGuardType(Ast.TypeRef type) {
