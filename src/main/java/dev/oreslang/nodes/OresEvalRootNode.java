@@ -738,7 +738,13 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
-                return new BoundMethod(object.owner, object, name);
+                Ast.MethodDecl method = findMethod(object.klass, name, 0, new LinkedHashSet<>());
+                if (method != null || !findMethodsByName(object.klass, name, new LinkedHashSet<>()).isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "instance method '" + object.klass.name() + "." + name
+                                    + "' is not a first-class value; invoke it directly through its receiver");
+                }
+                throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -880,28 +886,6 @@ public final class OresEvalRootNode extends RootNode {
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
-        }
-
-        /**
-         * Go-style method value: one shared method definition per class plus a
-         * tiny (receiver, method-name) pair only when a method is extracted as
-         * a first-class callback. Direct receiver.method(...) calls allocate no
-         * bound-method object.
-         */
-        private static final class BoundMethod implements Invokable {
-            private final Evaluator owner;
-            private final OresObject receiver;
-            private final String methodName;
-
-            private BoundMethod(Evaluator owner, OresObject receiver, String methodName) {
-                this.owner = owner;
-                this.receiver = receiver;
-                this.methodName = methodName;
-            }
-
-            @Override public Object call(List<Object> arguments) {
-                return owner.invokeMethod(receiver, methodName, arguments);
-            }
         }
 
         private Object importedValue(String name) {
