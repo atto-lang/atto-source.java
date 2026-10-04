@@ -36,6 +36,11 @@ public final class Parser {
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
+            if (match(EXPORT)) {
+                rootDeclarations.add(parseEntryExport());
+                continue;
+            }
+
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -104,6 +109,21 @@ public final class Parser {
         }
         if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
         return new Ast.Program(namespace, imports, modules);
+    }
+
+    private Ast.EntryExportDecl parseEntryExport() {
+        consume(ENTRY, "export metadata uses 'export entry <kind> <name>;'");
+
+        Ast.ExportKind kind;
+        if (match(MODULE)) kind = Ast.ExportKind.MODULE;
+        else if (match(CLASS)) kind = Ast.ExportKind.CLASS;
+        else if (match(ACTOR)) kind = Ast.ExportKind.ACTOR;
+        else if (match(FNC)) kind = Ast.ExportKind.FUNCTION;
+        else throw error(peek(), "entry export requires module, class, actor, or fnc kind");
+
+        String name = consume(IDENT, "expected entry export name").lexeme();
+        consume(SEMICOLON, "entry export must end with ';'");
+        return new Ast.EntryExportDecl(kind, name);
     }
 
     private Ast.ImportDecl parseImport() {
