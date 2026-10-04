@@ -204,6 +204,10 @@ public final class Parser {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
         String name = consume(IDENT, "expected callable name").lexeme();
+        if (kind == Ast.CallableKind.ROUTINE && check(EQUAL)) {
+            throw error(peek(), "routines are declaration-only and cannot use function-expression syntax; use 'routine "
+                    + name + "(...) => ... { ... }'. Use 'fnc " + name + " = |...| -> { ... }' for a first-class function value");
+        }
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
