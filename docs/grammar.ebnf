@@ -71,10 +71,10 @@ actor_member    = field_decl
 actor_method_decl
                 = { annotation } visibility [ "fnc" ] method_name [ generic_params ]
                   method_head method_return_spec block ;
-(* Semantic rule: every concrete actor has exactly one public
-   receive(message): void mailbox ingress. All other actor instance methods are
-   private helpers. The runtime owns the receive loop. Actor classes do not
-   declare static functions. *)
+(* Semantic rule: public actor instance methods form the typed source-level
+   actor protocol and are lowered onto one compiler/runtime-owned mailbox
+   ingress/dispatcher. Private methods are direct helpers inside an actor turn.
+   Actor classes do not declare static functions. *)
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -279,10 +279,12 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - "define actor X as ... end" and "define class X extends Actor as ... end"
      normalize to the same ClassDecl actor semantics. Actor/IsoActor/
      UntrustedActor are compiler-intrinsic bases, not ordinary library classes.
-   - Actor fields are private mailbox-owned state. Public instance methods form
-     the typed protocol and lower to one compiler-generated mailbox dispatcher.
-     Private methods are direct self calls inside the active turn. Actor classes
-     do not declare static functions.
+   - Actor fields are private mailbox-owned state. One or more public instance
+     methods form the typed protocol and lower to one compiler-generated mailbox
+     dispatcher. Public protocol methods are monomorphic at method level (class
+     generics remain supported), may return typed values, and project to
+     Future<T> when invoked through ActorRef. Private methods are direct self
+     calls inside the active turn. Actor classes do not declare static functions.
    - Actor constructors are runtime-only, non-public, non-static, non-generic,
      non-suspending, and return void.
    - Actor isolation is an ownership/effect rule rather than @Pure or nlex:
