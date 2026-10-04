@@ -215,7 +215,8 @@ public final class HotReloadManager implements AutoCloseable {
                             OresLanguage.ID,
                             vm.bindApplicationArguments(
                                     guestPolicy.applicationArguments(executionProfile),
-                                    generationBindingToken));
+                                    generationBindingToken,
+                                    id));
             if (sharedTrustedEngine != null) builder.engine(sharedTrustedEngine);
             context = builder.build();
 
