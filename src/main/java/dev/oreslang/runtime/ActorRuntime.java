@@ -699,7 +699,7 @@ public final class ActorRuntime implements AutoCloseable {
         Optional<ActorMemorySlice> privateMemory();
     }
 
-    public final class ActorRef<M> {
+    public final class ActorRef<M> implements SandboxForbiddenCapability {
         private final ActorId id;
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
@@ -1950,15 +1950,15 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (value instanceof SandboxForbiddenCapability) {
             throw new SecurityException(
-                    "live global/singleton/runtime capabilities cannot cross into an untrusted actor; "
-                            + "send only copied/frozen result data");
+                    "live actor/global/singleton/runtime capabilities cannot cross into an untrusted actor; "
+                            + "send only copied/frozen data or an explicitly sandbox-scoped reply capability");
         }
         if (value instanceof SyncCell<?> || value instanceof OresMutex.Shared<?>
                 || value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
             throw new SecurityException(
                     "live shared/mutable capabilities cannot cross into an untrusted actor");
         }
-        if (isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (isScalar(value)) return;
 
         if (value instanceof Shared<?> shared) {
             // The private transport path unwraps/copies this immutable value;
