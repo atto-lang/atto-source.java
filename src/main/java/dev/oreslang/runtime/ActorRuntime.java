@@ -4644,9 +4644,12 @@ public final class ActorRuntime implements AutoCloseable {
             ThreadPoolExecutor executor = dispatcherFor(kind);
             synchronized (executor) {
                 int base = dispatcherConfig.parallelismFor(kind);
-                int target = Math.min(
-                        executor.getMaximumPoolSize(),
-                        Math.max(base, executor.getCorePoolSize()) + 1);
+                int currentCore = Math.max(base, executor.getCorePoolSize());
+                if (currentCore >= executor.getMaximumPoolSize()) {
+                    counter.decrementAndGet();
+                    return false;
+                }
+                int target = Math.min(executor.getMaximumPoolSize(), currentCore + 1);
                 executor.setCorePoolSize(target);
                 executor.prestartCoreThread();
             }
