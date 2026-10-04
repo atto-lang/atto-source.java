@@ -12,6 +12,8 @@ public final class Parser {
 
     private final List<Token> tokens;
     private int current;
+    /** Parser-only guard so an explicit lex lambda cannot weaken an enclosing nlex barrier. */
+    private int inheritedNonLexicalDepth;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -215,8 +217,9 @@ public final class Parser {
             consume(PIPE, "expected closing '|' in lambda-style callable declaration");
             consume(ARROW, "lambda-style callable declarations use the slim arrow '->'");
             Ast.TypeRef returnType = parseTypeRef();
-            List<Ast.Stmt> body = parseBlock();
-            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind,
+            List<Ast.Stmt> body = parseCallableBlock(modifiers.nonLexical);
+            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical,
+                    modifiers.pure, modifiers.trapped, actorKind,
                     generics, params, returnType, annotations, body);
         }
 
@@ -225,8 +228,9 @@ public final class Parser {
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
-        List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics, params,
+        List<Ast.Stmt> body = parseCallableBlock(modifiers.nonLexical);
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical,
+                modifiers.pure, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body);
     }
 
@@ -481,12 +485,17 @@ public final class Parser {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean nonLexical = false;
+        boolean lexicalExplicit = false;
+        boolean pure = false;
+        boolean trapped = false;
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean shared = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
-        boolean nonLexicalSeen = false;
+        boolean lexicalModeSeen = false;
+        boolean pureSeen = false;
+        boolean trapSeen = false;
         boolean staticSeen = false;
         boolean abstractSeen = false;
         boolean sharedSeen = false;
@@ -505,9 +514,22 @@ public final class Parser {
                 asyncSeen = true;
                 async = true;
             } else if (match(NLEX)) {
-                if (nonLexicalSeen) throw error(previous(), "duplicate 'nlex' modifier");
-                nonLexicalSeen = true;
+                if (lexicalModeSeen) throw error(previous(), "'lex' and 'nlex' are mutually exclusive");
+                lexicalModeSeen = true;
                 nonLexical = true;
+            } else if (match(LEX)) {
+                if (lexicalModeSeen) throw error(previous(), "'lex' and 'nlex' are mutually exclusive");
+                lexicalModeSeen = true;
+                lexicalExplicit = true;
+                nonLexical = false;
+            } else if (match(PURE)) {
+                if (pureSeen) throw error(previous(), "duplicate 'pure' modifier");
+                pureSeen = true;
+                pure = true;
+            } else if (match(TRAP)) {
+                if (trapSeen) throw error(previous(), "duplicate 'trap' modifier");
+                trapSeen = true;
+                trapped = true;
             } else if (match(STATIC)) {
                 if (staticSeen) throw error(previous(), "duplicate 'static' modifier");
                 staticSeen = true;
@@ -524,7 +546,8 @@ public final class Parser {
                 break;
             }
         }
-        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared);
+        return new Modifiers(visibility, async, nonLexical, lexicalExplicit, pure, trapped,
+                isStatic, isAbstract, shared);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -776,6 +799,16 @@ public final class Parser {
         return body;
     }
 
+    private List<Ast.Stmt> parseCallableBlock(boolean establishesNonLexicalBarrier) {
+        if (!establishesNonLexicalBarrier) return parseBlock();
+        inheritedNonLexicalDepth++;
+        try {
+            return parseBlock();
+        } finally {
+            inheritedNonLexicalDepth--;
+        }
+    }
+
     private Ast.Stmt parseStatement() {
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
@@ -789,10 +822,25 @@ public final class Parser {
             consumeStatementTerminator("return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
+        if (check(RT) && checkNext(DEFER)) {
+            advance(); // rt
+            advance(); // defer
+            Ast.Expr callback;
+            if (match(LPAREN)) {
+                callback = parseExpression();
+                consume(RPAREN, "expected ')' after rt defer callback");
+            } else if (check(PIPE)) {
+                callback = parsePipeLambda(false);
+            } else if (check(LPAREN) && looksLikeLambda()) {
+                callback = parseLambda(false);
+            } else {
+                throw error(peek(), "rt defer without parentheses requires a single lambda callback");
+            }
+            consumeStatementTerminator("rt defer statement should end with ';'");
+            return new Ast.DeferStmt(callback);
+        }
         if (match(DEFER)) {
-            Ast.Expr expression = parseExpression();
-            consumeStatementTerminator("defer statement should end with ';'");
-            return new Ast.DeferStmt(expression);
+            throw error(previous(), "'defer' is a runtime intrinsic; use 'rt defer(callback)' or 'rt defer || -> { ... }'");
         }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
@@ -1233,7 +1281,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, LEX, NLEX, PURE, TRAP, RT, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -1255,6 +1303,7 @@ public final class Parser {
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
         if (match(ACTOR)) return new Ast.NameExpr("actor");
+        if (match(RT)) return parseRuntimeCall();
         if (isReservedCallableName(peek().type())
                 && reservedCallableNameFollowedByInvocation(current)) {
             return new Ast.NameExpr(advance().lexeme());
@@ -1279,6 +1328,14 @@ public final class Parser {
             if (check(LPAREN) && looksLikeLambda()) return parseLambda(true);
             throw error(previous(), "'nlex' in expression position must prefix a lambda");
         }
+        if (match(LEX)) {
+            if (inheritedNonLexicalDepth > 0) {
+                throw error(previous(), "explicit 'lex' cannot weaken an enclosing 'nlex' capture barrier");
+            }
+            if (check(PIPE)) return parsePipeLambda(false);
+            if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
+            throw error(previous(), "'lex' in expression position must prefix a lambda");
+        }
         if (check(PIPE)) return parsePipeLambda(false);
         if (check(LPAREN) && looksLikeLambda()) return parseLambda(false);
         if (match(LPAREN)) {
@@ -1299,6 +1356,21 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    private Ast.RuntimeCallExpr parseRuntimeCall() {
+        if (match(DEFER)) {
+            throw error(previous(), "rt defer is statement-only; use 'rt defer(callback)' or 'rt defer || -> { ... }'");
+        }
+        Token operation = consume(IDENT, "expected runtime intrinsic name after 'rt'");
+        switch (operation.lexeme()) {
+            case "copy", "share", "take", "borrow", "recover" -> { }
+            default -> throw error(operation, "unknown runtime intrinsic 'rt " + operation.lexeme() + "'");
+        }
+        consume(LPAREN, "runtime intrinsics require parentheses");
+        List<Ast.Expr> arguments = parseArgumentsUntil(RPAREN);
+        consume(RPAREN, "expected ')' after runtime intrinsic arguments");
+        return new Ast.RuntimeCallExpr(operation.lexeme(), arguments);
     }
 
     private Ast.ObjectExpr parseObjectLiteral() {
@@ -1330,7 +1402,7 @@ public final class Parser {
         consume(RPAREN, "expected ')' after lambda parameters");
         consume(ARROW, "expected '->' after lambda parameters");
         if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return new Ast.LambdaExpr(params, null, parseCallableBlock(nonLexical), nonLexical);
     }
 
     private Ast.LambdaExpr parsePipeLambda(boolean nonLexical) {
@@ -1352,7 +1424,7 @@ public final class Parser {
         consume(PIPE, "expected closing '|' after lambda parameters");
         consume(ARROW, "lambdas use the slim arrow '->'");
         if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock(), nonLexical);
+        return new Ast.LambdaExpr(params, null, parseCallableBlock(nonLexical), nonLexical);
     }
 
     private boolean looksLikeLambda() {
@@ -1488,5 +1560,18 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
+    private record Modifiers(
+            Ast.Visibility visibility,
+            boolean async,
+            boolean nonLexical,
+            boolean lexicalExplicit,
+            boolean pure,
+            boolean trapped,
+            boolean isStatic,
+            boolean isAbstract,
+            boolean shared) {
+        private boolean hasCallableOnlyModifiers() {
+            return nonLexical || lexicalExplicit || pure || trapped;
+        }
+    }
 }
