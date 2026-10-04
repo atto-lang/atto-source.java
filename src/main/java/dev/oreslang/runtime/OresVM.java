@@ -207,15 +207,29 @@ final class OresVM {
             IsolatePolicy policyCeiling,
             ActorRuntime.TurnExecutor turnExecutor,
             ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory) {
+        return newActorRuntime(
+                policyCeiling,
+                turnExecutor,
+                generationLeaseFactory,
+                ActorRuntime.RuntimePlacement.MAIN_GRAAL_ISOLATE);
+    }
+
+    ActorRuntime newActorRuntime(
+            IsolatePolicy policyCeiling,
+            ActorRuntime.TurnExecutor turnExecutor,
+            ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory,
+            ActorRuntime.RuntimePlacement runtimePlacement) {
         ensureRunning();
-        if (generationLeaseFactory == null) {
-            return ActorRuntime.attachToVm(this, policyCeiling, turnExecutor);
-        }
+        ActorRuntime.ActorGenerationLeaseFactory effectiveFactory =
+                generationLeaseFactory == null
+                        ? () -> () -> { }
+                        : generationLeaseFactory;
         return ActorRuntime.attachToVm(
                 this,
                 policyCeiling,
                 turnExecutor,
-                generationLeaseFactory);
+                effectiveFactory,
+                Objects.requireNonNull(runtimePlacement, "runtimePlacement"));
     }
 
     /**
