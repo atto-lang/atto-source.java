@@ -236,6 +236,54 @@ final class ParserTest {
     }
 
     @Test
+    void actorClassRejectsStaticEscapeHatchesAndReservedIntrinsicNames() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                  private static fnc helper() => int { return 1; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Actor as
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor IsoActor as
+                end
+                """));
+    }
+
+    @Test
+    void actorProtocolCannotReceiveOrAcquireWritableSharedMutexState() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  pub mutate(SharedMutex<int> state): void {
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  pub mutate(): void {
+                    val state = SharedMutex.new(1);
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  private mutate(SharedMutex<int> state): void {
+                    val guard = state.try_lock();
+                    return;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void actorFncDefaultsSharedAndIsoactorIsPrivate() {
         Ast.Program sharedProgram = Parser.parse("""
                 pub actor fnc worker(int value) => int {
