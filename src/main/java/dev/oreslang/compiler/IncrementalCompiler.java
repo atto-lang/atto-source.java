@@ -135,6 +135,11 @@ public final class IncrementalCompiler {
         StringBuilder abi = new StringBuilder("ores-abi-v1\n");
         abi.append("namespace=").append(program.namespace() == null ? "" : program.namespace()).append('\n');
 
+        for (Ast.NamespaceDecl namespace : program.namespaces()) {
+            abi.append("type-namespace ").append(namespace.mode()).append(' ').append(namespace.name()).append('\n');
+            for (Ast.Decl decl : namespace.declarations()) appendAbi(abi, decl);
+        }
+
         for (Ast.ModuleDecl module : program.modules()) {
             abi.append("module ").append(module.name()).append('\n');
             for (Ast.Annotation annotation : module.annotations()) {
