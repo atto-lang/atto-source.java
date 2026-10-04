@@ -22,7 +22,10 @@ final class ReservedIdentifierValidator {
         if (program.namespace() != null) name(program.namespace(), "namespace");
 
         for (Ast.ImportDecl imported : program.imports()) {
-            for (String importedName : imported.names()) name(importedName, "imported name");
+            for (String importedName : imported.names()) {
+                if (imported.kind() == Ast.ImportKind.FUNCTION && isCallableOnlyReserved(importedName)) continue;
+                name(importedName, "imported name");
+            }
             if (imported.namespace() != null) name(imported.namespace(), "import alias");
         }
 
