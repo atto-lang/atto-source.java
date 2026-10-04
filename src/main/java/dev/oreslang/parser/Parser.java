@@ -420,38 +420,29 @@ public final class Parser {
             return;
         }
 
-        if (method.name().equals("receive") && method.visibility() != Ast.Visibility.PUBLIC) {
-            throw error(previous(), "actor receive(message) must be public because it is the single mailbox ingress");
-        }
         if (method.visibility() != Ast.Visibility.PUBLIC) return;
 
-        if (!method.name().equals("receive")) {
-            throw error(previous(),
-                    "actors expose exactly one public mailbox ingress named 'receive'; all other actor methods must be private");
-        }
+        // Public actor methods are the typed source-level protocol. The runtime
+        // lowers all of them onto one hidden mailbox ingress/dispatcher.
+        // Keeping protocol methods monomorphic makes their wire/message shape
+        // closed and AOT-safe; class generics are still permitted.
         if (!method.genericParameters().isEmpty()) {
-            throw error(previous(), "actor receive(message) cannot declare generic parameters");
+            throw error(previous(), "public actor protocol methods cannot declare method generic parameters");
         }
         if (method.explicitReceiverType() != null) {
-            throw error(previous(), "actor receive(message) uses the implicit self receiver");
-        }
-        if (method.parameters().size() != 1) {
-            throw error(previous(), "actor receive(message) must declare exactly one message parameter");
-        }
-        if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
-            throw error(previous(), "actor receive(message) must return void");
+            throw error(previous(), "public actor protocol methods use the implicit self receiver");
         }
     }
 
     private void validateActorReceiveContract(String actorName, List<Ast.MethodDecl> methods) {
-        long receives = methods.stream()
+        long endpoints = methods.stream()
                 .filter(method -> !method.isStatic()
                         && method.visibility() == Ast.Visibility.PUBLIC
-                        && method.name().equals("receive"))
+                        && !method.name().equals("constructor"))
                 .count();
-        if (receives != 1) {
+        if (endpoints == 0) {
             throw error(previous(),
-                    "actor '" + actorName + "' must implement exactly one public receive(message): void mailbox ingress");
+                    "actor '" + actorName + "' must expose at least one public protocol method");
         }
     }
 
