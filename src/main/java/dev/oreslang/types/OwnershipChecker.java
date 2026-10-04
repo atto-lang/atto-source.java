@@ -388,6 +388,10 @@ public final class OwnershipChecker {
             if (concreteReceiver != null && concreteReceiver.name().equals("ActorRef")) {
                 return switch (member.member()) {
                     case "id" -> new ValueInfo(Ast.TypeRef.simple("ActorId"), ValueKind.COPY, null);
+                    case "is_alive" -> new ValueInfo(
+                            new Ast.TypeRef("Fnc", List.of(Ast.TypeRef.simple("bool")), false),
+                            ValueKind.COPY,
+                            null);
                     default -> new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
                 };
             }
@@ -436,6 +440,27 @@ public final class OwnershipChecker {
                 if (containsMutexGuardType(info.type)) {
                     throw error("MutexGuard cannot cross an actor spawn boundary");
                 }
+            }
+
+            Ast.ClassDecl actorClass = null;
+            String protocolName = null;
+            Ast.Expr callee = spawned.call().callee();
+            if (callee instanceof Ast.NameExpr name) {
+                actorClass = findClass(name.name());
+                protocolName = actorClass == null ? null : name.name();
+            } else if (callee instanceof Ast.MemberExpr member
+                    && member.receiver() instanceof Ast.NameExpr namespace) {
+                String qualified = namespace.name() + "." + member.member();
+                actorClass = findClass(qualified);
+                protocolName = actorClass == null ? null : qualified;
+            }
+            if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+                List<Ast.TypeRef> actorArguments = actorClass.genericParameters().isEmpty()
+                        ? List.of()
+                        : spawned.call().typeArguments();
+                Ast.TypeRef protocol = new Ast.TypeRef(protocolName, actorArguments, false);
+                Ast.TypeRef actorRef = new Ast.TypeRef("ActorRef", List.of(protocol), false);
+                return new ValueInfo(actorRef, ValueKind.COPY, null);
             }
             return new ValueInfo(Ast.TypeRef.simple("ActorSpawn"), ValueKind.MOVE_ONLY, null);
         }
@@ -632,6 +657,46 @@ public final class OwnershipChecker {
             }
             checkExpr(member.receiver(), scope, false);
             Ast.TypeRef concreteReceiver = receiverType(member.receiver(), scope);
+            if (concreteReceiver != null
+                    && concreteReceiver.name().equals("ActorRef")
+                    && concreteReceiver.arguments().size() == 1) {
+                Ast.TypeRef protocol = concreteReceiver.arguments().getFirst();
+                Ast.ClassDecl actorClass = findClass(protocol.name());
+                if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+                    ResolvedMethod actorTarget = findMethodTarget(
+                            actorClass,
+                            protocol,
+                            member.member(),
+                            call.arguments().size(),
+                            new LinkedHashSet<>());
+                    if (actorTarget != null
+                            && actorTarget.method().visibility() == Ast.Visibility.PUBLIC
+                            && !actorTarget.method().name().equals("constructor")) {
+                        Ast.MethodDecl method = actorTarget.method();
+                        Map<String, Ast.TypeRef> ownerBindings = genericBindings(
+                                actorTarget.owner().genericParameters(),
+                                actorTarget.ownerType().arguments());
+                        CallSignature signature = specializeCall(
+                                actorTarget.owner().genericParameters(),
+                                List.of(),
+                                method.parameters(),
+                                method.returnType(),
+                                call,
+                                scope,
+                                ownerBindings);
+                        checkArguments(
+                                call.arguments(),
+                                signature.parameters(),
+                                scope,
+                                "actor protocol method " + actorTarget.owner().name() + "." + method.name());
+                        Ast.TypeRef future = new Ast.TypeRef(
+                                "Future",
+                                List.of(signature.result()),
+                                false);
+                        return new ValueInfo(future, ValueKind.MOVE_ONLY, null);
+                    }
+                }
+            }
             Ast.ClassDecl klass = concreteReceiver == null ? null : findClass(concreteReceiver.name());
             ResolvedMethod target = klass == null ? null
                     : findMethodTarget(klass, concreteReceiver, member.member(), call.arguments().size(), new LinkedHashSet<>());
@@ -1425,7 +1490,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","ActorId","SharedMutex","OptionUnwrapError" -> true;
+                    "bool","Bool","string","String","void","ActorId","ActorRef","Recipient","SharedMutex","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
