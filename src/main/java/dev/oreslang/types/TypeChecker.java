@@ -288,7 +288,13 @@ public final class TypeChecker {
                         signature,
                         "module " + module.name());
             } else if (decl instanceof Ast.FieldDecl field && field.visibility() == Ast.Visibility.PUBLIC) {
-                Type type = field.type() == null ? typeOf(field.initializer(), new Env(null), Set.of(), null) : resolve(field.type(), Set.of(), null);
+                Type type = field.type() == null
+                        ? typeOf(field.initializer(), new Env(null), Set.of(), null)
+                        : resolve(field.type(), Set.of(), null);
+                if (module.storage() == Ast.ModuleStorage.GLOBAL
+                        && field.bindingKind() != Ast.BindingKind.CONST) {
+                    type = new Named("Future", List.of(type));
+                }
                 mergeMember(members, field.name(), type, "module " + module.name());
             }
         }
@@ -517,6 +523,14 @@ public final class TypeChecker {
     }
 
     private void checkModuleBinding(Ast.ModuleDecl module, Ast.FieldDecl field) {
+        if (module.storage() != Ast.ModuleStorage.ORDINARY
+                && field.bindingKind() != Ast.BindingKind.CONST
+                && field.type() == null) {
+            throw new IllegalArgumentException(
+                    "persistent " + module.storage().name().toLowerCase()
+                            + " module field '" + module.name() + "." + field.name()
+                            + "' requires an explicit type for hot-reload schema compatibility");
+        }
         if (injectedField(field)) {
             throw new IllegalArgumentException(
                     "dependency injection annotations are only valid on class/actor fields, not module bindings");
@@ -760,6 +774,38 @@ public final class TypeChecker {
                     }
                     return;
                 }
+            }
+            Ast.ClassDecl patternClass = findClass(variant.name());
+            if (patternClass != null) {
+                Named concrete = subject instanceof Named subjectNamed
+                        && findClass(subjectNamed.name()) == patternClass
+                        ? subjectNamed
+                        : nominalClassType(patternClass);
+                List<ResolvedField> publicFields = effectiveFieldTargets(
+                                patternClass, concrete, new LinkedHashSet<>())
+                        .stream()
+                        .filter(field -> field.field().visibility() == Ast.Visibility.PUBLIC)
+                        .toList();
+                if (variant.arguments().size() != publicFields.size()) {
+                    throw new IllegalArgumentException(
+                            "class pattern '" + variant.name() + "' exposes "
+                                    + publicFields.size() + " public field(s), but pattern has "
+                                    + variant.arguments().size() + " argument(s)");
+                }
+                for (int i = 0; i < publicFields.size(); i++) {
+                    ResolvedField resolved = publicFields.get(i);
+                    Type fieldType = classFieldType(resolved.owner(), resolved.field());
+                    fieldType = substituteGenerics(
+                            fieldType,
+                            classGenericBindings(resolved.owner(), resolved.ownerType()));
+                    bindPatternTypes(
+                            variant.arguments().get(i),
+                            fieldType,
+                            env,
+                            generics,
+                            self);
+                }
+                return;
             }
             for (Ast.Pattern child : variant.arguments()) {
                 bindPatternTypes(child, Unknown.INSTANCE, env, generics, self);
@@ -1222,6 +1268,13 @@ public final class TypeChecker {
                 if (klass != null) {
                     ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                     if (field != null) {
+                        boolean selfAccess = member.receiver() instanceof Ast.NameExpr name
+                                && name.name().equals("self");
+                        if (field.field().visibility() != Ast.Visibility.PUBLIC && !selfAccess) {
+                            throw new IllegalArgumentException(
+                                    "private field '" + field.owner().name() + "."
+                                            + field.field().name() + "' is only accessible through self");
+                        }
                         Type pattern = classFieldType(field.owner(), field.field());
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
@@ -1528,6 +1581,13 @@ public final class TypeChecker {
             if (klass != null) {
                 ResolvedField field = findFieldTarget(klass, named, member.member(), new LinkedHashSet<>());
                 if (field != null) {
+                    boolean selfAccess = member.receiver() instanceof Ast.NameExpr name
+                            && name.name().equals("self");
+                    if (field.field().visibility() != Ast.Visibility.PUBLIC && !selfAccess) {
+                        throw new IllegalArgumentException(
+                                "private field '" + field.owner().name() + "."
+                                        + field.field().name() + "' is only assignable through self");
+                    }
                     Type pattern = resolve(field.field().type(), Set.copyOf(field.owner().genericParameters()), field.ownerType());
                     return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                 }
