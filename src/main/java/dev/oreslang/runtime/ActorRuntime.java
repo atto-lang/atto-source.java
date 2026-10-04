@@ -5839,8 +5839,10 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable leaseFailure) {
                 ref.terminationCause.compareAndSet(null, leaseFailure);
             }
-            // Publish finalized only after runtime registry/accounting teardown
-            // and generation release have completed.
+            // Publish finalized only after registry/accounting teardown and the
+            // generation lease release are complete. Runtime.close() waits on
+            // this flag; publishing it earlier lets close() zero accounting
+            // while this finalizer is still unregistering the actor.
             finalized = true;
             ref.finalization.complete(null);
             } finally {
