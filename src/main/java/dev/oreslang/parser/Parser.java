@@ -403,7 +403,7 @@ public final class Parser {
                 continue;
             }
 
-            throw error(peek(), "interfaces are storage-free contracts; put state in a trait or class and declare functions with 'fnc'");
+            throw error(peek(), "interfaces are storage-free contracts; put state in a class or struct and declare functions with 'fnc'");
         }
 
         consume(terminator, braceStyle ? "expected '}' to close interface " + name : "expected 'end' to close interface " + name);
