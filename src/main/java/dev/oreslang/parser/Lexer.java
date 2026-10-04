@@ -23,7 +23,7 @@ public final class Lexer {
         KEYWORDS.put("void", VOID); KEYWORDS.put("static", STATIC); KEYWORDS.put("pub", PUB); KEYWORDS.put("private", PRIVATE);
         KEYWORDS.put("return", RETURN); KEYWORDS.put("defer", DEFER); KEYWORDS.put("val", VAL); KEYWORDS.put("const", CONST);
         KEYWORDS.put("let", LET); KEYWORDS.put("mut", MUT); KEYWORDS.put("self", SELF); KEYWORDS.put("true", TRUE); KEYWORDS.put("false", FALSE);
-        KEYWORDS.put("null", NULL); KEYWORDS.put("obj", OBJ); KEYWORDS.put("arr", ARR);
+        KEYWORDS.put("null", NULL); KEYWORDS.put("arr", ARR);
     }
 
     private final String source;
@@ -51,7 +51,7 @@ public final class Lexer {
         switch (c) {
             case '(' -> add(LPAREN); case ')' -> add(RPAREN); case '{' -> add(LBRACE); case '}' -> add(RBRACE);
             case '[' -> add(LBRACKET); case ']' -> add(RBRACKET); case ',' -> add(COMMA); case '.' -> add(DOT);
-            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '`' -> add(BACKTICK); case '+' -> add(PLUS);
+            case ';' -> add(SEMICOLON); case ':' -> add(COLON); case '?' -> add(QUESTION); case '@' -> add(AT); case '+' -> add(PLUS);
             case '*' -> add(STAR); case '%' -> add(PERCENT); case '|' -> add(PIPE); case '&' -> add(AMP);
             case '^' -> add(CARET); case '~' -> add(TILDE);
             case '-' -> add(match('>') ? ARROW : MINUS);
