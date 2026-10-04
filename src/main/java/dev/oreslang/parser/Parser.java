@@ -206,14 +206,16 @@ public final class Parser {
         String name = consume(IDENT, "expected callable name").lexeme();
         if (kind == Ast.CallableKind.ROUTINE && check(EQUAL)) {
             throw error(peek(), "routines are declaration-only and cannot use function-expression syntax; use 'routine "
-                    + name + "(...) => ... { ... }'. Use 'fnc " + name + " = |...| -> { ... }' for a first-class function value");
+                    + name + "(...) -> Type { ... }' or 'routine " + name + "(...) : Type { ... }'. Use 'fnc' for first-class function values");
         }
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
-        Ast.TypeRef returnType = parseReturnType(annotations);
+        Ast.TypeRef returnType = kind == Ast.CallableKind.ROUTINE
+                ? parseRoutineReturnType(annotations)
+                : parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
         return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, generics, params,
                 returnType, annotations, body);
@@ -532,6 +534,16 @@ public final class Parser {
             else progress = false;
         } while (progress);
         return new Modifiers(visibility, visibilityExplicit, async, isStatic, isAbstract);
+    }
+
+    private Ast.TypeRef parseRoutineReturnType(List<Ast.Annotation> annotations) {
+        if (!annotations.isEmpty()) {
+            throw error(peek(), "routine declarations use an explicit '-> Type' or ': Type' return type");
+        }
+        if (!match(ARROW, COLON)) {
+            throw error(peek(), "routine declarations require an explicit return type using '-> Type' or ': Type'");
+        }
+        return parseTypeRef();
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
