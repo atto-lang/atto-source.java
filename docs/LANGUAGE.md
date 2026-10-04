@@ -61,7 +61,7 @@ define singleton module X as
 end
 
 define module app as
-  pub routine main() => void {
+  pub routine main() -> void {
     val int value = await X.f.read();
     stdio.println(value);
     return;
@@ -593,7 +593,7 @@ define module x as
   end
 end
 
-pub routine main() => void {
+pub routine main() -> void {
   val y = new x.y();
   stdio.stdout.write(y)
 }
@@ -608,7 +608,7 @@ Qualified names such as `x.y` retain their module namespace.
 `routine` is the non-recursive procedural form:
 
 ```ores
-pub routine main() => void {
+pub routine main() -> void {
   run_app();
 }
 ```
@@ -630,7 +630,7 @@ Semicolons are strongly recommended. They remain the canonical formatter output.
 They may be omitted only where the parser has an unambiguous structural boundary, such as the final expression immediately before `}`, `fi`, or `end`. Oreslang does not use broad JavaScript-style automatic semicolon insertion.
 
 ```ores
-pub routine main() => void {
+pub routine main() -> void {
   stdio.stdout.write("done")
 }
 ```
