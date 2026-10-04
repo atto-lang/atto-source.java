@@ -49,7 +49,7 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
         }
     }
 
-    private final Runnable cancelHook;
+    private final AtomicReference<Runnable> cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
     private final ConcurrentLinkedQueue<Waiter<T>> waiters = new ConcurrentLinkedQueue<>();
@@ -59,7 +59,8 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
     }
 
     OresFuture(Runnable cancelHook) {
-        this.cancelHook = Objects.requireNonNull(cancelHook, "cancelHook");
+        this.cancelHook = new AtomicReference<>(
+                Objects.requireNonNull(cancelHook, "cancelHook"));
     }
 
     public static <T> OresFuture<T> completed(T value) {
@@ -157,11 +158,12 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
     public boolean cancel(boolean mayInterruptIfRunning) {
         CancellationException cancelled =
                 new CancellationException("OresFuture was cancelled");
+        Runnable hook = cancelHook.get();
         if (!settle(new Cancelled(cancelled))) return false;
 
-        if (cancelHookRun.compareAndSet(false, true)) {
+        if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
-                cancelHook.run();
+                hook.run();
             } catch (RuntimeException | Error ignored) {
                 // Cancellation state is already authoritative. A host
                 // cancellation hook cannot roll it back or poison waiter
@@ -251,6 +253,11 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
 
     private boolean settle(Object terminal) {
         if (!state.compareAndSet(PENDING, terminal)) return false;
+
+        // No terminal Future retains producer/task cancellation authority.
+        // public cancel() snapshots the hook before settlement when it is the
+        // winning terminal transition.
+        cancelHook.set(null);
 
         Waiter<T> waiter;
         while ((waiter = waiters.poll()) != null) {
