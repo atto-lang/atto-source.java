@@ -718,7 +718,7 @@ public final class Parser {
         String name;
         if (match(VOID)) name = "void";
         else if (match(SELF)) name = "self";
-        else if (match(NULL)) name = "null";
+        else if (match(NULL)) throw error(previous(), "null is not a type; represent absence with Option<T> and None");
         else name = parseQualifiedName();
 
         List<Ast.TypeRef> args = new ArrayList<>();
