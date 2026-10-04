@@ -128,8 +128,12 @@ final class RoutineAndLoopTest {
                   return value.markerBrand;
                 }
 
+                define class Branded as
+                  pub val String markerBrand;
+                end
+
                 fnc main(): void {
-                  val branded = obj{markerBrand: "marking/branding"};
+                  val branded = new Branded("marking/branding");
                   stdio.println(structural(branded));
                   return;
                 }
@@ -144,8 +148,12 @@ final class RoutineAndLoopTest {
                   return "ok";
                 }
 
+                define class Branded as
+                  pub val String markerBrand;
+                end
+
                 fnc main(): void {
-                  val branded = obj{markerBrand: "marking/branding"};
+                  val branded = new Branded("marking/branding");
                   stdio.println(nominal(branded));
                   return;
                 }
