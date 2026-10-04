@@ -103,8 +103,13 @@ final class ReturnedDestructuringTest {
     @Test
     void recordReturnSupportsBothObjectDestructureSpellings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Result as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc result(): {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
+                  return new Result(5, "x");
                 }
 
                 fnc prefixed(): void {
@@ -132,24 +137,38 @@ final class ReturnedDestructuringTest {
     @Test
     void recordReturnsAndDestructuresRejectMissingOrWrongMembers() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class MissingResult as
+                  pub val int foo;
+                end
+
                 fnc broken(): {foo: int, bar: string} {
-                  return obj{foo: 5};
+                  return new MissingResult(5);
                 }
 
                 pub fnc main(): void { return; }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class WrongResult as
+                  pub val string foo;
+                  pub val string bar;
+                end
+
                 fnc broken(): {foo: int, bar: string} {
-                  return obj{foo: "wrong", bar: "x"};
+                  return new WrongResult("wrong", "x");
                 }
 
                 pub fnc main(): void { return; }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Result as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc result(): {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
+                  return new Result(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -162,6 +181,11 @@ final class ReturnedDestructuringTest {
     @Test
     void equivalentUnionAndRecordOrderingsHaveCanonicalSignatures() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Result as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 @Ret<string | int>
                 fnc scalar(): int | string {
                   return 3;
@@ -169,7 +193,7 @@ final class ReturnedDestructuringTest {
 
                 @Ret<{bar: string, foo: int}>
                 fnc object(): {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
+                  return new Result(5, "x");
                 }
 
                 pub fnc main(): void { return; }
@@ -179,12 +203,17 @@ final class ReturnedDestructuringTest {
     @Test
     void prefixedPatternSyntaxDoesNotStealFiniteTupleOrRecordTypedBindings() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Result as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc fixed(): [int, bool, string] {
                   return [3, true, "yes"];
                 }
 
                 fnc result(): {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
+                  return new Result(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -220,11 +249,21 @@ final class ReturnedDestructuringTest {
     @Test
     void unionRecordReturnsDestructureWhenEveryAlternativeProvidesRequestedMembers() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class IntResult as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
+                define class BoolResult as
+                  pub val bool foo;
+                  pub val string bar;
+                end
+
                 fnc variant(bool flag): {foo: int, bar: string} | {foo: bool, bar: string} {
                   if flag; do
-                    return obj{foo: 3, bar: "number"};
+                    return new IntResult(3, "number");
                   else
-                    return obj{foo: true, bar: "boolean"};
+                    return new BoolResult(true, "boolean");
                   fi
                 }
 
@@ -255,11 +294,20 @@ final class ReturnedDestructuringTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class FullResult as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
+                define class PartialResult as
+                  pub val bool foo;
+                end
+
                 fnc variant(bool flag): {foo: int, bar: string} | {foo: bool} {
                   if flag; do
-                    return obj{foo: 3, bar: "number"};
+                    return new FullResult(3, "number");
                   else
-                    return obj{foo: true};
+                    return new PartialResult(true);
                   fi
                 }
 
@@ -273,8 +321,13 @@ final class ReturnedDestructuringTest {
     @Test
     void bareDiscardIsRejectedInObjectPatterns() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Result as
+                  pub val int foo;
+                  pub val string bar;
+                end
+
                 fnc result(): {foo: int, bar: string} {
-                  return obj{foo: 5, bar: "x"};
+                  return new Result(5, "x");
                 }
 
                 pub fnc main(): void {
@@ -333,17 +386,22 @@ final class ReturnedDestructuringTest {
     }
 
     @Test
-    void returnedTupleAndRecordDestructureAtRuntime() throws Exception {
+    void returnedTupleAndStaticRecordDestructureAtRuntime() throws Exception {
         String program = """
                 type FixedResult = [int, bool, string];
                 type NamedResult = {foo: int, bar: string};
+
+                define class Result as
+                  pub val int foo;
+                  pub val string bar;
+                end
 
                 fnc fixed(): FixedResult {
                   return [3, true, "yes"];
                 }
 
                 fnc result(): NamedResult {
-                  return obj{foo: 5, bar: "x"};
+                  return new Result(5, "x");
                 }
 
                 pub fnc main(): void {
