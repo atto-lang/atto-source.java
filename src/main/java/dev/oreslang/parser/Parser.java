@@ -802,6 +802,16 @@ public final class Parser {
         do {
             boolean structural = false;
 
+            // Name-first typed spelling: m: ActorMessage
+            if (check(IDENT) && checkNext(COLON)) {
+                String name = advance().lexeme();
+                consume(COLON, "expected ':' after parameter name");
+                Ast.TypeRef type = parseTypeRef();
+                boolean mutable = match(MUT);
+                params.add(new Ast.Param(type, name, false, mutable));
+                continue;
+            }
+
             // Name-first structural spelling: y structural Foo
             if (check(IDENT) && checkNextLexeme("structural")) {
                 String name = advance().lexeme();
