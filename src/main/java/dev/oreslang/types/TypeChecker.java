@@ -2124,6 +2124,8 @@ public final class TypeChecker {
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
             }
 
+            case "DynamicStruct" -> throw new IllegalArgumentException(
+                    "DynamicStruct<T> was removed from Oreslang; use a statically declared struct/class shape or Map<K,V> for open-ended keys");
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self, true);
