@@ -23,6 +23,9 @@ final class PolyglotFeatureTest {
                   end
                   define class B extends A as
                   end
+                  define class Person as
+                    pub val String name;
+                  end
                 end
 
                 define module app
@@ -30,7 +33,7 @@ final class PolyglotFeatureTest {
                     let answer = math.add(1, 2);
                     answer = answer + 4;
                     val values = arr[answer, 9];
-                    val person = obj{name: "ores"};
+                    val person = new model.Person("ores");
                     val inherited = new B();
                     stdio.println(values[0]);
                     stdio.println(person.name);
