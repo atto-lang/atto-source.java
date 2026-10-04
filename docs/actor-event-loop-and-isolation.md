@@ -65,7 +65,7 @@ A shared actor may declare:
 
 - private state;
 - private helper methods;
-- one runtime-owned mailbox ingress generated from the actor's public typed protocol methods.
+- exactly one effective public `receive(Message): void` mailbox ingress.
 
 All external interaction goes through the actor reference/mailbox. Public static
 helpers and additional public methods are rejected.
@@ -76,9 +76,10 @@ execution lease. Cross-actor shared mutation must use explicit synchronized
 capabilities such as runtime-managed shared cells/mutexes; ordinary actor state
 does not become concurrently callable shared-object state.
 
-The public ingress is deliberately singular so future typed message patterns can
-lower to one Erlang-style receive loop instead of many concurrently callable
-methods.
+The public ingress is deliberately singular: the runtime owns the permanent
+Erlang-style receive loop, while source code supplies only one serialized
+`receive(Message): void` turn handler. External code enqueues with
+`ActorRef.send(message)`.
 
 ## Private / isoactors
 
