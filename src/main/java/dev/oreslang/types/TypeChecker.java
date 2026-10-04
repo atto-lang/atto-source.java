@@ -1486,10 +1486,10 @@ public final class TypeChecker {
                     case "share" -> {
                         Type source = operand instanceof Borrow borrowed ? borrowed.target() : operand;
                         requireCopyable(source, new LinkedHashSet<>());
-                        // Share creates a detached immutable snapshot. Keep the
-                        // source nominal type for ordinary read-reference calls;
-                        // OwnershipChecker carries the read-only SHARED state.
-                        yield source;
+                        // Detached, immutable, and safe to outlive the source.
+                        // Calls dereference parameter types during compatibility
+                        // checks, while storage keeps the read-only qualifier.
+                        yield new Borrow(source, false);
                     }
                     default -> throw new IllegalStateException("unknown rt ownership operation " + operation);
                 };
