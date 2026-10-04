@@ -1859,15 +1859,15 @@ public final class ActorRuntime implements AutoCloseable {
      */
     public void setActorExitHook(Consumer<Object> actorExitHook) {
         requireSupervisorContext("install actor-exit hook");
-        installActorExitHookFromRuntime(actorExitHook);
+        installActorExitHookFromKernel(actorExitHook);
     }
 
     /**
-     * Runtime-kernel installation path used while constructing OresContext.
-     * Package-private on purpose: guest code cannot reach this authority, and
-     * context construction may itself occur inside a CONTROL root task.
+     * Kernel-only lifecycle wiring. OresContext construction may run while a
+     * root task owns the runtime execution marker, so it cannot use the public
+     * supervisor API without being mistaken for guest code.
      */
-    void installActorExitHookFromRuntime(Consumer<Object> actorExitHook) {
+    void installActorExitHookFromKernel(Consumer<Object> actorExitHook) {
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
