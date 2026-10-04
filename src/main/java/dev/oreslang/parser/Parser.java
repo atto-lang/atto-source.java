@@ -80,7 +80,7 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                throw error(previous(), "expected namespace, module, class, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -153,12 +153,7 @@ public final class Parser {
             return parseTypeAlias();
         }
 
-        throw error(peek(),
-                "namespace '" + (modeNameForError()) + "' is type-only; expected interface or type declaration");
-    }
-
-    private String modeNameForError() {
-        return "member";
+        throw error(peek(), "namespace is type-only; expected interface or type declaration");
     }
 
     private Ast.ImportDecl parseImport() {
