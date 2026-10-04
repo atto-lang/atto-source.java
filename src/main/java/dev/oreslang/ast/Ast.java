@@ -14,15 +14,42 @@ public final class Ast {
         public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
     }
 
-    public enum ImportKind { MODULE, CLASS, FUNCTION, ALL }
+    public enum ImportKind { MODULE, CLASS, ACTOR, FUNCTION, ALL }
 
     public record ImportDecl(
             ImportKind kind,
             List<String> names,
             boolean wildcard,
             String namespace,
-            String path) {
-        public ImportDecl { names = List.copyOf(names); }
+            String path,
+            java.util.Map<String, String> aliases) {
+        public ImportDecl {
+            names = List.copyOf(names);
+            aliases = java.util.Map.copyOf(aliases);
+            if (wildcard && namespace == null) {
+                throw new IllegalArgumentException("wildcard imports require a local namespace");
+            }
+            if (!wildcard && namespace != null) {
+                throw new IllegalArgumentException("named imports cannot also declare a namespace");
+            }
+        }
+
+        public ImportDecl(ImportKind kind, List<String> names, boolean wildcard, String namespace, String path) {
+            this(kind, names, wildcard, namespace, path, java.util.Map.of());
+        }
+
+        /** Local binding name for one explicitly imported export. */
+        public String localName(String importedName) {
+            return aliases.getOrDefault(importedName, importedName);
+        }
+
+        /** Exported name selected by a local binding name, or null when absent. */
+        public String importedName(String localName) {
+            for (String importedName : names) {
+                if (localName(importedName).equals(localName)) return importedName;
+            }
+            return null;
+        }
     }
 
     public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
