@@ -690,33 +690,37 @@ public final class TypeChecker {
             Type subject,
             List<Ast.SwitchClause> clauses,
             boolean hasCatchAll) {
-        if (hasCatchAll) return;
-
         if (subject instanceof Named named && named.name().equals("Option")) {
-            requireExhaustiveVariants("Option", Set.of("Some", "None"), clauses);
+            requireExhaustiveVariants(
+                    "Option",
+                    List.of("Some", "None"),
+                    clauses,
+                    hasCatchAll);
             return;
         }
         if (subject instanceof Named named && named.name().equals("Result")) {
-            requireExhaustiveVariants("Result", Set.of("Ok", "Err"), clauses);
+            requireExhaustiveVariants(
+                    "Result",
+                    List.of("Ok", "Err"),
+                    clauses,
+                    hasCatchAll);
             return;
         }
         if (subject == Primitive.BOOL) {
-            boolean seenTrue = false;
-            boolean seenFalse = false;
+            Set<Boolean> covered = new LinkedHashSet<>();
             for (Ast.SwitchClause clause : clauses) {
-                if (clause.guard() != null || !(clause.pattern() instanceof Ast.LiteralPattern literal)
+                if (!(clause.pattern() instanceof Ast.LiteralPattern literal)
                         || !(literal.value() instanceof Boolean value)) {
                     continue;
                 }
-                if (value) {
-                    if (seenTrue) throw new IllegalArgumentException("duplicate unguarded true switch pattern");
-                    seenTrue = true;
-                } else {
-                    if (seenFalse) throw new IllegalArgumentException("duplicate unguarded false switch pattern");
-                    seenFalse = true;
+                if (covered.contains(value)) {
+                    throw new IllegalArgumentException(
+                            "unreachable " + value + " switch pattern after an unguarded total "
+                                    + value + " pattern");
                 }
+                if (clause.guard() == null) covered.add(value);
             }
-            if (!seenTrue || !seenFalse) {
+            if (!hasCatchAll && covered.size() != 2) {
                 throw new IllegalArgumentException(
                         "non-exhaustive bool switch; cover both true and false or add an unguarded catch-all");
             }
@@ -725,22 +729,28 @@ public final class TypeChecker {
 
     private void requireExhaustiveVariants(
             String typeName,
-            Set<String> required,
-            List<Ast.SwitchClause> clauses) {
+            List<String> required,
+            List<Ast.SwitchClause> clauses,
+            boolean hasCatchAll) {
         Set<String> covered = new LinkedHashSet<>();
         for (Ast.SwitchClause clause : clauses) {
-            if (clause.guard() != null || !(clause.pattern() instanceof Ast.VariantPattern variant)) continue;
-            if (!required.contains(variant.name())) continue;
-            boolean totalVariant = variant.arguments().isEmpty()
-                    || (variant.arguments().size() == 1
-                        && isIrrefutablePayloadPattern(variant.arguments().getFirst()));
-            if (!totalVariant) continue;
-            if (!covered.add(variant.name())) {
-                throw new IllegalArgumentException(
-                        "duplicate unguarded " + variant.name() + " switch pattern");
+            if (!(clause.pattern() instanceof Ast.VariantPattern variant)
+                    || !required.contains(variant.name())) {
+                continue;
             }
+            if (covered.contains(variant.name())) {
+                throw new IllegalArgumentException(
+                        "unreachable " + variant.name()
+                                + " switch pattern after an unguarded total "
+                                + variant.name() + " pattern");
+            }
+            boolean totalVariant = clause.guard() == null
+                    && (variant.arguments().isEmpty()
+                        || (variant.arguments().size() == 1
+                            && isIrrefutablePayloadPattern(variant.arguments().getFirst())));
+            if (totalVariant) covered.add(variant.name());
         }
-        if (!covered.containsAll(required)) {
+        if (!hasCatchAll && !covered.containsAll(required)) {
             Set<String> missing = new LinkedHashSet<>(required);
             missing.removeAll(covered);
             throw new IllegalArgumentException(
