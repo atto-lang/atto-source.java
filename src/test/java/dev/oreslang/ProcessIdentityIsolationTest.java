@@ -11,6 +11,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -206,4 +211,122 @@ final class ProcessIdentityIsolationTest {
             assertInstanceOf(SecurityException.class, observed.get());
         }
     }
+    @Test
+    void untrustedMailboxRejectsActorRefsAsLiveAuthority() {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            ActorRuntime.ActorRef<String> trustedTarget = runtime.spawnPrivateTrusted(
+                    factoryContext -> (message, turn) -> { });
+            ActorRuntime.ActorRef<Object> sandbox = runtime.spawnPrivate(
+                    IsolatePolicy.strictFaas(),
+                    factoryContext -> (message, turn) -> { });
+
+            SecurityException direct = assertThrows(
+                    SecurityException.class,
+                    () -> sandbox.send(trustedTarget));
+            assertTrue(direct.getMessage().contains("actor"));
+
+            assertThrows(
+                    SecurityException.class,
+                    () -> sandbox.send(List.of("nested", List.of(trustedTarget))));
+        }
+    }
+
+    @Test
+    void wellKnownSymbolsStillRequireExplicitSandboxExport() {
+        IsolatePolicy trusted = IsolatePolicy.developer();
+        IsolatePolicy untrusted = IsolatePolicy.strictFaas();
+        OresSymbol iterator = OresSymbol.wellKnown("iterator", trusted);
+
+        if (iterator.visibleToUntrusted()) {
+            OresSymbol.revokeFromUntrusted(iterator, trusted);
+        }
+        assertThrows(
+                SecurityException.class,
+                () -> OresSymbol.wellKnown("iterator", untrusted));
+
+        OresSymbol.exportToUntrusted(iterator, trusted);
+        try {
+            assertEquals(iterator, OresSymbol.wellKnown("iterator", untrusted));
+        } finally {
+            OresSymbol.revokeFromUntrusted(iterator, trusted);
+        }
+    }
+
+    @Test
+    void singletonRejectsReentrantCallIntoSameCell() {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            MemorySlotSingletonRegistry.Handle<ArrayList<Integer>> singleton =
+                    runtime.singletons().getOrCreate("reentrant", ArrayList::new);
+
+            IllegalStateException failure = assertThrows(
+                    IllegalStateException.class,
+                    () -> singleton.call(
+                            List.of(),
+                            (state, args) -> singleton.call(
+                                    List.of(),
+                                    (sameState, sameArgs) -> sameState.size())));
+            assertTrue(failure.getMessage().contains("reentrant"));
+        }
+    }
+
+    @Test
+    void singletonWaitGraphRejectsCrossCellDeadlockCycle() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer())) {
+            MemorySlotSingletonRegistry.Handle<ArrayList<Integer>> left =
+                    runtime.singletons().getOrCreate("cycle-left", ArrayList::new);
+            MemorySlotSingletonRegistry.Handle<ArrayList<Integer>> right =
+                    runtime.singletons().getOrCreate("cycle-right", ArrayList::new);
+            CyclicBarrier barrier = new CyclicBarrier(2);
+            ExecutorService executor = Executors.newFixedThreadPool(2);
+            try {
+                Future<Object> a = executor.submit(() -> left.call(
+                        List.of(),
+                        (state, args) -> {
+                            barrier.await(2, TimeUnit.SECONDS);
+                            return right.call(
+                                    List.of(),
+                                    (rightState, rightArgs) -> rightState.size());
+                        }));
+                Future<Object> b = executor.submit(() -> right.call(
+                        List.of(),
+                        (state, args) -> {
+                            barrier.await(2, TimeUnit.SECONDS);
+                            return left.call(
+                                    List.of(),
+                                    (leftState, leftArgs) -> leftState.size());
+                        }));
+
+                Throwable aFailure = futureFailure(a);
+                Throwable bFailure = futureFailure(b);
+                assertTrue(
+                        containsMessage(aFailure, "cycle")
+                                || containsMessage(bFailure, "cycle"),
+                        "at least one side must reject the lock cycle");
+            } finally {
+                executor.shutdownNow();
+                assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+            }
+        }
+    }
+
+    private static Throwable futureFailure(Future<?> future) throws Exception {
+        try {
+            future.get(3, TimeUnit.SECONDS);
+            return null;
+        } catch (ExecutionException failure) {
+            return failure.getCause();
+        }
+    }
+
+    private static boolean containsMessage(Throwable failure, String fragment) {
+        for (Throwable current = failure; current != null; current = current.getCause()) {
+            if (current.getMessage() != null
+                    && current.getMessage().toLowerCase().contains(fragment.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
 }
