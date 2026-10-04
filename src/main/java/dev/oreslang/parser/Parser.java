@@ -363,11 +363,9 @@ public final class Parser {
         while (!check(terminator) && !check(EOF)) {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers mods = parseModifiers();
-            if (check(INIT)) throw error(peek(), "traits cannot declare init routines; trait state initializes as part of the host object");
+            if (check(INIT)) throw error(peek(), "traits cannot declare init routines; traits are storage-free reusable behavior");
             if (isBindingKind(peek().type())) {
-                if (mods.isStatic) throw error(peek(), "traits cannot declare static data");
-                fields.add(parseField(mods.visibility));
-                continue;
+                throw error(peek(), "traits are storage-free reusable behavior and cannot declare instance fields; put state on the composing class/struct");
             }
             if (mods.isStatic) throw error(peek(), "traits contain instance behavior only; static functions belong on classes or modules");
             if (check(FNC)) throw error(peek(), "trait instance methods omit 'fnc', like class instance methods");
@@ -717,14 +715,14 @@ public final class Parser {
 
     private Ast.Stmt parseStatement() {
         if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(true));
-        if (match(TRAIT)) return new Ast.TypeDeclStmt(parseTrait());
+        if (match(TRAIT)) throw error(previous(), "traits are declaration-level composition units and cannot be declared inside callables");
         if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
         if (match(TYPE)) return new Ast.TypeDeclStmt(parseTypeAlias());
         if (match(DEFINE)) {
             if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(false));
-            if (match(TRAIT)) return new Ast.TypeDeclStmt(parseTrait());
+            if (match(TRAIT)) throw error(previous(), "traits are declaration-level composition units and cannot be declared inside callables");
             if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
-            throw error(previous(), "callable-local 'define' only supports struct, trait, or interface declarations; type aliases use 'type Name = ...'");
+            throw error(previous(), "callable-local 'define' only supports struct or interface declarations; type aliases use 'type Name = ...'");
         }
         if (isBindingKind(peek().type())) return parseBindingStatement();
         if (check(LBRACKET) && looksLikeDestructure()) return parseDestructure();
