@@ -219,14 +219,17 @@ public final class OresGenerator<Y, R, N> implements Iterable<Y>, AutoCloseable 
             throw propagate(thrown);
         }
 
-        if (step instanceof Yielded<Y, R> yielded) {
+        if (step instanceof Yielded<?, ?> yielded) {
+            @SuppressWarnings("unchecked")
+            Y value = (Y) yielded.value();
             state = State.SUSPENDED;
-            return Iteration.yielded(yielded.value());
+            return Iteration.yielded(value);
         }
 
+        Complete<?, ?> complete = (Complete<?, ?>) step;
         @SuppressWarnings("unchecked")
-        Complete<Y, R> complete = (Complete<Y, R>) step;
-        completionValue = complete.value();
+        R value = (R) complete.value();
+        completionValue = value;
         state = State.DONE;
         closeFrameAfterNormalCompletion();
         return Iteration.complete(completionValue);
