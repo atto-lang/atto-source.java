@@ -1618,13 +1618,6 @@ public final class OresEvalRootNode extends RootNode {
                 for (Object item : set) releaseMutexGuardsInValue(item, failed, seen);
                 return;
             }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    releaseMutexGuardsInValue(entry.getKey(), failed, seen);
-                    releaseMutexGuardsInValue(entry.getValue(), failed, seen);
-                }
-                return;
-            }
             if (value instanceof Map<?, ?> map) {
                 for (Map.Entry<?, ?> entry : map.entrySet()) {
                     releaseMutexGuardsInValue(entry.getKey(), failed, seen);
@@ -1664,14 +1657,6 @@ public final class OresEvalRootNode extends RootNode {
         private Complex mul(Complex o){return new Complex(real*o.real-imaginary*o.imaginary,real*o.imaginary+imaginary*o.real);}
         private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
-    }
-
-    private static final class DynamicStructValue implements OresMutex.SharedState {
-        private final LinkedHashMap<String, Object> fields;
-        private DynamicStructValue() { this.fields = new LinkedHashMap<>(); }
-        private DynamicStructValue(Map<String, Object> initial) { this.fields = new LinkedHashMap<>(initial); }
-        @Override public Iterable<?> sharedStateChildren() { return fields.values(); }
-        @Override public String toString() { return "DynamicStruct" + fields; }
     }
 
     private static final class OresObject implements OresMutex.SharedState {
@@ -1744,15 +1729,6 @@ public final class OresEvalRootNode extends RootNode {
             if (value instanceof OresObject object) {
                 for (Object field : object.fields.values()) {
                     if (!runtimeSharedSafe(field, seen)) return false;
-                }
-                return true;
-            }
-            if (value instanceof DynamicStructValue dynamic) {
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    if (!runtimeSharedSafe(entry.getKey(), seen)
-                            || !runtimeSharedSafe(entry.getValue(), seen)) {
-                        return false;
-                    }
                 }
                 return true;
             }
