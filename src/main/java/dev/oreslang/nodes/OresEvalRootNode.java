@@ -349,14 +349,13 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            predeclareLocalTypes(fn.body(), env);
             try {
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) {
-                return shapeReturnedValue(
-                        fn.returnType(),
-                        signal.value,
-                        "function " + fn.name());
+                Object shaped = coerceDeclaredStruct(fn.returnType(), signal.value, env);
+                return shapeReturnedValue(fn.returnType(), shaped, "function " + fn.name());
             }
         }
 
@@ -368,14 +367,19 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Param param = method.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            predeclareLocalTypes(method.body(), env);
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
+            } catch (ReturnSignal signal) {
+                Object shaped = coerceDeclaredStruct(method.returnType(), signal.value, env);
+                return shapeReturnedValue(method.returnType(), shaped, "method " + method.name());
+            }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             Env env = new Env(parent);
+            predeclareLocalTypes(statements, env);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             try {
@@ -399,12 +403,14 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
+            if (stmt instanceof Ast.TypeDeclStmt) return;
             if (stmt instanceof Ast.BindingStmt binding) {
+                Object value = coerceDeclaredStruct(binding.declaredType(), eval(binding.initializer(), env), env);
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
-                    env.initialize(binding.name(), eval(binding.initializer(), env));
+                    env.initialize(binding.name(), value);
                 } else {
-                    env.define(binding.name(), eval(binding.initializer(), env), binding.kind());
+                    env.define(binding.name(), value, binding.kind());
                 }
                 return;
             }
@@ -544,20 +550,14 @@ public final class OresEvalRootNode extends RootNode {
                         object.fields.put(target.member(), value);
                         return value;
                     }
-                    if (receiver instanceof DynamicStructValue dynamic) {
-                        dynamic.fields.put(target.member(), value);
-                        return value;
-                    }
-                    throw new IllegalArgumentException("member assignment requires a class instance, DynamicStruct, or mutex guard");
+                    throw new IllegalArgumentException("member assignment requires a declared mutable field; dynamic Map keys use map[key]");
                 }
                 if (assignment.target() instanceof Ast.IndexExpr target) {
                     Object receiver = eval(target.receiver(), env);
                     Object index = eval(target.index(), env);
-                    if (receiver instanceof DynamicStructValue dynamic) {
-                        if (!(index instanceof String key)) {
-                            throw new IllegalArgumentException("DynamicStruct key must be a string");
-                        }
-                        dynamic.fields.put(key, value);
+                    if (receiver instanceof Map<?, ?> raw) {
+                        @SuppressWarnings("unchecked") Map<Object, Object> map = (Map<Object, Object>) raw;
+                        map.put(index, value);
                         return value;
                     }
                     if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
@@ -567,7 +567,7 @@ public final class OresEvalRootNode extends RootNode {
                         list.set(i, value);
                         return value;
                     }
-                    throw new IllegalArgumentException("indexed assignment requires a mutable array/list or DynamicStruct");
+                    throw new IllegalArgumentException("indexed assignment requires a mutable array/list or Map");
                 }
                 throw new IllegalArgumentException("unsupported assignment target");
             }
@@ -629,23 +629,11 @@ public final class OresEvalRootNode extends RootNode {
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
-                if (receiver instanceof DynamicStructValue dynamic) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("DynamicStruct key must be a string");
-                    }
-                    if (!dynamic.fields.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown DynamicStruct key " + key);
-                    }
-                    return dynamic.fields.get(key);
-                }
                 if (receiver instanceof Map<?, ?> map) {
-                    if (!(index instanceof String key)) {
-                        throw new IllegalArgumentException("object/map key must be a string");
+                    if (!map.containsKey(index)) {
+                        throw new IllegalArgumentException("unknown object/map key " + index);
                     }
-                    if (!map.containsKey(key)) {
-                        throw new IllegalArgumentException("unknown object/map key " + key);
-                    }
-                    return map.get(key);
+                    return map.get(index);
                 }
                 if (!(index instanceof Number number)) throw new IllegalArgumentException("array/list index must be an integer");
                 int i = Math.toIntExact(number.longValue());
@@ -655,10 +643,11 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.NewExpr created) {
                 if (created.type().name().equals("DynamicStruct")) {
-                    if (!created.arguments().isEmpty()) {
-                        throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
-                    }
-                    return new DynamicStructValue();
+                    throw new IllegalArgumentException("DynamicStruct has been removed; use Map<K,V>");
+                }
+                if (created.type().name().equals("Map")) {
+                    if (!created.arguments().isEmpty()) throw new IllegalArgumentException("Map<K,V> constructor takes no positional arguments");
+                    return new LinkedHashMap<>();
                 }
                 HostClassFacade hostClass = hostClasses.get(created.type().name());
                 if (hostClass != null) {
@@ -682,8 +671,23 @@ public final class OresEvalRootNode extends RootNode {
                     }
                 }
                 if (klass == null) throw new IllegalArgumentException("unknown class " + created.type().name());
+                if (klass.isStruct()) throw new IllegalArgumentException("struct " + klass.name() + " is a value type; use " + klass.name() + " { ... }");
                 List<Object> args = created.arguments().stream().map(arg -> eval(arg, env)).toList();
                 return owner.instantiate(klass, args);
+            }
+            if (expr instanceof Ast.StructInitExpr created) {
+                Ast.ClassDecl struct = runtimeClass(created.type(), env);
+                if (struct == null || !struct.isStruct()) {
+                    throw new IllegalArgumentException(created.type().name() + " is not a struct type");
+                }
+                LinkedHashMap<String, Object> supplied = new LinkedHashMap<>();
+                for (Ast.ObjectField field : created.fields()) {
+                    if (field.isDynamic()) throw new IllegalArgumentException("struct fields must have static names");
+                    if (supplied.putIfAbsent(field.name(), eval(field.value(), env)) != null) {
+                        throw new IllegalArgumentException("duplicate struct field " + struct.name() + "." + field.name());
+                    }
+                }
+                return materializeStruct(struct, supplied, env);
             }
             if (expr instanceof Ast.AwaitExpr awaited) {
                 Object value = eval(awaited.expression(), env);
@@ -704,24 +708,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
             if (expr instanceof Ast.ObjectExpr object) {
-                boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
                 for (Ast.ObjectField field : object.fields()) {
-                    String key;
-                    if (field.isDynamic()) {
-                        Object evaluatedKey = eval(field.dynamicName(), env);
-                        if (!(evaluatedKey instanceof String stringKey)) {
-                            throw new IllegalArgumentException("dynamic obj key must evaluate to a string");
-                        }
-                        key = stringKey;
-                    } else {
-                        key = field.name();
-                    }
-                    if (result.putIfAbsent(key, eval(field.value(), env)) != null) {
-                        throw new IllegalArgumentException("duplicate obj field " + key);
+                    if (field.isDynamic()) throw new IllegalArgumentException("obj{} has a fixed shape; use Map<K,V> for dynamic keys");
+                    if (result.putIfAbsent(field.name(), eval(field.value(), env)) != null) {
+                        throw new IllegalArgumentException("duplicate obj field " + field.name());
                     }
                 }
-                return dynamicKeys ? new DynamicStructValue(result) : Map.copyOf(result);
+                return Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
                 boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
