@@ -56,6 +56,7 @@ public final class NativeValues {
         public synchronized Object set(int index, Object value) { return NativeCoreBridge.listSet(handle(), checkedIndex(index, size(), false, "List.set"), value); }
         public synchronized void add(Object value) { NativeCoreBridge.listAdd(handle(), value); }
         public synchronized Object remove(int index) { return NativeCoreBridge.listRemove(handle(), checkedIndex(index, size(), false, "List.remove")); }
+        public synchronized void clear() { NativeCoreBridge.listClear(handle()); }
         public synchronized Object[] snapshot() { return NativeCoreBridge.listSnapshot(handle()); }
 
         @Override
@@ -86,7 +87,7 @@ public final class NativeValues {
                 };
                 case "clear" -> (BuiltinCallable) args -> {
                     requireArity(args, 0, "List.clear");
-                    NativeCoreBridge.listClear(handle());
+                    clear();
                     return this;
                 };
                 default -> throw new IllegalArgumentException("unknown List member " + name);
@@ -145,6 +146,12 @@ public final class NativeValues {
         }
         public final synchronized Object putStringUnchecked(String key, Object value) {
             return NativeCoreBridge.mapPut(handle(), Objects.requireNonNull(key), value);
+        }
+        public final synchronized Object removeString(String key) {
+            return NativeCoreBridge.mapRemove(handle(), Objects.requireNonNull(key));
+        }
+        public final synchronized void clearStrings() {
+            NativeCoreBridge.mapClear(handle());
         }
         public final synchronized Object[] valuesSnapshot() { return NativeCoreBridge.mapValues(handle()); }
         public final synchronized String[] keysSnapshot() { return NativeCoreBridge.mapKeys(handle()); }
@@ -214,7 +221,7 @@ public final class NativeValues {
             return storage.getString(encoded);
         }
         public synchronized Object put(Object key, Object value) { return storage.putString(key(key), value); }
-        public synchronized Object remove(Object key) { return NativeCoreBridge.mapRemove(storage.handle(), key(key)); }
+        public synchronized Object remove(Object key) { return storage.removeString(key(key)); }
 
         @Override
         public Object member(String name) {
@@ -224,7 +231,7 @@ public final class NativeValues {
                 case "contains", "has" -> (BuiltinCallable) args -> { requireArity(args, 1, "Map.contains"); return contains(args.getFirst()); };
                 case "set", "put" -> (BuiltinCallable) args -> { requireArity(args, 2, "Map.set"); put(args.getFirst(), args.get(1)); return this; };
                 case "remove" -> (BuiltinCallable) args -> { requireArity(args, 1, "Map.remove"); return remove(args.getFirst()); };
-                case "clear" -> (BuiltinCallable) args -> { requireArity(args, 0, "Map.clear"); NativeCoreBridge.mapClear(storage.handle()); return this; };
+                case "clear" -> (BuiltinCallable) args -> { requireArity(args, 0, "Map.clear"); storage.clearStrings(); return this; };
                 default -> throw new IllegalArgumentException("unknown Map member " + name);
             };
         }
