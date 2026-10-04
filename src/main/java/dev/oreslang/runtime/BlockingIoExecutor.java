@@ -11,6 +11,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -41,6 +42,7 @@ final class BlockingIoExecutor implements AutoCloseable {
 
     private final ExecutorService javaBlocking;
     private final Semaphore javaAdmissions;
+    private final int maxJavaBlocking;
     private final ThreadPoolExecutor nativeBlocking;
     private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -68,6 +70,7 @@ final class BlockingIoExecutor implements AutoCloseable {
             throw new IllegalArgumentException("nativeQueueCapacity must be positive");
         }
 
+        this.maxJavaBlocking = maxJavaBlocking;
         this.javaAdmissions = new Semaphore(maxJavaBlocking);
         this.javaBlocking = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual()
@@ -103,9 +106,11 @@ final class BlockingIoExecutor implements AutoCloseable {
         if (!javaAdmissions.tryAcquire()) {
             return rejected(
                     "Java blocking operation admission limit exceeded: "
-                            + DEFAULT_MAX_JAVA_BLOCKING);
+                            + maxJavaBlocking);
         }
 
+        // 0=queued, 1=running, 2=terminal/cancelled-before-run.
+        AtomicInteger lifecycle = new AtomicInteger(0);
         AtomicBoolean admissionReleased = new AtomicBoolean();
         Runnable releaseAdmission = () -> {
             if (admissionReleased.compareAndSet(false, true)) {
@@ -116,41 +121,54 @@ final class BlockingIoExecutor implements AutoCloseable {
         OresFuture<T> result = new OresFuture<>(() -> {
             Future<?> task = taskRef.get();
             if (task != null) task.cancel(true);
-            releaseAdmission.run();
+            // Only cancellation that wins before the worker starts may release
+            // admission here. A running/uncooperative host call remains charged
+            // until its worker actually exits.
+            if (lifecycle.compareAndSet(0, 2)) {
+                releaseAdmission.run();
+            }
         });
 
         final Future<?> submitted;
         try {
             submitted = javaBlocking.submit(() -> {
-                if (result.isCancelled()) {
-                    releaseAdmission.run();
+                if (!lifecycle.compareAndSet(0, 1)) {
                     return;
                 }
                 try {
-                    result.completeFromRuntime(operation.call());
-                } catch (VirtualMachineError fatal) {
-                    result.failFromRuntime(fatal);
-                    throw fatal;
-                } catch (ThreadDeath fatal) {
-                    result.failFromRuntime(fatal);
-                    throw fatal;
-                } catch (LinkageError fatal) {
-                    result.failFromRuntime(fatal);
-                    throw fatal;
-                } catch (Throwable failure) {
-                    result.failFromRuntime(failure);
+                    if (!result.isCancelled()) {
+                        try {
+                            result.completeFromRuntime(operation.call());
+                        } catch (VirtualMachineError fatal) {
+                            result.failFromRuntime(fatal);
+                            throw fatal;
+                        } catch (ThreadDeath fatal) {
+                            result.failFromRuntime(fatal);
+                            throw fatal;
+                        } catch (LinkageError fatal) {
+                            result.failFromRuntime(fatal);
+                            throw fatal;
+                        } catch (Throwable failure) {
+                            result.failFromRuntime(failure);
+                        }
+                    }
                 } finally {
+                    lifecycle.set(2);
                     releaseAdmission.run();
                 }
             });
         } catch (RejectedExecutionException rejected) {
+            lifecycle.set(2);
             releaseAdmission.run();
             result.failFromRuntime(rejected);
             return result;
         }
 
         taskRef.set(submitted);
-        if (result.isCancelled()) submitted.cancel(true);
+        if (result.isCancelled()) {
+            submitted.cancel(true);
+            if (lifecycle.compareAndSet(0, 2)) releaseAdmission.run();
+        }
         return result;
     }
 
