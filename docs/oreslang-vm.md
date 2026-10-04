@@ -80,20 +80,31 @@ resize schedulers, or reach VM implementation state.
 
 ## Actor scheduler isolation
 
+Scheduler domains and Graal-isolate placement are deliberately different axes.
+A trusted isoactor gets private/confined actor memory without moving into another
+Graal isolate.
+
 ```text
-OresVM
-├── CONTROL
-│   ├── main/root
-│   ├── supervisors
-│   ├── ActorGroup mailmen
-│   └── generation reclamation
-├── SHARED_ACTOR
-│   └── shared actors
-├── ISOACTOR
-│   └── private/confined actors
-└── UNTRUSTED_ACTOR
-    └── actors executing inside an isolated/adversarial context
+OS process
+└── PRIMARY_GRAAL_ISOLATE
+    ├── OresVM / CONTROL
+    │   ├── main/root
+    │   ├── supervisors
+    │   ├── ActorGroup mailmen
+    │   └── generation reclamation
+    ├── SHARED_ACTOR
+    │   └── trusted shared actors
+    ├── ISOACTOR
+    │   └── trusted private/confined-memory actors
+    └── spawned/subsequent Graal isolate(s)
+        └── UNTRUSTED_ACTOR
+            └── adversarial sandboxed actors
 ```
+
+The hard invariant is:
+
+> memory confinement does not imply a Graal-isolate boundary; only untrusted
+> actors cross into a spawned/subsequent Graal isolate.
 
 Actor invariants:
 
@@ -154,13 +165,17 @@ on one code generation for its full lifetime.
 
 ## Trusted hot loading
 
-Trusted application generations may run in the main OS process/main Graal
-isolate.
+Trusted application generations run in the main OS process/main Graal isolate.
 
-`TRUSTED_JIT` generations may share the process Graal engine. This is the
-normal Java/Go-style model: safe guest code and runtime implementation are
-co-resident, while type safety, managed references, capability APIs, package/
-module visibility, and the language verifier form the logical wall.
+`TRUSTED_JIT` and `TRUSTED_ISOACTOR_JIT` generations both remain in the
+primary Graal isolate. The latter still strips host escape hatches and executes
+on the ISOACTOR scheduler/memory domain; that confinement is semantic/runtime
+memory isolation, not a second Graal isolate.
+
+This is the normal Java/Go-style model: safe guest code and runtime
+implementation are co-resident, while type safety, managed references,
+capability APIs, package/module visibility, actor-memory ownership, and the
+language verifier form the logical wall.
 
 Trusted does **not** mean privileged. Trusted actor code still cannot obtain
 OresVM or runtime implementation objects.
@@ -211,7 +226,7 @@ Hot loading is control-plane authority.
 The supervisor policy must contain `HOT_CODE_LOAD`. That capability is removed
 from the guest policy before the generation starts.
 
-Isolated/untrusted JIT generations also strip host escape hatches such as:
+Trusted isoactor and untrusted JIT generations strip host escape hatches such as:
 
 - FFI;
 - native access;
