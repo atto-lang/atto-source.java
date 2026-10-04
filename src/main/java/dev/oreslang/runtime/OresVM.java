@@ -256,6 +256,12 @@ final class OresVM {
         return dispatchers;
     }
 
+    void executeControlMaintenance(Runnable task) {
+        ensureRunning();
+        dispatchers.executeControlMaintenance(
+                Objects.requireNonNull(task, "task"));
+    }
+
     private void ensureRunning() {
         if (shutdown.get()) {
             throw new IllegalStateException("Oreslang VM is shut down");
