@@ -44,40 +44,41 @@ import class ArrayList as JArrayList from "java:java.util.ArrayList";
 
 The selected name (`ArrayList`) must match the Java simple class name; `JArrayList` is only the Oreslang-local alias. Java imports never grant authority by themselves: runtime use additionally requires the `JAVA_INTEROP` capability and an exact host-class allowlist supplied by the launcher/embedder.
 
-### Circular imports and file initialization
+### Circular imports and inert file loading
 
 Import cycles are legal. Oreslang does not reject a program merely because its
 file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
 
-The loader uses a staged lifecycle:
+Loading is declaration-only:
 
 1. parse and statically validate the complete reachable source graph;
 2. resolve/link imports for every code unit;
-3. compute strongly connected components (SCCs) of the import graph;
-4. for each dependency-first SCC, verify that **all** members are linked;
-5. run each member's optional file init hook;
-6. after initialization, invoke the entry unit's `main`.
+3. compute and verify the import graph;
+4. index declarations and static metadata;
+5. invoke only the selected entry unit's explicit `main` entrypoint.
 
-A file init hook has the exact shape:
+**Loading or importing a file never executes Oreslang user code.** There is no
+automatic `init` hook, module constructor, file initializer, or import-time
+callback. A callable named `init` is an ordinary callable and runs only when
+explicitly called.
+
+File/root scope is declaration-only and may not contain `const`, `val`, or
+`let` bindings. Static data belongs to a named module:
 
 ```ores
-fnc init(): void {
-  // side effects are allowed here
-  return;
-}
+define module Foo
+  pub const foo = "bar";
+end
 ```
 
-It is private, synchronous, non-actor, non-generic, takes no parameters, and
-returns `void`. The hook runs at most once for that loaded code-unit
-generation. Inside a cycle, init hooks execute in deterministic normalized
-code-unit-id order, but code must rely only on the stronger barrier guarantee:
-**every peer in the cycle is already linked before any peer's init begins**.
+This is legal because `Foo.foo` is module-owned static data; it is not a
+file-load callback. A naked file binding such as `pub const foo = "bar";` is
+a compile-time error.
 
-This means an init hook may call exported declarations from a cyclic peer
-without observing an "unloaded module" state. If application state requires a
-specific sequencing relationship *between* two init hooks in the same cycle,
-that relationship should be made explicit in application code rather than
-inferred from the import edges.
+For cyclic imports, every reachable code unit is linked before `main` begins.
+Any application-specific startup ordering must therefore be expressed
+explicitly from `main` (or from functions that `main` calls), never inferred
+from import order.
 
 ## Module interfaces / OCaml-style module signatures
 
@@ -152,8 +153,13 @@ fnc fixed(): [int, bool, string] {
   return [3, true, "yes"];
 }
 
-fnc named(): {foo: int, bar: string} {
-  return obj{foo: 5, bar: "x"};
+type Named = struct {
+  foo: int
+  bar: string
+}
+
+fnc named(): Named {
+  return Named{foo: 5, bar: "x"};
 }
 ```
 
@@ -246,34 +252,58 @@ end
 
 Inline object and array literals are values, not classes, and cannot be inherited from.
 
-## Inline values
+## Structs, lexical types, maps, and inline arrays
 
-Structural inline object:
-
-```ores
-val user = obj{name: "Ada", age: 37};
-stdio.println(user.name);
-```
-
-Static object/map keys may be identifiers, reserved member keys such as
-`stop`/`do`/`done`, or strings written with either single or double
-quotes. Backticks make the key dynamic: the expression between the backticks
-must evaluate to a string.
+Structs have a statically closed field set. They may be declared at file/module
+scope or lexically inside a `fnc`, `routine`, or method:
 
 ```ores
-val key = "score";
-val stats = obj{
-  stop: 1,
-  'do': 2,
-  "done": 3,
-  `key`: 4
-};
+pub fnc make = || -> R {
+  struct R {
+    name: string
+    age: int
+  }
+
+  return R{name: "Ada", age: 37}
+}
 ```
 
-An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
-`T` is the joined value type. A `DynamicStruct<T>` can also be created
-directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
-only values assignable to `T`.
+The equivalent alias form is also legal, including without a trailing
+semicolon after the closing struct brace:
+
+```ores
+pub fnc make = || -> R {
+  type R = struct {
+    name: string
+    age: int
+  }
+  return R{name: "Ada", age: 37}
+}
+```
+
+Lexical type declarations are collected by the compiler before executable
+statements are checked. Declaring a local struct or interface is therefore a
+compile-time operation, not a runtime statement. If a local struct escapes
+through a callable signature, the exported callable contract carries its
+closed record shape; the lexical type name itself does not become globally
+nameable.
+
+`class`, `module`, and `namespace` declarations remain top-level/static.
+
+Struct literals require exactly the declared fields. Fields cannot be inserted
+or removed at runtime. The old `obj{...}` and `DynamicStruct<T>` model is
+shelved.
+
+For runtime key insertion use an explicit map:
+
+```ores
+let Map<string, int> stats = new Map<string, int>();
+stats["score"] = 4;
+stats["attempts"] = 2;
+```
+
+Both map key and value types are checked statically. Maps are the explicit
+dynamic collection primitive; they do not mutate a struct's shape.
 
 Inline array:
 
@@ -681,7 +711,13 @@ stdio.stdout.println(value);
 
 ## Execution profiles: JIT, AOT, and hybrid
 
-The same Oreslang source model supports three deployment profiles:
+The same Oreslang source model supports three deployment profiles.
+
+**AOT compatibility is the semantic floor.** Every valid source program must
+have a statically discoverable type and executable structure sufficient for
+AOT compilation. JIT execution may profile, inline, specialize, speculate, and
+deoptimize, but it does not unlock additional source-language semantics such as
+runtime-generated struct shapes or import-time code execution.
 
 - **JIT** — normal GraalVM/JVM host with Truffle JIT available.
 - **AOT** — Native Image host with the Truffle interpreter retained and guest JIT disabled. This is the conservative mobile/FaaS profile and still supports source hot reload because new Oreslang source is data consumed by the precompiled interpreter.
@@ -759,7 +795,12 @@ fnc c(y Foo): void {
 All three may accept:
 
 ```ores
-val branded = obj{
+struct Branded {
+  marker: string
+  markerBrand: string
+}
+
+val branded = Branded{
   marker: "brand",
   markerBrand: "marking/branding"
 };
