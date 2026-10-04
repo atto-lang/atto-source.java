@@ -1384,6 +1384,27 @@ public final class ActorRuntime implements AutoCloseable {
             return config;
         }
 
+        /**
+         * Kernel-only maintenance runs on the CONTROL pool, never on an actor
+         * carrier domain. If the bounded control queue is momentarily full,
+         * retry through the existing watchdog service rather than dropping a
+         * generation-reclamation task.
+         */
+        void executeControlMaintenance(Runnable task) {
+            Objects.requireNonNull(task, "task");
+            try {
+                controlDispatcher.execute(task);
+            } catch (RejectedExecutionException rejected) {
+                if (controlDispatcher.isShutdown() || messageWatchdog.isShutdown()) {
+                    throw rejected;
+                }
+                messageWatchdog.schedule(
+                        () -> executeControlMaintenance(task),
+                        1L,
+                        TimeUnit.MILLISECONDS);
+            }
+        }
+
         void shutdownNow() {
             controlDispatcher.shutdownNow();
             privateDispatcher.shutdownNow();
