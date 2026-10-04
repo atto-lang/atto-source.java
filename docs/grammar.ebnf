@@ -254,10 +254,10 @@ struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_
      use "as" as the body marker. "as", "is", "with", and "trait" are reserved.
    - Interfaces are storage-free contracts: they declare function signatures only.
      They never allocate fields or contribute object layout.
-   - Stateful reusable composition uses traits. A class satisfies interfaces with
+   - Reusable behavior composition uses storage-free traits. A class satisfies interfaces with
      "is" and composes traits with "with". "implements"/"impl" remain migration
      aliases for "is".
-   - Traits may contain initialized state, concrete methods, and abstract method
+   - Traits may contain concrete methods and abstract method
      requirements, but are never directly instantiated and have no object identity.
      Trait state is flattened into the host class before runtime.
    - Traits are composition units, not runtime types. Trait names are rejected in
