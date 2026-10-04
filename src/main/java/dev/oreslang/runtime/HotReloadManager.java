@@ -601,8 +601,8 @@ public final class HotReloadManager implements AutoCloseable {
         public long id() { return id; }
         public String codeUnitId() { return codeUnitId; }
         public String sha256() { return sha256; }
-        public Context context() { return context; }
-        public Source source() { return source; }
+        Context context() { return context; }
+        Source source() { return source; }
         public ExecutionProfile executionProfile() { return executionProfile; }
         public ExecutionDomain executionDomain() { return executionDomain; }
         public IsolatePolicy guestPolicy() { return guestPolicy; }
