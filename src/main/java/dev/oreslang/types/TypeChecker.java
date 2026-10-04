@@ -442,29 +442,22 @@ public final class TypeChecker {
                         && !method.name().equals("constructor"))
                 .toList();
 
-        if (publicInstance.size() != 1 || !publicInstance.getFirst().name().equals("receive")) {
+        if (publicInstance.isEmpty()) {
             throw new IllegalArgumentException(
-                    "actor '" + klass.name()
-                            + "' must expose exactly one public mailbox ingress receive(message); "
-                            + "all other actor methods must be private");
+                    "actor '" + klass.name() + "' must expose at least one public protocol method");
         }
 
-        Ast.MethodDecl receive = publicInstance.getFirst();
-        if (!receive.genericParameters().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) cannot declare generic parameters");
-        }
-        if (receive.explicitReceiverType() != null) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) must use implicit self");
-        }
-        if (receive.parameters().size() != 1) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) must declare exactly one message parameter");
-        }
-        if (!receive.returnType().equals(Ast.TypeRef.simple("void"))) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' receive(message) must return void");
+        for (Ast.MethodDecl endpoint : publicInstance) {
+            if (!endpoint.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException(
+                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
+                                + "' cannot declare method generic parameters");
+            }
+            if (endpoint.explicitReceiverType() != null) {
+                throw new IllegalArgumentException(
+                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
+                                + "' must use implicit self");
+            }
         }
     }
 
