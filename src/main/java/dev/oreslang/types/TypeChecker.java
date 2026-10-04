@@ -630,17 +630,15 @@ public final class TypeChecker {
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
                 Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
                 Type index = typeOf(indexed.index(), env, generics, self);
-                if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-                    if (dynamic.arguments().size() != 1) {
-                        throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
-                    }
-                    requireAssignable(index, Primitive.STRING, "DynamicStruct key");
-                    targetType = dynamic.arguments().getFirst();
+                if (receiver instanceof Named map && map.name().equals("Map")) {
+                    if (map.arguments().size() != 2) throw new IllegalArgumentException("Map requires key and value types");
+                    requireAssignable(index, map.arguments().get(0), "Map key");
+                    targetType = map.arguments().get(1);
                 } else {
                     requireAssignable(index, Primitive.INT, "array/list index");
                     if (receiver instanceof ListType list) targetType = list.element();
                     else if (receiver instanceof Tuple tuple) targetType = tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-                    else throw new IllegalArgumentException("indexed assignment requires an array/list, tuple, or DynamicStruct");
+                    else throw new IllegalArgumentException("indexed assignment requires an array/list/tuple or Map");
                 }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
@@ -929,12 +927,6 @@ public final class TypeChecker {
                 if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
                 return result;
             }
-            if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-                if (dynamic.arguments().size() != 1) {
-                    throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
-                }
-                return dynamic.arguments().getFirst();
-            }
             if (receiver instanceof Named named) {
                 Ast.ClassDecl klass = findClass(named.name());
                 if (klass != null) {
@@ -966,12 +958,10 @@ public final class TypeChecker {
         if (expr instanceof Ast.IndexExpr indexed) {
             Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
             Type index = typeOf(indexed.index(), env, generics, self);
-            if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-                if (dynamic.arguments().size() != 1) {
-                    throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
-                }
-                requireAssignable(index, Primitive.STRING, "DynamicStruct key");
-                return dynamic.arguments().getFirst();
+            if (receiver instanceof Named map && map.name().equals("Map")) {
+                if (map.arguments().size() != 2) throw new IllegalArgumentException("Map requires key and value types");
+                requireAssignable(index, map.arguments().get(0), "Map key");
+                return map.arguments().get(1);
             }
             if (receiver instanceof Record record) {
                 requireAssignable(index, Primitive.STRING, "object/map key");
@@ -988,18 +978,22 @@ public final class TypeChecker {
             requireAssignable(index, Primitive.INT, "array/list index");
             if (receiver instanceof ListType list) return list.element();
             if (receiver instanceof Tuple tuple) return tuple.elements().stream().reduce(Unknown.INSTANCE, this::commonType);
-            throw new IllegalArgumentException("indexing requires an array/list, tuple, or DynamicStruct");
+            throw new IllegalArgumentException("indexing requires an array/list, tuple, record, or Map");
         }
         if (expr instanceof Ast.NewExpr created) {
             if (created.type().name().equals("DynamicStruct")) {
-                Type dynamic = resolve(created.type(), generics, self);
-                if (!created.arguments().isEmpty()) {
-                    throw new IllegalArgumentException("DynamicStruct<T> constructor takes no positional arguments");
-                }
-                return dynamic;
+                throw new IllegalArgumentException("DynamicStruct has been removed; use Map<K,V>");
+            }
+            if (created.type().name().equals("Map")) {
+                Type map = resolve(created.type(), generics, self);
+                if (!created.arguments().isEmpty()) throw new IllegalArgumentException("Map<K,V> constructor takes no positional arguments");
+                return map;
             }
             Ast.ClassDecl klass = findClass(created.type().name());
             if (klass == null) return resolve(created.type(), generics, self);
+            if (klass.isStruct()) {
+                throw new IllegalArgumentException("struct '" + klass.name() + "' is a value type; initialize it with " + klass.name() + " { ... }, not new");
+            }
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException("actor '" + klass.name()
                         + "' cannot be constructed with new; actor instances must be created through the actor runtime");
@@ -1035,6 +1029,24 @@ public final class TypeChecker {
             }
             return nominal;
         }
+        if (expr instanceof Ast.StructInitExpr created) {
+            Type resolved = resolve(created.type(), generics, self);
+            if (!(resolved instanceof Named named)) throw new IllegalArgumentException("struct initializer must name a struct type");
+            Ast.ClassDecl struct = findClass(named.name());
+            if (struct == null || !struct.isStruct()) {
+                throw new IllegalArgumentException("'" + created.type().name() + "' is not a struct");
+            }
+            Map<String, Type> supplied = new LinkedHashMap<>();
+            for (Ast.ObjectField field : created.fields()) {
+                if (field.isDynamic()) throw new IllegalArgumentException("struct initializer keys must be static");
+                Type fieldType = typeOf(field.value(), env, generics, self);
+                if (supplied.putIfAbsent(field.name(), fieldType) != null) {
+                    throw new IllegalArgumentException("duplicate struct field '" + field.name() + "'");
+                }
+            }
+            validateStructRecord(struct, named, new Record(supplied), "initializer for struct '" + struct.name() + "'");
+            return named;
+        }
         if (expr instanceof Ast.AwaitExpr awaited) {
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) return named.arguments().getFirst();
@@ -1053,27 +1065,14 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ObjectExpr object) {
             Map<String, Type> members = new LinkedHashMap<>();
-            boolean dynamicKeys = false;
-            Type dynamicValue = null;
             for (Ast.ObjectField field : object.fields()) {
-                Type exactValueType = typeOf(field.value(), env, generics, self);
-                Type dynamicValueType = widenCollectionElement(exactValueType);
-                dynamicValue = dynamicValue == null
-                        ? dynamicValueType
-                        : collectionElementJoin(dynamicValue, dynamicValueType);
                 if (field.isDynamic()) {
-                    dynamicKeys = true;
-                    requireAssignable(
-                            typeOf(field.dynamicName(), env, generics, self),
-                            Primitive.STRING,
-                            "dynamic obj key");
-                } else if (members.putIfAbsent(field.name(), exactValueType) != null) {
+                    throw new IllegalArgumentException("obj{} has a fixed compile-time shape; use Map<K,V> for dynamic keys");
+                }
+                Type exactValueType = typeOf(field.value(), env, generics, self);
+                if (members.putIfAbsent(field.name(), exactValueType) != null) {
                     throw new IllegalArgumentException("duplicate obj field '" + field.name() + "'");
                 }
-            }
-            if (dynamicKeys) {
-                return new Named("DynamicStruct", List.of(
-                        dynamicValue == null ? Unknown.INSTANCE : dynamicValue));
             }
             return new Record(members);
         }
@@ -1099,6 +1098,15 @@ public final class TypeChecker {
         if (expr instanceof Ast.LambdaExpr lambda && expected instanceof Function fn) {
             validateLambdaAgainstExpected(lambda, fn, env, generics, self);
             return fn;
+        }
+        if (expr instanceof Ast.ObjectExpr object && expected instanceof Named named) {
+            Ast.ClassDecl struct = findClass(named.name());
+            if (struct != null && struct.isStruct()) {
+                Type actual = typeOf(object, env, generics, self);
+                if (!(actual instanceof Record record)) throw new IllegalArgumentException("internal error: obj{} did not produce a record");
+                validateStructRecord(struct, named, record, "object value for struct '" + struct.name() + "'");
+                return named;
+            }
         }
         if (expr instanceof Ast.ListExpr list) {
             if (expected instanceof Tuple) {
@@ -2660,6 +2668,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.ListExpr list) return list.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().allMatch(this::constant);
         if (expr instanceof Ast.ObjectExpr object) return object.fields().stream().allMatch(field -> constant(field.value()));
+        if (expr instanceof Ast.StructInitExpr struct) return struct.fields().stream().allMatch(field -> constant(field.value()));
         return false;
     }
 
