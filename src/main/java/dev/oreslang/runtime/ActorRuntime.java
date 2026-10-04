@@ -5433,6 +5433,23 @@ public final class ActorRuntime implements AutoCloseable {
                     return;
                 }
 
+                // Timer/reactor callbacks that are not resuming an await are
+                // ordinary actor-local events. Execute at most one per carrier
+                // quantum and never on the completion/timer thread itself.
+                ContinuationEnvelope readyEvent = readyContinuations.poll();
+                if (readyEvent != null) {
+                    releaseControlEvent();
+                    try {
+                        readyEvent.continuation().resume(
+                                readyEvent.value(),
+                                readyEvent.failure(),
+                                context);
+                    } catch (ActorTurnSuspendedSignal suspended) {
+                        return;
+                    }
+                    return;
+                }
+
                 // next_tick is a later actor turn, never an inline microtask.
                 // Execute at most one deferred callback per scheduler quantum so
                 // a recursive next_tick chain cannot starve mailbox traffic.
@@ -5476,6 +5493,13 @@ public final class ActorRuntime implements AutoCloseable {
                         }
                     }
                     processed++;
+
+                    // A next_tick/timer/reactor event created by this message is
+                    // defined to run on a later scheduler turn, before another
+                    // mailbox message from this actor. End this batch now.
+                    if (!nextTickContinuations.isEmpty() || !readyContinuations.isEmpty()) {
+                        break;
+                    }
 
                     // This is deliberately checked between complete mailbox
                     // messages. We never asynchronously tear through an
