@@ -221,7 +221,7 @@ public final class Parser {
             Ast.TypeRef returnType = parseTypeRef();
             List<Ast.Stmt> body = parseBlock();
             return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind,
-                    generics, params, returnType, annotations, body);
+                    generics, exposeLocalStructParams(params, body), exposeLocalStructType(returnType, body), annotations, body);
         }
 
         consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
@@ -230,8 +230,8 @@ public final class Parser {
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics, params,
-                returnType, annotations, body);
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics,
+                exposeLocalStructParams(params, body), exposeLocalStructType(returnType, body), annotations, body);
     }
 
     private Ast.ClassDecl parseClass(boolean isAbstract) {
@@ -440,7 +440,53 @@ public final class Parser {
             body = List.of();
         } else body = parseBlock();
         return new Ast.MethodDecl(name, mods.visibility, mods.isStatic, mods.isAbstract, mods.async,
-                receiverType, generics, params, returnType, annotations, body);
+                receiverType, generics, exposeLocalStructParams(params, body), exposeLocalStructType(returnType, body), annotations, body);
+    }
+
+    private List<Ast.Param> exposeLocalStructParams(List<Ast.Param> params, List<Ast.Stmt> body) {
+        return params.stream()
+                .map(param -> new Ast.Param(
+                        exposeLocalStructType(param.type(), body),
+                        param.name(),
+                        param.structural(),
+                        param.mutable()))
+                .toList();
+    }
+
+    private Ast.TypeRef exposeLocalStructType(Ast.TypeRef ref, List<Ast.Stmt> body) {
+        java.util.LinkedHashMap<String, Ast.TypeAliasDecl> locals = new java.util.LinkedHashMap<>();
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.LocalTypeDeclStmt local
+                    && local.declaration() instanceof Ast.TypeAliasDecl alias
+                    && alias.target().isRecordType()) {
+                locals.put(alias.name(), alias);
+            }
+        }
+        return exposeLocalStructType(ref, locals, new java.util.HashSet<>());
+    }
+
+    private Ast.TypeRef exposeLocalStructType(
+            Ast.TypeRef ref,
+            java.util.Map<String, Ast.TypeAliasDecl> locals,
+            java.util.Set<String> resolving) {
+        Ast.TypeAliasDecl alias = locals.get(ref.name());
+        if (alias != null && ref.arguments().isEmpty() && !ref.inferArguments()) {
+            if (!resolving.add(alias.name())) {
+                throw error(peek(), "local struct/type alias cycle involving '" + alias.name() + "'");
+            }
+            try {
+                return exposeLocalStructType(alias.target(), locals, resolving);
+            } finally {
+                resolving.remove(alias.name());
+            }
+        }
+        if (ref.arguments().isEmpty()) return ref;
+        return new Ast.TypeRef(
+                ref.name(),
+                ref.arguments().stream()
+                        .map(arg -> exposeLocalStructType(arg, locals, new java.util.HashSet<>(resolving)))
+                        .toList(),
+                ref.inferArguments());
     }
 
     private String parseMethodName() {
