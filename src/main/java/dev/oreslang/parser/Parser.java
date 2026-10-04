@@ -739,6 +739,14 @@ public final class Parser {
             consumeStatementTerminator("return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
+        if (match(YIELD)) {
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(previous(), "yield requires a value");
+            }
+            Ast.Expr value = parseExpression();
+            consumeStatementTerminator("yield statement should end with ';'");
+            return new Ast.YieldStmt(value);
+        }
         if (match(DEFER)) {
             Ast.Expr expression = parseExpression();
             consumeStatementTerminator("defer statement should end with ';'");
