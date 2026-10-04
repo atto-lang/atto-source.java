@@ -112,9 +112,10 @@ public final class Parser {
                 throw error(peek(), "function imports use 'import fnc', not 'import fn'");
             }
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
+            else if (match(NAMESPACE)) kind = Ast.ImportKind.NAMESPACE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
-            else throw error(peek(), "expected module, class, fnc, or * after import");
+            else throw error(peek(), "expected module, namespace, class, fnc, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
