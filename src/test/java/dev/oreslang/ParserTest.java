@@ -132,7 +132,7 @@ final class ParserTest {
     }
 
     @Test
-    void actorRequiresExactlyOnePublicReceiveIngress() {
+    void actorPublicMethodsFormTypedProtocolOverOneHiddenIngress() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   let int count = 0;
@@ -145,33 +145,39 @@ final class ParserTest {
                     return self.count;
                   }
 
-                  pub receive(int value): void {
+                  pub run1(int value): void {
                     self.count = self.count + value;
                     return;
                   }
+
+                  pub run2(int value) -> int {
+                    return self.count + value;
+                  }
                 end
+
+                async fnc exercise() => void {
+                  val worker = spawn Worker();
+                  await worker.run1(2);
+                  val result = await worker.run2(3);
+                  stdio.println(result);
+                  return;
+                }
                 """));
 
         Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
-        assertEquals(List.of("constructor", "helper", "receive"),
+        assertEquals(List.of("constructor", "helper", "run1", "run2"),
                 actor.methods().stream().map(Ast.MethodDecl::name).toList());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor Bad as
-                  pub run(int value): void { return; }
+                define actor NoProtocol as
+                  private helper(): int { return 1; }
                 end
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor BadArity as
-                  pub receive(int one, int two): void { return; }
-                end
-                """));
-
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor BadReturn as
-                  pub receive(int value): int { return value; }
+                define actor GenericEndpoint as
+                  pub run<T>(T value): void { return; }
                 end
                 """));
     }
