@@ -486,7 +486,7 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private sealed interface AsyncPlan
-                permits AsyncPure, AsyncFailure, AsyncAwait, AsyncThunk { }
+                permits AsyncPure, AsyncFailure, AsyncAwait, AsyncTailTransfer, AsyncThunk { }
 
         private record AsyncPure(Object value) implements AsyncPlan { }
 
@@ -503,10 +503,28 @@ public final class OresEvalRootNode extends RootNode {
 
         private record AsyncAwait(
                 OresFuture<?> future,
-                AsyncResume continuation) implements AsyncPlan {
+                AsyncResume continuation,
+                OresAsyncTrace.SourceSite site) implements AsyncPlan {
             private AsyncAwait {
                 Objects.requireNonNull(future, "future");
                 Objects.requireNonNull(continuation, "continuation");
+                Objects.requireNonNull(site, "site");
+            }
+        }
+
+        /**
+         * Verified proper async tail transfer. The caller has no remaining
+         * cleanup or result work, so the current task can replace its logical
+         * frame with {@code next} instead of allocating a child Future/task.
+         */
+        private record AsyncTailTransfer(
+                AsyncPlan next,
+                OresAsyncTrace.Frame targetFrame,
+                OresAsyncTrace.SourceSite site) implements AsyncPlan {
+            private AsyncTailTransfer {
+                Objects.requireNonNull(next, "next");
+                Objects.requireNonNull(targetFrame, "targetFrame");
+                Objects.requireNonNull(site, "site");
             }
         }
 
@@ -556,7 +574,15 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        /**
+         * Tail transfers deliberately bypass mapper/recovery/finally wrappers.
+         * They are emitted only after tail-position validation proves that the
+         * caller has no work left. Letting a wrapper capture them would rebuild
+         * the continuation chain that proper async tail transfer is meant to
+         * eliminate.
+         */
         private static AsyncPlan asyncFlatMap(AsyncPlan plan, AsyncMapper next) {
+            if (plan instanceof AsyncTailTransfer) return plan;
             if (plan instanceof AsyncPure pure) {
                 return new AsyncThunk(() -> safePlan(() -> next.apply(pure.value())));
             }
@@ -570,12 +596,14 @@ public final class OresEvalRootNode extends RootNode {
                     awaited.future(),
                     (value, failure) -> asyncFlatMap(
                             safePlan(() -> awaited.continuation().resume(value, failure)),
-                            next));
+                            next),
+                    awaited.site());
         }
 
         private static AsyncPlan asyncRecover(
                 AsyncPlan plan,
                 AsyncFailureMapper recover) {
+            if (plan instanceof AsyncTailTransfer) return plan;
             if (plan instanceof AsyncPure) return plan;
             if (plan instanceof AsyncFailure failed) {
                 return new AsyncThunk(() ->
@@ -590,13 +618,15 @@ public final class OresEvalRootNode extends RootNode {
                     awaited.future(),
                     (value, failure) -> asyncRecover(
                             safePlan(() -> awaited.continuation().resume(value, failure)),
-                            recover));
+                            recover),
+                    awaited.site());
         }
 
         private static AsyncPlan asyncFold(
                 AsyncPlan plan,
                 AsyncMapper success,
                 AsyncFailureMapper failure) {
+            if (plan instanceof AsyncTailTransfer) return plan;
             if (plan instanceof AsyncPure pure) {
                 return new AsyncThunk(() ->
                         safePlan(() -> success.apply(pure.value())));
@@ -615,45 +645,71 @@ public final class OresEvalRootNode extends RootNode {
                     (value, problem) -> asyncFold(
                             safePlan(() -> awaited.continuation().resume(value, problem)),
                             success,
-                            failure));
+                            failure),
+                    awaited.site());
         }
 
         private final class AsyncPlanTask implements OresScheduler.Task<Object> {
             private AsyncPlan current;
             private AsyncAwait waiting;
+            private final OresAsyncTrace.Trace trace;
+            private boolean tailDispatchPending;
 
-            private AsyncPlanTask(AsyncPlan initial) {
+            private AsyncPlanTask(
+                    AsyncPlan initial,
+                    OresAsyncTrace.Trace trace) {
                 this.current = Objects.requireNonNull(initial, "initial");
+                this.trace = Objects.requireNonNull(trace, "trace");
             }
 
             @Override
             public OresScheduler.Step<Object> resume(OresScheduler.Resume resume) {
-                if (waiting != null) {
-                    AsyncAwait awaited = waiting;
-                    waiting = null;
-                    current = safePlan(() -> awaited.continuation().resume(
-                            resume.value(),
-                            resume.failure()));
-                } else if (!resume.initial()) {
-                    throw new IllegalStateException(
-                            "async source task resumed without a captured await");
-                }
-
-                while (true) {
-                    if (current instanceof AsyncThunk thunk) {
-                        current = safePlan(thunk.body());
-                        continue;
-                    }
-                    if (current instanceof AsyncFailure failed) {
-                        throw propagateAsyncFailure(failed.failure());
-                    }
-                    if (current instanceof AsyncPure pure) {
-                        return OresScheduler.done(pure.value());
+                try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+                    if (waiting != null) {
+                        AsyncAwait awaited = waiting;
+                        waiting = null;
+                        current = safePlan(() -> awaited.continuation().resume(
+                                resume.value(),
+                                resume.failure()));
+                    } else if (tailDispatchPending) {
+                        if (resume.initial()) {
+                            throw new IllegalStateException(
+                                    "tail-await replacement resumed as an initial task turn");
+                        }
+                        if (resume.failure() != null) {
+                            throw propagateAsyncFailure(resume.failure());
+                        }
+                        tailDispatchPending = false;
+                    } else if (!resume.initial()) {
+                        throw new IllegalStateException(
+                                "async source task resumed without a captured await");
                     }
 
-                    AsyncAwait awaited = (AsyncAwait) current;
-                    waiting = awaited;
-                    return OresScheduler.await(awaited.future());
+                    while (true) {
+                        if (current instanceof AsyncThunk thunk) {
+                            current = safePlan(thunk.body());
+                            continue;
+                        }
+                        if (current instanceof AsyncFailure failed) {
+                            Throwable failure = unwrapFutureFailure(failed.failure());
+                            OresAsyncTrace.attach(failure, trace);
+                            throw propagateAsyncFailure(failure);
+                        }
+                        if (current instanceof AsyncPure pure) {
+                            return OresScheduler.done(pure.value());
+                        }
+                        if (current instanceof AsyncTailTransfer tail) {
+                            trace.tailAwait(tail.targetFrame(), tail.site());
+                            current = tail.next();
+                            tailDispatchPending = true;
+                            return OresScheduler.tailAwait();
+                        }
+
+                        AsyncAwait awaited = (AsyncAwait) current;
+                        trace.awaitAt(awaited.site());
+                        waiting = awaited;
+                        return OresScheduler.await(awaited.future());
+                    }
                 }
             }
         }
@@ -662,12 +718,15 @@ public final class OresEvalRootNode extends RootNode {
             private AsyncPlan current;
             private AsyncAwait waiting;
             private final ActorRuntime.InvocationCompletion<Object> completion;
+            private final OresAsyncTrace.Trace trace;
 
             private ActorPlanRunner(
                     AsyncPlan initial,
-                    ActorRuntime.InvocationCompletion<Object> completion) {
+                    ActorRuntime.InvocationCompletion<Object> completion,
+                    OresAsyncTrace.Trace trace) {
                 this.current = Objects.requireNonNull(initial, "initial");
                 this.completion = Objects.requireNonNull(completion, "completion");
+                this.trace = Objects.requireNonNull(trace, "trace");
             }
 
             private void start(ActorRuntime.ActorContext<?> actorContext) {
@@ -686,44 +745,57 @@ public final class OresEvalRootNode extends RootNode {
                     boolean initial,
                     Object resumeValue,
                     Throwable resumeFailure) {
-                if (waiting != null) {
-                    AsyncAwait awaited = waiting;
-                    waiting = null;
-                    current = safePlan(() -> awaited.continuation().resume(
-                            resumeValue,
-                            resumeFailure));
-                } else if (!initial) {
-                    IllegalStateException invalid =
-                            new IllegalStateException(
-                                    "actor async frame resumed without a captured await");
-                    completion.fail(invalid);
-                    throw invalid;
-                }
-
-                while (true) {
-                    actorContext.checkpoint();
-
-                    if (current instanceof AsyncThunk thunk) {
-                        current = safePlan(thunk.body());
-                        continue;
-                    }
-                    if (current instanceof AsyncFailure failed) {
-                        completion.fail(failed.failure());
-                        throw propagateAsyncFailure(failed.failure());
-                    }
-                    if (current instanceof AsyncPure pure) {
-                        completion.complete(pure.value());
-                        return;
+                try (OresAsyncTrace.Scope ignored = OresAsyncTrace.install(trace)) {
+                    if (waiting != null) {
+                        AsyncAwait awaited = waiting;
+                        waiting = null;
+                        current = safePlan(() -> awaited.continuation().resume(
+                                resumeValue,
+                                resumeFailure));
+                    } else if (!initial) {
+                        IllegalStateException invalid =
+                                new IllegalStateException(
+                                        "actor async frame resumed without a captured await");
+                        OresAsyncTrace.attach(invalid, trace);
+                        completion.fail(invalid);
+                        throw invalid;
                     }
 
-                    AsyncAwait awaited = (AsyncAwait) current;
-                    waiting = awaited;
-                    actorContext.suspendOn(
-                            awaited.future(),
-                            (value, failure, resumedContext) ->
-                                    resume(value, failure, resumedContext));
-                    throw new AssertionError(
-                            "ActorContext.suspendOn must unwind the actor turn");
+                    while (true) {
+                        actorContext.checkpoint();
+
+                        if (current instanceof AsyncThunk thunk) {
+                            current = safePlan(thunk.body());
+                            continue;
+                        }
+                        if (current instanceof AsyncFailure failed) {
+                            Throwable failure = unwrapFutureFailure(failed.failure());
+                            OresAsyncTrace.attach(failure, trace);
+                            completion.fail(failure);
+                            throw propagateAsyncFailure(failure);
+                        }
+                        if (current instanceof AsyncPure pure) {
+                            completion.complete(pure.value());
+                            return;
+                        }
+                        if (current instanceof AsyncTailTransfer) {
+                            IllegalStateException invalid = new IllegalStateException(
+                                    "actor async plans may not fuse tail calls across actor execution boundaries");
+                            OresAsyncTrace.attach(invalid, trace);
+                            completion.fail(invalid);
+                            throw invalid;
+                        }
+
+                        AsyncAwait awaited = (AsyncAwait) current;
+                        trace.awaitAt(awaited.site());
+                        waiting = awaited;
+                        actorContext.suspendOn(
+                                awaited.future(),
+                                (value, failure, resumedContext) ->
+                                        resume(value, failure, resumedContext));
+                        throw new AssertionError(
+                                "ActorContext.suspendOn must unwind the actor turn");
+                    }
                 }
             }
         }
