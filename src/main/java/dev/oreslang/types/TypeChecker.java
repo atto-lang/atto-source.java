@@ -636,15 +636,6 @@ public final class TypeChecker {
                                 + "member-value and direct-call syntax must remain unambiguous");
             }
         }
-        Set<CallableSelector> localMethodSignatures = new HashSet<>();
-        for (Ast.MethodDecl method : klass.methods()) {
-            CallableSelector selector = CallableSelector.of(method);
-            if (!localMethodSignatures.add(selector)) {
-                String label = method.isStatic() ? "static function" : "method";
-                throw new IllegalArgumentException(label + " '" + klass.name() + "." + method.name() + "' already has arity " + method.arity()
-                        + "; class callables may overload only by arity within their own static/instance namespace");
-            }
-        }
         // Every effective (kind, name, arity) slot must have one statically
         // determined implementation. This is the vtable/static-table contract
         // shared by AOT and JIT. Multiple-inheritance collisions require the
