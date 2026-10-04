@@ -177,7 +177,7 @@ final class CallableSemanticsTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        define class Worker
+                        define class Worker as
                           pub run() => int {
                             return 1;
                           }
