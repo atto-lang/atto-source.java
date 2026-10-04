@@ -1,7 +1,5 @@
 package dev.oreslang.runtime;
 
-import org.graalvm.polyglot.Context;
-
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -52,7 +50,9 @@ final class OresVM {
         }
     }
 
-    private static final ThreadLocal<OresVM> CONTEXT_CREATION_OWNER = new ThreadLocal<>();
+    private static final String VM_BINDING_ARG = "--ores-vm-binding=";
+    private static final java.util.concurrent.ConcurrentMap<String, OresVM> VM_BINDINGS =
+            new ConcurrentHashMap<>();
 
     private static final OresVM PROCESS = new OresVM(
             ActorRuntime.DispatcherConfig.defaults(),
@@ -60,6 +60,7 @@ final class OresVM {
             true);
 
     private final UUID vmId = UUID.randomUUID();
+    private final String contextBindingToken = UUID.randomUUID().toString();
     private final ActorRuntime.DispatcherGroup dispatchers;
     private final boolean processVm;
     private final Set<HotReloadManager> hotReloadManagers = ConcurrentHashMap.newKeySet();
@@ -73,6 +74,7 @@ final class OresVM {
                 Objects.requireNonNull(config, "config"),
                 Objects.requireNonNull(threadPrefix, "threadPrefix"));
         this.processVm = processVm;
+        VM_BINDINGS.put(contextBindingToken, this);
     }
 
     /** The one physical Oreslang VM for the current OS process. */
@@ -86,36 +88,33 @@ final class OresVM {
     }
 
     /**
-     * Resolve the VM selected by the host while constructing a Polyglot Context.
-     * Ordinary host-created contexts default to the process VM.
+     * Resolve the VM selected by the privileged host for this language context.
+     * The opaque binding token is injected by OresVM when it builds a hot-load
+     * generation and is never exposed through the Oreslang guest API.
      */
-    static OresVM contextOwner() {
-        OresVM selected = CONTEXT_CREATION_OWNER.get();
-        return selected == null ? PROCESS : selected;
+    static OresVM contextOwner(String[] applicationArguments) {
+        String token = null;
+        for (String argument : applicationArguments) {
+            if (argument.startsWith(VM_BINDING_ARG)) {
+                token = argument.substring(VM_BINDING_ARG.length());
+                break;
+            }
+        }
+        if (token == null) return PROCESS;
+
+        OresVM vm = VM_BINDINGS.get(token);
+        if (vm == null || vm.shutdown()) {
+            throw new SecurityException("invalid or retired Oreslang VM context binding");
+        }
+        return vm;
     }
 
-    /**
-     * Build a Polyglot Context while binding its OresContext to this VM.
-     * The binding exists only during synchronous context construction and is
-     * never exposed to guest code.
-     */
-    Context buildContext(Context.Builder builder) {
-        Objects.requireNonNull(builder, "builder");
+    String[] bindApplicationArguments(String[] baseArguments) {
+        Objects.requireNonNull(baseArguments, "baseArguments");
         ensureRunning();
-
-        OresVM previous = CONTEXT_CREATION_OWNER.get();
-        if (previous != null && previous != this) {
-            throw new IllegalStateException(
-                    "cannot construct one Oreslang context under two VM owners");
-        }
-
-        CONTEXT_CREATION_OWNER.set(this);
-        try {
-            return builder.build();
-        } finally {
-            if (previous == null) CONTEXT_CREATION_OWNER.remove();
-            else CONTEXT_CREATION_OWNER.set(previous);
-        }
+        String[] bound = java.util.Arrays.copyOf(baseArguments, baseArguments.length + 1);
+        bound[baseArguments.length] = VM_BINDING_ARG + contextBindingToken;
+        return bound;
     }
 
     UUID id() {
@@ -220,6 +219,7 @@ final class OresVM {
             }
         }
         dispatchers.shutdownNow();
+        VM_BINDINGS.remove(contextBindingToken, this);
 
         if (firstFailure != null) throw firstFailure;
     }
