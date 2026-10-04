@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -140,6 +141,43 @@ final class ActorGroupRuntimeTest {
         }
     }
 
+
+    @Test
+    void stoppedGroupRejectsLateReservationsAndLateOutboxAdmission() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            ActorGroupRef<String> group = runtime.defineActorGroup(
+                    ActorRuntime.ActorKind.SHARED,
+                    policy(ActorRuntime.ActorKind.SHARED, 2, 16));
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnInGroup(
+                    group,
+                    ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    ECHO);
+
+            Field groupsField = ActorRuntime.class.getDeclaredField("actorGroups");
+            groupsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            Map<ActorGroupId, ActorGroupRuntime<?>> groups =
+                    (Map<ActorGroupId, ActorGroupRuntime<?>>) groupsField.get(runtime);
+            @SuppressWarnings("unchecked")
+            ActorGroupRuntime<String> internal =
+                    (ActorGroupRuntime<String>) groups.get(group.id());
+            assertNotNull(internal);
+
+            internal.stop();
+
+            assertTrue(internal.stopped());
+            assertEquals(0, internal.outboxSize());
+            assertThrows(IllegalStateException.class, internal::reserveActor);
+            assertThrows(
+                    IllegalStateException.class,
+                    () -> internal.emit(actor, "late-mail"));
+            assertEquals(0, internal.outboxSize(),
+                    "stopped groups must never retain mail admitted after stop");
+        }
+    }
+
     @Test
     void privateActorSeesOnlyOpaquePrivateGroupHandle() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
@@ -207,8 +245,11 @@ final class ActorGroupRuntimeTest {
                         @SuppressWarnings("unchecked")
                         ActorGroupHandle<String> sameGroup =
                                 (ActorGroupHandle<String>) turn.group().orElseThrow();
-                        ActorRuntime.ActorRef<String> child =
-                                turn.spawnInGroup(sameGroup, ECHO);
+                        ActorRuntime.ActorRef<String> child = turn.runtime().spawnInGroup(
+                                sameGroup,
+                                ActorRuntime.ActorKind.SHARED,
+                                turn.policy(),
+                                ECHO);
                         child.send("from-child");
                     };
 
