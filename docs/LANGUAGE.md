@@ -420,85 +420,150 @@ does not depend on a specific OS-thread implementation.
 
 ## Actors
 
-Oreslang uses an Akka-style dispatcher model: an actor is **not** a thread. Every actor owns one mailbox, and at most one mailbox turn for a given actor may execute at a time. Actors are multiplexed over bounded thread pools, so the carrier thread may change between turns.
+An Oreslang actor is a **compiler/runtime-enforced specialization of the class
+model**, not a second object system. The AST represents both ordinary classes
+and actor classes as `ClassDecl`; actor classes additionally carry an
+`ActorKind` and the compiler enables actor ownership, mailbox, scheduling, and
+capability rules.
+
+These declarations are semantically equivalent:
+
+```ores
+define actor Worker as
+  let int count = 0;
+
+  constructor() {
+    self.count = 0;
+  }
+
+  pub run1(int value): void {
+    self.count = self.count + value;
+    return;
+  }
+
+  pub run2(int value) -> int {
+    return self.count + value;
+  }
+end
+```
+
+```ores
+define class Worker extends Actor as
+  let int count = 0;
+
+  constructor() {
+    self.count = 0;
+  }
+
+  pub run1(int value): void {
+    self.count = self.count + value;
+    return;
+  }
+
+  pub run2(int value) -> int {
+    return self.count + value;
+  }
+end
+```
+
+`Actor`, `IsoActor`, and `UntrustedActor` are compiler-intrinsic base
+markers. They are normalized into the actor kind; they are not ordinary
+standard-library classes and do not grant authority through inheritance.
 
 There are three actor execution domains:
 
-```ores
-pub actor fnc worker(int value) => int {
-  return value;
-}
+- an unqualified `actor` / `Actor` is **SHARED-domain**;
+- `isoactor` / `IsoActor` owns confined/private actor memory;
+- `untrusted actor` / `UntrustedActor` is the adversarial sandbox domain
+  with hard lifetime, fuel, memory, I/O, and capability ceilings.
 
-shared actor Account {
-  let int balance = 100;
+The three domains use separate dispatcher pools. Every actor still owns exactly
+one logical mailbox and at most one actor turn may execute at a time; carrier
+threads may change between turns.
 
-  pub fnc withdraw(int amount) => void {
-    self.balance = self.balance - amount;
-    return;
-  }
-}
+### Actor methods are a typed protocol
 
-untrusted actor RequestSandbox {
-  pub fnc handle() => void {
-    // The host may bind this actor to one bounded HTTP exchange.
-    return;
-  }
-}
+Public actor instance methods describe the actor's typed external protocol.
+They are **not** independent runtime entrypoints and do not weaken the
+single-mailbox invariant. The compiler lowers the public method set into one
+hidden mailbox envelope/dispatcher, conceptually:
+
+```text
+ActorRef<Worker>.run1(5)
+    -> WorkerEnvelope.Run1(5)
+    -> one Worker mailbox
+    -> generated dispatcher
+    -> Worker$run1(self, 5)
 ```
 
-- an unqualified `actor` is **shared**; use `isoactor` for confined/private actor memory;
-- `shared actor` is a **shared-memory-capable** actor;
-- `untrusted actor` is a **memory-isolated adversarial sandbox** with a hard lifetime/fuel/capability budget;
-- private, shared, and untrusted actors are scheduled on **different dispatcher pools** for bulkheading;
-- compiler-generated/context-aware actor factories are capture-free for **both** actor kinds; mutable host state must enter through messages or explicit runtime-owned capabilities rather than Java closure capture;
-- trusted host embedding has separately named supervisor-only construction escape hatches, and adversarial policies reject them;
-- both kinds still process their own mailbox serially;
-- actor-owned `let` fields may mutate during a mailbox turn because that turn is the exclusive mutation capability for `self`;
-- no lock is required around ordinary actor-owned fields, including fields of a shared actor;
-- actor `self` and move-only state rooted at `self` cannot escape the mailbox turn by value or returned borrow; copy-like values such as integers, booleans, and strings may be returned normally;
-- synchronized shared memory requires the host-granted `SHARED_MEMORY` capability.
+Source code therefore does not need to expose a special
+`receive_message` method. A private actor method is an ordinary direct
+self-call within the current actor turn. Cross-actor public calls are
+mailbox-dispatched and their result is asynchronous; a non-void endpoint
+projects to `Future<R>` at the `ActorRef` boundary.
 
-Actor callables are entry points, not ordinary functions. They are invoked only
-with `spawn`:
+Actor/class method return declarations accept `: T` and `-> T` as equivalent
+spellings; legacy `=> T` remains accepted for compatibility. `=>` remains
+the canonical return marker for top-level `fnc`/`routine` declarations.
 
-```ores
-val pending = spawn worker(41);
+Instance methods are not first-class bound callbacks. `worker.run1(...)` is a
+direct receiver call or actor message depending on the receiver, but
+`val callback = worker.run1` is invalid. This prevents implicit
+`(receiver, method)` closure allocation and avoids silently extending actor
+receiver lifetimes. Use an explicit `fnc` or lambda when a first-class
+callable is required.
 
-// Available synchronously after identity reservation + spawn admission.
-stdio.println(pending.id);
+### Actor ownership/effects
 
-// READY means the actor runtime has initialized the actor and its mailbox/control
-// endpoint. It does not mean worker() has finished.
-val ref = await pending.ready;
+Actor isolation is **not** equivalent to `@Pure` and is not implemented by
+`nlex`. Actor methods are allowed to mutate their own state. The invariant is
+ownership-domain based:
 
-// Equivalent readiness shorthand:
-val other_ref = await spawn worker(1);
+```text
+allowed:
+  read/write self-owned state
+  read/write fresh actor-turn local state
+  consume/copy/transfer admitted message values according to their type
+  send mailbox messages / emit group output
+  use explicitly granted runtime capabilities
+  read synchronized external state through an explicit read capability
 
-// Completion is separate from readiness.
-val completed = await pending.done;
-
-// Actor functions additionally expose their returned value.
-val answer = await pending.result;
+forbidden:
+  mutate arbitrary module/global mutable state
+  mutate caller-owned or another actor's object graph
+  leak self or a mutable self-rooted alias
+  retain a turn-scoped borrow across await
+  smuggle runtime/VM/scheduler implementation authority through actor data
 ```
 
-`spawn actor_fnc(...)` returns an `ActorSpawn<T>` ticket immediately after the
-runtime has reserved an `ActorId` and admitted the initial spawn/message. The
-fast path must not wait for actor behavior construction or actor-callable
-completion. `ActorSpawn<T>` exposes `id`, `ready: Future<ActorRef>`,
-and `done: Future<bool>`. `done` resolves to `true` only after normal actor
-callable completion and fails exceptionally on actor failure/cancellation.
-Any non-`void` actor callable—`fnc` or `routine`—additionally exposes
-`result: Future<T>`. A void actor callable has no result value and uses
-`done` when completion must be observed.
+Actor fields are private mailbox-owned state. `let` actor fields may mutate
+during the actor's exclusive turn without a lock. Public endpoint parameter and
+return types are checked at the actor boundary; unsafe borrows, guards, futures,
+and domain-incompatible shared-mutable capabilities are rejected.
 
-`await spawn actor_fnc(...)` awaits **READY only** and yields an `ActorRef`.
-It never waits for the actor function/routine to finish. The ready reference
-exposes stable actor identity/control metadata such as `id` and
-`is_alive()`. One-shot actor callables do **not** expose an application
-mailbox: they terminate after their invocation, so accepting queued messages
-would be misleading. Typed mailboxes belong to persistent actor behavior/receive
-semantics rather than this one-shot callable launch primitive. Ordinary
-`worker(...)` calls are compile errors when `worker` is declared `actor`.
+A constructor is runtime-only initialization, not a mailbox endpoint. Actor
+constructors are non-public, non-static, non-generic, non-suspending, return
+`void`, and may not leak `self`. Ordinary `new ActorClass(...)` is
+forbidden; actor identity/state must be created by the actor runtime.
+
+### References, factories, and launch
+
+Code outside an actor never receives the mutable actor object. It receives an
+`ActorRef<Protocol>`/typed actor reference. The reference is a capability:
+it carries actor identity and only the operations permitted by its protocol and
+sandbox policy.
+
+Persistent actor factories remain useful as explicit launch adapters for actor
+groups, configured factory catalogs, hot loading, and dependency injection.
+They execute under the target actor context and must be capture-safe. The
+persistent-actor ABI is the actor reference/mailbox, not a raw class pointer.
+A launch ticket separates identity/readiness/lifecycle from actor application
+messages.
+
+This model preserves the existing ActorGroup/ActorMailman architecture: public
+method calls enqueue bounded typed messages into the actor's mailbox; actors
+emit bounded group output; one logical serialized mailman consumes the group's
+outbox; supervisors remain responsible for lifecycle/restart policy.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
