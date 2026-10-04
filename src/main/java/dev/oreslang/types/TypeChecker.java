@@ -1974,6 +1974,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.YieldStmt yielded) {
+                rejectStaticClassGenericReferences(yielded.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ExprStmt expression) {
                 rejectStaticClassGenericReferences(expression.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DeferStmt defer) {
@@ -2656,6 +2658,7 @@ public final class TypeChecker {
         if (stmt instanceof Ast.BindingStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.DestructureStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
+        else if (stmt instanceof Ast.YieldStmt s) collectCalls(s.value(), module, out);
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.IfStmt s) {
