@@ -259,6 +259,7 @@ public final class Parser {
 
     private Ast.ClassDecl parseClass(boolean isAbstract) {
         String name = consume(IDENT, "expected class name").lexeme();
+        rejectReservedActorTypeName(name);
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -294,11 +295,11 @@ public final class Parser {
                 throw error(peek(), "actor methods cannot be abstract");
             }
             if (mods.isStatic) {
+                if (actorKind != Ast.ActorKind.NONE) {
+                    throw error(peek(), "actor classes cannot declare static functions; actor code must remain inside the actor ownership/effect domain");
+                }
                 consume(FNC, "static class functions must be declared with 'static fnc'");
                 if (mods.isAbstract) throw error(previous(), "static class functions cannot be abstract");
-                if (actorKind != Ast.ActorKind.NONE && mods.visibility == Ast.Visibility.PUBLIC) {
-                    throw error(previous(), "actor static helpers must be private; public actor API is mailbox-dispatched");
-                }
             } else if (check(FNC)) {
                 if (actorKind != Ast.ActorKind.NONE) match(FNC);
                 else throw error(peek(), "instance methods omit 'fnc'; use 'static fnc' only for class functions");
@@ -308,12 +309,12 @@ public final class Parser {
             methods.add(method);
         }
         consume(END, "expected 'end' to close class " + name);
-        if (actorKind != Ast.ActorKind.NONE) validateActorReceiveContract(name, methods);
         return new Ast.ClassDecl(name, isAbstract, actorKind, generics, parents, interfaces, fields, methods);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
         String name = consume(IDENT, "expected actor name").lexeme();
+        rejectReservedActorTypeName(name);
         List<String> generics = parseGenericParameters();
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
@@ -351,10 +352,7 @@ public final class Parser {
                 throw error(peek(), "actor methods are inherently suspendable; explicit 'async' is redundant");
             }
             if (mods.isStatic) {
-                consume(FNC, "static actor functions must be declared with 'static fnc'");
-                if (mods.visibility == Ast.Visibility.PUBLIC) {
-                    throw error(previous(), "actor static helpers must be private; public actor API is mailbox-dispatched");
-                }
+                throw error(peek(), "actor classes cannot declare static functions; actor code must remain inside the actor ownership/effect domain");
             } else {
                 match(FNC);
             }
@@ -366,7 +364,6 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
-        validateActorReceiveContract(name, methods);
         return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods);
     }
 
@@ -398,63 +395,40 @@ public final class Parser {
     }
 
     private void validateActorMethodDeclaration(Ast.MethodDecl method) {
-        if (method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
-            throw error(previous(), "actor static helpers must be private; the public mailbox ingress is receive(message)");
+        if (method.isStatic()) {
+            throw error(previous(), "actor classes cannot declare static functions");
         }
 
-        if (method.name().equals("constructor")) {
-            if (method.isStatic()) throw error(previous(), "actor constructor cannot be static");
-            if (method.visibility() == Ast.Visibility.PUBLIC) {
-                throw error(previous(), "actor constructor is runtime-only and cannot be part of the public mailbox protocol");
+        if (!method.name().equals("constructor")) {
+            if (method.visibility() == Ast.Visibility.PUBLIC && !method.genericParameters().isEmpty()) {
+                throw error(previous(), "public actor protocol methods cannot declare generic parameters; specialize behind a private helper");
             }
-            if (method.async()) {
-                throw error(previous(), "actor constructor cannot suspend");
-            }
-            if (!method.genericParameters().isEmpty()) {
-                throw error(previous(), "actor constructor cannot declare generic parameters");
-            }
-            if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
-                throw error(previous(), "actor constructor must return void");
+            if (method.visibility() == Ast.Visibility.PUBLIC && method.explicitReceiverType() != null) {
+                throw error(previous(), "public actor protocol methods use the implicit self receiver");
             }
             return;
         }
 
-        if (method.name().equals("receive") && method.visibility() != Ast.Visibility.PUBLIC) {
-            throw error(previous(), "actor receive(message) must be public because it is the single mailbox ingress");
+        if (method.visibility() == Ast.Visibility.PUBLIC) {
+            throw error(previous(), "actor constructor is runtime-only and cannot be part of the public mailbox protocol");
         }
-
-        if (method.visibility() != Ast.Visibility.PUBLIC) return;
-
-        if (!method.name().equals("receive")) {
-            throw error(previous(),
-                    "actors expose exactly one public mailbox ingress named 'receive'; all other actor methods must be private");
-        }
-        if (method.isStatic()) {
-            throw error(previous(), "actor receive(message) cannot be static");
+        if (method.async()) {
+            throw error(previous(), "actor constructor cannot suspend");
         }
         if (!method.genericParameters().isEmpty()) {
-            throw error(previous(), "actor receive(message) cannot declare generic parameters");
+            throw error(previous(), "actor constructor cannot declare generic parameters");
         }
         if (method.explicitReceiverType() != null) {
-            throw error(previous(), "actor receive(message) uses the implicit self receiver");
-        }
-        if (method.parameters().size() != 1) {
-            throw error(previous(), "actor receive(message) must declare exactly one message parameter");
+            throw error(previous(), "actor constructor uses the implicit self receiver");
         }
         if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
-            throw error(previous(), "actor receive(message) must return void");
+            throw error(previous(), "actor constructor must return void");
         }
     }
 
-    private void validateActorReceiveContract(String actorName, List<Ast.MethodDecl> methods) {
-        long receives = methods.stream()
-                .filter(method -> !method.isStatic()
-                        && method.visibility() == Ast.Visibility.PUBLIC
-                        && method.name().equals("receive"))
-                .count();
-        if (receives != 1) {
-            throw error(previous(),
-                    "actor '" + actorName + "' must implement exactly one public receive(message): void mailbox ingress");
+    private void rejectReservedActorTypeName(String name) {
+        if (name.equals("Actor") || name.equals("IsoActor") || name.equals("UntrustedActor")) {
+            throw error(previous(), "'" + name + "' is a compiler-intrinsic actor base name and cannot be redeclared");
         }
     }
 
