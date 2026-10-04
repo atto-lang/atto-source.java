@@ -79,6 +79,92 @@ specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
 
+## Process globals, memory-slot singletons, and Symbols
+
+Oreslang deliberately separates **state scope** from **identity**.
+
+```ores
+define global module ProcessConfig
+  private let int revision = 0;
+
+  pub fnc bump(int by) : int {
+    revision = revision + by;
+    return revision;
+  }
+end
+
+define singleton module RequestCache
+  private let int hits = 0;
+
+  pub fnc hit() : int {
+    hits = hits + 1;
+    return hits;
+  }
+end
+```
+
+A `global module` has one logical mutable authority for the whole OS process. Its
+state is never handed out as a raw object pointer. Public functions execute through
+the process-global owner and therefore return `Future<R>` at call sites. Trusted
+isolated heaps eventually reach the same authority through the supervisor bridge;
+an isolate-local static registry is never considered a valid substitute for
+process-global identity.
+
+A `singleton module` has one logical mutable authority **per semantic memory
+slot**. Main/root execution and shared actors inhabit the same slot. Each
+private/isolated actor has its own slot and therefore its own singleton instance.
+A private actor's slot-singleton state is reclaimed when that actor is finalized.
+Calls are serialized inside the slot cell and do not expose the mutable state
+object.
+
+Dependency injection uses capabilities, not pointers:
+
+```ores
+define class Handler as
+  @InjectGlobal(ProcessConfig)
+  private val GlobalRef<ProcessConfig> process_config;
+
+  @InjectSingleton(RequestCache)
+  private val SingletonRef<RequestCache> request_cache;
+end
+```
+
+Injected fields are private, immutable, explicitly typed, have no initializer, and
+are not constructor arguments. `GlobalRef<T>` and `SingletonRef<T>` are
+non-Sendable authority values. They must be reacquired/injected in the destination
+memory domain rather than placed in actor mailboxes.
+
+`Symbol` is different from both forms of state. A Symbol is an immutable,
+process-canonical identity. Logical equality and hashing use the Symbol's scope and
+canonical key, never a JVM/native pointer or heap-local numeric handle. Consequently
+the same Symbol may be copied into separate actor/isolate heaps and still compare
+identically.
+
+```ores
+val Symbol timeout = :timeout;
+```
+
+Permanent Symbol interning is bounded. Ordinary wire decoding is lookup-only and
+cannot turn arbitrary external strings into permanent identities.
+
+Untrusted actors are completely sandboxed. They receive no global/singleton refs or
+live shared-memory capabilities. A Symbol is visible to an untrusted actor only if
+trusted code explicitly exports that exact identity. Declarative export is limited
+to auditable constant Symbol literals in a global module:
+
+```ores
+define global module ErrorCodes
+  @ExportToUntrusted
+  pub const Symbol timeout = :timeout;
+
+  pub const Symbol internal_bug = :internal_bug;
+end
+```
+
+Here `:timeout` may cross an untrusted mailbox after normal value-transport
+validation; `:internal_bug` remains trusted-only. Exporting a Symbol grants only
+visibility/comparison/pattern matching. It does **not** grant interning authority.
+
 ## Module interfaces / OCaml-style module signatures
 
 Interfaces can describe the structural public shape required of a module. A module opts into checking with `@AdheresTo(...)`:
@@ -417,6 +503,49 @@ fi
 ```
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
+
+## Pattern matching and guarded error handling
+
+`switch` is Oreslang's Erlang-style ordered pattern-match construct. Clauses are
+tried top-to-bottom; the first pattern whose optional guard is true executes.
+
+```ores
+switch result {
+  Err(:timeout) -> {
+    retry();
+  }
+
+  Err(TimeoutError err) when err.retryable -> {
+    recover(err);
+  }
+
+  Ok(val value) -> {
+    use(value);
+  }
+
+  _ -> {
+    fallback();
+  }
+}
+```
+
+Patterns support immutable bindings, wildcard `_`, primitive/Symbol literals,
+nominal type tests, `Ok`/`Err`, `Some`/`None`, tuples/lists, and object-field
+patterns. `Result<T,E>` and `Option<T>` clauses narrow their payload bindings.
+
+A `when` guard is deliberately restricted to pure/read-only expressions. Calls,
+assignment, allocation, `await`, lambdas, container construction, and borrowing or
+mutation are rejected. This keeps clause selection deterministic and prevents a
+guard from creating synchronization/data-race surprises.
+
+A `switch` with no matching clause raises recoverable `PatternMatchError`.
+An unconditional wildcard or binding clause is a catch-all; clauses after it are
+statically unreachable.
+
+Error protocols should prefer nominal error types plus canonical Symbol codes over
+string comparisons. An exported Symbol such as `:timeout` is especially useful at
+an untrusted mailbox boundary because the sandbox can compare/match the approved
+identity without receiving authority to create new process-global Symbols.
 
 ## Exceptions and defer
 
