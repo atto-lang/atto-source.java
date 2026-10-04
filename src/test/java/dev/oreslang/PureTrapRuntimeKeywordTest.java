@@ -104,6 +104,38 @@ final class PureTrapRuntimeKeywordTest {
         assertTrue(error.getMessage().contains("mutually exclusive"));
     }
 
+
+    @Test
+    void pureRejectsMutationThroughInputAliases() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pure fnc mutate_alias(List<int> values): int {
+                          val alias = values;
+                          alias[0] = 99;
+                          return alias[0];
+                        }
+                        """)));
+        assertTrue(error.getMessage().contains("external alias")
+                || error.getMessage().contains("input")
+                || error.getMessage().contains("pure"));
+    }
+
+    @Test
+    void trapDoesNotCatchPanicChannel() {
+        assertThrows(Exception.class, () -> run("""
+                trap fnc explode(): int {
+                  val missing = None;
+                  return missing.unwrap();
+                }
+
+                pub fnc main(): void {
+                  val result = explode();
+                  stdio.println(result);
+                  return;
+                }
+                """));
+    }
+
     @Test
     void rtNamespaceIsMandatoryForDefer() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
