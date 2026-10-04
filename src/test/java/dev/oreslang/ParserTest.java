@@ -276,7 +276,7 @@ final class ParserTest {
     }
 
     @Test
-    void actorInheritancePreservesIsolationAndReceiveContract() {
+    void actorInheritancePreservesIsolationAndOneEffectiveReceive() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Parent as
                   let int total = 0;
@@ -287,10 +287,7 @@ final class ParserTest {
                 end
 
                 define actor Child extends Parent as
-                  pub receive(value: int): void {
-                    self.total = self.total + value;
-                    return;
-                  }
+                  private current(): int { return self.total; }
                 end
 
                 fnc exercise() -> void {
@@ -300,19 +297,32 @@ final class ParserTest {
                 }
                 """)));
 
+        IllegalArgumentException narrowed = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Parent as
+                          pub receive(value: int): void { return; }
+                        end
+
+                        define actor Child extends Parent as
+                          private receive(value: int): void { return; }
+                        end
+                        """)));
+        assertTrue(narrowed.getMessage().contains("cannot narrow inherited public receive"));
+
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 isoactor Parent {
                   pub receive(value: int): void { return; }
                 }
 
                 shared actor Child extends Parent {
-                  pub receive(value: int): void { return; }
+                  private current(): int { return 1; }
                 }
                 """)));
     }
 
     @Test
-    void actorMayImplementReceiveInterfaceButActorRefBehaviorStaysConcrete() {
+    void actorRefMayNarrowOnlyToReceiveOnlyInterface() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define interface WorkerInbox
                   fnc receive(value: int): void;
@@ -323,28 +333,41 @@ final class ParserTest {
                 end
 
                 fnc exercise() -> void {
-                  val worker = spawn Worker();
-                  worker.send(41);
-                  return;
-                }
-                """)));
-
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define interface WorkerInbox
-                  fnc receive(value: int): void;
-                end
-
-                define actor Worker implements WorkerInbox as
-                  pub receive(value: int): void { return; }
-                end
-
-                fnc bad() -> void {
                   val concrete = spawn Worker();
                   val ActorRef<WorkerInbox> narrowed = concrete;
                   narrowed.send(41);
+                  val alive = narrowed.is_alive();
                   return;
                 }
                 """)));
+
+        IllegalArgumentException methodBag = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadInbox
+                          fnc receive(value: int): void;
+                          fnc stop(): void;
+                        end
+
+                        define actor Worker implements BadInbox as
+                          pub receive(value: int): void { return; }
+                        end
+                        """)));
+        assertTrue(methodBag.getMessage().contains("exactly receive(Message): void"));
+
+        IllegalArgumentException malformedRef = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadInbox
+                          fnc receive(value: int): void;
+                          fnc stop(): void;
+                        end
+
+                        fnc bad(ref: ActorRef<BadInbox>) -> void {
+                          return;
+                        }
+                        """)));
+        assertTrue(malformedRef.getMessage().contains("exactly receive(Message): void"));
     }
 
     @Test
@@ -645,6 +668,19 @@ final class ParserTest {
                   return;
                 }
                 """));
+    }
+
+    @Test
+    void initIsAnOrdinaryFunctionName() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc init(value: int) -> int {
+                  return value + 1;
+                }
+
+                fnc call_it() -> int {
+                  return init(41);
+                }
+                """)));
     }
 
     @Test
