@@ -48,6 +48,10 @@ public final class OresMutex {
         }
         IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
         if (actorPolicy != null) {
+            if (actorPolicy.adversarial()) {
+                throw new SecurityException(
+                        "adversarial actors cannot create SharedMutex<T> or other live shared mutable state");
+            }
             actorPolicy.require(
                     IsolatePolicy.Capability.SHARED_MEMORY,
                     "SharedMutex.new");
@@ -412,6 +416,10 @@ public final class OresMutex {
             }
             IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
             if (actorPolicy != null) {
+                if (actorPolicy.adversarial()) {
+                    throw new SecurityException(
+                            "adversarial actors cannot access SharedMutex<T> or other live shared mutable state");
+                }
                 actorPolicy.require(
                         IsolatePolicy.Capability.SHARED_MEMORY,
                         "SharedMutex operation");
