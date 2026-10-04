@@ -431,6 +431,9 @@ public final class Parser {
             String symbol = consume(IDENT, "expected symbol name").lexeme();
             consume(RBRACKET, "expected ']' after symbol method");
             if (!namespace.equals("Symbol")) throw error(previous(), "symbol methods must use Symbol.<name>");
+            if (!symbol.equals("iterator")) {
+                throw error(previous(), "unknown well-known protocol Symbol." + symbol);
+            }
             return namespace + "." + symbol;
         }
         return consumeCallableName("expected method name (methods omit 'fnc')");
@@ -1236,6 +1239,10 @@ public final class Parser {
         if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
+        if (match(COLON)) {
+            String name = consume(IDENT, "expected symbol name after ':'").lexeme();
+            return new Ast.LiteralExpr(new Ast.Symbol(name));
+        }
         if (match(SELF)) return new Ast.NameExpr("self");
         // 'actor' remains reserved, but in expression position it names the
         // actor-local runtime namespace (actor.gc and future local primitives).
