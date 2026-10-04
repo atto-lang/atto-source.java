@@ -110,7 +110,7 @@ final class TraitCompositionTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define module model as
                           define trait Counter as
-                            private val int count = 0;
+                            pub value() => int { return 0; }
                           end
 
                           pub fnc make() => void {
@@ -328,7 +328,7 @@ final class TraitCompositionTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define module app as
                           define trait Thing as
-                            private val int state = 1;
+                            pub value() => int { return 1; }
                           end
 
                           struct Thing {
