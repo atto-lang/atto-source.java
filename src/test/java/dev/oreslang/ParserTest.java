@@ -236,6 +236,106 @@ final class ParserTest {
     }
 
     @Test
+    void actorClassSpawnUsesReceiveAsTheOnlyPublicMailboxCall() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  let int count = 0;
+
+                  constructor(int initial) {
+                    self.count = initial;
+                  }
+
+                  private helper(): int {
+                    return self.count;
+                  }
+
+                  pub receive(int value): void {
+                    self.count = self.count + value;
+                    return;
+                  }
+                end
+
+                fnc exercise() => void {
+                  val worker = spawn Worker(1);
+                  val pending = worker.receive(2);
+                  await pending;
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Worker as
+                  private helper(): int { return 1; }
+                  pub read(): int { return helper(); }
+                  pub receive(int value): void { return; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  constructor() {
+                    val f = Futures.completed(1);
+                    await f;
+                  }
+
+                  pub receive(int value): void { return; }
+                end
+                """)));
+    }
+
+    @Test
+    void actorClassRejectsStaticEscapeHatchesAndReservedIntrinsicNames() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                  private static fnc helper() => int { return 1; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define class Actor as
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor IsoActor as
+                end
+                """));
+    }
+
+    @Test
+    void actorReceiveCannotReceiveOrAcquireWritableSharedMutexState() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  pub receive(SharedMutex<int> state): void {
+                    return;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  private mutate(): void {
+                    val state = SharedMutex.new(1);
+                    return;
+                  }
+
+                  pub receive(int message): void { return; }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  private mutate(SharedMutex<int> state): void {
+                    val guard = state.try_lock();
+                    return;
+                  }
+
+                  pub receive(int message): void { return; }
+                end
+                """)));
+    }
+
+    @Test
     void actorFncDefaultsSharedAndIsoactorIsPrivate() {
         Ast.Program sharedProgram = Parser.parse("""
                 pub actor fnc worker(int value) => int {
@@ -359,7 +459,7 @@ final class ParserTest {
     }
 
     @Test
-    void actorMayReadCopyLikeStateInsideReceiveButCannotPassSelfBorrowToOrdinaryFunction() {
+    void actorMayReadAndMutateOwnedStateButCannotLeakSelfBorrow() {
         assertDoesNotThrow(() -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
@@ -429,6 +529,7 @@ final class ParserTest {
                 }
                 """)));
     }
+
 
 
 
