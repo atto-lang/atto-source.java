@@ -612,7 +612,13 @@ public final class TypeChecker {
             Ast.ClassDecl owner,
             Named ownerType,
             Ast.MethodDecl method) {
-        if (currentActorKind == Ast.ActorKind.NONE || owner.actorKind() != Ast.ActorKind.NONE) return;
+        if (currentActorKind == Ast.ActorKind.NONE) return;
+        if (owner.actorKind() != Ast.ActorKind.NONE && !currentActorConstructor) {
+            // Actor methods are already checked under their actor domain during
+            // class validation. Re-check only when constructor context must
+            // propagate the stricter no-suspension rule.
+            return;
+        }
         ActorEffectContext effect = new ActorEffectContext(currentActorKind, currentActorConstructor);
         Set<ActorEffectContext> checked =
                 actorEffectCheckedMethods.computeIfAbsent(method, ignored -> new HashSet<>());
@@ -1148,7 +1154,7 @@ public final class TypeChecker {
                         Ast.MethodDecl method = target.method();
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
-                        if (owner.actorKind() == Ast.ActorKind.NONE) {
+                        if (owner.actorKind() == Ast.ActorKind.NONE || currentActorConstructor) {
                             validateOrdinaryMethodForActorContext(owner, ownerType, method);
                         }
                         if (owner.actorKind() != Ast.ActorKind.NONE && method.name().equals("constructor")) {
