@@ -72,6 +72,16 @@ The strict production direction is:
 Method code is stored once per class declaration. Direct calls dispatch to that shared definition with the receiver as an implicit immutable argument. Instance and actor methods are non-reifiable: evaluating `receiver.method` as a callable value is illegal, so the runtime never allocates an implicit bound-method pair. Code that needs a callback writes an explicit lambda that captures the receiver. `static fnc` remains reifiable because it has no receiver to bind.
 
 
+## Proper tail-call runtime
+
+OresVM implements proper tail calls itself instead of relying on GraalVM to infer tail-recursion optimization. A tail-position call is prepared as an internal invocation descriptor after its receiver/callee and arguments have been evaluated. The current activation unwinds, and an iterative trampoline executes the next raw activation. Self-recursion, mutual recursion, routines, instance methods, `static fnc`, lambdas, module/import calls, and first-class Oreslang function values therefore share the same constant-call-stack mechanism.
+
+The trampoline performs a scheduler safepoint every 64 tail transfers. This prevents a very long recursive chain from becoming an uncooperative scheduling loophole.
+
+Tail transfer is deliberately blocked when caller-owned cleanup still exists: active `defer`, catch/finally semantics, or live mutex guards. Those calls use ordinary call/return behavior so cleanup ordering and lock lifetime remain correct. Arbitrary Java/host `Invokable` values are also not tail-transferred; only Oreslang-origin first-class callables are marked tail-transferable, preserving the caller's runtime return-shape validation across interop.
+
+This mechanism is part of Oreslang semantics and runs identically inside the JVM/Graal JIT runtime, the Native Image AOT launcher, and the AOT-host/guest-JIT hybrid launcher.
+
 ## Truffle thread boundary
 
 `ActorRuntime` owns host dispatcher threads; guest code still receives no ambient thread-creation authority. A dispatcher carrier is marked by the runtime, explicitly enters/leaves the associated `TruffleContext` for each actor batch, and only marked actor carriers are accepted for concurrent context access.
