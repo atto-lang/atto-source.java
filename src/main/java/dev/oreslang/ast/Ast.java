@@ -124,6 +124,8 @@ public final class Ast {
             Visibility visibility,
             boolean async,
             boolean nonLexical,
+            boolean pure,
+            boolean trapped,
             ActorKind actorKind,
             List<String> genericParameters,
             List<Param> parameters,
@@ -136,19 +138,30 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+        /** Compatibility constructor for compiler passes that do not synthesize effects. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean nonLexical, ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body) {
+            this(name, kind, visibility, async, nonLexical, false, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             ActorKind actorKind, List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, actorKind, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
         }
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, false, ActorKind.NONE,
+                    genericParameters, parameters, returnType, annotations, body);
         }
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, false, false, false, ActorKind.NONE,
+                    genericParameters, parameters, returnType, annotations, body);
         }
     }
 
@@ -311,7 +324,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, RuntimeCallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -339,6 +352,11 @@ public final class Ast {
         public CallExpr(Expr callee, List<TypeRef> typeArguments, List<Expr> arguments) {
             this(callee, typeArguments, true, arguments);
         }
+    }
+
+    /** A compiler-owned runtime intrinsic. The rt prefix cannot be rebound or shadowed. */
+    public record RuntimeCallExpr(String operation, List<Expr> arguments) implements Expr {
+        public RuntimeCallExpr { arguments = List.copyOf(arguments); }
     }
 
     public record MemberExpr(Expr receiver, String member) implements Expr { }
