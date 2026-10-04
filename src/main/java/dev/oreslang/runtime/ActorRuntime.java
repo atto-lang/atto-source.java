@@ -298,8 +298,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Production defaults use three independent Erlang-style carrier
-         * bulkheads. Each domain starts with a small worker floor and may grow
+         * Production defaults use four independent Erlang-style scheduler
+         * bulkheads: control-plane, shared actor, isoactor/private, and untrusted
+         * actor. Each domain starts with a small worker floor and may grow
          * toward a bounded ceiling when runnable actor demand accumulates.
          *
          * The pools are intentionally not partitioned as permanent CPU owners:
@@ -344,6 +345,23 @@ public final class ActorRuntime implements AutoCloseable {
         /** Reserve most actor identities for trusted domains during hostile load. */
         public int maxUntrustedActors() {
             return Math.max(1, maxActors / 8);
+        }
+
+        /**
+         * Control-plane carriers are a physically separate pool. For the first
+         * VM declaration they inherit the same configured floor as shared actors
+         * while remaining an independent executor and scheduler domain.
+         */
+        public int controlParallelism() {
+            return sharedParallelism;
+        }
+
+        public int maxControlParallelism() {
+            try {
+                return Math.addExact(controlParallelism(), maxCompensatingThreads);
+            } catch (ArithmeticException overflow) {
+                return Integer.MAX_VALUE;
+            }
         }
 
         public int throughputFor(ActorKind kind) {
@@ -1202,8 +1220,9 @@ public final class ActorRuntime implements AutoCloseable {
      * ActorRuntime construction intentionally owns a dedicated group for tests
      * and explicit host isolation.
      */
-    private static final class DispatcherGroup {
+    static final class DispatcherGroup {
         private final DispatcherConfig config;
+        private final ThreadPoolExecutor controlDispatcher;
         private final ThreadPoolExecutor privateDispatcher;
         private final ThreadPoolExecutor sharedDispatcher;
         private final ThreadPoolExecutor untrustedDispatcher;
@@ -1211,12 +1230,15 @@ public final class ActorRuntime implements AutoCloseable {
         private final ScheduledThreadPoolExecutor messageWatchdog;
         private final ActorTimerWheel actorTimerWheel;
         private final Semaphore rootSlots;
+        private final AtomicInteger controlCompensatingThreads = new AtomicInteger();
         private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
         private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
         private final AtomicInteger untrustedCompensatingThreads = new AtomicInteger();
+        private final AtomicLong controlOverrunTurns = new AtomicLong();
         private final AtomicLong privateOverrunTurns = new AtomicLong();
         private final AtomicLong sharedOverrunTurns = new AtomicLong();
         private final AtomicLong untrustedOverrunTurns = new AtomicLong();
+        private final AtomicLong controlRejectedTurns = new AtomicLong();
         private final AtomicLong privateRejectedTurns = new AtomicLong();
         private final AtomicLong sharedRejectedTurns = new AtomicLong();
         private final AtomicLong untrustedRejectedTurns = new AtomicLong();
@@ -1227,16 +1249,22 @@ public final class ActorRuntime implements AutoCloseable {
         private final long maxActorMemoryBytes;
         private long actorMemoryBytes;
 
-        private DispatcherGroup(DispatcherConfig config, String prefix) {
+        DispatcherGroup(DispatcherConfig config, String prefix) {
             this.config = Objects.requireNonNull(config);
             this.maxActorMemoryBytes = configuredProcessActorMemoryLimit();
-            int rootPermits = Math.max(1, config.sharedParallelism() - 1);
+            int controlParallelism = config.controlParallelism();
+            int rootPermits = Math.max(1, controlParallelism - 1);
             int readyQueueCapacity;
             try {
                 readyQueueCapacity = Math.addExact(config.maxActors(), rootPermits);
             } catch (ArithmeticException overflow) {
                 throw new IllegalArgumentException("dispatcher ready-queue capacity overflow", overflow);
             }
+            this.controlDispatcher = newDispatcher(
+                    controlParallelism,
+                    readyQueueCapacity,
+                    config.maxCompensatingThreads(),
+                    prefix + "control-plane-dispatcher-");
             this.privateDispatcher = newDispatcher(
                     config.privateParallelism(),
                     readyQueueCapacity,
@@ -1333,7 +1361,12 @@ public final class ActorRuntime implements AutoCloseable {
             return actorMemoryBytes;
         }
 
-        private void shutdownNow() {
+        DispatcherConfig config() {
+            return config;
+        }
+
+        void shutdownNow() {
+            controlDispatcher.shutdownNow();
             privateDispatcher.shutdownNow();
             sharedDispatcher.shutdownNow();
             untrustedDispatcher.shutdownNow();
@@ -1344,9 +1377,8 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * The production/default OresContext carrier bulkhead: exactly three actor
-     * carrier pools for the OS process, independent of the number of contexts
-     * or hot-reload generations.
+     * Process-level actor memory ceiling used by the Oreslang VM scheduler
+     * infrastructure. Physical pool ownership now lives in OresVM.
      */
     private static long configuredProcessActorMemoryLimit() {
         long maxHeap = Runtime.getRuntime().maxMemory();
@@ -1376,9 +1408,6 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
-    private static final DispatcherGroup PROCESS_DISPATCHERS =
-            new DispatcherGroup(DispatcherConfig.defaults(), "ores-process-");
-
     private final Map<ActorId, ActorCell<?>> actors = new ConcurrentHashMap<>();
     private final Map<ActorGroupId, ActorGroupRuntime<?>> actorGroups = new ConcurrentHashMap<>();
     private final AtomicLong nextActorGroupGeneration = new AtomicLong();
@@ -1398,23 +1427,28 @@ public final class ActorRuntime implements AutoCloseable {
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
+    private final OresVM vm;
     private final DispatcherGroup dispatcherGroup;
-    private final boolean ownsDispatcherGroup;
+    private final boolean ownsVm;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
     private volatile BiConsumer<ActorGroupId, Throwable> actorGroupFailureHook =
             (ignoredGroup, ignoredFailure) -> { };
+    private final ThreadPoolExecutor controlDispatcher;
     private final ThreadPoolExecutor privateDispatcher;
     private final ThreadPoolExecutor sharedDispatcher;
     private final ThreadPoolExecutor untrustedDispatcher;
     private final ScheduledThreadPoolExecutor untrustedWatchdog;
     private final ScheduledThreadPoolExecutor messageWatchdog;
     private final ActorTimerWheel actorTimerWheel;
+    private final AtomicInteger controlCompensatingThreads;
     private final AtomicInteger privateCompensatingThreads;
     private final AtomicInteger sharedCompensatingThreads;
     private final AtomicInteger untrustedCompensatingThreads;
+    private final AtomicLong controlOverrunTurns;
     private final AtomicLong privateOverrunTurns;
     private final AtomicLong sharedOverrunTurns;
     private final AtomicLong untrustedOverrunTurns;
+    private final AtomicLong controlRejectedTurns;
     private final AtomicLong privateRejectedTurns;
     private final AtomicLong sharedRejectedTurns;
     private final AtomicLong untrustedRejectedTurns;
@@ -1449,23 +1483,30 @@ public final class ActorRuntime implements AutoCloseable {
                 policyCeiling,
                 dispatcherConfig,
                 turnExecutor,
-                new DispatcherGroup(dispatcherConfig, "ores-"),
+                OresVM.dedicated(dispatcherConfig),
                 true);
     }
 
     /**
      * Production OresContext factory. Multiple contexts/hot-reload generations
-     * share the one process carrier bulkhead while retaining independent actor
-     * registries, policies, memory accounting, and Truffle entry callbacks.
+     * attach independent logical actor registries to the one process Oreslang VM.
      */
     public static ActorRuntime processShared(
             IsolatePolicy policyCeiling,
             TurnExecutor turnExecutor) {
+        return OresVM.process().newActorRuntime(policyCeiling, turnExecutor);
+    }
+
+    static ActorRuntime attachToVm(
+            OresVM vm,
+            IsolatePolicy policyCeiling,
+            TurnExecutor turnExecutor) {
+        Objects.requireNonNull(vm, "vm");
         return new ActorRuntime(
                 policyCeiling,
-                PROCESS_DISPATCHERS.config,
+                vm.dispatcherGroup().config(),
                 turnExecutor,
-                PROCESS_DISPATCHERS,
+                vm,
                 false);
     }
 
@@ -1492,31 +1533,36 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor,
-            DispatcherGroup dispatcherGroup,
-            boolean ownsDispatcherGroup) {
+            OresVM vm,
+            boolean ownsVm) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
-        this.dispatcherGroup = Objects.requireNonNull(dispatcherGroup);
-        this.ownsDispatcherGroup = ownsDispatcherGroup;
-        if (dispatcherGroup.config != dispatcherConfig
-                && !dispatcherGroup.config.equals(dispatcherConfig)) {
+        this.vm = Objects.requireNonNull(vm);
+        this.dispatcherGroup = vm.dispatcherGroup();
+        this.ownsVm = ownsVm;
+        if (dispatcherGroup.config() != dispatcherConfig
+                && !dispatcherGroup.config().equals(dispatcherConfig)) {
             throw new IllegalArgumentException(
                     "ActorRuntime dispatcher config does not match its carrier group");
         }
 
+        this.controlDispatcher = dispatcherGroup.controlDispatcher;
         this.privateDispatcher = dispatcherGroup.privateDispatcher;
         this.sharedDispatcher = dispatcherGroup.sharedDispatcher;
         this.untrustedDispatcher = dispatcherGroup.untrustedDispatcher;
         this.untrustedWatchdog = dispatcherGroup.untrustedWatchdog;
         this.messageWatchdog = dispatcherGroup.messageWatchdog;
         this.actorTimerWheel = dispatcherGroup.actorTimerWheel;
+        this.controlCompensatingThreads = dispatcherGroup.controlCompensatingThreads;
         this.privateCompensatingThreads = dispatcherGroup.privateCompensatingThreads;
         this.sharedCompensatingThreads = dispatcherGroup.sharedCompensatingThreads;
         this.untrustedCompensatingThreads = dispatcherGroup.untrustedCompensatingThreads;
+        this.controlOverrunTurns = dispatcherGroup.controlOverrunTurns;
         this.privateOverrunTurns = dispatcherGroup.privateOverrunTurns;
         this.sharedOverrunTurns = dispatcherGroup.sharedOverrunTurns;
         this.untrustedOverrunTurns = dispatcherGroup.untrustedOverrunTurns;
+        this.controlRejectedTurns = dispatcherGroup.controlRejectedTurns;
         this.privateRejectedTurns = dispatcherGroup.privateRejectedTurns;
         this.sharedRejectedTurns = dispatcherGroup.sharedRejectedTurns;
         this.untrustedRejectedTurns = dispatcherGroup.untrustedRejectedTurns;
@@ -1524,7 +1570,8 @@ public final class ActorRuntime implements AutoCloseable {
 
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
-    public boolean usesProcessSharedDispatchers() { return !ownsDispatcherGroup; }
+    public OresVM vm() { return vm; }
+    public boolean usesProcessSharedDispatchers() { return vm.processVm(); }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
     /**
@@ -1581,11 +1628,24 @@ public final class ActorRuntime implements AutoCloseable {
         this.actorGroupFailureHook = Objects.requireNonNull(failureHook, "failureHook");
     }
 
-    void executeActorGroupMailman(ActorKind kind, Runnable turn) {
-        Objects.requireNonNull(kind, "kind");
+    void executeActorGroupMailman(Runnable turn) {
         Objects.requireNonNull(turn, "turn");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        dispatcherFor(kind).execute(turn);
+        scaleControlDispatcherForDemand();
+        try {
+            controlDispatcher.execute(() -> {
+                ACTOR_CARRIER.set(Boolean.TRUE);
+                try {
+                    turnExecutor.execute(turn);
+                } finally {
+                    ACTOR_CARRIER.remove();
+                    relaxControlDispatcherAfterQuantum();
+                }
+            });
+        } catch (RejectedExecutionException rejected) {
+            controlRejectedTurns.incrementAndGet();
+            throw rejected;
+        }
     }
 
     void onActorGroupMailmanFailure(ActorGroupId id, Throwable failure) {
@@ -1731,10 +1791,9 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     /**
-     * Run trusted root/main-process guest work on the SHARED carrier domain.
-     * This is not an actor turn, so it has no mailbox identity, but it shares
-     * the same CPU bulkhead as shared actors and therefore cannot consume an
-     * isolate/untrusted carrier.
+     * Run trusted root/main-process and supervisor work on the VM CONTROL
+     * scheduler domain. This is not an actor turn and never borrows a shared,
+     * isoactor/private, or untrusted actor carrier.
      */
     public <T> T executeRootTask(Supplier<T> task) {
         requireSupervisorContext("execute root/main process work");
@@ -1761,9 +1820,10 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         try {
-            sharedDispatcher.execute(rootTask);
+            scaleControlDispatcherForDemand();
+            controlDispatcher.execute(rootTask);
         } catch (RejectedExecutionException rejected) {
-            sharedRejectedTurns.incrementAndGet();
+            controlRejectedTurns.incrementAndGet();
             rootTask.cancelBeforeStart(rejected);
             throw rejected;
         }
@@ -1883,9 +1943,9 @@ public final class ActorRuntime implements AutoCloseable {
             if (running == null) return;
             if (!deadlineExpired.compareAndSet(false, true)) return;
 
-            sharedOverrunTurns.incrementAndGet();
+            controlOverrunTurns.incrementAndGet();
             if (compensationClaimed.compareAndSet(false, true)
-                    && !claimCompensatingThread(ActorKind.SHARED)) {
+                    && !claimControlCompensatingThread()) {
                 compensationClaimed.set(false);
             }
             completion.completeExceptionally(new CancellationException(
@@ -1899,8 +1959,9 @@ public final class ActorRuntime implements AutoCloseable {
             deadlineFuture = null;
             if (deadline != null) deadline.cancel(false);
             if (compensationClaimed.compareAndSet(true, false)) {
-                releaseCompensatingThread(ActorKind.SHARED);
+                releaseControlCompensatingThread();
             }
+            relaxControlDispatcherAfterQuantum();
         }
 
         private void cancelBeforeStart(Throwable failure) {
@@ -4950,11 +5011,11 @@ public final class ActorRuntime implements AutoCloseable {
             rootTask.cancelFromRuntimeClose();
         }
 
-        if (firstClose && ownsDispatcherGroup) {
-            // Dedicated/test runtimes own their physical carriers. Production
-            // OresContext runtimes share PROCESS_DISPATCHERS and must never
-            // shut down carriers that service another live generation.
-            dispatcherGroup.shutdownNow();
+        if (firstClose && ownsVm) {
+            // Dedicated/test runtimes own their complete VM scheduler set.
+            // Production OresContext runtimes attach to OresVM.process() and
+            // must never shut down carriers serving another live generation.
+            vm.shutdownNow();
         }
 
         long deadline = System.nanoTime() + CLOSE_WAIT_NANOS;
@@ -5068,6 +5129,68 @@ public final class ActorRuntime implements AutoCloseable {
      * core target one step at a time lets demand activate additional carriers
      * while keeping the hard maximum bounded.
      */
+    private void scaleControlDispatcherForDemand() {
+        synchronized (controlDispatcher) {
+            int current = controlDispatcher.getCorePoolSize();
+            int maximum = dispatcherConfig.maxControlParallelism();
+            if (current >= maximum) return;
+            int queued = controlDispatcher.getQueue().size();
+            if (queued <= current) return;
+            controlDispatcher.setCorePoolSize(current + 1);
+            controlDispatcher.prestartCoreThread();
+        }
+    }
+
+    private void relaxControlDispatcherAfterQuantum() {
+        synchronized (controlDispatcher) {
+            if (!controlDispatcher.getQueue().isEmpty()) return;
+            int floor = dispatcherConfig.controlParallelism()
+                    + controlCompensatingThreads.get();
+            int current = controlDispatcher.getCorePoolSize();
+            if (current > floor) controlDispatcher.setCorePoolSize(current - 1);
+        }
+    }
+
+    private boolean claimControlCompensatingThread() {
+        int limit = dispatcherConfig.maxCompensatingThreads();
+        if (limit == 0) return false;
+        while (true) {
+            int current = controlCompensatingThreads.get();
+            if (current >= limit) return false;
+            if (!controlCompensatingThreads.compareAndSet(current, current + 1)) continue;
+            synchronized (controlDispatcher) {
+                int base = dispatcherConfig.controlParallelism();
+                int currentCore = Math.max(base, controlDispatcher.getCorePoolSize());
+                if (currentCore >= controlDispatcher.getMaximumPoolSize()) {
+                    controlCompensatingThreads.decrementAndGet();
+                    return false;
+                }
+                int target = Math.min(
+                        controlDispatcher.getMaximumPoolSize(),
+                        currentCore + 1);
+                controlDispatcher.setCorePoolSize(target);
+                controlDispatcher.prestartCoreThread();
+            }
+            return true;
+        }
+    }
+
+    private void releaseControlCompensatingThread() {
+        int remaining = controlCompensatingThreads.decrementAndGet();
+        if (remaining < 0) {
+            controlCompensatingThreads.incrementAndGet();
+            throw new IllegalStateException(
+                    "control-plane dispatcher compensation accounting underflow");
+        }
+        synchronized (controlDispatcher) {
+            int base = dispatcherConfig.controlParallelism();
+            int target = Math.max(base, base + remaining);
+            if (controlDispatcher.getCorePoolSize() > target) {
+                controlDispatcher.setCorePoolSize(target);
+            }
+        }
+    }
+
     private void scaleDispatcherForDemand(ActorKind kind) {
         ThreadPoolExecutor executor = dispatcherFor(kind);
         synchronized (executor) {
