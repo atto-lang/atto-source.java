@@ -380,7 +380,7 @@ public final class OresEvalRootNode extends RootNode {
             boolean abnormalExit = false;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
-            } catch (ReturnSignal signal) {
+            } catch (ReturnSignal | BreakSignal | ContinueSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
                 abnormalExit = true;
@@ -432,6 +432,9 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.BlockStmt block) { executeBlock(block.body(), env); return; }
+            if (stmt instanceof Ast.BreakStmt) throw new BreakSignal();
+            if (stmt instanceof Ast.ContinueStmt) throw new ContinueSignal();
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
                     if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env); return; }
@@ -441,7 +444,7 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.TryStmt tried) {
                 try { executeBlock(tried.body(), env); }
-                catch (ReturnSignal signal) { throw signal; }
+                catch (ReturnSignal | BreakSignal | ContinueSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
@@ -456,7 +459,13 @@ public final class OresEvalRootNode extends RootNode {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
                     iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    executeBlock(loop.body(), iteration);
+                    try {
+                        executeBlock(loop.body(), iteration);
+                    } catch (ContinueSignal ignored) {
+                        continue;
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
                 }
                 return;
             }
@@ -465,8 +474,27 @@ public final class OresEvalRootNode extends RootNode {
                 if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<>());
                 while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                     context.schedulerSafepoint();
-                    executeBlock(loop.body(), loopEnv);
+                    try {
+                        executeBlock(loop.body(), loopEnv);
+                    } catch (ContinueSignal ignored) {
+                        // A conventional for-loop still executes its update expression on continue.
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
                     if (loop.update() != null) eval(loop.update(), loopEnv);
+                }
+                return;
+            }
+            if (stmt instanceof Ast.LoopStmt loop) {
+                while (true) {
+                    context.schedulerSafepoint();
+                    try {
+                        executeBlock(loop.body(), env);
+                    } catch (ContinueSignal ignored) {
+                        continue;
+                    } catch (BreakSignal ignored) {
+                        break;
+                    }
                 }
             }
         }
@@ -1594,6 +1622,14 @@ public final class OresEvalRootNode extends RootNode {
     private static final class ReturnSignal extends RuntimeException {
         private final Object value;
         private ReturnSignal(Object value) { super(null,null,false,false); this.value=value; }
+    }
+
+    private static final class BreakSignal extends RuntimeException {
+        private BreakSignal() { super(null, null, false, false); }
+    }
+
+    private static final class ContinueSignal extends RuntimeException {
+        private ContinueSignal() { super(null, null, false, false); }
     }
 
     private enum StartupPhase {
