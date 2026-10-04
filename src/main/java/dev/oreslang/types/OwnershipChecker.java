@@ -22,9 +22,9 @@ import java.util.Set;
  * - primitive immutable values are Copy;
  * - class/list/object/function values are move-only by default;
  * - ordinary parameters read-borrow for the duration of a call;
- * - mut Type name parameters are exclusive temporary mutable borrows;
+ * - Type mut name parameters are exclusive temporary mutable borrows;
  * - contextual take Type name parameters transfer ownership;
- * - borrow(x) creates a stored immutable view; take(x) explicitly moves;
+ * - rt borrow x creates a stored immutable view; rt take x explicitly moves;
  * - no pointer-style '&' or '*' ownership syntax is exposed;
  * - escaping closures own non-Copy captures and mutable captures;
  * - closures may not capture a borrow (use take when ownership must escape);
@@ -664,6 +664,7 @@ public final class OwnershipChecker {
         }
 
         if (call.callee() instanceof Ast.NameExpr intrinsic) {
+            String ownershipOperation = ownershipIntrinsicOperation(intrinsic.name());
             if (intrinsic.name().equals("Some")) {
                 requireIntrinsicArity(call, "Some", 1);
                 ValueInfo payload = checkExpr(call.arguments().getFirst(), scope, true);
@@ -677,12 +678,12 @@ public final class OwnershipChecker {
                         payload.kind == ValueKind.COPY ? ValueKind.COPY : ValueKind.MOVE_ONLY,
                         null);
             }
-            if (intrinsic.name().equals("borrow")) {
+            if (ownershipOperation.equals("borrow")) {
                 VarState owner = intrinsicOwner(call, scope, "borrow");
                 validateBorrow(owner, false);
                 return new ValueInfo(Ast.TypeRef.borrowed(owner.type, false), ValueKind.IMM_BORROW, owner);
             }
-            if (intrinsic.name().equals("take")) {
+            if (ownershipOperation.equals("take")) {
                 requireIntrinsicArity(call, "take", 1);
                 ValueInfo taken = checkExpr(call.arguments().getFirst(), scope, true);
                 if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW) {
@@ -690,7 +691,7 @@ public final class OwnershipChecker {
                 }
                 return taken;
             }
-            if (intrinsic.name().equals("copy")) {
+            if (ownershipOperation.equals("copy")) {
                 requireIntrinsicArity(call, "copy", 1);
                 ValueInfo source = checkExpr(call.arguments().getFirst(), scope, false);
                 if (source.kind == ValueKind.IMM_BORROW || source.kind == ValueKind.MUT_BORROW) {
@@ -701,7 +702,7 @@ public final class OwnershipChecker {
                 }
                 return new ValueInfo(source.type, ValueKind.COPY, null);
             }
-            if (intrinsic.name().equals("share")) {
+            if (ownershipOperation.equals("share")) {
                 throw error("share(...) is reserved for explicit shared capabilities; ordinary ownership cannot be converted to shared mutable state implicitly");
             }
 
@@ -846,6 +847,10 @@ public final class OwnershipChecker {
         }
         checkArguments(call.arguments(), borrowed, scope, "first-class function");
         return new ValueInfo(Ast.TypeRef.inferred(), ValueKind.MOVE_ONLY, null);
+    }
+
+    private static String ownershipIntrinsicOperation(String name) {
+        return name.startsWith("$rt$") ? name.substring("$rt$".length()) : name;
     }
 
     private boolean requiresMutableReceiver(Ast.MethodDecl method) {
