@@ -50,6 +50,27 @@ final class RuntimeOwnershipSyntaxTest {
     }
 
     @Test
+    void ordinaryReferenceParameterCannotMutateTheCallerObject() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Person as
+                          pub let String name = "Alex";
+                        end
+
+                        fnc rename(Person person) => void {
+                          person.name = "Taylor";
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("mut")
+                || error.getMessage().toLowerCase().contains("borrow")
+                || error.getMessage().toLowerCase().contains("mutable"),
+                error.getMessage());
+    }
+
+    @Test
     void mutableParameterMutatesTheSameReferencedObject() throws Exception {
         String output = run("""
                 define class Person as
@@ -92,6 +113,42 @@ final class RuntimeOwnershipSyntaxTest {
                   return;
                 }
                 """)));
+    }
+
+    @Test
+    void pipeLambdaAcceptsCanonicalTypeMutNameSyntax() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                define class Person as
+                  pub let String name = "Alex";
+                end
+
+                fnc make() => void {
+                  val rename = |Person mut person| -> {
+                    person.name = "Taylor";
+                    return;
+                  };
+                  return;
+                }
+                """));
+    }
+
+    @Test
+    void pipeLambdaRejectsDuplicateMutMarkers() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define class Person as
+                        end
+
+                        fnc bad() => void {
+                          val f = |mut Person mut person| -> {
+                            return;
+                          };
+                          return;
+                        }
+                        """));
+
+        assertTrue(error.getMessage().contains("duplicate mut"), error.getMessage());
     }
 
     @Test
