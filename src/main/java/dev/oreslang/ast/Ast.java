@@ -221,7 +221,21 @@ public final class Ast {
             Visibility visibility,
             BindingKind bindingKind,
             TypeRef type,
-            Expr initializer) implements Decl { }
+            List<Annotation> annotations,
+            Expr initializer) implements Decl {
+        public FieldDecl {
+            annotations = List.copyOf(annotations);
+        }
+
+        public FieldDecl(
+                String name,
+                Visibility visibility,
+                BindingKind bindingKind,
+                TypeRef type,
+                Expr initializer) {
+            this(name, visibility, bindingKind, type, List.of(), initializer);
+        }
+    }
 
     public record MethodDecl(
             String name,
