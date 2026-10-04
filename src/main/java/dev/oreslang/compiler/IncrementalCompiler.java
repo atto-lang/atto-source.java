@@ -164,7 +164,7 @@ public final class IncrementalCompiler {
             return;
         }
         if (decl instanceof Ast.ClassDecl klass) {
-            abi.append(klass.actorKind()).append(" class ").append(klass.name());
+            abi.append(klass.actorKind()).append(klass.isStruct() ? " struct " : " class ").append(klass.name());
             appendGenerics(abi, klass.genericParameters());
             abi.append(" extends ");
             for (Ast.TypeRef parent : klass.parents()) abi.append(typeRef(parent)).append(',');
