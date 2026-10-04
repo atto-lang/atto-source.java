@@ -365,6 +365,85 @@ final class ParserTest {
     }
 
     @Test
+    void actorRestrictionsPropagateThroughOrdinaryHelpers() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        fnc unsafe_helper() -> void {
+                          val state = SharedMutex.new(1);
+                          return;
+                        }
+
+                        define actor Worker as
+                          pub run(): void {
+                            unsafe_helper();
+                            return;
+                          }
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("actor code cannot create writable SharedMutex state"));
+    }
+
+    @Test
+    void actorConstructorNoSuspendRulePropagatesThroughPrivateHelpers() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          constructor() {
+                            self.prepare();
+                          }
+
+                          private prepare(): void {
+                            val ready = Futures.completed(1);
+                            await ready;
+                            return;
+                          }
+
+                          pub run(): void { return; }
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("actor constructors cannot await or suspend"));
+    }
+
+    @Test
+    void actorBoundaryInputCannotBeUpgradedToMutableHelperAuthority() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Box as
+                          let int value = 0;
+                        end
+
+                        fnc mutate(Box mut box) -> void {
+                          box.value = 1;
+                          return;
+                        }
+
+                        define actor Worker as
+                          pub run(box: Box): void {
+                            mutate(box);
+                            return;
+                          }
+                        end
+                        """)));
+
+        assertTrue(failure.getMessage().contains("cannot upgrade actor-boundary input"));
+    }
+
+    @Test
+    void actorConstructorParametersCannotBeMut() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Worker as
+                  constructor(box: Box mut) { }
+                  pub run(): void { return; }
+                end
+                """));
+    }
+
+    @Test
     void actorImportAliasesAndEntrySyntaxParseWithoutDefaultExports() {
         Ast.Program imports = Parser.parse("""
                 import actor Foo from "../../actor-mod";
