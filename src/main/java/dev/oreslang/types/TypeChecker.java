@@ -357,12 +357,6 @@ public final class TypeChecker {
         }
 
         if (klass.actorKind() != Ast.ActorKind.NONE) {
-            if (!klass.actorProtocolTypes().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "actor '" + klass.name()
-                                + "' cannot carry protocol type arguments on the intrinsic Actor base; "
-                                + "public methods/interfaces define the actor protocol");
-            }
             validateActorProtocolContract(klass);
         }
 
