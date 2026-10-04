@@ -265,6 +265,56 @@ final class LanguageHardeningTest {
     }
 
     @Test
+    void fieldAndInstanceMethodNamesCannotCollideLocallyOrThroughInheritance() {
+        IllegalArgumentException local = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Bad as
+                          pub val int value = 1;
+
+                          pub value(): int {
+                            return 2;
+                          }
+                        end
+                        """)));
+        assertTrue(local.getMessage().contains("both a field and an instance method"));
+
+        IllegalArgumentException inherited = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class HasField as
+                          pub val int value = 1;
+                        end
+
+                        define class HasMethod as
+                          pub value(): int {
+                            return 2;
+                          }
+                        end
+
+                        define class Bad extends HasField, HasMethod as
+                        end
+                        """)));
+        assertTrue(inherited.getMessage().contains("both a field and an instance method"));
+
+        IllegalArgumentException iface = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface HasField
+                          val int value;
+                        end
+
+                        define interface HasMethod
+                          fnc value() => int;
+                        end
+
+                        define interface Bad extends HasField, HasMethod
+                        end
+                        """)));
+        assertTrue(iface.getMessage().contains("both a field and a method"));
+    }
+
+    @Test
     void moduleAdherenceRejectsMissingExports() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module contracts
