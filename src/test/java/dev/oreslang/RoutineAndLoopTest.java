@@ -75,7 +75,7 @@ final class RoutineAndLoopTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                pub routine legacy() => void { return; }
+                pub routine legacy() -> void { return; }
                 """));
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 pub routine inferred() { return; }
