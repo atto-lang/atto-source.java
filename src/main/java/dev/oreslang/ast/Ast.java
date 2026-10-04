@@ -244,7 +244,7 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, YieldStmt, ExprStmt, DeferStmt,
             IfStmt, TryStmt, ForOfStmt, ForStmt { }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
@@ -274,6 +274,11 @@ public final class Ast {
     }
 
     public record ReturnStmt(Expr value) implements Stmt { }
+    public record YieldStmt(Expr value) implements Stmt {
+        public YieldStmt {
+            if (value == null) throw new IllegalArgumentException("yield requires a value");
+        }
+    }
     public record ExprStmt(Expr expression) implements Stmt { }
     public record DeferStmt(Expr expression) implements Stmt { }
 
