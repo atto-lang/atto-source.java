@@ -411,7 +411,7 @@ final class SingletonModuleTest {
                   return;
                 }
 
-                pub routine main() => void {
+                pub routine main() -> void {
                   stdio.println(count);
                   return;
                 }
@@ -438,7 +438,7 @@ final class SingletonModuleTest {
                 end
 
                 define module app as
-                  pub routine main() => void {
+                  pub routine main() -> void {
                     stdio.println(local_state.read());
                     return;
                   }
@@ -471,7 +471,7 @@ final class SingletonModuleTest {
                 end
 
                 define module app as
-                  pub routine main() => void {
+                  pub routine main() -> void {
                     val Reader reader = local_model.make();
                     stdio.println(reader.read());
                     return;
@@ -521,7 +521,7 @@ final class SingletonModuleTest {
                 end
 
                 define module app as
-                  pub routine main() => void {
+                  pub routine main() -> void {
                     stdio.println(await process_init_once_test.next());
                     return;
                   }
@@ -554,7 +554,7 @@ final class SingletonModuleTest {
                 end
 
                 define module app as
-                  pub routine main() => void {
+                  pub routine main() -> void {
                     val int object_value = await singleton_object_export_test.value.read();
                     val int call_count = await singleton_object_export_test.note_call();
                     stdio.println(object_value + call_count);
@@ -627,7 +627,7 @@ final class SingletonModuleTest {
                         end
 
                         define module app as
-                          pub routine main() => void {
+                          pub routine main() -> void {
                             singleton_proxy_await_test.box.read();
                             return;
                           }
@@ -647,7 +647,7 @@ final class SingletonModuleTest {
                         end
 
                         define module app as
-                          pub routine main() => void {
+                          pub routine main() -> void {
                             val int leaked = singleton_proxy_field_test.box.value;
                             return;
                           }
