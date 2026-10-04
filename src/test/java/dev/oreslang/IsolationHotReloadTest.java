@@ -141,8 +141,13 @@ final class IsolationHotReloadTest {
                   return;
                 }
 
+                define class Branded as
+                  pub val String marker;
+                  pub val String markerBrand;
+                end
+
                 pub routine main(): void {
-                  val branded = obj{marker: "brand", markerBrand: "marking/branding"};
+                  val branded = new Branded("brand", "marking/branding");
                   first(branded);
                   second(branded);
                   third(branded);
@@ -160,8 +165,12 @@ final class IsolationHotReloadTest {
 
                 fnc nominal(Foo y): void { return; }
 
+                define class Branded as
+                  pub val String marker;
+                end
+
                 pub routine main(): void {
-                  val branded = obj{marker: "brand"};
+                  val branded = new Branded("brand");
                   nominal(branded);
                   return;
                 }
