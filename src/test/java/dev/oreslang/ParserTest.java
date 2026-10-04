@@ -130,34 +130,98 @@ final class ParserTest {
     }
 
     @Test
-    void sharedActorRejectsMultipleOrNonMailboxPublicMethods() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                shared actor Bad {
-                  pub fnc read() => int { return 1; }
-                }
-                """));
+    void actorPublicMethodsFormTypedProtocolWhileMailboxIngressStaysCompilerOwned() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  let int count = 0;
 
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                shared actor Bad {
-                  pub fnc receive_message(int value) => void { return; }
-                  pub fnc receive_message(String value) => void { return; }
-                }
-                """));
+                  constructor() {
+                    self.count = 0;
+                  }
 
-        assertDoesNotThrow(() -> Parser.parse("""
-                shared actor Good {
-                  let count = 0;
-
-                  private helper() => int {
+                  private helper(): int {
                     return self.count;
                   }
 
-                  pub receive_message(int value) => void {
+                  pub run1(int value): void {
                     self.count = self.count + value;
                     return;
                   }
-                }
+
+                  pub run2(int value) -> int {
+                    return self.count + value;
+                  }
+                end
                 """));
+
+        Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
+        assertEquals(List.of("constructor", "helper", "run1", "run2"),
+                actor.methods().stream().map(Ast.MethodDecl::name).toList());
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Bad as
+                  pub static fnc helper() => void { return; }
+                end
+                """));
+    }
+
+    @Test
+    void classExtendingIntrinsicActorNormalizesToActorClass() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                define class Worker extends Actor as
+                  let int count = 0;
+
+                  pub run1(): void {
+                    self.count = self.count + 1;
+                    return;
+                  }
+
+                  pub run2() -> int {
+                    return self.count;
+                  }
+                end
+                """));
+
+        Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
+        assertTrue(actor.parents().isEmpty(), "compiler-intrinsic Actor base normalizes into actorKind");
+    }
+
+    @Test
+    void actorPublicMethodBoundaryTypesAreChecked() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Bad as
+                  pub run(Mutex<int> value): void { return; }
+                end
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Good as
+                  pub run(int value): int { return value + 1; }
+                end
+                """)));
+    }
+
+    @Test
+    void instanceMethodsAreNotFirstClassBoundCallbacks() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Worker as
+                          run(): int {
+                            return 1;
+                          }
+                        end
+
+                        fnc bad() => void {
+                          val worker = new Worker();
+                          val callback = worker.run;
+                          return;
+                        }
+                        """)));
+
+        assertTrue(failure.getMessage().contains("not a first-class value"));
     }
 
     @Test
