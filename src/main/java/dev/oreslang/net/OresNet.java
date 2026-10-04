@@ -1518,17 +1518,28 @@ public final class OresNet {
             byte[] body) { }
 
     private static ParsedResponse parseResponse(byte[] wire) {
+        final int maxHeaderBytes = 64 * 1024;
         int headerEnd = indexOf(wire, new byte[] {'\r','\n','\r','\n'}, 0);
         if (headerEnd < 0) throw new IllegalStateException("malformed HTTP response: missing header terminator");
+        if (headerEnd > maxHeaderBytes) throw new IllegalStateException("HTTP response headers exceed 65536 bytes");
 
         String head = new String(wire, 0, headerEnd, StandardCharsets.ISO_8859_1);
         String[] lines = head.split("\\r\\n");
         if (lines.length == 0) throw new IllegalStateException("malformed HTTP response");
         String[] status = lines[0].split(" ", 3);
-        if (status.length < 2 || !status[0].startsWith("HTTP/")) {
+        if (status.length < 2 || !status[0].matches("HTTP/\\d+\\.\\d+")) {
             throw new IllegalStateException("malformed HTTP status line: " + lines[0]);
         }
-        int statusCode = Integer.parseInt(status[1]);
+
+        final int statusCode;
+        try {
+            statusCode = Integer.parseInt(status[1]);
+        } catch (NumberFormatException error) {
+            throw new IllegalStateException("malformed HTTP status code: " + status[1], error);
+        }
+        if (statusCode < 100 || statusCode > 599) {
+            throw new IllegalStateException("HTTP status code out of range: " + statusCode);
+        }
 
         LinkedHashMap<String, List<String>> headers = new LinkedHashMap<>();
         for (int i = 1; i < lines.length; i++) {
@@ -1536,15 +1547,22 @@ public final class OresNet {
             if (colon <= 0) throw new IllegalStateException("malformed HTTP header: " + lines[i]);
             String name = canonicalHeaderName(lines[i].substring(0, colon).trim());
             String value = lines[i].substring(colon + 1).trim();
+            if (name.isEmpty()) throw new IllegalStateException("malformed HTTP header name");
             headers.computeIfAbsent(name, ignored -> new ArrayList<>()).add(value);
         }
 
         byte[] body = Arrays.copyOfRange(wire, headerEnd + 4, wire.length);
-        String transferEncoding = firstHeader(headers, "transfer-encoding");
+        List<String> transferEncodings = headers.getOrDefault("transfer-encoding", List.of());
         List<String> contentLengths = headers.getOrDefault("content-length", List.of());
-        if (transferEncoding != null && !contentLengths.isEmpty()) {
+
+        if (!transferEncodings.isEmpty() && !contentLengths.isEmpty()) {
             throw new IllegalStateException("ambiguous HTTP response framing: Transfer-Encoding with Content-Length");
         }
+
+        if (transferEncodings.size() > 1) {
+            throw new IllegalStateException("multiple Transfer-Encoding response headers are not supported");
+        }
+
         if (contentLengths.size() > 1) {
             String expected = contentLengths.getFirst().trim();
             for (String value : contentLengths) {
@@ -1553,7 +1571,9 @@ public final class OresNet {
                 }
             }
         }
-        if (transferEncoding != null) {
+
+        if (!transferEncodings.isEmpty()) {
+            String transferEncoding = transferEncodings.getFirst();
             String normalized = transferEncoding.trim().toLowerCase(Locale.ROOT);
             if (!normalized.equals("chunked")) {
                 throw new IllegalStateException("unsupported HTTP Transfer-Encoding: " + transferEncoding);
@@ -1590,10 +1610,49 @@ public final class OresNet {
             String sizeLine = new String(body, offset, lineEnd - offset, StandardCharsets.US_ASCII);
             int semicolon = sizeLine.indexOf(';');
             if (semicolon >= 0) sizeLine = sizeLine.substring(0, semicolon);
-            int size = Integer.parseInt(sizeLine.trim(), 16);
+            String sizeToken = sizeLine.trim();
+            if (sizeToken.isEmpty()) throw new IllegalStateException("empty chunk size");
+
+            final int size;
+            try {
+                long parsed = Long.parseLong(sizeToken, 16);
+                if (parsed < 0 || parsed > Integer.MAX_VALUE) {
+                    throw new IllegalStateException("chunk size out of range");
+                }
+                size = (int) parsed;
+            } catch (NumberFormatException error) {
+                throw new IllegalStateException("invalid chunk size", error);
+            }
+
             offset = lineEnd + 2;
-            if (size == 0) break;
-            if (offset + size + 2 > body.length) throw new IllegalStateException("truncated chunked response");
+            if (size == 0) {
+                int trailerEnd = indexOf(body, new byte[] {'\r','\n','\r','\n'}, offset);
+                if (trailerEnd < 0) {
+                    if (offset + 2 == body.length && body[offset] == '\r' && body[offset + 1] == '\n') {
+                        return out.toByteArray();
+                    }
+                    throw new IllegalStateException("malformed chunk trailer terminator");
+                }
+
+                String trailerBlock = new String(body, offset, trailerEnd - offset, StandardCharsets.ISO_8859_1);
+                if (!trailerBlock.isEmpty()) {
+                    for (String trailer : trailerBlock.split("\\r\\n")) {
+                        int colon = trailer.indexOf(':');
+                        if (colon <= 0) throw new IllegalStateException("malformed chunk trailer");
+                        String name = canonicalHeaderName(trailer.substring(0, colon).trim());
+                        if (name.equals("content-length") || name.equals("transfer-encoding")) {
+                            throw new IllegalStateException("forbidden framing field in chunk trailer");
+                        }
+                    }
+                }
+
+                if (trailerEnd + 4 != body.length) {
+                    throw new IllegalStateException("unexpected bytes after chunked response");
+                }
+                return out.toByteArray();
+            }
+
+            if (size > body.length - offset - 2) throw new IllegalStateException("truncated chunked response");
             out.write(body, offset, size);
             offset += size;
             if (body[offset] != '\r' || body[offset + 1] != '\n') {
@@ -1601,7 +1660,6 @@ public final class OresNet {
             }
             offset += 2;
         }
-        return out.toByteArray();
     }
 
     private static int indexOf(byte[] source, byte[] needle, int start) {
