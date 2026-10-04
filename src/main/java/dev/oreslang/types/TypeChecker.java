@@ -80,6 +80,12 @@ public final class TypeChecker {
                 importedValues.add(imported.namespace());
                 continue;
             }
+            if (imported.kind() == Ast.ImportKind.ENTRY
+                    && (imported.names().size() != 1
+                        || !imported.names().getFirst().equals("$entry$"))) {
+                throw new IllegalArgumentException(
+                        "entry import must bind exactly one code-unit entry capability");
+            }
             if (imported.names().isEmpty()) {
                 throw new IllegalArgumentException("named import must select at least one name");
             }
@@ -100,34 +106,60 @@ public final class TypeChecker {
     }
 
     private void validateEntryExport(Ast.Program program) {
-        List<Ast.EntryExportDecl> entries = new ArrayList<>();
+        Ast.EntryExportDecl entry = null;
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
-                if (decl instanceof Ast.EntryExportDecl entry) entries.add(entry);
+                if (!(decl instanceof Ast.EntryExportDecl candidate)) continue;
+                if (!module.name().equals(Parser.ROOT_MODULE)) {
+                    throw new IllegalArgumentException(
+                            "export entry is code-unit metadata and may appear only at top level");
+                }
+                if (entry != null) {
+                    throw new IllegalArgumentException(
+                            "a code unit may declare at most one export entry marker");
+                }
+                entry = candidate;
             }
         }
-        if (entries.size() > 1) {
-            throw new IllegalArgumentException(
-                    "a code unit may declare at most one 'export entry <name>'; ordinary default exports are not supported");
-        }
-        if (entries.isEmpty()) return;
+        if (entry == null) return;
 
-        String name = entries.getFirst().name();
-        if (findClass(name) != null) return;
+        String name = entry.name();
+        int matches = 0;
+
+        Ast.ClassDecl klass = findClass(name);
+        if (klass != null && Parser.ROOT_MODULE.equals(classOwners.get(klass))) {
+            matches++;
+        }
 
         Ast.FunctionDecl fn = findFunction(name);
-        if (fn != null) {
+        if (fn != null && Parser.ROOT_MODULE.equals(functionOwners.get(fn))) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalArgumentException("entry function '" + name + "' must be public");
+                throw new IllegalArgumentException(
+                        "entry function '" + name + "' must be public");
             }
-            return;
+            if (fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "actor fnc/routine '" + name
+                                + "' cannot be a code-unit entry; export an actor class or an ordinary public fnc/routine");
+            }
+            matches++;
         }
 
-        Ast.ModuleDecl module = modules.get(name);
-        if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return;
+        Ast.ModuleDecl namedModule = modules.get(name);
+        if (namedModule != null && !namedModule.name().equals(Parser.ROOT_MODULE)) {
+            matches++;
+        }
 
-        throw new IllegalArgumentException(
-                "export entry '" + name + "' must name a class/actor, public fnc/routine, or named module in this code unit");
+        if (matches == 0) {
+            throw new IllegalArgumentException(
+                    "export entry '" + name
+                            + "' must name a top-level class/actor, public non-actor fnc/routine, or named module in this code unit");
+        }
+        if (matches > 1) {
+            throw new IllegalArgumentException(
+                    "export entry '" + name
+                            + "' is ambiguous across declaration kinds; rename the entry target");
+        }
     }
 
     private void collect(Ast.Program program) {
