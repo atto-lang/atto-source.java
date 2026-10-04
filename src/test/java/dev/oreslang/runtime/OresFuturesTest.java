@@ -240,6 +240,52 @@ final class OresFuturesTest {
         assertInstanceOf(java.util.concurrent.CancellationException.class, failure.getCause());
     }
 
+
+    @Test
+    void hostFutureCancellationRemainsCancellationAfterInteropAdaptation() {
+        CompletableFuture<Integer> host = new CompletableFuture<>();
+        OresFuture<Integer> ores = OresFuture.from(host);
+
+        assertTrue(host.cancel(true));
+
+        assertTrue(ores.isCancelled());
+        assertThrows(java.util.concurrent.CancellationException.class, ores::join);
+    }
+
+    @Test
+    void hostCancellationExceptionFailureIsNotMisclassifiedAsCancellation() {
+        CompletableFuture<Integer> host = new CompletableFuture<>();
+        OresFuture<Integer> ores = OresFuture.from(host);
+
+        host.completeExceptionally(
+                new java.util.concurrent.CancellationException("domain failure"));
+
+        assertFalse(ores.isCancelled());
+        CompletionException failure = assertThrows(CompletionException.class, ores::join);
+        assertInstanceOf(java.util.concurrent.CancellationException.class, failure.getCause());
+    }
+
+    @Test
+    void allSettledPreservesCancellationIdentitySeparatelyFromFailureClass() {
+        OresFuture<Integer> cancelled = new OresFuture<>();
+        OresFuture<Integer> domainFailure =
+                OresFuture.failed(new java.util.concurrent.CancellationException("domain failure"));
+
+        OresFuture<List<OresFutures.Settled<Integer>>> settled =
+                OresFutures.allSettled(List.of(cancelled, domainFailure));
+
+        assertTrue(cancelled.cancel(true));
+        List<OresFutures.Settled<Integer>> values = settled.join();
+
+        assertTrue(values.get(0).cancelled());
+        assertFalse(values.get(0).ok());
+        assertInstanceOf(java.util.concurrent.CancellationException.class, values.get(0).error());
+
+        assertFalse(values.get(1).cancelled());
+        assertFalse(values.get(1).ok());
+        assertInstanceOf(java.util.concurrent.CancellationException.class, values.get(1).error());
+    }
+
     private static java.util.concurrent.ConcurrentLinkedQueue<?> runtimeWaiters(
             OresFuture<?> future) throws Exception {
         var field = OresFuture.class.getDeclaredField("waiters");
