@@ -289,6 +289,70 @@ final class ParserTest {
     }
 
     @Test
+    void actorRefProtocolInterfaceMustBeReceiveOnly() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface WorkerAPI
+                  fnc receive(message: int): void;
+                end
+
+                define actor Worker implements WorkerAPI as
+                  pub receive(message: int): void { return; }
+                end
+
+                fnc exercise() -> void {
+                  val concrete = spawn Worker();
+                  val ActorRef<WorkerAPI> worker = concrete;
+                  worker.send(5);
+                  val alive = worker.is_alive();
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException methodBag = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          fnc receive(message: int): void;
+                          fnc stop(): void;
+                        end
+
+                        fnc bad(worker: ActorRef<BadAPI>) -> void {
+                          worker.send(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(methodBag.getMessage().contains("exactly receive(Message): void"));
+
+        IllegalArgumentException wrongMessage = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface WorkerAPI
+                          fnc receive(message: int): void;
+                        end
+
+                        fnc bad(worker: ActorRef<WorkerAPI>) -> void {
+                          worker.send("wrong");
+                          return;
+                        }
+                        """)));
+        assertTrue(wrongMessage.getMessage().contains("ActorRef.send"));
+
+        IllegalArgumentException directReceive = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface WorkerAPI
+                          fnc receive(message: int): void;
+                        end
+
+                        fnc bad(worker: ActorRef<WorkerAPI>) -> void {
+                          worker.receive(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(directReceive.getMessage().contains("runtime-owned"));
+    }
+
+    @Test
     void actorImportAliasesAndEntrySyntaxParseWithoutDefaultExports() {
         Ast.Program imports = Parser.parse("""
                 import actor Foo from "../../actor-mod";
