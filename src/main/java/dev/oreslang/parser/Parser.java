@@ -75,12 +75,20 @@ public final class Parser {
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
+                if (match(STRUCT)) {
+                    if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                    if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.shared) {
+                        throw error(previous(), "struct declarations do not accept executable modifiers");
+                    }
+                    rootDeclarations.add(parseStruct(false));
+                    continue;
+                }
                 if (match(INTERFACE)) {
                     if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected namespace, module, class, or interface after 'define'");
+                throw error(previous(), "expected namespace, module, class, struct, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -232,16 +240,23 @@ public final class Parser {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
+            if (match(STRUCT)) {
+                if (modifiers.isAbstract || afterDefineAbstract) throw error(previous(), "structs cannot be abstract");
+                if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.shared) {
+                    throw error(previous(), "struct declarations do not accept executable modifiers");
+                }
+                return parseStruct(false);
+            }
             if (match(INTERFACE)) {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseInterface(modifiers.visibility);
             }
-            throw error(previous(), "expected class or interface after 'define'");
+            throw error(previous(), "expected class, struct, or interface after 'define'");
         }
 
         Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
         if (declaration != null) return declaration;
-        throw error(peek(), "expected function, routine, class, interface, type, or binding declaration");
+        throw error(peek(), "expected function, routine, class, struct, interface, type, or binding declaration");
     }
 
     private Ast.Decl parseDeclarationAfterModifiers(List<Ast.Annotation> annotations, Modifiers modifiers) {
@@ -269,6 +284,12 @@ public final class Parser {
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
+        if (match(STRUCT)) {
+            if (modifiers.isAbstract || modifiers.async || modifiers.isStatic) {
+                throw error(previous(), "struct declarations do not accept abstract/async/static modifiers");
+            }
+            return parseStruct(true);
+        }
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
@@ -347,6 +368,72 @@ public final class Parser {
         }
         consume(END, "expected 'end' to close class " + name);
         return new Ast.ClassDecl(name, isAbstract, Ast.ActorKind.NONE, generics, parents, interfaces, fields, methods);
+    }
+
+    private Ast.ClassDecl parseStruct(boolean compactStyle) {
+        String name = consume(IDENT, "expected struct name").lexeme();
+        List<String> generics = parseGenericParameters();
+        if (match(EXTENDS)) throw error(previous(), "structs are value types and cannot extend classes");
+        List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
+
+        Token.Type terminator;
+        if (compactStyle) {
+            consume(LBRACE, "compact struct declarations require '{'");
+            terminator = RBRACE;
+        } else {
+            consume(AS, "long struct declarations use 'define struct Name as ... end'");
+            terminator = END;
+        }
+
+        List<Ast.FieldDecl> fields = new ArrayList<>();
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+        while (!check(terminator) && !check(EOF)) {
+            List<Ast.Annotation> annotations = parseAnnotations();
+            Modifiers mods = parseModifiers();
+            if (mods.shared || mods.nonLexical || mods.isAbstract) {
+                throw error(peek(), "struct members do not accept shared/nlex/abstract modifiers");
+            }
+
+            if (check(IDENT) && checkNext(COLON)) {
+                if (mods.isStatic) throw error(peek(), "struct data fields cannot be static");
+                String fieldName = advance().lexeme();
+                consume(COLON, "expected ':' after struct field name");
+                Ast.TypeRef type = parseTypeRef();
+                Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+                consumeStructFieldTerminator(terminator);
+                fields.add(new Ast.FieldDecl(fieldName, Ast.Visibility.PUBLIC, Ast.BindingKind.VAL, type, annotations, initializer));
+                continue;
+            }
+
+            if (isBindingKind(peek().type())) {
+                if (mods.isStatic) throw error(peek(), "struct data fields cannot be static");
+                Ast.BindingKind kind = parseBindingKind();
+                String fieldName;
+                Ast.TypeRef type;
+                if (check(IDENT) && checkNext(COLON)) {
+                    fieldName = advance().lexeme();
+                    consume(COLON, "expected ':' after struct field name");
+                    type = parseTypeRef();
+                } else {
+                    type = parseTypeRef();
+                    fieldName = consume(IDENT, "expected struct field name").lexeme();
+                }
+                Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+                consumeStructFieldTerminator(terminator);
+                fields.add(new Ast.FieldDecl(fieldName, Ast.Visibility.PUBLIC, kind, type, annotations, initializer));
+                continue;
+            }
+
+            if (mods.isStatic) {
+                consume(FNC, "static struct functions must be declared with 'static fnc'");
+            } else if (check(FNC)) {
+                throw error(peek(), "instance struct methods omit 'fnc'; use 'static fnc' only for type-level functions");
+            }
+            methods.add(parseMethod(annotations, mods));
+        }
+
+        consume(terminator, compactStyle ? "expected '}' to close struct " + name : "expected 'end' to close struct " + name);
+        return new Ast.ClassDecl(name, Ast.AggregateKind.STRUCT, false, generics, List.of(), interfaces, fields, methods);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -857,6 +944,19 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(true));
+        if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
+        if (match(DEFINE)) {
+            if (match(STRUCT)) return new Ast.TypeDeclStmt(parseStruct(false));
+            if (match(INTERFACE)) return new Ast.TypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
+            if (check(CLASS) || check(MODULE) || check(NAMESPACE)) {
+                throw error(peek(), "class, module, and namespace declarations are top-level; only struct/interface may be callable-local");
+            }
+            throw error(previous(), "callable-local 'define' supports only struct or interface declarations");
+        }
+        if (check(CLASS) || check(MODULE) || check(NAMESPACE) || check(DECLARE)) {
+            throw error(peek(), "class, module, and namespace declarations are top-level; only struct/interface may be callable-local");
+        }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
@@ -1311,7 +1411,7 @@ public final class Parser {
     private static boolean isMemberNameToken(Token.Type type) {
         return switch (type) {
             case IDENT,
-                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
+                    DEFINE, CLASS, STRUCT, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
@@ -1339,7 +1439,11 @@ public final class Parser {
                 && reservedCallableNameFollowedByInvocation(current)) {
             return new Ast.NameExpr(advance().lexeme());
         }
-        if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
+        if (match(IDENT)) {
+            String name = previous().lexeme();
+            if (check(LBRACE)) return parseStructInitializer(Ast.TypeRef.simple(name));
+            return new Ast.NameExpr(name);
+        }
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
@@ -1381,23 +1485,31 @@ public final class Parser {
         throw error(peek(), "expected expression");
     }
 
+    private Ast.StructInitExpr parseStructInitializer(Ast.TypeRef type) {
+        consume(LBRACE, "expected '{' after struct type");
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        if (!check(RBRACE)) {
+            do {
+                String name = consumeStaticObjectKeyName("expected struct field name");
+                if (!match(EQUAL, COLON)) throw error(peek(), "expected '=' or ':' after struct field name");
+                fields.add(Ast.ObjectField.named(name, parseExpression()));
+            } while (match(COMMA));
+        }
+        consume(RBRACE, "expected '}' after struct initializer");
+        return new Ast.StructInitExpr(type, fields);
+    }
+
     private Ast.ObjectExpr parseObjectLiteral() {
         consume(LBRACE, "expected '{' after obj");
         List<Ast.ObjectField> fields = new ArrayList<>();
         if (!check(RBRACE)) {
             do {
-                Ast.ObjectField field;
-                if (match(BACKTICK)) {
-                    Ast.Expr key = parseExpression();
-                    consume(BACKTICK, "expected closing backtick after dynamic object key");
-                    consume(COLON, "expected ':' after dynamic object key");
-                    field = Ast.ObjectField.dynamic(key, parseExpression());
-                } else {
-                    String name = consumeStaticObjectKeyName("expected object field name");
-                    consume(COLON, "expected ':' after object field name");
-                    field = Ast.ObjectField.named(name, parseExpression());
+                if (check(BACKTICK)) {
+                    throw error(peek(), "obj{} has a fixed compile-time shape; use Map<K,V> for dynamic keys");
                 }
-                fields.add(field);
+                String name = consumeStaticObjectKeyName("expected object field name");
+                consume(COLON, "expected ':' after object field name");
+                fields.add(Ast.ObjectField.named(name, parseExpression()));
             } while (match(COMMA));
         }
         consume(RBRACE, "expected '}' after obj literal");
@@ -1466,6 +1578,13 @@ public final class Parser {
                 || isBindingKind(peek().type())
                 || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))) return;
         throw error(peek(), message);
+    }
+
+    private void consumeStructFieldTerminator(Token.Type terminator) {
+        if (match(SEMICOLON) || check(terminator) || check(AT) || check(PUB) || check(PRIVATE)
+                || check(STATIC) || check(ASYNC) || isBindingKind(peek().type())
+                || (check(IDENT) && (checkNext(COLON) || checkNext(LPAREN)))) return;
+        throw error(peek(), "struct field declaration should end with ';'");
     }
 
     private boolean hasAnnotation(List<Ast.Annotation> annotations, String name) {
