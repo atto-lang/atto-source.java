@@ -16,10 +16,14 @@ import static org.junit.jupiter.api.Assertions.*;
 final class ReservedKeywordsDynamicStructTest {
     @Test
     void reservedWordsRemainCallableNamesAndMapKeysOnly() {
-        var tokens = new Lexer("stop do done").scan();
+        var tokens = new Lexer("stop do done declare define end as").scan();
         assertEquals(Token.Type.STOP, tokens.get(0).type());
         assertEquals(Token.Type.DO, tokens.get(1).type());
         assertEquals(Token.Type.DONE, tokens.get(2).type());
+        assertEquals(Token.Type.DECLARE, tokens.get(3).type());
+        assertEquals(Token.Type.DEFINE, tokens.get(4).type());
+        assertEquals(Token.Type.END, tokens.get(5).type());
+        assertEquals(Token.Type.AS, tokens.get(6).type());
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
@@ -121,6 +125,40 @@ final class ReservedKeywordsDynamicStructTest {
         }
 
         assertTrue(output.toString(StandardCharsets.UTF_8).contains("6"));
+    }
+
+    @Test
+    void dynamicStructCheckedLookupAvoidsUndefinedAndNull() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main(): void {
+                    let DynamicStruct<int> bag = new DynamicStruct<int>();
+                    bag["answer"] = 42;
+                    stdio.stdout.write(bag.has_key("answer"));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(bag.has_key("missing"));
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(bag.get("answer").unwrap());
+                    stdio.stdout.write("|");
+                    stdio.stdout.write(bag.get_or("missing", 7));
+                    return;
+                  }
+                end
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "dynamic-struct-checked.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        assertEquals("true|false|42|7", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
