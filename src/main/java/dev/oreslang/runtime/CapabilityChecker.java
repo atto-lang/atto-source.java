@@ -14,14 +14,26 @@ public final class CapabilityChecker {
     public static void check(Ast.Program program, IsolatePolicy policy) {
         for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl declaration : module.declarations()) {
-                if (declaration instanceof Ast.FunctionDecl fn) checkStatements(fn.body(), policy);
+                if (declaration instanceof Ast.FunctionDecl fn) {
+                    checkContracts(fn.contracts(), policy);
+                    checkStatements(fn.body(), policy);
+                }
                 else if (declaration instanceof Ast.ClassDecl klass) {
                     for (Ast.FieldDecl field : klass.fields()) if (field.initializer() != null) checkExpr(field.initializer(), policy);
-                    for (Ast.MethodDecl method : klass.methods()) checkStatements(method.body(), policy);
+                    for (Ast.MethodDecl method : klass.methods()) {
+                        checkContracts(method.contracts(), policy);
+                        checkStatements(method.body(), policy);
+                    }
                 } else if (declaration instanceof Ast.FieldDecl field && field.initializer() != null) {
                     checkExpr(field.initializer(), policy);
                 }
             }
+        }
+    }
+
+    private static void checkContracts(List<Ast.ContractClause> contracts, IsolatePolicy policy) {
+        for (Ast.ContractClause contract : contracts) {
+            checkExpr(contract.expression(), policy);
         }
     }
 
@@ -32,6 +44,9 @@ public final class CapabilityChecker {
             else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) checkExpr(s.value(), policy);
             else if (stmt instanceof Ast.ExprStmt s) checkExpr(s.expression(), policy);
             else if (stmt instanceof Ast.DeferStmt s) checkExpr(s.expression(), policy);
+            else if (stmt instanceof Ast.AssertStmt s) checkExpr(s.condition(), policy);
+            else if (stmt instanceof Ast.AssumeStmt s) checkExpr(s.condition(), policy);
+            else if (stmt instanceof Ast.InvariantStmt s) checkExpr(s.condition(), policy);
             else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
                     checkExpr(b.condition(), policy);
@@ -50,6 +65,9 @@ public final class CapabilityChecker {
                 if (s.condition() != null) checkExpr(s.condition(), policy);
                 if (s.update() != null) checkExpr(s.update(), policy);
                 checkStatements(s.body(), policy);
+            } else {
+                throw new IllegalStateException(
+                        "capability checker is missing statement traversal for " + stmt.getClass().getName());
             }
         }
     }
@@ -88,6 +106,17 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
+        } else if (expr instanceof Ast.MatchExpr e) {
+            checkExpr(e.subject(), policy);
+            for (Ast.MatchArm arm : e.arms()) {
+                if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                checkExpr(arm.value(), policy);
+            }
+        } else if (expr instanceof Ast.OldExpr e) {
+            checkExpr(e.expression(), policy);
+        } else if (!(expr instanceof Ast.LiteralExpr) && !(expr instanceof Ast.NameExpr)) {
+            throw new IllegalStateException(
+                    "capability checker is missing expression traversal for " + expr.getClass().getName());
         }
     }
 
