@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
@@ -26,8 +27,12 @@ public final class OresFutures {
 
     public static <T> OresFuture<List<T>> all(List<?> awaitables) {
         List<OresFuture<T>> children = normalize(awaitables, "Futures.all");
-        OresFuture<List<T>> result = new OresFuture<>(
-                () -> children.forEach(child -> child.cancel(true)));
+        ConcurrentLinkedQueue<OresFuture.RuntimeWaiterRegistration> registrations =
+                new ConcurrentLinkedQueue<>();
+        OresFuture<List<T>> result = new OresFuture<>(() -> {
+            detachAll(registrations);
+            children.forEach(child -> child.cancel(true));
+        });
         if (children.isEmpty()) {
             result.completeFromRuntime(List.of());
             return result;
@@ -38,23 +43,29 @@ public final class OresFutures {
 
         for (int index = 0; index < children.size(); index++) {
             int slot = index;
-            children.get(index).whenCompleteRuntime((value, failure) -> {
-                if (result.isDone()) return;
-                if (failure != null) {
-                    result.failFromRuntime(OresFuture.unwrap(failure));
-                    return;
-                }
-                values.set(slot, value);
-                if (remaining.decrementAndGet() == 0) {
-                    ArrayList<T> ordered = new ArrayList<>(children.size());
-                    for (int i = 0; i < children.size(); i++) {
-                        @SuppressWarnings("unchecked")
-                        T item = (T) values.get(i);
-                        ordered.add(item);
-                    }
-                    result.completeFromRuntime(List.copyOf(ordered));
-                }
-            });
+            OresFuture.RuntimeWaiterRegistration registration =
+                    children.get(index).whenCompleteRuntime((value, failure) -> {
+                        if (result.isDone()) return;
+                        if (failure != null) {
+                            if (result.failFromRuntime(OresFuture.unwrap(failure))) {
+                                detachAll(registrations);
+                            }
+                            return;
+                        }
+                        values.set(slot, value);
+                        if (remaining.decrementAndGet() == 0) {
+                            ArrayList<T> ordered = new ArrayList<>(children.size());
+                            for (int i = 0; i < children.size(); i++) {
+                                @SuppressWarnings("unchecked")
+                                T item = (T) values.get(i);
+                                ordered.add(item);
+                            }
+                            if (result.completeFromRuntime(List.copyOf(ordered))) {
+                                detachAll(registrations);
+                            }
+                        }
+                    });
+            trackRegistration(registrations, registration, result);
         }
         return result;
     }
@@ -66,24 +77,33 @@ public final class OresFutures {
                     new IllegalArgumentException("Futures.race requires at least one future"));
         }
 
-        OresFuture<T> result = new OresFuture<>(
-                () -> children.forEach(child -> child.cancel(true)));
+        ConcurrentLinkedQueue<OresFuture.RuntimeWaiterRegistration> registrations =
+                new ConcurrentLinkedQueue<>();
+        OresFuture<T> result = new OresFuture<>(() -> {
+            detachAll(registrations);
+            children.forEach(child -> child.cancel(true));
+        });
         for (OresFuture<T> child : children) {
-            child.whenCompleteRuntime((value, failure) -> {
-                if (failure == null) {
-                    result.completeFromRuntime(value);
-                } else {
-                    result.failFromRuntime(OresFuture.unwrap(failure));
-                }
-            });
+            OresFuture.RuntimeWaiterRegistration registration =
+                    child.whenCompleteRuntime((value, failure) -> {
+                        boolean won = failure == null
+                                ? result.completeFromRuntime(value)
+                                : result.failFromRuntime(OresFuture.unwrap(failure));
+                        if (won) detachAll(registrations);
+                    });
+            trackRegistration(registrations, registration, result);
         }
         return result;
     }
 
     public static <T> OresFuture<List<Settled<T>>> allSettled(List<?> awaitables) {
         List<OresFuture<T>> children = normalize(awaitables, "Futures.all_settled");
-        OresFuture<List<Settled<T>>> result = new OresFuture<>(
-                () -> children.forEach(child -> child.cancel(true)));
+        ConcurrentLinkedQueue<OresFuture.RuntimeWaiterRegistration> registrations =
+                new ConcurrentLinkedQueue<>();
+        OresFuture<List<Settled<T>>> result = new OresFuture<>(() -> {
+            detachAll(registrations);
+            children.forEach(child -> child.cancel(true));
+        });
         if (children.isEmpty()) {
             result.completeFromRuntime(List.of());
             return result;
@@ -95,23 +115,46 @@ public final class OresFutures {
 
         for (int index = 0; index < children.size(); index++) {
             int slot = index;
-            children.get(index).whenCompleteRuntime((value, failure) -> {
-                settled.set(
-                        slot,
-                        new Settled<>(
-                                failure == null ? value : null,
-                                failure == null ? null : OresFuture.unwrap(failure)));
-                if (remaining.decrementAndGet() == 0) {
-                    ArrayList<Settled<T>> ordered =
-                            new ArrayList<>(children.size());
-                    for (int i = 0; i < children.size(); i++) {
-                        ordered.add(settled.get(i));
-                    }
-                    result.completeFromRuntime(List.copyOf(ordered));
-                }
-            });
+            OresFuture.RuntimeWaiterRegistration registration =
+                    children.get(index).whenCompleteRuntime((value, failure) -> {
+                        if (result.isDone()) return;
+                        settled.set(
+                                slot,
+                                new Settled<>(
+                                        failure == null ? value : null,
+                                        failure == null ? null : OresFuture.unwrap(failure)));
+                        if (remaining.decrementAndGet() == 0) {
+                            ArrayList<Settled<T>> ordered =
+                                    new ArrayList<>(children.size());
+                            for (int i = 0; i < children.size(); i++) {
+                                ordered.add(settled.get(i));
+                            }
+                            if (result.completeFromRuntime(List.copyOf(ordered))) {
+                                detachAll(registrations);
+                            }
+                        }
+                    });
+            trackRegistration(registrations, registration, result);
         }
         return result;
+    }
+
+    private static void trackRegistration(
+            ConcurrentLinkedQueue<OresFuture.RuntimeWaiterRegistration> registrations,
+            OresFuture.RuntimeWaiterRegistration registration,
+            OresFuture<?> result) {
+        registrations.add(registration);
+        if (result.isDone() && registrations.remove(registration)) {
+            registration.detach();
+        }
+    }
+
+    private static void detachAll(
+            ConcurrentLinkedQueue<OresFuture.RuntimeWaiterRegistration> registrations) {
+        OresFuture.RuntimeWaiterRegistration registration;
+        while ((registration = registrations.poll()) != null) {
+            registration.detach();
+        }
     }
 
     @SuppressWarnings("unchecked")
