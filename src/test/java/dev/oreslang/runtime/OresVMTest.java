@@ -82,16 +82,52 @@ final class OresVMTest {
                 }
                 """);
         assertEquals(HotReloadManager.GenerationState.ACTIVE, generation.state());
+        assertEquals(1, vm.generationBindingCount());
 
         vm.shutdownNow();
 
         assertTrue(vm.shutdown());
         assertEquals(0, vm.hotReloadManagerCount());
+        assertEquals(0, vm.generationBindingCount(),
+                "VM shutdown must revoke every opaque generation binding");
         assertTrue(generation.closed(),
                 "dedicated VM shutdown must retire contexts/generations it owns");
         assertThrows(
                 IllegalStateException.class,
                 () -> hot.load("after-shutdown.ores", "pub routine main() => void { return; }"));
+    }
+
+    @Test
+    void replacingUnpinnedGenerationRevokesItsOpaqueBinding() {
+        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
+        try (HotReloadManager hot = vm.newHotReloadManager(
+                IsolatePolicy.developer(),
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                HotReloadManager.ExecutionDomain.TRUSTED_JIT)) {
+
+            HotReloadManager.Generation first = hot.loadAndStart(
+                    "service.ores",
+                    "pub routine main() => void { return; }");
+            assertEquals(1, vm.generationBindingCount());
+
+            HotReloadManager.Generation second = hot.loadAndStart(
+                    "service.ores",
+                    """
+                    pub routine main() => void {
+                      val version = 2;
+                      return;
+                    }
+                    """);
+
+            assertTrue(first.closed());
+            assertTrue(second.active());
+            assertEquals(1, vm.generationBindingCount(),
+                    "only the active generation binding should remain");
+        } finally {
+            assertEquals(0, vm.generationBindingCount());
+            vm.shutdownNow();
+        }
     }
 
     @Test
