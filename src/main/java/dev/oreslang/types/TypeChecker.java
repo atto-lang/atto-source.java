@@ -31,6 +31,10 @@ import java.util.Set;
 /** Static semantic pass run before Oreslang code is lowered/executed. */
 public final class TypeChecker {
     private record ResolvedMethod(Ast.ClassDecl owner, Named ownerType, Ast.MethodDecl method) { }
+    private record ResolvedInterfaceFunction(
+            Ast.InterfaceDecl owner,
+            Named ownerType,
+            Ast.InterfaceFunctionDecl function) { }
     private record ResolvedField(Ast.ClassDecl owner, Named ownerType, Ast.FieldDecl field) { }
     private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
@@ -810,6 +814,39 @@ public final class TypeChecker {
                                 bindings,
                                 label);
                     }
+
+                    Ast.InterfaceDecl iface = findInterface(named.name());
+                    if (iface != null) {
+                        ResolvedInterfaceFunction target = findInterfaceFunctionTarget(
+                                iface, named, member.member(), call.arguments().size(), new LinkedHashSet<>());
+                        if (target == null) {
+                            throw new IllegalArgumentException(
+                                    "no interface method '" + member.member() + "' with arity "
+                                            + call.arguments().size() + " on " + named.name());
+                        }
+                        Ast.InterfaceFunctionDecl method = target.function();
+                        Ast.InterfaceDecl owner = target.owner();
+                        Named ownerType = target.ownerType();
+                        String label = "interface method " + owner.name() + "." + method.name();
+                        validateCallTypeArgumentMarker(call, method.genericParameters(), label);
+
+                        List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
+                        callableGenerics.addAll(method.genericParameters());
+                        Map<String, Type> bindings = new HashMap<>(genericBindings(
+                                owner.genericParameters(), ownerType.arguments(), "interface " + owner.name()));
+                        bindings.putAll(explicitGenericBindings(
+                                method.genericParameters(), call.typeArguments(), generics, self, label));
+
+                        return checkGenericCallable(
+                                callableGenerics,
+                                method.parameters(),
+                                method.returnType(),
+                                call.arguments(),
+                                env, generics, self,
+                                null,
+                                bindings,
+                                label);
+                    }
                 }
             }
             if (call.typeArgumentsPresent()) {
@@ -912,6 +949,16 @@ public final class TypeChecker {
                                         + "invoke it as receiver." + member.member()
                                         + "(...) or wrap that call in an explicit lambda");
                     }
+                }
+
+                Ast.InterfaceDecl iface = findInterface(named.name());
+                if (iface != null && hasInterfaceFunctionNamed(
+                        iface, member.member(), new LinkedHashSet<>())) {
+                    throw new IllegalArgumentException(
+                            "interface method '" + iface.name() + "." + member.member()
+                                    + "' is direct-call-only and cannot be used as a first-class callable value; "
+                                    + "invoke it as receiver." + member.member()
+                                    + "(...) or wrap that call in an explicit lambda");
                 }
             }
             return Unknown.INSTANCE;
@@ -1778,6 +1825,75 @@ public final class TypeChecker {
         }
         seen.remove(klass);
         return List.copyOf(methods.values());
+    }
+
+    private Named concreteInterfaceParentType(
+            Ast.TypeRef parentRef,
+            Ast.InterfaceDecl child,
+            Named childType) {
+        Type parentPattern = resolve(parentRef, Set.copyOf(child.genericParameters()), null);
+        Type concrete = substituteGenerics(
+                parentPattern,
+                genericBindings(child.genericParameters(), childType.arguments(), "interface " + child.name()));
+        if (!(concrete instanceof Named named)) {
+            throw new IllegalArgumentException("parent interface must resolve to a named type");
+        }
+        return named;
+    }
+
+    private ResolvedInterfaceFunction findInterfaceFunctionTarget(
+            Ast.InterfaceDecl iface,
+            Named concreteType,
+            String name,
+            int arity,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return null;
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceFunctionDecl fn
+                    && fn.name().equals(name)
+                    && fn.parameters().size() == arity) {
+                seen.remove(iface);
+                return new ResolvedInterfaceFunction(iface, concreteType, fn);
+            }
+        }
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null) {
+                throw new IllegalArgumentException(
+                        "unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            }
+            Named parentType = concreteInterfaceParentType(parentRef, iface, concreteType);
+            ResolvedInterfaceFunction result = findInterfaceFunctionTarget(
+                    parent, parentType, name, arity, seen);
+            if (result != null) {
+                seen.remove(iface);
+                return result;
+            }
+        }
+        seen.remove(iface);
+        return null;
+    }
+
+    private boolean hasInterfaceFunctionNamed(
+            Ast.InterfaceDecl iface,
+            String name,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return false;
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceFunctionDecl fn && fn.name().equals(name)) {
+                seen.remove(iface);
+                return true;
+            }
+        }
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null && hasInterfaceFunctionNamed(parent, name, seen)) {
+                seen.remove(iface);
+                return true;
+            }
+        }
+        seen.remove(iface);
+        return false;
     }
 
     private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
