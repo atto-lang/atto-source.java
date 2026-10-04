@@ -461,9 +461,11 @@ public final class OresScheduler implements AutoCloseable {
         private void publishTerminalIfReady() {
             if (phase.get() != TERMINAL || completion.isDone()) return;
             TerminalOutcome<T> outcome = terminalOutcome.get();
-            if (outcome instanceof TerminalSuccess<T> success) {
-                completion.completeFromRuntime(success.value());
-            } else if (outcome instanceof TerminalFailure<T> failure) {
+            if (outcome instanceof TerminalSuccess<?> success) {
+                @SuppressWarnings("unchecked")
+                T value = (T) success.value();
+                completion.completeFromRuntime(value);
+            } else if (outcome instanceof TerminalFailure<?> failure) {
                 completion.failFromRuntime(failure.failure());
             }
         }
