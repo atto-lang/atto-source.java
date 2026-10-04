@@ -1770,7 +1770,8 @@ public final class TypeChecker {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                                method.async(), generics, self),
                         "class " + klass.name());
             }
         }
