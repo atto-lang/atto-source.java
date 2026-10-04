@@ -411,7 +411,7 @@ public final class OresEvalRootNode extends RootNode {
                     if (!matchPattern(clause.pattern(), subject, clauseEnv)) continue;
                     if (clause.guard() != null) {
                         requirePurePatternGuard(clause.guard());
-                        if (!truth(eval(clause.guard(), clauseEnv))) continue;
+                        if (!truth(evalPatternGuard(clause.guard(), clauseEnv))) continue;
                     }
                     executeBlock(clause.body(), clauseEnv);
                     return;
@@ -493,7 +493,17 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.ObjectPatternField field : objectPattern.fields()) {
                     Object child;
                     if (value instanceof OresObject object) {
-                        if (!object.fields.containsKey(field.name())) return false;
+                        Ast.FieldDecl declaration = effectiveFields(
+                                        object.klass, new LinkedHashSet<>())
+                                .stream()
+                                .filter(candidate -> candidate.name().equals(field.name()))
+                                .findFirst()
+                                .orElse(null);
+                        if (declaration == null
+                                || declaration.visibility() != Ast.Visibility.PUBLIC
+                                || !object.fields.containsKey(field.name())) {
+                            return false;
+                        }
                         child = object.fields.get(field.name());
                     } else if (value instanceof DynamicStructValue dynamic) {
                         if (!dynamic.fields.containsKey(field.name())) return false;
@@ -538,7 +548,10 @@ public final class OresEvalRootNode extends RootNode {
 
                 if (value instanceof OresObject object && matchesNominalType(object, name)) {
                     List<Ast.FieldDecl> fields =
-                            effectiveFields(object.klass, new LinkedHashSet<>());
+                            effectiveFields(object.klass, new LinkedHashSet<>())
+                                    .stream()
+                                    .filter(field -> field.visibility() == Ast.Visibility.PUBLIC)
+                                    .toList();
                     if (fields.size() != variant.arguments().size()) return false;
                     for (int i = 0; i < fields.size(); i++) {
                         Object child = object.fields.get(fields.get(i).name());
@@ -626,6 +639,145 @@ public final class OresEvalRootNode extends RootNode {
                             + "lambdas, and container construction are not allowed");
         }
 
+        private Object evalPatternGuard(Ast.Expr expr, Env env) {
+            if (expr instanceof Ast.LiteralExpr literal) {
+                Object value = literal.value() instanceof Ast.Symbol symbol
+                        ? OresSymbol.processLiteral(symbol.name(), context.isolatePolicy())
+                        : literal.value();
+                return requireGuardData(value);
+            }
+            if (expr instanceof Ast.NameExpr name) {
+                Object value = env.lookup(name.name());
+                if (value == Env.MISSING) {
+                    throw new IllegalArgumentException(
+                            "pattern guard may reference only clause/local data; unknown or authority-bearing name '"
+                                    + name.name() + "'");
+                }
+                return requireGuardData(value);
+            }
+            if (expr instanceof Ast.MemberExpr member) {
+                Object receiver = requireGuardData(evalPatternGuard(member.receiver(), env));
+                if (receiver instanceof OresObject object) {
+                    Ast.FieldDecl field = effectiveFields(object.klass, new LinkedHashSet<>())
+                            .stream()
+                            .filter(candidate -> candidate.name().equals(member.member()))
+                            .findFirst()
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "pattern guard references unknown field " + member.member()));
+                    boolean selfAccess = member.receiver() instanceof Ast.NameExpr name
+                            && name.name().equals("self");
+                    if (field.visibility() != Ast.Visibility.PUBLIC && !selfAccess) {
+                        throw new IllegalArgumentException(
+                                "pattern guard cannot read private field '" + member.member()
+                                        + "' except through self");
+                    }
+                    return requireGuardData(object.fields.get(member.member()));
+                }
+                if (receiver instanceof DynamicStructValue dynamic) {
+                    if (!dynamic.fields.containsKey(member.member())) {
+                        throw new IllegalArgumentException(
+                                "pattern guard references unknown DynamicStruct member " + member.member());
+                    }
+                    return requireGuardData(dynamic.fields.get(member.member()));
+                }
+                if (receiver instanceof Map<?, ?> map) {
+                    if (!map.containsKey(member.member())) {
+                        throw new IllegalArgumentException(
+                                "pattern guard references unknown map member " + member.member());
+                    }
+                    return requireGuardData(map.get(member.member()));
+                }
+                throw new IllegalArgumentException(
+                        "pattern guard member reads are limited to Oreslang data objects/maps");
+            }
+            if (expr instanceof Ast.IndexExpr indexed) {
+                Object receiver = requireGuardData(evalPatternGuard(indexed.receiver(), env));
+                Object index = requireGuardData(evalPatternGuard(indexed.index(), env));
+                if (receiver instanceof DynamicStructValue dynamic) {
+                    if (!(index instanceof String key) || !dynamic.fields.containsKey(key)) {
+                        throw new IllegalArgumentException("invalid DynamicStruct guard index");
+                    }
+                    return requireGuardData(dynamic.fields.get(key));
+                }
+                if (receiver instanceof Map<?, ?> map) {
+                    if (!map.containsKey(index)) {
+                        throw new IllegalArgumentException("unknown map key in pattern guard");
+                    }
+                    return requireGuardData(map.get(index));
+                }
+                if (!(index instanceof Number number)) {
+                    throw new IllegalArgumentException("pattern guard sequence index must be an integer");
+                }
+                int i = Math.toIntExact(number.longValue());
+                if (receiver instanceof List<?> list) return requireGuardData(list.get(i));
+                if (receiver instanceof Object[] array) return requireGuardData(array[i]);
+                throw new IllegalArgumentException(
+                        "pattern guard indexing is limited to data lists/maps");
+            }
+            if (expr instanceof Ast.UnaryExpr unary) {
+                Object value = evalPatternGuard(unary.operand(), env);
+                return switch (unary.operator()) {
+                    case "!" -> !truth(value);
+                    case "~" -> ~integralLong(value);
+                    case "+" -> value;
+                    case "-" -> negate(value);
+                    default -> throw new IllegalArgumentException(
+                            "unsupported pattern guard unary operator " + unary.operator());
+                };
+            }
+            if (expr instanceof Ast.BinaryExpr binary) {
+                if (binary.operator().equals("&&")) {
+                    Object left = evalPatternGuard(binary.left(), env);
+                    return truth(left) && truth(evalPatternGuard(binary.right(), env));
+                }
+                if (binary.operator().equals("||")) {
+                    Object left = evalPatternGuard(binary.left(), env);
+                    return truth(left) || truth(evalPatternGuard(binary.right(), env));
+                }
+                if (binary.operator().equals("^^")) {
+                    return truth(evalPatternGuard(binary.left(), env))
+                            ^ truth(evalPatternGuard(binary.right(), env));
+                }
+                Object left = evalPatternGuard(binary.left(), env);
+                Object right = evalPatternGuard(binary.right(), env);
+                if (binary.operator().equals("|")
+                        && left instanceof Boolean lb
+                        && right instanceof Boolean rb) {
+                    return lb || rb;
+                }
+                return requireGuardData(binary(binary.operator(), left, right));
+            }
+            if (expr instanceof Ast.ConditionalExpr conditional) {
+                return truth(evalPatternGuard(conditional.condition(), env))
+                        ? evalPatternGuard(conditional.whenTrue(), env)
+                        : evalPatternGuard(conditional.whenFalse(), env);
+            }
+            throw new IllegalArgumentException(
+                    "pattern guard contains an effectful or authority-bearing expression");
+        }
+
+        private Object requireGuardData(Object value) {
+            if (value instanceof SandboxForbiddenCapability
+                    || value instanceof OresMutex.Local<?>
+                    || value instanceof OresMutex.Shared<?>
+                    || value instanceof OresMutex.Guard<?>
+                    || value instanceof CompletionStage<?>
+                    || value instanceof Invokable
+                    || value instanceof HostClassFacade
+                    || value instanceof HostObjectFacade
+                    || value instanceof ModuleFacade
+                    || value instanceof ClassFacade
+                    || value instanceof ImportedNamespace
+                    || value instanceof ProcessFacade
+                    || value instanceof ActorFacade
+                    || value instanceof StdioFacade
+                    || value instanceof StdoutFacade) {
+                throw new IllegalArgumentException(
+                        "pattern guard cannot observe a live capability, callable, host object, or module authority");
+            }
+            return value;
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
@@ -695,6 +847,13 @@ public final class OresEvalRootNode extends RootNode {
                                 .filter(candidate -> candidate.name().equals(target.member()))
                                 .findFirst()
                                 .orElseThrow(() -> new IllegalArgumentException("unknown field " + target.member()));
+                        boolean selfAccess = target.receiver() instanceof Ast.NameExpr name
+                                && name.name().equals("self");
+                        if (field.visibility() != Ast.Visibility.PUBLIC && !selfAccess) {
+                            throw new IllegalArgumentException(
+                                    "private field '" + object.klass.name() + "."
+                                            + target.member() + "' is only assignable through self");
+                        }
                         if (field.bindingKind() != Ast.BindingKind.LET) {
                             throw new IllegalArgumentException("field '" + object.klass.name() + "."
                                     + target.member() + "' is immutable");
@@ -783,7 +942,11 @@ public final class OresEvalRootNode extends RootNode {
                 if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
                 return invokable.call(args);
             }
-            if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member());
+            if (expr instanceof Ast.MemberExpr member) {
+                boolean selfAccess = member.receiver() instanceof Ast.NameExpr name
+                        && name.name().equals("self");
+                return member(eval(member.receiver(), env), member.member(), selfAccess);
+            }
             if (expr instanceof Ast.IndexExpr indexed) {
                 Object receiver = eval(indexed.receiver(), env);
                 Object index = eval(indexed.index(), env);
@@ -900,6 +1063,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object member(Object receiver, String name) {
+            return member(receiver, name, false);
+        }
+
+        private Object member(Object receiver, String name, boolean allowPrivate) {
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
                         "Java host class " + host.className());
@@ -972,7 +1139,21 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
-                if (object.fields.containsKey(name)) return object.fields.get(name);
+                if (object.fields.containsKey(name)) {
+                    Ast.FieldDecl field = object.owner.effectiveFields(
+                                    object.klass, new LinkedHashSet<>())
+                            .stream()
+                            .filter(candidate -> candidate.name().equals(name))
+                            .findFirst()
+                            .orElseThrow(() -> new IllegalArgumentException(
+                                    "unknown field " + object.klass.name() + "." + name));
+                    if (field.visibility() != Ast.Visibility.PUBLIC && !allowPrivate) {
+                        throw new IllegalArgumentException(
+                                "private field '" + object.klass.name() + "."
+                                        + name + "' is only accessible through self");
+                    }
+                    return object.fields.get(name);
+                }
                 return new BoundMethod(object.owner, object, name);
             }
             if (receiver instanceof DynamicStructValue dynamic) {
@@ -1587,7 +1768,7 @@ public final class OresEvalRootNode extends RootNode {
                     return (Invokable) args -> ref.handle().call(
                             args,
                             (state, delivered) ->
-                                callStatefulModuleFunction(state, fn, delivered));
+                                callStatefulModuleFunction(state, ref.module(), fn, delivered));
                 }
             }
             throw new IllegalArgumentException(
