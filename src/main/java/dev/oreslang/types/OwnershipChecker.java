@@ -253,13 +253,13 @@ public final class OwnershipChecker {
         if (stmt instanceof Ast.WhileStmt loop) {
             if (loop.condition() != null) checkExpr(loop.condition(), scope, false);
             Map<VarState,Boolean> before = movedSnapshot(scope);
-            checkBlock(loop.body(), new Scope(scope), returnType);
+            checkBlock(loop.body(), scope, returnType);
             rejectLoopMoves(before, scope);
             return;
         }
         if (stmt instanceof Ast.DoWhileStmt loop) {
             Map<VarState,Boolean> before = movedSnapshot(scope);
-            checkBlock(loop.body(), new Scope(scope), returnType);
+            checkBlock(loop.body(), scope, returnType);
             checkExpr(loop.condition(), scope, false);
             rejectLoopMoves(before, scope);
             return;
