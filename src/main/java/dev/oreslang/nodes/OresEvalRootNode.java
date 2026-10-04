@@ -16,6 +16,7 @@ import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.OresAsyncTrace;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.Awaitable;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -104,12 +105,14 @@ public final class OresEvalRootNode extends RootNode {
         private final String codeUnitId;
         private final Map<String, Ast.FunctionDecl> functions = new HashMap<>();
         private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
+        private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
         private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
         private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namedImports = new HashMap<>();
         private final Map<String, Ast.ImportDecl> namespaceImports = new HashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private final Set<String> ambiguousInterfaces = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
         private boolean initialized;
 
@@ -137,6 +140,7 @@ public final class OresEvalRootNode extends RootNode {
                 for (Ast.Decl decl : module.declarations()) {
                     if (decl instanceof Ast.FunctionDecl fn) index(functions, ambiguousFunctions, module.name(), fn.name(), fn);
                     else if (decl instanceof Ast.ClassDecl klass) index(classes, ambiguousClasses, module.name(), klass.name(), klass);
+                    else if (decl instanceof Ast.InterfaceDecl iface) index(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface);
                     else if (decl instanceof Ast.TypeAliasDecl alias) index(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias);
                 }
             }
@@ -159,6 +163,14 @@ public final class OresEvalRootNode extends RootNode {
         private Ast.ClassDecl findClass(String name) {
             if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class " + name + "; qualify it with its module");
             return classes.get(name);
+        }
+
+        private Ast.InterfaceDecl findInterface(String name) {
+            if (ambiguousInterfaces.contains(name)) {
+                throw new IllegalArgumentException(
+                        "ambiguous interface " + name + "; qualify it with its module");
+            }
+            return interfaces.get(name);
         }
 
         private Ast.TypeAliasDecl findTypeAlias(String name) {
@@ -1350,6 +1362,87 @@ public final class OresEvalRootNode extends RootNode {
                     site);
         }
 
+        private OresFuture<?> awaitableFuture(Object value) {
+            Objects.requireNonNull(value, "awaitable");
+
+            if (value instanceof Awaitable<?> awaitable) {
+                return Objects.requireNonNull(
+                        awaitable.getAwaited(),
+                        "Awaitable.get_awaited() returned null");
+            }
+
+            if (value instanceof CompletionStage<?> stage) {
+                return OresFuture.from(stage);
+            }
+
+            if (value instanceof OresObject object
+                    && classImplementsAwaitable(object.klass, new LinkedHashSet<>())) {
+                Ast.MethodDecl method =
+                        findMethod(object.klass, "get_awaited", 0, new LinkedHashSet<>());
+                if (method == null) {
+                    throw new IllegalStateException(
+                            "class " + object.klass.name()
+                                    + " implements Awaitable<T> but has no get_awaited() method");
+                }
+                Object projected = callMethod(object, method, List.of());
+                if (projected instanceof Awaitable<?> awaitable) {
+                    return Objects.requireNonNull(
+                            awaitable.getAwaited(),
+                            "Awaitable.get_awaited() returned null");
+                }
+                if (projected instanceof CompletionStage<?> stage) {
+                    return OresFuture.from(stage);
+                }
+                throw new IllegalStateException(
+                        "Awaitable.get_awaited() on " + object.klass.name()
+                                + " must return Future<T>");
+            }
+
+            throw new IllegalArgumentException(
+                    "await requires Awaitable<T>; value of runtime type "
+                            + value.getClass().getName() + " is not awaitable");
+        }
+
+        private boolean classImplementsAwaitable(
+                Ast.ClassDecl klass,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return false;
+            for (Ast.TypeRef ifaceRef : klass.interfaces()) {
+                if (ifaceRef.name().equals("Awaitable")) return true;
+                Ast.InterfaceDecl iface = findInterface(ifaceRef.name());
+                if (iface != null
+                        && interfaceExtendsAwaitable(iface, new LinkedHashSet<>())) {
+                    return true;
+                }
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals("Object")
+                        || parentRef.name().equals("List")) {
+                    continue;
+                }
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent != null && classImplementsAwaitable(parent, seen)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean interfaceExtendsAwaitable(
+                Ast.InterfaceDecl iface,
+                Set<Ast.InterfaceDecl> seen) {
+            if (!seen.add(iface)) return false;
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                if (parentRef.name().equals("Awaitable")) return true;
+                Ast.InterfaceDecl parent = findInterface(parentRef.name());
+                if (parent != null
+                        && interfaceExtendsAwaitable(parent, seen)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private AsyncPlan asyncEval(Ast.Expr expr, Env env) {
             if (!containsAwait(expr)) {
                 return new AsyncThunk(() -> safePlan(() -> asyncPure(eval(expr, env))));
@@ -1357,18 +1450,7 @@ public final class OresEvalRootNode extends RootNode {
 
             if (expr instanceof Ast.AwaitExpr awaited) {
                 return asyncFlatMap(asyncEval(awaited.expression(), env), value -> {
-                    Object normalized = value;
-                    if (normalized instanceof ActorRuntime.ActorSpawn<?, ?> spawn) {
-                        normalized = spawn.ready();
-                    }
-                    final OresFuture<?> future;
-                    if (normalized instanceof OresFuture<?> oresFuture) {
-                        future = oresFuture;
-                    } else if (normalized instanceof CompletionStage<?> stage) {
-                        future = OresFuture.from(stage);
-                    } else {
-                        return asyncPure(normalized);
-                    }
+                    OresFuture<?> future = awaitableFuture(value);
                     return new AsyncAwait(
                             future,
                             (result, failure) -> failure == null
@@ -1948,6 +2030,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Futures")) return new FuturesFacade();
+                if (name.name().equals("Future")) return new FutureFactory();
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("RwLock")) return new RwLockFactory(context);
