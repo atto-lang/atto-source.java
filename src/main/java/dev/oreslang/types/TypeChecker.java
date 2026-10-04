@@ -38,7 +38,6 @@ public final class TypeChecker {
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
-    private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
@@ -100,7 +99,6 @@ public final class TypeChecker {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
-                    functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
                     putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
                     classOwners.put(klass, module.name());
@@ -2488,18 +2486,6 @@ public final class TypeChecker {
     }
 
 
-
-    private Ast.FunctionDecl resolveStaticCall(Ast.Expr callee, String module) {
-        if (callee instanceof Ast.NameExpr name) {
-            Ast.FunctionDecl local = functions.get(module + "." + name.name());
-            if (local != null) return local;
-            return ambiguousFunctions.contains(name.name()) ? null : functions.get(name.name());
-        }
-        if (callee instanceof Ast.MemberExpr member && member.receiver() instanceof Ast.NameExpr namespace) {
-            return functions.get(namespace.name() + "." + member.member());
-        }
-        return null;
-    }
 
     private static final class Env {
         private final Env parent;
