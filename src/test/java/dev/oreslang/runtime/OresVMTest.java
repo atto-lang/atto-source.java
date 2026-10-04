@@ -2,6 +2,7 @@ package dev.oreslang.runtime;
 
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.time.Duration;
@@ -623,6 +624,24 @@ final class OresVMTest {
                     resumed.await(100, TimeUnit.MILLISECONDS),
                     "a finalized actor must not remain reachable through an old Future waiter");
         }
+    }
+
+
+    @Test
+    void timedFutureGetDoesNotRetainHostWaiterAfterTimeout() throws Exception {
+        OresFuture<Integer> future = new OresFuture<>();
+
+        assertThrows(
+                java.util.concurrent.TimeoutException.class,
+                () -> future.get(1, TimeUnit.MILLISECONDS));
+
+        Field waitersField = OresFuture.class.getDeclaredField("waiters");
+        waitersField.setAccessible(true);
+        java.util.Queue<?> waiters =
+                (java.util.Queue<?>) waitersField.get(future);
+        assertTrue(
+                waiters.isEmpty(),
+                "timed-out host observation must detach its Future waiter");
     }
 
 
