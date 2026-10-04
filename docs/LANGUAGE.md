@@ -481,34 +481,28 @@ The three domains use separate dispatcher pools. Every actor owns exactly one
 logical mailbox and at most one actor turn may execute at a time; carrier
 threads may change between turns.
 
-### Actor protocol and hidden receive loop
+### Actor receive protocol and runtime-owned loop
 
-Public actor instance methods define the typed actor protocol:
+Every concrete actor exposes exactly one public mailbox ingress:
 
 ```ores
-pub run1(value: int): void {
-  self.count += value;
-}
-
-pub run2(value: int) -> int {
-  return self.count + value;
+pub receive(message: ActorMessage): void {
+  // one actor turn
 }
 ```
 
-Those methods are **not** separate mailbox loops. The compiler assigns stable
-protocol slots/envelopes and lowers every external `ActorRef` call through one
-runtime-owned mailbox dispatcher. The runtime owns the Erlang-style receive
-loop, acquires the actor execution lease, dispatches one protocol message, and
-then releases/yields the turn. User code therefore cannot pin a carrier thread
-by implementing its own permanent mailbox loop.
-
-Private actor methods remain direct implementation helpers within the current
-turn. Public actor methods cannot be generic and use implicit `self`, keeping
-the protocol statically describable for AOT, hot loading, and ABI checks.
+All other actor instance methods are private implementation helpers. The runtime
+owns the Erlang-style receive loop: dequeue one message, acquire the actor's
+single execution lease, invoke `receive(message)`, then release/yield the turn.
+Returning from `receive` completes one turn; it does not terminate the actor.
+User code therefore cannot pin a carrier thread by writing its own permanent
+mailbox loop.
 
 `define actor X ...` and `define class X extends Actor ...` have the same
-actor-class semantics and the same generated protocol machinery. Source code
-does not declare or override the hidden mailbox ingress.
+actor-class semantics and the same receive contract. The parser and type
+checker both enforce the contract. External actor references send typed
+messages to the mailbox rather than gaining direct access to private actor
+methods or actor-owned fields.
 
 Actor classes do not support static functions. Until a separate effect-safe,
 non-instance actor utility construct exists, allowing static actor methods would
