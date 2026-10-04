@@ -2,9 +2,31 @@
 
 Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
-## Files, modules, and imports
+## Files, namespaces, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+Oreslang deliberately separates **compile-time namespaces** from **runtime-capable modules**.
+
+A namespace is a flat, top-level, type-only container. It may contain interfaces and type aliases, is erased from runtime execution, has no initialization, and cannot be used as a runtime value:
+
+```ores
+define namespace protocol as {
+  type RequestId = u64;
+
+  interface Request {
+    id: RequestId;
+  }
+}
+
+declare namespace external_api as
+  interface Response {
+    status: int;
+  }
+end
+```
+
+`define namespace` owns the type declarations in the current source. `declare namespace` records an ambient/external type contract. Both forms remain compile-time-only. Namespaces cannot contain functions, routines, bindings, classes, actors, modules, executable statements, or nested namespaces.
+
+A module is also flat and top-level, but it is the runtime-capable container. Exported members are accessed through the module name, such as `math.add(1, 2)`:
 
 ```ores
 define module math
@@ -21,6 +43,8 @@ define module app
   }
 end
 ```
+
+Neither construct is dynamically declared. Modules do not implicitly execute merely because they are imported or linked; runtime execution remains explicit.
 
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
