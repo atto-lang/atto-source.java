@@ -23,6 +23,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public final class OresRwLock<T> {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock(true);
+    private ActorRuntime owningRuntime;
     private T value;
 
     public OresRwLock(T value) {
@@ -60,6 +61,19 @@ public final class OresRwLock<T> {
 
     public boolean isWriteLocked() {
         return lock.isWriteLocked();
+    }
+
+    synchronized boolean bindToRuntime(ActorRuntime runtime) {
+        Objects.requireNonNull(runtime, "runtime");
+        if (owningRuntime == null) {
+            owningRuntime = runtime;
+            return true;
+        }
+        return owningRuntime == runtime;
+    }
+
+    synchronized boolean ownedBy(ActorRuntime runtime) {
+        return owningRuntime == null || owningRuntime == runtime;
     }
 
     private void requireReadAccess() {
