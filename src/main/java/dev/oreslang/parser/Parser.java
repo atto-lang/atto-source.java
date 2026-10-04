@@ -439,15 +439,10 @@ public final class Parser {
     }
 
     private void validateActorReceiveContract(String actorName, List<Ast.MethodDecl> methods) {
-        long endpoints = methods.stream()
-                .filter(method -> !method.isStatic()
-                        && method.visibility() == Ast.Visibility.PUBLIC
-                        && !method.name().equals("constructor"))
-                .count();
-        if (endpoints == 0) {
-            throw error(previous(),
-                    "actor '" + actorName + "' must expose at least one public protocol method");
-        }
+        // Local public methods are validated declaration-by-declaration above.
+        // Do not require a local endpoint here: actor subclasses may inherit
+        // their complete public protocol from an actor parent. The type checker
+        // validates the effective inherited protocol once parents are resolved.
     }
 
     private void rejectReservedActorTypeName(String name) {
