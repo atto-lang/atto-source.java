@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -107,6 +108,61 @@ final class ProjectManifestImportTest {
                         new ByteArrayOutputStream()));
 
         assertTrue(failure.getMessage().contains("mailbox-oriented actor composition"));
+    }
+
+    @Test
+    void importedTailCallsPreserveCallerReturnContracts() throws Exception {
+        Path app = temp.resolve("tail-contract-import");
+        Files.createDirectories(app);
+        Path child = app.resolve("child.ores");
+        Path namedMain = app.resolve("named-main.ores");
+        Path wildcardMain = app.resolve("wildcard-main.ores");
+
+        Files.writeString(child, """
+                pub fnc wrong(): String {
+                  return "not-an-int";
+                }
+                """);
+
+        Files.writeString(namedMain, """
+                import fnc wrong from "./child.ores";
+
+                fnc wrapped(): int {
+                  return wrong();
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(wrapped());
+                  return;
+                }
+                """);
+
+        Files.writeString(wildcardMain, """
+                import * as external from "./child.ores";
+
+                fnc wrapped(): int {
+                  return external.wrong();
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(wrapped());
+                  return;
+                }
+                """);
+
+        for (Path entry : List.of(namedMain, wildcardMain)) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> LinkedProgramRunner.run(
+                            entry,
+                            IsolatePolicy.developer(),
+                            ExecutionProfile.serverJit(),
+                            Set.of(),
+                            Map.of(),
+                            new ByteArrayOutputStream(),
+                            new ByteArrayOutputStream()));
+            assertTrue(failure.getMessage().contains("declared int"));
+        }
     }
 
     @Test
