@@ -137,7 +137,7 @@ fnc answer() {
 }
 ```
 
-`@Ret<T>` and `: T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+`@Ret<T>` and `: T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, statically-declared class/struct-like value, or another aggregate.
 
 Return types may be unions, homogeneous arrays, finite tuple types, or structural record types:
 
@@ -152,8 +152,13 @@ fnc fixed(): [int, bool, string] {
   return [3, true, "yes"];
 }
 
+define class NamedResult as
+  pub val int foo;
+  pub val string bar;
+end
+
 fnc named(): {foo: int, bar: string} {
-  return obj{foo: 5, bar: "x"};
+  return new NamedResult(5, "x");
 }
 ```
 
@@ -244,36 +249,46 @@ define class Names extends List as
 end
 ```
 
-Inline object and array literals are values, not classes, and cannot be inherited from.
+Inline array literals are values, not classes, and cannot be inherited from.
 
-## Inline values
+## Static object model and inline arrays
 
-Structural inline object:
+Oreslang deliberately has **no anonymous runtime object literal**. The former
+`obj{...}` and `DynamicStruct<T>` forms are removed.
+
+Runtime object layouts must be declared statically so AOT compilation, closed-world
+reachability, ownership analysis, actor sendability, and field layout all see the
+same program shape before execution:
 
 ```ores
-val user = obj{name: "Ada", age: 37};
+define class User as
+  pub val String name;
+  pub val int age;
+end
+
+val user = new User("Ada", 37);
 stdio.println(user.name);
 ```
 
-Static object/map keys may be identifiers, reserved member keys such as
-`stop`/`do`/`done`, or strings written with either single or double
-quotes. Backticks make the key dynamic: the expression between the backticks
-must evaluate to a string.
+Structural record types remain available as **compile-time contracts**:
 
 ```ores
-val key = "score";
-val stats = obj{
-  stop: 1,
-  'do': 2,
-  "done": 3,
-  `key`: 4
-};
+fnc read_user(user: {name: String, age: int}): String {
+  return user.name;
+}
 ```
 
-An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
-`T` is the joined value type. A `DynamicStruct<T>` can also be created
-directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
-only values assignable to `T`.
+A record type does not create an anonymous runtime object and cannot acquire new
+members dynamically. A statically declared class/struct-like value can satisfy a
+record/structural contract when its public shape matches.
+
+Open-ended key/value data belongs to `Map<K,V>`. Dynamic key insertion is a
+container operation, not dynamic creation or mutation of an object's type/layout.
+
+This is an AOT invariant: Oreslang source must not define a new object shape merely
+by evaluating an expression. JIT runtimes may optimize known layouts more
+aggressively, but JIT mode does not receive a more dynamic language surface than
+AOT mode.
 
 Inline array:
 
@@ -756,20 +771,22 @@ fnc c(y Foo): void {
 }
 ```
 
-All three may accept:
+All three may accept a statically declared value whose public shape matches:
 
 ```ores
-val branded = obj{
-  marker: "brand",
-  markerBrand: "marking/branding"
-};
+define class Branded as
+  pub val String marker;
+  pub val String markerBrand;
+end
+
+val branded = new Branded("brand", "marking/branding");
 
 a(branded);
 b(branded);
 c(branded);
 ```
 
-Without one of those explicit structural opt-ins, passing that object to a nominal `Foo` parameter is a compile-time error.
+Without one of those explicit structural opt-ins, passing that value to a nominal `Foo` parameter is a compile-time error.
 
 `structural` is a contextual keyword, so existing identifiers named `structural` remain legal elsewhere.
 
