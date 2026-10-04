@@ -483,26 +483,30 @@ threads may change between turns.
 
 ### Actor receive protocol and runtime-owned loop
 
-Every concrete actor exposes exactly one public mailbox ingress:
+Every concrete actor has exactly one **runtime-owned mailbox ingress**, but that
+ingress is not a user-visible source method. Public actor instance methods form a
+typed protocol:
 
 ```ores
-pub receive(message: ActorMessage): void {
-  // one actor turn
+pub run1(value: int): void {
+  self.count = self.count + value;
+}
+
+pub run2(value: int): int {
+  return self.count + value;
 }
 ```
 
-All other actor instance methods are private implementation helpers. The runtime
-owns the Erlang-style receive loop: dequeue one message, acquire the actor's
-single execution lease, invoke `receive(message)`, then release/yield the turn.
-Returning from `receive` completes one turn; it does not terminate the actor.
-User code therefore cannot pin a carrier thread by writing its own permanent
-mailbox loop.
+The compiler lowers those endpoints into one hidden mailbox message union and
+dispatcher. Private methods remain direct self calls inside the active actor
+turn. Returning from one public protocol method completes one actor turn; it
+does not terminate the actor. User code therefore cannot pin a carrier thread
+by writing its own permanent mailbox loop.
 
 `define actor X ...` and `define class X extends Actor ...` have the same
-actor-class semantics and the same receive contract. The parser and type
-checker both enforce the contract. External actor references send typed
-messages to the mailbox rather than gaining direct access to private actor
-methods or actor-owned fields.
+actor-class semantics and typed protocol rules. External actor references send
+typed messages to the hidden mailbox dispatcher rather than gaining direct
+access to actor-owned fields or private helper methods.
 
 Actor classes do not support static functions. Until a separate effect-safe,
 non-instance actor utility construct exists, allowing static actor methods would
@@ -572,8 +576,7 @@ persistent-actor ABI is the actor reference/mailbox, not a raw class pointer.
 A launch ticket separates identity/readiness/lifecycle from actor application
 messages.
 
-This model preserves the existing ActorGroup/ActorMailman architecture: public
-method calls enqueue bounded typed messages into the actor's mailbox; actors
+This model preserves the existing ActorGroup/ActorMailman architecture: public protocol method calls enqueue bounded typed messages into the actor's mailbox; actors
 emit bounded group output; one logical serialized mailman consumes the group's
 outbox; supervisors remain responsible for lifecycle/restart policy.
 
