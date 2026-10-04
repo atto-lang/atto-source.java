@@ -29,6 +29,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -1207,6 +1208,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ThreadPoolExecutor untrustedDispatcher;
         private final ScheduledThreadPoolExecutor untrustedWatchdog;
         private final ScheduledThreadPoolExecutor messageWatchdog;
+        private final ActorTimerWheel actorTimerWheel;
         private final Semaphore rootSlots;
         private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
         private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
@@ -1253,6 +1255,7 @@ public final class ActorRuntime implements AutoCloseable {
                     namedFactory(prefix + "untrusted-watchdog-"));
             this.messageWatchdog = newUntrustedWatchdog(
                     namedFactory(prefix + "actor-turn-watchdog-"));
+            this.actorTimerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
             this.rootSlots = new Semaphore(rootPermits, true);
         }
 
@@ -1335,6 +1338,7 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedDispatcher.shutdownNow();
             untrustedWatchdog.shutdownNow();
             messageWatchdog.shutdownNow();
+            actorTimerWheel.close();
         }
     }
 
@@ -1399,6 +1403,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final ThreadPoolExecutor untrustedDispatcher;
     private final ScheduledThreadPoolExecutor untrustedWatchdog;
     private final ScheduledThreadPoolExecutor messageWatchdog;
+    private final ActorTimerWheel actorTimerWheel;
     private final AtomicInteger privateCompensatingThreads;
     private final AtomicInteger sharedCompensatingThreads;
     private final AtomicInteger untrustedCompensatingThreads;
@@ -1499,6 +1504,7 @@ public final class ActorRuntime implements AutoCloseable {
         this.untrustedDispatcher = dispatcherGroup.untrustedDispatcher;
         this.untrustedWatchdog = dispatcherGroup.untrustedWatchdog;
         this.messageWatchdog = dispatcherGroup.messageWatchdog;
+        this.actorTimerWheel = dispatcherGroup.actorTimerWheel;
         this.privateCompensatingThreads = dispatcherGroup.privateCompensatingThreads;
         this.sharedCompensatingThreads = dispatcherGroup.sharedCompensatingThreads;
         this.untrustedCompensatingThreads = dispatcherGroup.untrustedCompensatingThreads;
@@ -1744,6 +1750,11 @@ public final class ActorRuntime implements AutoCloseable {
     /** Runtime observability: canceled deadlines are removed immediately. */
     public int pendingUntrustedDeadlineCount() {
         return untrustedWatchdog.getQueue().size();
+    }
+
+    /** Runtime observability for actor timers across this carrier group. */
+    public long pendingActorTimerCount() {
+        return actorTimerWheel.pendingCount();
     }
 
     /**
@@ -2191,6 +2202,42 @@ public final class ActorRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Heap-safe resumable actor frame produced by compiler lowering.
+     *
+     * A reactor/timer completion may make this continuation runnable, but the
+     * continuation itself is always executed later under the owning actor's
+     * execution lease on that actor domain's carrier pool.
+     */
+    @FunctionalInterface
+    public interface ActorContinuation {
+        void resume(Object value, Throwable failure, ActorContext<?> context) throws Exception;
+    }
+
+    public interface TimerHandle {
+        boolean cancel();
+        boolean isCancelled();
+        boolean isDone();
+    }
+
+    private record ContinuationEnvelope(
+            ActorContinuation continuation,
+            Object value,
+            Throwable failure) { }
+
+    /**
+     * Internal non-error control transfer used by compiler-generated state
+     * machines. It unwinds the current Java interpreter stack after the live
+     * Oreslang frame has already been captured in an ActorContinuation.
+     */
+    private static final class ActorTurnSuspendedSignal extends RuntimeException {
+        private static final ActorTurnSuspendedSignal INSTANCE = new ActorTurnSuspendedSignal();
+
+        private ActorTurnSuspendedSignal() {
+            super(null, null, false, false);
+        }
+    }
+
     @FunctionalInterface
     public interface Behavior<M> {
         void onMessage(M message, ActorContext<M> context) throws Exception;
@@ -2230,6 +2277,28 @@ public final class ActorRuntime implements AutoCloseable {
 
         /** Optional stateless outbound HTTP capability; never exposes raw TCP. */
         Optional<OutboundHttpCapability> outboundHttp();
+
+        /**
+         * Suspend the current logical actor turn on a nonblocking future.
+         *
+         * Compiler lowering captures all live locals/program counter in the
+         * supplied continuation before calling this method. This method never
+         * blocks the carrier and never runs the continuation inline, even when
+         * the stage is already complete.
+         */
+        void suspendOn(CompletionStage<?> awaited, ActorContinuation continuation);
+
+        /**
+         * Schedule actor-local work for a later scheduler turn. nextTick work is
+         * bounded and never executes inline in the current turn.
+         */
+        void nextTick(ActorContinuation continuation);
+
+        /**
+         * Schedule actor-local work through the shared hashed timer wheel.
+         * Timer-driver threads only enqueue the continuation.
+         */
+        TimerHandle setTimer(Duration delay, ActorContinuation continuation);
 
         /** Mandatory compiler/runtime scheduling checkpoint. */
         void checkpoint();
@@ -4737,11 +4806,18 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final AtomicInteger queuedMessages = new AtomicInteger();
+        private final AtomicInteger queuedControlEvents = new AtomicInteger();
+        private final ConcurrentLinkedQueue<ContinuationEnvelope> readyContinuations =
+                new ConcurrentLinkedQueue<>();
+        private final ConcurrentLinkedQueue<ContinuationEnvelope> nextTickContinuations =
+                new ConcurrentLinkedQueue<>();
+        private final Set<ActorTimerWheel.Handle> timers = ConcurrentHashMap.newKeySet();
         private final AtomicLong sharedMailboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
         private final Object executionDomain = new Object();
         private int activeTurns;
         private boolean finalized;
+        private volatile boolean logicalTurnSuspended;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -4991,6 +5067,9 @@ public final class ActorRuntime implements AutoCloseable {
             activeMessageEpoch = 0L;
             if (messageTimer != null) messageTimer.cancel(false);
             drainMailboxReservations();
+            drainControlEvents();
+            for (ActorTimerWheel.Handle timer : List.copyOf(timers)) timer.cancel();
+            timers.clear();
             behavior = null;
             if (httpRequest != null) {
                 httpRequest.cancelFromRuntime(ref.terminationCause.get());
@@ -5067,6 +5146,141 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        private int maxControlEvents() {
+            return Math.max(8, Math.min(16_384, policy.maxMailboxMessages() * 2));
+        }
+
+        private boolean reserveControlEvent() {
+            int limit = maxControlEvents();
+            while (true) {
+                int current = queuedControlEvents.get();
+                if (current >= limit) return false;
+                if (queuedControlEvents.compareAndSet(current, current + 1)) return true;
+            }
+        }
+
+        private void releaseControlEvent() {
+            int remaining = queuedControlEvents.decrementAndGet();
+            if (remaining < 0) {
+                queuedControlEvents.incrementAndGet();
+                throw new IllegalStateException(
+                        "actor continuation accounting underflow for " + ref.id());
+            }
+        }
+
+        private Throwable unwrapCompletionFailure(Throwable failure) {
+            if (failure instanceof java.util.concurrent.CompletionException completion
+                    && completion.getCause() != null) {
+                return completion.getCause();
+            }
+            if (failure instanceof ExecutionException execution
+                    && execution.getCause() != null) {
+                return execution.getCause();
+            }
+            return failure;
+        }
+
+        private void enqueueContinuation(
+                ConcurrentLinkedQueue<ContinuationEnvelope> queue,
+                ContinuationEnvelope continuation,
+                String source) {
+            if (stopped.get() || closed.get()) return;
+            if (!reserveControlEvent()) {
+                fail(new RejectedExecutionException(
+                        "actor " + ref.id() + " exceeded bounded " + source
+                                + " continuation queue of " + maxControlEvents()));
+                return;
+            }
+            boolean admitted = false;
+            try {
+                if (stopped.get() || closed.get()) return;
+                queue.offer(continuation);
+                admitted = true;
+            } finally {
+                if (!admitted) releaseControlEvent();
+            }
+            schedule();
+        }
+
+        private void suspendOn(CompletionStage<?> awaited, ActorContinuation continuation) {
+            Objects.requireNonNull(awaited, "awaited");
+            Objects.requireNonNull(continuation, "continuation");
+            if (currentActor.get() != this) {
+                throw new IllegalStateException("actor suspension is only valid inside the owning actor turn");
+            }
+            if (logicalTurnSuspended) {
+                throw new IllegalStateException(
+                        "actor turn is already suspended; compiler emitted overlapping await state");
+            }
+
+            logicalTurnSuspended = true;
+            try {
+                awaited.whenComplete((value, failure) -> enqueueContinuation(
+                        readyContinuations,
+                        new ContinuationEnvelope(
+                                continuation,
+                                value,
+                                unwrapCompletionFailure(failure)),
+                        "resume"));
+            } catch (RuntimeException | Error registrationFailure) {
+                logicalTurnSuspended = false;
+                throw registrationFailure;
+            }
+            throw ActorTurnSuspendedSignal.INSTANCE;
+        }
+
+        private void nextTick(ActorContinuation continuation) {
+            Objects.requireNonNull(continuation, "continuation");
+            if (currentActor.get() != this) {
+                throw new IllegalStateException("nextTick is only valid inside the owning actor turn");
+            }
+            enqueueContinuation(
+                    nextTickContinuations,
+                    new ContinuationEnvelope(continuation, null, null),
+                    "next_tick");
+        }
+
+        private TimerHandle setTimer(Duration delay, ActorContinuation continuation) {
+            Objects.requireNonNull(delay, "delay");
+            Objects.requireNonNull(continuation, "continuation");
+            if (currentActor.get() != this) {
+                throw new IllegalStateException("actor timers are only valid inside the owning actor turn");
+            }
+            if (delay.isNegative()) throw new IllegalArgumentException("actor timer delay cannot be negative");
+
+            AtomicReference<ActorTimerWheel.Handle> holder = new AtomicReference<>();
+            ActorTimerWheel.Handle delegate = actorTimerWheel.schedule(delay, () -> {
+                ActorTimerWheel.Handle handle = holder.get();
+                if (handle != null) timers.remove(handle);
+                enqueueContinuation(
+                        readyContinuations,
+                        new ContinuationEnvelope(continuation, null, null),
+                        "timer");
+            });
+            holder.set(delegate);
+            timers.add(delegate);
+            if (stopped.get() || closed.get()) {
+                timers.remove(delegate);
+                delegate.cancel();
+            }
+
+            return new TimerHandle() {
+                @Override public boolean cancel() {
+                    timers.remove(delegate);
+                    return delegate.cancel();
+                }
+                @Override public boolean isCancelled() { return delegate.isCancelled(); }
+                @Override public boolean isDone() { return delegate.isDone(); }
+            };
+        }
+
+        private boolean hasRunnableWork() {
+            if (logicalTurnSuspended) return !readyContinuations.isEmpty();
+            return !readyContinuations.isEmpty()
+                    || !nextTickContinuations.isEmpty()
+                    || !mailbox.isEmpty();
+        }
+
         private void schedule() {
             if (stopped.get() || closed.get()) return;
             if (!scheduled.compareAndSet(false, true)) return;
@@ -5121,7 +5335,7 @@ public final class ActorRuntime implements AutoCloseable {
                             "actor execution lease ownership changed unexpectedly for " + ref.id()));
                 }
                 scheduled.set(false);
-                if (!stopped.get() && !closed.get() && !mailbox.isEmpty()) {
+                if (!stopped.get() && !closed.get() && hasRunnableWork()) {
                     schedule();
                 } else {
                     relaxDispatcherAfterQuantum(kind);
@@ -5153,6 +5367,19 @@ public final class ActorRuntime implements AutoCloseable {
                     @Override public Optional<OutboundHttpCapability> outboundHttp() {
                         return Optional.ofNullable(outboundHttp);
                     }
+                    @Override public void suspendOn(
+                            CompletionStage<?> awaited,
+                            ActorContinuation continuation) {
+                        ActorCell.this.suspendOn(awaited, continuation);
+                    }
+                    @Override public void nextTick(ActorContinuation continuation) {
+                        ActorCell.this.nextTick(continuation);
+                    }
+                    @Override public TimerHandle setTimer(
+                            Duration delay,
+                            ActorContinuation continuation) {
+                        return ActorCell.this.setTimer(delay, continuation);
+                    }
                     @Override public void checkpoint() {
                         ActorRuntime.this.schedulerSafepoint();
                     }
@@ -5183,6 +5410,43 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 }
 
+                // A suspended logical turn has priority over mailbox work. The
+                // completion thread only enqueues this continuation; execution
+                // resumes here under the actor lease, possibly on a different
+                // carrier from the one that observed await.
+                if (logicalTurnSuspended) {
+                    ContinuationEnvelope continuation = readyContinuations.poll();
+                    if (continuation == null) return;
+                    releaseControlEvent();
+                    logicalTurnSuspended = false;
+                    try {
+                        continuation.continuation().resume(
+                                continuation.value(),
+                                continuation.failure(),
+                                context);
+                    } catch (ActorTurnSuspendedSignal suspendedAgain) {
+                        return;
+                    }
+                    // await always ends a scheduling turn, even when the future
+                    // was already complete. Do not consume another mailbox
+                    // message inline after a resumed continuation.
+                    return;
+                }
+
+                // next_tick is a later actor turn, never an inline microtask.
+                // Execute at most one deferred callback per scheduler quantum so
+                // a recursive next_tick chain cannot starve mailbox traffic.
+                ContinuationEnvelope nextTick = nextTickContinuations.poll();
+                if (nextTick != null) {
+                    releaseControlEvent();
+                    try {
+                        nextTick.continuation().resume(null, null, context);
+                    } catch (ActorTurnSuspendedSignal suspended) {
+                        return;
+                    }
+                    return;
+                }
+
                 int processed = 0;
                 int turnThroughput = dispatcherConfig.throughputFor(kind);
                 long batchStartedNanos = System.nanoTime();
@@ -5194,7 +5458,16 @@ public final class ActorRuntime implements AutoCloseable {
                         beginMessageBudget();
                         long messageDeadline = armMessageDeadline("mailbox message");
                         try {
-                            behavior.onMessage((M) envelope.value(), context);
+                            try {
+                                behavior.onMessage((M) envelope.value(), context);
+                            } catch (ActorTurnSuspendedSignal suspended) {
+                                // The live Oreslang frame is already captured in
+                                // the continuation registered by suspendOn().
+                                // The message is consumed, but its logical turn
+                                // remains suspended and no later mailbox message
+                                // may run until that continuation completes.
+                                return;
+                            }
                             if (kind.memoryIsolated() && !trustedFactory) {
                                 validatePrivateBehaviorState(ref.id(), behavior);
                             }
@@ -5236,6 +5509,12 @@ public final class ActorRuntime implements AutoCloseable {
                 releaseMailboxSlot();
                 envelope.close();
             }
+        }
+
+        private void drainControlEvents() {
+            while (readyContinuations.poll() != null) releaseControlEvent();
+            while (nextTickContinuations.poll() != null) releaseControlEvent();
+            logicalTurnSuspended = false;
         }
 
         private void fail(Throwable failure) {
