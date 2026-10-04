@@ -228,7 +228,8 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 (* Semantic restrictions:
    - Oreslang has no obj{} literal and no DynamicStruct<T>. Runtime object
      layouts must come from statically declared classes/struct-like declarations.
-     Open-ended keyed data belongs to Map<K,V>, not anonymous object shapes.
+     Open-ended keyed data belongs to an explicit keyed container (for example
+     Map<K,V>), not anonymous object shapes.
    - Record types such as {foo: int, bar: string} are compile-time structural
      contracts with statically known member names; they are not runtime object
      constructors and do not permit dynamic member creation.
