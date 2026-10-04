@@ -5,7 +5,7 @@ The networking architecture is:
 ```
 Oreslang net/http stdlib (.ores)
         |
-privileged native_net builtin ABI
+privileged native_net builtin ABI (NETWORK + trusted NETWORK_RAW)
         |
 thin Java JNI declaration/binding layer (hosted Truffle build only)
         |
@@ -35,5 +35,9 @@ The migration is complete only when:
 3. The stdlib uses only the capability-gated `native_net` primitive namespace.
 4. Native primitives are tested independently and Oreslang protocol behavior is
    tested through guest source.
-5. strict/untrusted isolates receive NETWORK only through explicit capability
-   admission; they never receive unrestricted FFI/NATIVE merely to use HTTP.
+5. Public HTTP policy uses NETWORK. Raw socket primitives require the separate
+   trusted NETWORK_RAW capability in addition to NETWORK.
+6. Adversarial/untrusted policies can never hold NETWORK_RAW; stateless HTTP for
+   those actors must be brokered through the safe HTTP layer rather than exposing
+   connect/listen/accept/read/write directly.
+7. strict/untrusted isolates never receive unrestricted FFI/NATIVE merely to use HTTP.
