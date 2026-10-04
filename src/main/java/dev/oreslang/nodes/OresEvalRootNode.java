@@ -99,6 +99,7 @@ public final class OresEvalRootNode extends RootNode {
         private final IdentityHashMap<Ast.ModuleDecl, String> singletonSchemas = new IdentityHashMap<>();
         private final Set<String> ambiguousFunctions = new LinkedHashSet<>();
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
+        private static final Object COPY_IN_PROGRESS = new Object();
 
         private Evaluator(
                 Ast.Program program,
@@ -637,14 +638,17 @@ public final class OresEvalRootNode extends RootNode {
                         if (call.arguments().size() != 1) {
                             throw new IllegalArgumentException("rt " + operation + " expects exactly one argument");
                         }
-                        if (operation.equals("share")) {
-                            throw new IllegalArgumentException(
-                                    "rt share requires an explicit shared-capability runtime and cannot alias ordinary owned state");
-                        }
-                        // References are the default runtime representation.
-                        // borrow/take are compile-time ownership state changes;
-                        // copy is accepted here only for statically Copy values.
-                        return eval(call.arguments().getFirst(), env);
+                        Object value = eval(call.arguments().getFirst(), env);
+                        return switch (operation) {
+                            // References are already the default runtime representation.
+                            // borrow/take change compiler ownership state, not JVM identity.
+                            case "borrow", "take" -> value;
+                            case "copy" -> copyValue(value, env.singletonState, new IdentityHashMap<>());
+                            case "share" -> freezeGuestValue(
+                                    copyValue(value, env.singletonState, new IdentityHashMap<>()),
+                                    new IdentityHashMap<>());
+                            default -> throw new IllegalStateException("unknown rt operation " + operation);
+                        };
                     }
                 }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
@@ -1078,6 +1082,334 @@ public final class OresEvalRootNode extends RootNode {
                 case ">" -> compare(left, right) > 0; case ">=" -> compare(left, right) >= 0;
                 default -> throw new IllegalArgumentException("unsupported operator " + op);
             };
+        }
+
+        private Object copyValue(
+                Object value,
+                SingletonState singletonState,
+                IdentityHashMap<Object, Object> copies) {
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Complex) {
+                return value;
+            }
+
+            Object existing = copies.get(value);
+            if (existing != null) {
+                if (existing == COPY_IN_PROGRESS) {
+                    throw new IllegalArgumentException(
+                            "class copy graph recursed into an in-progress class instance; "
+                                    + "break the cycle explicitly in copy()");
+                }
+                return existing;
+            }
+
+            if (value instanceof OptionValue option) {
+                if (!option.present()) return option;
+                Object nested = copyValue(option.value(), singletonState, copies);
+                OptionValue copied = new OptionValue(true, nested);
+                copies.put(value, copied);
+                return copied;
+            }
+
+            if (value instanceof OresObject object) {
+                Ast.ClassDecl dispatchClass = runtimeDispatchClass(object, singletonState);
+                Ast.MethodDecl copyMethod = findMethod(dispatchClass, "copy", 0, new LinkedHashSet<>());
+                boolean immutableReceiver = copyMethod != null
+                        && (copyMethod.explicitReceiverType() == null
+                        || (copyMethod.explicitReceiverType().isBorrow()
+                        && !copyMethod.explicitReceiverType().mutableBorrow()));
+                if (copyMethod == null
+                        || copyMethod.isStatic()
+                        || copyMethod.visibility() != Ast.Visibility.PUBLIC
+                        || copyMethod.isAbstract()
+                        || copyMethod.async()
+                        || copyMethod.composed()
+                        || !dispatchClass.methods().contains(copyMethod)
+                        || !copyMethod.genericParameters().isEmpty()
+                        || !immutableReceiver) {
+                    throw new IllegalArgumentException("class '" + dispatchClass.name()
+                            + "' is not copyable: copy() must be concrete, synchronous, non-generic, "
+                            + "public, instance-bound, declared directly on the class, and read-only");
+                }
+
+                Object sourceSnapshot = copySingletonValue(object, new IdentityHashMap<>());
+                copies.put(value, COPY_IN_PROGRESS);
+                Object copied;
+                try {
+                    copied = callMethod(object, dispatchClass, copyMethod, List.of(), singletonState);
+                } catch (RuntimeException | Error failure) {
+                    copies.remove(value);
+                    throw failure;
+                }
+
+                if (!sameValueGraph(object, sourceSnapshot, new IdentityHashMap<>())) {
+                    copies.remove(value);
+                    throw new IllegalArgumentException("class '" + dispatchClass.name()
+                            + "' copy() mutated its source; copy() must observe self read-only");
+                }
+                if (!(copied instanceof OresObject result)
+                        || runtimeDispatchClass(result, singletonState) != dispatchClass
+                        || result == object) {
+                    copies.remove(value);
+                    throw new IllegalArgumentException("class '" + dispatchClass.name()
+                            + "' copy() must return a fresh instance of the same concrete class");
+                }
+                assertNoMutableAliases(object, result);
+                copies.put(value, result);
+                return result;
+            }
+
+            if (value instanceof List<?> list) {
+                ArrayList<Object> copied = new ArrayList<>(list.size());
+                copies.put(value, copied);
+                for (Object item : list) copied.add(copyValue(item, singletonState, copies));
+                return copied;
+            }
+            if (value instanceof Set<?> set) {
+                LinkedHashSet<Object> copied = new LinkedHashSet<>();
+                copies.put(value, copied);
+                for (Object item : set) copied.add(copyValue(item, singletonState, copies));
+                return copied;
+            }
+            if (value instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, Object> copied = new LinkedHashMap<>();
+                copies.put(value, copied);
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    Object key = copyValue(entry.getKey(), singletonState, copies);
+                    Object item = copyValue(entry.getValue(), singletonState, copies);
+                    if (copied.putIfAbsent(key, item) != null) {
+                        throw new IllegalArgumentException("rt copy produced colliding map keys");
+                    }
+                }
+                return copied;
+            }
+            if (value instanceof Object[] array) {
+                Object[] copied = new Object[array.length];
+                copies.put(value, copied);
+                for (int i = 0; i < array.length; i++) {
+                    copied[i] = copyValue(array[i], singletonState, copies);
+                }
+                return copied;
+            }
+
+            throw new IllegalArgumentException(
+                    "value has no runtime copy semantics: " + value.getClass().getName());
+        }
+
+        private Object freezeGuestValue(
+                Object value,
+                IdentityHashMap<Object, Object> frozen) {
+            if (value == null || value instanceof String || value instanceof Number
+                    || value instanceof Boolean || value instanceof Character
+                    || value instanceof Complex) {
+                return value;
+            }
+
+            Object existing = frozen.get(value);
+            if (existing != null) return existing;
+
+            if (value instanceof OptionValue option) {
+                if (!option.present()) return option;
+                OptionValue result = new OptionValue(
+                        true,
+                        freezeGuestValue(option.value(), frozen));
+                frozen.put(value, result);
+                return result;
+            }
+            if (value instanceof OresObject object) {
+                LinkedHashMap<String, Object> backing = new LinkedHashMap<>();
+                OresObject result = new OresObject(
+                        object.klass,
+                        java.util.Collections.unmodifiableMap(backing));
+                frozen.put(value, result);
+                for (Map.Entry<String, Object> entry : object.fields.entrySet()) {
+                    backing.put(entry.getKey(), freezeGuestValue(entry.getValue(), frozen));
+                }
+                return result;
+            }
+            if (value instanceof List<?> list) {
+                ArrayList<Object> backing = new ArrayList<>(list.size());
+                List<Object> result = java.util.Collections.unmodifiableList(backing);
+                frozen.put(value, result);
+                for (Object item : list) backing.add(freezeGuestValue(item, frozen));
+                return result;
+            }
+            if (value instanceof Set<?> set) {
+                LinkedHashSet<Object> backing = new LinkedHashSet<>();
+                Set<Object> result = java.util.Collections.unmodifiableSet(backing);
+                frozen.put(value, result);
+                for (Object item : set) backing.add(freezeGuestValue(item, frozen));
+                return result;
+            }
+            if (value instanceof Map<?, ?> map) {
+                LinkedHashMap<Object, Object> backing = new LinkedHashMap<>();
+                Map<Object, Object> result = java.util.Collections.unmodifiableMap(backing);
+                frozen.put(value, result);
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    Object key = freezeGuestValue(entry.getKey(), frozen);
+                    Object item = freezeGuestValue(entry.getValue(), frozen);
+                    if (backing.putIfAbsent(key, item) != null) {
+                        throw new IllegalArgumentException("rt share produced colliding map keys");
+                    }
+                }
+                return result;
+            }
+            if (value instanceof Object[] array) {
+                ArrayList<Object> backing = new ArrayList<>(array.length);
+                List<Object> result = java.util.Collections.unmodifiableList(backing);
+                frozen.put(value, result);
+                for (Object item : array) backing.add(freezeGuestValue(item, frozen));
+                return result;
+            }
+
+            Object result = ActorRuntime.freeze(value);
+            frozen.put(value, result);
+            return result;
+        }
+
+        private void assertNoMutableAliases(Object original, Object copied) {
+            IdentityHashMap<Object, Boolean> sourceGraph = new IdentityHashMap<>();
+            collectMutableGraph(original, sourceGraph, new IdentityHashMap<>());
+            rejectMutableAliases(copied, sourceGraph, new IdentityHashMap<>());
+        }
+
+        private void collectMutableGraph(
+                Object value,
+                IdentityHashMap<Object, Boolean> graph,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (value instanceof OptionValue option) {
+                if (seen.put(value, Boolean.TRUE) != null) return;
+                if (option.present()) collectMutableGraph(option.value(), graph, seen);
+                return;
+            }
+            if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
+            graph.put(value, Boolean.TRUE);
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) collectMutableGraph(field, graph, seen);
+            } else if (value instanceof List<?> list) {
+                for (Object item : list) collectMutableGraph(item, graph, seen);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) collectMutableGraph(item, graph, seen);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    collectMutableGraph(entry.getKey(), graph, seen);
+                    collectMutableGraph(entry.getValue(), graph, seen);
+                }
+            } else if (value instanceof Object[] array) {
+                for (Object item : array) collectMutableGraph(item, graph, seen);
+            }
+        }
+
+        private void rejectMutableAliases(
+                Object value,
+                IdentityHashMap<Object, Boolean> sourceGraph,
+                IdentityHashMap<Object, Boolean> seen) {
+            if (value instanceof OptionValue option) {
+                if (seen.put(value, Boolean.TRUE) != null) return;
+                if (option.present()) rejectMutableAliases(option.value(), sourceGraph, seen);
+                return;
+            }
+            if (!isMutableComposite(value) || seen.put(value, Boolean.TRUE) != null) return;
+            if (sourceGraph.containsKey(value)) {
+                throw new IllegalArgumentException(
+                        "copy() violated the copy contract by retaining mutable storage from the source");
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) rejectMutableAliases(field, sourceGraph, seen);
+            } else if (value instanceof List<?> list) {
+                for (Object item : list) rejectMutableAliases(item, sourceGraph, seen);
+            } else if (value instanceof Set<?> set) {
+                for (Object item : set) rejectMutableAliases(item, sourceGraph, seen);
+            } else if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    rejectMutableAliases(entry.getKey(), sourceGraph, seen);
+                    rejectMutableAliases(entry.getValue(), sourceGraph, seen);
+                }
+            } else if (value instanceof Object[] array) {
+                for (Object item : array) rejectMutableAliases(item, sourceGraph, seen);
+            }
+        }
+
+        private boolean isMutableComposite(Object value) {
+            return value != null
+                    && !(value instanceof String)
+                    && !(value instanceof Number)
+                    && !(value instanceof Boolean)
+                    && !(value instanceof Character)
+                    && !(value instanceof Complex)
+                    && !(value instanceof ActorRuntime.ActorId)
+                    && !(value instanceof ActorRuntime.ActorRef<?>)
+                    && !(value instanceof ActorRuntime.Shared<?>);
+        }
+
+        private boolean sameValueGraph(
+                Object current,
+                Object snapshot,
+                IdentityHashMap<Object, Object> seen) {
+            if (current == snapshot) return true;
+            if (current == null || snapshot == null) return false;
+            if (!isMutableComposite(current)
+                    && !(current instanceof OptionValue)
+                    && !(snapshot instanceof OptionValue)) {
+                return Objects.equals(current, snapshot);
+            }
+
+            Object existing = seen.get(current);
+            if (existing != null) return existing == snapshot;
+            seen.put(current, snapshot);
+
+            if (current instanceof OptionValue left && snapshot instanceof OptionValue right) {
+                return left.present() == right.present()
+                        && (!left.present() || sameValueGraph(left.value(), right.value(), seen));
+            }
+            if (current instanceof OresObject left && snapshot instanceof OresObject right) {
+                if (left.klass != right.klass || !left.fields.keySet().equals(right.fields.keySet())) {
+                    return false;
+                }
+                for (String name : left.fields.keySet()) {
+                    if (!sameValueGraph(left.fields.get(name), right.fields.get(name), seen)) return false;
+                }
+                return true;
+            }
+            if (current instanceof List<?> left && snapshot instanceof List<?> right) {
+                if (left.size() != right.size()) return false;
+                for (int i = 0; i < left.size(); i++) {
+                    if (!sameValueGraph(left.get(i), right.get(i), seen)) return false;
+                }
+                return true;
+            }
+            if (current instanceof Set<?> left && snapshot instanceof Set<?> right) {
+                if (left.size() != right.size()) return false;
+                java.util.Iterator<?> a = left.iterator();
+                java.util.Iterator<?> b = right.iterator();
+                while (a.hasNext() && b.hasNext()) {
+                    if (!sameValueGraph(a.next(), b.next(), seen)) return false;
+                }
+                return !a.hasNext() && !b.hasNext();
+            }
+            if (current instanceof Map<?, ?> left && snapshot instanceof Map<?, ?> right) {
+                if (left.size() != right.size()) return false;
+                java.util.Iterator<? extends Map.Entry<?, ?>> a = left.entrySet().iterator();
+                java.util.Iterator<? extends Map.Entry<?, ?>> b = right.entrySet().iterator();
+                while (a.hasNext() && b.hasNext()) {
+                    Map.Entry<?, ?> ae = a.next();
+                    Map.Entry<?, ?> be = b.next();
+                    if (!sameValueGraph(ae.getKey(), be.getKey(), seen)
+                            || !sameValueGraph(ae.getValue(), be.getValue(), seen)) {
+                        return false;
+                    }
+                }
+                return !a.hasNext() && !b.hasNext();
+            }
+            if (current instanceof Object[] left && snapshot instanceof Object[] right) {
+                if (left.length != right.length) return false;
+                for (int i = 0; i < left.length; i++) {
+                    if (!sameValueGraph(left[i], right[i], seen)) return false;
+                }
+                return true;
+            }
+            return Objects.equals(current, snapshot);
         }
 
         private Object add(Object left, Object right) {
