@@ -181,6 +181,46 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void closeFinalizesQueuedActorBatchCancelledBeforeCarrierEntry() throws Exception {
+        CountDownLatch executorEntered = new CountDownLatch(1);
+        CountDownLatch releaseExecutor = new CountDownLatch(1);
+
+        ActorRuntime.TurnExecutor executor = turn -> {
+            executorEntered.countDown();
+            try {
+                releaseExecutor.await();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            turn.run();
+        };
+
+        var config = new ActorRuntime.DispatcherConfig(1, 1, 1, 16);
+        ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config, executor);
+        try {
+            var first = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+            var queued = runtime.<Integer>spawnShared(() -> (message, context) -> { });
+
+            first.send(1);
+            assertTrue(executorEntered.await(2, TimeUnit.SECONDS));
+            queued.send(2);
+
+            assertDoesNotThrow(runtime::close);
+            assertFalse(first.isAlive());
+            assertFalse(queued.isAlive());
+        } finally {
+            releaseExecutor.countDown();
+            try {
+                runtime.close();
+            } catch (IllegalStateException ignored) {
+                // Preserve the primary assertion if a broken implementation
+                // already reported a close failure above.
+            }
+        }
+    }
+
+    @Test
     void privateAndSharedActorsUseDifferentDispatchers() throws Exception {
         var config = new ActorRuntime.DispatcherConfig(1, 1, 16);
         try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
