@@ -1098,7 +1098,8 @@ public final class TreeShaker {
                     }
                 }
                 if (!declarations.isEmpty()) {
-                    modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), declarations));
+                    modules.add(new Ast.ModuleDecl(
+                            module.name(), module.storage(), module.annotations(), declarations));
                 }
             }
 
