@@ -54,7 +54,7 @@ public final class OresScheduler implements AutoCloseable {
     }
 
     /** Result of one resumable task turn. */
-    public sealed interface Step<T> permits Done, Await { }
+    public sealed interface Step<T> permits Done, Await, TailAwait { }
 
     /** The async task has produced its final value. */
     public record Done<T>(T value) implements Step<T> { }
@@ -68,6 +68,12 @@ public final class OresScheduler implements AutoCloseable {
             Objects.requireNonNull(future, "future");
         }
     }
+
+    /**
+     * Proper async tail transfer. The current logical frame has already been
+     * replaced, but this remains a hard scheduler boundary.
+     */
+    public record TailAwait<T>() implements Step<T> { }
 
     /**
      * Input delivered to a compiler-generated state machine when it starts or
@@ -267,6 +273,10 @@ public final class OresScheduler implements AutoCloseable {
         return new Await<>(Objects.requireNonNull(future, "future"));
     }
 
+    public static <T> Step<T> tailAwait() {
+        return new TailAwait<>();
+    }
+
     /**
      * Start one compiler-lowered async task on this scheduler.
      *
@@ -462,6 +472,11 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
+                if (step instanceof TailAwait<?>) {
+                    armTailAwait();
+                    return;
+                }
+
                 failTerminal(new IllegalStateException(
                         "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
@@ -504,6 +519,20 @@ public final class OresScheduler implements AutoCloseable {
                 });
             } catch (RuntimeException | Error registrationFailure) {
                 failTerminal(registrationFailure);
+            }
+        }
+
+        /**
+         * Publish only a synthetic resume token. executing remains true until
+         * afterCarrierTurn(), so the replacement frame cannot run inline.
+         */
+        private void armTailAwait() {
+            if (!phase.compareAndSet(RUNNING, WAITING)) {
+                return;
+            }
+            if (!pendingResume.compareAndSet(null, Resume.completed(null, null))) {
+                failTerminal(new IllegalStateException(
+                        "tail-await attempted to publish more than one resume"));
             }
         }
 

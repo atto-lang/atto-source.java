@@ -32,6 +32,7 @@ public final class OresContext implements AutoCloseable {
     private final AtomicLong schedulerSafepoints = new AtomicLong();
     private final IsolatePolicy isolatePolicy;
     private final ExecutionProfile executionProfile;
+    private final String codeGenerationId;
     private static final int MAX_USER_SCHEDULERS = 32;
     private static final int MAX_USER_SCHEDULER_PARALLELISM = 64;
     private static final int MAX_USER_SCHEDULER_CARRIERS = 256;
@@ -49,6 +50,7 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
+        this.codeGenerationId = OresVM.generationDiagnosticId(env.getApplicationArguments());
         this.vm = OresVM.contextOwner(env.getApplicationArguments());
         ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory =
                 vm.generationLeaseFactory(env.getApplicationArguments());
@@ -79,6 +81,7 @@ public final class OresContext implements AutoCloseable {
     public UUID contextId() { return contextId; }
     public IsolatePolicy isolatePolicy() { return isolatePolicy; }
     public ExecutionProfile executionProfile() { return executionProfile; }
+    public String codeGenerationId() { return codeGenerationId; }
 
     public void requireCapability(IsolatePolicy.Capability capability, String api) {
         IsolatePolicy actorPolicy = ActorRuntime.currentActorPolicy();
