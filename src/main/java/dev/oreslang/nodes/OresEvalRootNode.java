@@ -344,6 +344,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunctionBody(Ast.FunctionDecl fn, List<?> args) {
+            if (!fn.trapped()) return callFunctionBodyUntrapped(fn, args);
+            try {
+                Object value = callFunctionBodyUntrapped(fn, args);
+                return List.of(
+                        new OptionValue(true, value),
+                        new OptionValue(false, null));
+            } catch (OresPanic panic) {
+                // trap is intentionally narrower than panic/recovery semantics.
+                throw panic;
+            } catch (RuntimeException failure) {
+                return List.of(
+                        new OptionValue(false, null),
+                        new OptionValue(true, failure));
+            }
+        }
+
+        private Object callFunctionBodyUntrapped(Ast.FunctionDecl fn, List<?> args) {
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -376,7 +393,7 @@ public final class OresEvalRootNode extends RootNode {
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
             Env env = new Env(parent);
-            ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
+            ArrayDeque<Invokable> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             try {
                 for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
@@ -388,7 +405,7 @@ public final class OresEvalRootNode extends RootNode {
             } finally {
                 boolean deferredFailure = false;
                 try {
-                    while (!deferred.isEmpty()) eval(deferred.pop(), env);
+                    while (!deferred.isEmpty()) deferred.pop().call(List.of());
                 } catch (RuntimeException | Error failure) {
                     deferredFailure = true;
                     throw failure;
@@ -398,7 +415,7 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
+        private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Invokable> deferred) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
@@ -431,7 +448,14 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
-            if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
+            if (stmt instanceof Ast.DeferStmt defer) {
+                Object callback = eval(defer.expression(), env);
+                if (!(callback instanceof Invokable invokable)) {
+                    throw new IllegalArgumentException("rt defer requires a zero-argument callback");
+                }
+                deferred.push(invokable);
+                return;
+            }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
                     if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env); return; }
