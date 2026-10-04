@@ -66,6 +66,35 @@ final class RoutineAndLoopTest {
                 """)));
     }
 
+
+    @Test
+    void routinesAreDeclarationOnlyAndNeverFirstClassValues() {
+        IllegalArgumentException expressionStyle = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine work = || -> {
+                        }
+                        """));
+        assertTrue(expressionStyle.getMessage().contains("declaration-only"));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                routine work() => void { return; }
+                fnc caller() => void {
+                  work();
+                  return;
+                }
+                """)));
+
+        IllegalArgumentException extracted = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        routine work() => void { return; }
+                        fnc bad() => void {
+                          val callback = work;
+                          return;
+                        }
+                        """)));
+        assertTrue(extracted.getMessage().contains("cannot be used as a first-class value"));
+    }
+
     @Test
     void methodsOverloadOnlyByArity() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
