@@ -478,6 +478,30 @@ final class NativeNetworkingLanguageTest {
 
 
     @Test
+    void networkCapabilityAloneCannotReachRawNativeTransport() throws Exception {
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    native_net.resolve_all("localhost");
+                    return;
+                  }
+                end
+                """;
+        Exception error = assertThrows(Exception.class, () -> evaluate(program));
+        assertTrue(error.toString().contains("NETWORK_RAW"));
+    }
+
+    @Test
+    void adversarialPoliciesCannotGrantRawNetworkAuthority() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> IsolatePolicy.strictFaas()
+                        .withCapabilities(
+                                IsolatePolicy.Capability.NETWORK,
+                                IsolatePolicy.Capability.NETWORK_RAW));
+    }
+
+    @Test
     void nativeNetRejectsOutOfBoundsGuestBufferRangesBeforeJni() throws Exception {
         String program = """
                 define module app
@@ -488,7 +512,7 @@ final class NativeNetworkingLanguageTest {
                   }
                 end
                 """;
-        Exception error = assertThrows(Exception.class, () -> evaluateWithNetwork(program));
+        Exception error = assertThrows(Exception.class, () -> evaluateWithRawNetwork(program));
         assertTrue(error.toString().contains("byte range is out of bounds"));
     }
 
@@ -498,6 +522,24 @@ final class NativeNetworkingLanguageTest {
                 java.nio.file.Path.of("src/main/c/oresnet.c"));
         assertTrue(source.contains("close(fd) < 0 && errno != EINTR"));
         assertFalse(source.contains("if (errno == EINTR) continue;\n        throw_errno(env, \"close\")"));
+    }
+
+    private static String evaluateWithRawNetwork(String program) throws Exception {
+        IsolatePolicy policy = IsolatePolicy.developer()
+                .withCapabilities(
+                        IsolatePolicy.Capability.NETWORK,
+                        IsolatePolicy.Capability.NETWORK_RAW);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "native-net-raw-test.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = policy.restrictedContextBuilder(ExecutionProfile.serverJit())
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 
     private static String evaluate(String program) throws Exception {
