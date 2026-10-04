@@ -50,6 +50,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
         program = AnnotationExpander.expand(program);
@@ -420,6 +421,15 @@ public final class TypeChecker {
         for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
     }
 
+    private void checkLoopBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
+        loopDepth++;
+        try {
+            checkBlock(body, parent, generics, expectedReturn, self);
+        } finally {
+            loopDepth--;
+        }
+    }
+
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
             Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
@@ -455,6 +465,18 @@ public final class TypeChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.BlockStmt block) {
+            checkBlock(block.body(), env, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.BreakStmt) {
+            if (loopDepth == 0) throw new IllegalArgumentException("'break' may only appear inside loop or for");
+            return;
+        }
+        if (stmt instanceof Ast.ContinueStmt) {
+            if (loopDepth == 0) throw new IllegalArgumentException("'continue' may only appear inside loop or for");
+            return;
+        }
         if (stmt instanceof Ast.ReturnStmt ret) {
             if (ret.value() instanceof Ast.LambdaExpr lambda && expectedReturn instanceof Function expectedFunction) {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
@@ -488,7 +510,7 @@ public final class TypeChecker {
             Type element = iterableElementType(iterable);
             Env loopEnv = new Env(env);
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
-            checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             return;
         }
         if (stmt instanceof Ast.ForStmt loop) {
@@ -496,7 +518,11 @@ public final class TypeChecker {
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopEnv, generics, expectedReturn, self);
             if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
-            checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.LoopStmt loop) {
+            checkLoopBlock(loop.body(), env, generics, expectedReturn, self);
         }
     }
 
