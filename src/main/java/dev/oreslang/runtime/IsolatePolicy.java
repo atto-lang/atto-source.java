@@ -33,6 +33,10 @@ public record IsolatePolicy(
         STDIN,
         STDOUT,
         PROCESS_INFO,
+        /** Access to process-wide global authority/proxies. Never valid for adversarial code. */
+        PROCESS_GLOBAL,
+        /** Trusted authority to expose/revoke selected canonical Symbols at the untrusted boundary. */
+        SYMBOL_EXPORT,
         GC_CONTROL,
         ACTOR_SHARE_READONLY,
         SHARED_MEMORY,
@@ -69,6 +73,15 @@ public record IsolatePolicy(
         if (adversarial && capabilities.contains(Capability.JAVA_SOURCE_INTEROP)) {
             throw new IllegalArgumentException("adversarial isolates cannot grant JAVA_SOURCE_INTEROP");
         }
+        if (adversarial && capabilities.contains(Capability.PROCESS_GLOBAL)) {
+            throw new IllegalArgumentException(
+                    "adversarial/untrusted isolates cannot grant PROCESS_GLOBAL; "
+                            + "global data must cross through mailbox value transport instead");
+        }
+        if (adversarial && capabilities.contains(Capability.SYMBOL_EXPORT)) {
+            throw new IllegalArgumentException(
+                    "adversarial/untrusted isolates cannot grant SYMBOL_EXPORT");
+        }
     }
 
     /**
@@ -82,8 +95,9 @@ public record IsolatePolicy(
     /** Restricted local/test baseline. Java interop/FFI/native/reflection/process spawning remain denied. */
     public static IsolatePolicy developer() {
         return new IsolatePolicy(
-                Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO, Capability.GC_CONTROL,
-                        Capability.ACTOR_SHARE_READONLY, Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD),
+                Set.of(Capability.STDIN, Capability.STDOUT, Capability.PROCESS_INFO, Capability.PROCESS_GLOBAL,
+                        Capability.SYMBOL_EXPORT, Capability.GC_CONTROL, Capability.ACTOR_SHARE_READONLY,
+                        Capability.SHARED_MEMORY, Capability.HOT_CODE_LOAD),
                 512L * 1024 * 1024, 8192, Duration.ofMinutes(10), false);
     }
 
