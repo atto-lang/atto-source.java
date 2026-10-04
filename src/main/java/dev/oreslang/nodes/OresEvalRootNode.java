@@ -754,7 +754,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("routine " + fn.name()
                                 + " is direct-call-only and cannot be used as a first-class callable value");
                     }
-                    return (Invokable) args -> callFunction(fn, args);
+                    return (Invokable) args -> callFunctionRaw(fn, objectArguments(args));
                 }
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
@@ -1196,7 +1196,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("Mutex.with_lock expects a one-argument lambda/function");
                     }
                     return lock.withLock(value -> {
-                        Object result = callback.call(List.of(value));
+                        Object result = invoke(invokableInvocation(callback, List.of(value)));
                         if (result != null) {
                             throw new IllegalArgumentException(
                                     "Mutex.with_lock callback must return void");
@@ -1216,7 +1216,7 @@ public final class OresEvalRootNode extends RootNode {
                             throw new IllegalArgumentException("SharedMutex.recover expects a one-argument lambda/function");
                         }
                         return shared.recover(value -> {
-                            Object result = callback.call(List.of(value));
+                            Object result = invoke(invokableInvocation(callback, List.of(value)));
                             if (result != null) {
                                 throw new IllegalArgumentException(
                                         "SharedMutex.recover callback must return void");
@@ -1340,7 +1340,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("import fnc requires a reifiable non-actor fnc; '" + name
                                 + "' is direct-call-only or actor-scheduled");
                     }
-                    yield (Invokable) args -> callFunction(fn, args);
+                    yield (Invokable) args -> callFunctionRaw(fn, objectArguments(args));
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
@@ -1365,7 +1365,7 @@ public final class OresEvalRootNode extends RootNode {
             if (fn != null && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.kind() == Ast.CallableKind.FNC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
-                return (Invokable) args -> callFunction(fn, args);
+                return (Invokable) args -> callFunctionRaw(fn, objectArguments(args));
             }
             for (Ast.ModuleDecl candidate : program.modules()) {
                 for (Ast.Decl decl : candidate.declarations()) {
@@ -1415,7 +1415,7 @@ public final class OresEvalRootNode extends RootNode {
                         throw new IllegalArgumentException("callable '" + module.name() + "." + name
                                 + "' is direct-call-only and cannot be extracted as a value");
                     }
-                    return (Invokable) args -> callFunction(fn, args);
+                    return (Invokable) args -> callFunctionRaw(fn, objectArguments(args));
                 }
                 if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
