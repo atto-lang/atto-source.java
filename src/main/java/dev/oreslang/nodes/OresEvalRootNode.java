@@ -841,24 +841,64 @@ public final class OresEvalRootNode extends RootNode {
                     env,
                     deferred,
                     callable);
-            return asyncFold(
-                    body,
-                    flow -> asyncFlatMap(
-                            asyncRunDeferred(deferred, env),
-                            ignored -> {
-                                env.releaseMutexGuards(false);
-                                return asyncPure(flow);
-                            }),
-                    failure -> asyncFold(
-                            asyncRunDeferred(deferred, env),
-                            ignored -> {
-                                env.releaseMutexGuards(true);
-                                return asyncFailure(failure);
-                            },
-                            deferredFailure -> {
-                                env.releaseMutexGuards(true);
-                                return asyncFailure(deferredFailure);
-                            }));
+            return asyncFinalizeBlock(body, deferred, env);
+        }
+
+        /**
+         * Finalize one lexical async scope without rebuilding the caller
+         * continuation chain. Proper tail transfer still has to perform the
+         * lexical cleanup that an ordinary return would perform.
+         */
+        private AsyncPlan asyncFinalizeBlock(
+                AsyncPlan plan,
+                ArrayDeque<Ast.Expr> deferred,
+                Env env) {
+            if (plan instanceof AsyncTailTransfer tail) {
+                return new AsyncThunk(() -> safePlan(() -> {
+                    if (!deferred.isEmpty()) {
+                        return asyncFailure(new IllegalStateException(
+                                "tail-await reached a lexical scope with pending defer cleanup"));
+                    }
+                    env.releaseMutexGuards(false);
+                    return tail;
+                }));
+            }
+            if (plan instanceof AsyncPure pure) {
+                return asyncFlatMap(
+                        asyncRunDeferred(deferred, env),
+                        ignored -> safePlan(() -> {
+                            env.releaseMutexGuards(false);
+                            return asyncPure(pure.value());
+                        }));
+            }
+            if (plan instanceof AsyncFailure failed) {
+                return asyncFold(
+                        asyncRunDeferred(deferred, env),
+                        ignored -> safePlan(() -> {
+                            env.releaseMutexGuards(true);
+                            return asyncFailure(failed.failure());
+                        }),
+                        deferredFailure -> safePlan(() -> {
+                            env.releaseMutexGuards(true);
+                            return asyncFailure(deferredFailure);
+                        }));
+            }
+            if (plan instanceof AsyncThunk thunk) {
+                return new AsyncThunk(() ->
+                        asyncFinalizeBlock(
+                                safePlan(thunk.body()),
+                                deferred,
+                                env));
+            }
+
+            AsyncAwait awaited = (AsyncAwait) plan;
+            return new AsyncAwait(
+                    awaited.future(),
+                    (value, failure) -> asyncFinalizeBlock(
+                            safePlan(() -> awaited.continuation().resume(value, failure)),
+                            deferred,
+                            env),
+                    awaited.site());
         }
 
         private AsyncPlan asyncRunDeferred(ArrayDeque<Ast.Expr> deferred, Env env) {
