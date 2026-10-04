@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class ProjectManifestImportTest {
@@ -66,6 +67,46 @@ final class ProjectManifestImportTest {
 
         assertEquals(2, build.units().size());
         assertTrue(out.toString(StandardCharsets.UTF_8).contains("manifest-path"));
+    }
+
+    @Test
+    void importedWildcardActorCallableCannotBypassActorCompositionBoundary() throws Exception {
+        Path app = temp.resolve("actor-import");
+        Files.createDirectories(app);
+        Path child = app.resolve("child.ores");
+        Path main = app.resolve("main.ores");
+
+        Files.writeString(child, """
+                pub actor fnc child(int value): int {
+                  return value + 1;
+                }
+                """);
+
+        Files.writeString(main, """
+                import * as external from "./child.ores";
+
+                actor fnc parent(int value): int {
+                  return external.child(value);
+                }
+
+                pub routine main(): void {
+                  stdio.stdout.write(parent(1));
+                  return;
+                }
+                """);
+
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> LinkedProgramRunner.run(
+                        main,
+                        IsolatePolicy.developer(),
+                        ExecutionProfile.serverJit(),
+                        Set.of(),
+                        Map.of(),
+                        new ByteArrayOutputStream(),
+                        new ByteArrayOutputStream()));
+
+        assertTrue(failure.getMessage().contains("mailbox-oriented actor composition"));
     }
 
     @Test
