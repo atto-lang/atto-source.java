@@ -611,7 +611,7 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                return declaredFunctionType(fn);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
@@ -916,7 +916,7 @@ public final class TypeChecker {
                                 "generic static function '" + klass.name() + "." + fn.name()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                    return declaredFunctionType(fn);
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function '" + member.member() + "' must be called so arity can select the overload");
                 throw new IllegalArgumentException("unknown static member '" + member.member() + "' on " + klass.name());
@@ -947,7 +947,7 @@ public final class TypeChecker {
                         if (target == null) throw new IllegalArgumentException("cannot resolve method owner for '" + member.member() + "'");
                         Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
                         memberGenerics.addAll(method.genericParameters());
-                        Type signature = functionType(method.parameters(), method.returnType(), memberGenerics, target.ownerType());
+                        Type signature = declaredMethodType(method, memberGenerics, target.ownerType());
                         return substituteGenerics(signature, classGenericBindings(target.owner(), target.ownerType()));
                     }
                     if (methods.size() > 1) throw new IllegalArgumentException("overloaded method '" + member.member() + "' must be called so arity can select the overload");
@@ -1602,7 +1602,7 @@ public final class TypeChecker {
             if (method.isStatic()) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                    declaredMethodContractType(method, generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -1633,7 +1633,7 @@ public final class TypeChecker {
             if (!method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
                 mergeMember(members,
                         methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                        callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                        declaredMethodContractType(method, generics, self),
                         "class " + klass.name());
             }
         }
@@ -2600,6 +2600,39 @@ public final class TypeChecker {
     private void popLocalTypeScope() {
         localClassScopes.pop();
         localInterfaceScopes.pop();
+    }
+
+    private Function declaredFunctionType(Ast.FunctionDecl fn) {
+        Set<String> generics = Set.copyOf(fn.genericParameters());
+        rejectLocalTypeGenericCollisions(fn.body(), generics);
+        pushLocalTypeScope(fn.body());
+        try {
+            return functionType(fn.parameters(), fn.returnType(), generics, null);
+        } finally {
+            popLocalTypeScope();
+        }
+    }
+
+    private Type declaredMethodType(Ast.MethodDecl method, Set<String> generics, Type self) {
+        rejectLocalTypeGenericCollisions(method.body(), generics);
+        pushLocalTypeScope(method.body());
+        try {
+            return functionType(method.parameters(), method.returnType(), generics, self);
+        } finally {
+            popLocalTypeScope();
+        }
+    }
+
+    private Type declaredMethodContractType(Ast.MethodDecl method, Set<String> ownerGenerics, Type self) {
+        Set<String> all = new HashSet<>(ownerGenerics);
+        all.addAll(method.genericParameters());
+        rejectLocalTypeGenericCollisions(method.body(), all);
+        pushLocalTypeScope(method.body());
+        try {
+            return callableContractType(method.genericParameters(), method.parameters(), method.returnType(), ownerGenerics, self);
+        } finally {
+            popLocalTypeScope();
+        }
     }
 
     private Type resolveInLocalScope(Ast.TypeRef ref, Set<String> generics, Type self, List<Ast.Stmt> body) {
