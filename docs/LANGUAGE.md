@@ -429,22 +429,22 @@ capability rules.
 These declarations are semantically equivalent:
 
 ```ores
-define actor Worker as
+define actor Worker {
   let int count = 0;
 
   constructor() {
     self.count = 0;
   }
 
-  pub run1(int value): void {
+  private current(): int {
+    return self.count;
+  }
+
+  pub receive(int value): void {
     self.count = self.count + value;
     return;
   }
-
-  pub run2(int value) -> int {
-    return self.count + value;
-  }
-end
+}
 ```
 
 ```ores
@@ -455,13 +455,13 @@ define class Worker extends Actor as
     self.count = 0;
   }
 
-  pub run1(int value): void {
-    self.count = self.count + value;
-    return;
+  private current(): int {
+    return self.count;
   }
 
-  pub run2(int value) -> int {
-    return self.count + value;
+  pub receive(int value): void {
+    self.count = self.count + value;
+    return;
   }
 end
 ```
@@ -477,41 +477,41 @@ There are three actor execution domains:
 - `untrusted actor` / `UntrustedActor` is the adversarial sandbox domain
   with hard lifetime, fuel, memory, I/O, and capability ceilings.
 
-The three domains use separate dispatcher pools. Every actor still owns exactly
-one logical mailbox and at most one actor turn may execute at a time; carrier
+The three domains use separate dispatcher pools. Every actor owns exactly one
+logical mailbox and at most one actor turn may execute at a time; carrier
 threads may change between turns.
 
-### Actor methods are a typed protocol
+### Actor receive protocol
 
-Public actor instance methods describe the actor's typed external protocol.
-They are **not** independent runtime entrypoints and do not weaken the
-single-mailbox invariant. The compiler lowers the public method set into one
-hidden mailbox envelope/dispatcher, conceptually:
+Every concrete actor must implement exactly one public mailbox ingress:
 
-```text
-ActorRef<Worker>.run1(5)
-    -> WorkerEnvelope.Run1(5)
-    -> one Worker mailbox
-    -> generated dispatcher
-    -> Worker$run1(self, 5)
+```ores
+pub receive(message: Message): void {
+  // one actor turn
+}
 ```
 
-Source code therefore does not need to expose a special
-`receive_message` method. A private actor method is an ordinary direct
-self-call within the current actor turn. Cross-actor public calls are
-mailbox-dispatched and their result is asynchronous; a non-void endpoint
-projects to `Future<R>` at the `ActorRef` boundary.
+All other actor instance methods are private implementation helpers. Returning
+from `receive` completes the current turn; it does **not** terminate the actor.
+The runtime owns the Erlang-style receive loop: it dequeues the next message,
+acquires the actor execution lease, invokes `receive(message)`, and then
+releases/yields the turn. User code therefore cannot pin a carrier thread by
+implementing its own permanent mailbox loop.
 
-Actor/class method return declarations accept `: T` and `-> T` as equivalent
-spellings; legacy `=> T` remains accepted for compatibility. `=>` remains
-the canonical return marker for top-level `fnc`/`routine` declarations.
+`define actor X ...` and `define class X extends Actor ...` have the same
+actor-class semantics and the same receive contract. The compiler and type
+checker both enforce the contract so programmatically constructed ASTs cannot
+bypass it.
 
-Instance methods are not first-class bound callbacks. `worker.run1(...)` is a
-direct receiver call or actor message depending on the receiver, but
-`val callback = worker.run1` is invalid. This prevents implicit
-`(receiver, method)` closure allocation and avoids silently extending actor
-receiver lifetimes. Use an explicit `fnc` or lambda when a first-class
-callable is required.
+Actor/class method return declarations canonically use `: T` or `-> T`.
+Historical `=> T` callable-return syntax remains parse-compatible during the
+migration, but new source should reserve `=>` for type-level callable
+signatures.
+
+Instance methods are not first-class bound callbacks. `self.helper(...)` is a
+direct call within the current actor turn, while extracting `self.helper` as a
+callback is invalid. This prevents implicit receiver capture from extending an
+actor's lifetime or escaping its mailbox turn.
 
 ### Actor ownership/effects
 
