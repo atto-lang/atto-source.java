@@ -702,10 +702,20 @@ public final class OwnershipChecker {
                 Ast.TypeRef target = source.type != null && source.type.isBorrow()
                         ? source.type.borrowedTarget()
                         : source.type;
-                if (!isRtCopyableType(target)) {
+                // TypeChecker has already proven the expression type. The
+                // ownership pass intentionally uses $infer$ for operators, but a
+                // COPY-valued inferred expression is still safe to copy.
+                if (!isRtCopyableType(target)
+                        && !(source.kind == ValueKind.COPY
+                        && target != null
+                        && target.name().equals("$infer$"))) {
                     throw error("rt copy requires a provable copy contract for type '" + displayType(target) + "'");
                 }
-                return new ValueInfo(target, isCopyType(target) ? ValueKind.COPY : ValueKind.MOVE_ONLY, null);
+                return new ValueInfo(target,
+                        source.kind == ValueKind.COPY || isCopyType(target)
+                                ? ValueKind.COPY
+                                : ValueKind.MOVE_ONLY,
+                        null);
             }
             if (ownershipOperation.equals("share")) {
                 requireIntrinsicArity(call, "share", 1);
@@ -713,7 +723,10 @@ public final class OwnershipChecker {
                 Ast.TypeRef target = source.type != null && source.type.isBorrow()
                         ? source.type.borrowedTarget()
                         : source.type;
-                if (!isRtCopyableType(target)) {
+                if (!isRtCopyableType(target)
+                        && !(source.kind == ValueKind.COPY
+                        && target != null
+                        && target.name().equals("$infer$"))) {
                     throw error("rt share requires a provable copy contract for type '" + displayType(target) + "'");
                 }
                 return new ValueInfo(Ast.TypeRef.borrowed(target, false), ValueKind.SHARED, null);
@@ -1798,6 +1811,10 @@ public final class OwnershipChecker {
         if (type == null) return false;
         while (type.isBorrow()) type = type.borrowedTarget();
         if (isCopyType(type)) return true;
+        if (type.name().equals("Option") && type.arguments().size() == 1) {
+            Ast.TypeRef inner = type.arguments().getFirst();
+            return inner.name().equals("null") || isRtCopyableType(inner);
+        }
         if ((type.name().equals("Array") || type.name().equals("List"))
                 && type.arguments().size() == 1) {
             return isRtCopyableType(type.arguments().getFirst());
