@@ -30,7 +30,7 @@ compiler-generated mailbox dispatch over the actor's public protocol methods
 
 For shared actors, every other actor method and every mutable field is private to the behavior. The runtime never dispatches arbitrary public methods.
 
-`Out` is the actor's typed outgoing-mail contract. The actor may emit zero or more `Out` values during a turn; these are appended to its ActorGroup outbox and are not returned from `receive`.
+`Out` is the actor's typed outgoing-mail contract. The actor may emit zero or more `Out` values during a turn; these are appended to its ActorGroup outbox and are not returned from the hidden dispatcher.
 
 A no-output actor uses `ActorBehavior<In, void>`.
 
