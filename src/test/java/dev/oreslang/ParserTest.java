@@ -236,6 +236,62 @@ final class ParserTest {
     }
 
     @Test
+    void actorClassSpawnReturnsTypedActorRefAndPublicCallsReturnFutures() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  let int count = 0;
+
+                  constructor(int initial) {
+                    self.count = initial;
+                  }
+
+                  pub add(int value): void {
+                    self.count = self.count + value;
+                    return;
+                  }
+
+                  pub read() -> int {
+                    return self.count;
+                  }
+
+                  private helper(): int {
+                    return self.count;
+                  }
+                end
+
+                fnc exercise() => void {
+                  val worker = spawn Worker(1);
+                  val alias = worker;
+                  val pending = worker.add(2);
+                  await pending;
+                  val value = await alias.read();
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  private helper(): int { return 1; }
+                end
+
+                fnc bad() => void {
+                  val worker = spawn Worker();
+                  val result = worker.helper();
+                  return;
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define actor Worker as
+                  constructor() {
+                    val f = Futures.completed(1);
+                    await f;
+                  }
+                end
+                """)));
+    }
+
+    @Test
     void actorClassRejectsStaticEscapeHatchesAndReservedIntrinsicNames() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Bad as
