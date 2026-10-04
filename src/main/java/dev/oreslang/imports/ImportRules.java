@@ -82,8 +82,8 @@ public final class ImportRules {
         if (!isJavaPath(imported.path())) return;
 
         String simpleName = javaSimpleName(imported.path());
-        if (imported.kind() == Ast.ImportKind.MODULE) {
-            throw new IllegalArgumentException("Java host classes cannot be imported as Oreslang modules");
+        if (imported.kind() == Ast.ImportKind.MODULE || imported.kind() == Ast.ImportKind.NAMESPACE) {
+            throw new IllegalArgumentException("Java host classes cannot be imported as Oreslang modules/namespaces");
         }
         if (imported.kind() == Ast.ImportKind.CLASS) {
             if (imported.wildcard() || imported.names().size() != 1) {
