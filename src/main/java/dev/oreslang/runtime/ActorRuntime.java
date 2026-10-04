@@ -5638,6 +5638,8 @@ public final class ActorRuntime implements AutoCloseable {
                 new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<ContinuationEnvelope> nextTickContinuations =
                 new ConcurrentLinkedQueue<>();
+        private final AtomicReference<OresFuture.RuntimeWaiterRegistration> suspendedAwaitRegistration =
+                new AtomicReference<>();
         private final Set<ActorTimerWheel.Handle> timers = ConcurrentHashMap.newKeySet();
         private final AtomicLong sharedInboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
@@ -6086,15 +6088,33 @@ public final class ActorRuntime implements AutoCloseable {
 
             logicalTurnSuspended = true;
             try {
-                awaited.whenCompleteRuntime((value, failure) -> enqueueContinuation(
-                        readyContinuations,
-                        new ContinuationEnvelope(
-                                continuation,
-                                value,
-                                unwrapCompletionFailure(failure)),
-                        "resume"));
+                OresFuture.RuntimeWaiterRegistration registration =
+                        awaited.whenCompleteRuntime((value, failure) -> enqueueContinuation(
+                                readyContinuations,
+                                new ContinuationEnvelope(
+                                        continuation,
+                                        value,
+                                        unwrapCompletionFailure(failure)),
+                                "resume"));
+
+                OresFuture.RuntimeWaiterRegistration previous =
+                        suspendedAwaitRegistration.getAndSet(registration);
+                if (previous != null) {
+                    registration.detach();
+                    previous.detach();
+                    logicalTurnSuspended = false;
+                    throw new IllegalStateException(
+                            "actor attempted to retain overlapping await registrations");
+                }
+
+                // stop/fail/runtime-close can race suspension installation while
+                // the current actor turn is still unwinding.
+                if (stopped.get() || closed.get()) {
+                    detachSuspendedAwaitRegistration();
+                }
             } catch (RuntimeException | Error registrationFailure) {
                 logicalTurnSuspended = false;
+                detachSuspendedAwaitRegistration();
                 throw registrationFailure;
             }
             throw ActorTurnSuspendedSignal.INSTANCE;
@@ -6325,6 +6345,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ContinuationEnvelope continuation = readyContinuations.poll();
                     if (continuation == null) return;
                     releaseControlEvent();
+                    detachSuspendedAwaitRegistration();
                     logicalTurnSuspended = false;
                     long continuationDeadline = armMessageDeadline("await continuation");
                     boolean suspendedAgain = false;
@@ -6466,9 +6487,16 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainControlEvents() {
+            detachSuspendedAwaitRegistration();
             while (readyContinuations.poll() != null) releaseControlEvent();
             while (nextTickContinuations.poll() != null) releaseControlEvent();
             logicalTurnSuspended = false;
+        }
+
+        private void detachSuspendedAwaitRegistration() {
+            OresFuture.RuntimeWaiterRegistration registration =
+                    suspendedAwaitRegistration.getAndSet(null);
+            if (registration != null) registration.detach();
         }
 
         private void fail(Throwable failure) {
