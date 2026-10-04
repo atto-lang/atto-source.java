@@ -1568,6 +1568,14 @@ public final class TypeChecker {
                 operation + " expects only Future<T> elements, found " + type);
     }
 
+    private static Type rwReadView(Type element) {
+        if (element instanceof Primitive primitive && primitive != Primitive.VOID) {
+            return element;
+        }
+        if (element instanceof StringLiteral) return Primitive.STRING;
+        return new Borrow(element, false);
+    }
+
     private Type builtinRwLockMember(Type receiver, String member) {
         if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
         Type element = named.arguments().getFirst();
@@ -1595,7 +1603,7 @@ public final class TypeChecker {
 
         if (named.name().equals("RwReadGuard")) {
             return switch (member) {
-                case "value" -> new Function(List.of(), new Borrow(element, false));
+                case "value" -> new Function(List.of(), rwReadView(element));
                 case "release" -> new Function(List.of(), Primitive.VOID);
                 case "is_released" -> new Function(List.of(), Primitive.BOOL);
                 default -> null;
@@ -1604,7 +1612,7 @@ public final class TypeChecker {
 
         if (named.name().equals("RwWriteGuard")) {
             return switch (member) {
-                case "value" -> new Function(List.of(), new Borrow(element, false));
+                case "value" -> new Function(List.of(), rwReadView(element));
                 case "replace" -> new Function(List.of(element), Primitive.VOID);
                 case "release" -> new Function(List.of(), Primitive.VOID);
                 case "is_released" -> new Function(List.of(), Primitive.BOOL);
