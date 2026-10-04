@@ -18,7 +18,9 @@ import dev.oreslang.types.Types.Union;
 import dev.oreslang.types.Types.Type;
 import dev.oreslang.types.Types.Unknown;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -49,6 +51,8 @@ public final class TypeChecker {
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Deque<Map<String, Ast.TypeAliasDecl>> lexicalTypeAliases = new ArrayDeque<>();
+    private final Deque<Map<String, Ast.InterfaceDecl>> lexicalInterfaces = new ArrayDeque<>();
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
 
     public static Ast.Program check(Ast.Program program) {
@@ -212,63 +216,57 @@ public final class TypeChecker {
     }
 
     private void checkFunction(String module, Ast.FunctionDecl fn) {
-        if (fn.name().equals("init")) {
-            Ast.TypeRef initReturn = fn.returnType();
-            if (fn.visibility() != Ast.Visibility.PRIVATE
-                    || fn.async()
-                    || fn.nonLexical()
-                    || fn.actorKind() != Ast.ActorKind.NONE
-                    || !fn.genericParameters().isEmpty()
-                    || !fn.parameters().isEmpty()
-                    || initReturn == null
-                    || !"void".equals(initReturn.name())
-                    || !initReturn.arguments().isEmpty()
-                    || initReturn.inferArguments()) {
-                throw new IllegalArgumentException(
-                        "init hook must be a private synchronous non-actor non-generic zero-arity "
-                                + "fnc/routine returning void");
-            }
-        }
         if (fn.name().equals("main") && fn.actorKind() != Ast.ActorKind.NONE) {
             throw new IllegalArgumentException(
                     "program entrypoint 'main' cannot be an actor fnc; main must run synchronously and explicitly launch actors");
         }
-        Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
-        Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
-        for (Ast.Param param : fn.parameters()) {
-            Type parameterType = resolveParam(param, generics, null);
+
+        pushLexicalTypes(fn.body());
+        try {
+            Set<String> generics = uniqueGenerics(
+                    fn.genericParameters(),
+                    (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
+            Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
+            for (Ast.Param param : fn.parameters()) {
+                Type parameterType = resolveParam(param, generics, null);
+                if (fn.actorKind() != Ast.ActorKind.NONE) {
+                    validateActorCallableBoundaryType(
+                            parameterType,
+                            fn.actorKind(),
+                            false,
+                            "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
+                }
+                env.define(
+                        param.name(),
+                        parameterType,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            Type returns = resolve(fn.returnType(), generics, null);
             if (fn.actorKind() != Ast.ActorKind.NONE) {
                 validateActorCallableBoundaryType(
-                        parameterType,
+                        returns,
                         fn.actorKind(),
-                        false,
-                        "parameter '" + param.name() + "' of actor callable '" + module + "." + fn.name() + "'");
+                        true,
+                        "return type of actor callable '" + module + "." + fn.name() + "'");
             }
-            env.define(
-                    param.name(),
-                    parameterType,
-                    param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        }
-        Type returns = resolve(fn.returnType(), generics, null);
-        if (fn.actorKind() != Ast.ActorKind.NONE) {
-            validateActorCallableBoundaryType(
-                    returns,
-                    fn.actorKind(),
-                    true,
-                    "return type of actor callable '" + module + "." + fn.name() + "'");
-        }
-        Ast.ActorKind previousActorKind = currentActorKind;
-        currentActorKind = fn.actorKind();
-        try {
-            checkBlock(fn.body(), env, generics, returns, null);
+            Ast.ActorKind previousActorKind = currentActorKind;
+            currentActorKind = fn.actorKind();
+            try {
+                checkBlock(fn.body(), env, generics, returns, null);
+            } finally {
+                currentActorKind = previousActorKind;
+            }
+            if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
+                throw new IllegalArgumentException(
+                        "non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name()
+                                + "' must explicitly return on every path");
+            }
+            if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
+                throw new IllegalArgumentException(
+                        "public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+            }
         } finally {
-            currentActorKind = previousActorKind;
-        }
-        if (returns != Primitive.VOID && !definitelyReturns(fn.body())) {
-            throw new IllegalArgumentException("non-void " + fn.kind().name().toLowerCase() + " '" + module + "." + fn.name() + "' must explicitly return on every path");
-        }
-        if (fn.visibility() == Ast.Visibility.PUBLIC && hasInferredArgs(fn.returnType())) {
-            throw new IllegalArgumentException("public callable '" + fn.name() + "' cannot export unresolved <> type arguments");
+            popLexicalTypes();
         }
     }
 
@@ -416,11 +414,50 @@ public final class TypeChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
-        Env env = new Env(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        pushLexicalTypes(body);
+        try {
+            Env env = new Env(parent);
+            for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        } finally {
+            popLexicalTypes();
+        }
+    }
+
+    private void pushLexicalTypes(List<Ast.Stmt> body) {
+        Map<String, Ast.TypeAliasDecl> aliases = new LinkedHashMap<>();
+        Map<String, Ast.InterfaceDecl> localInterfaces = new LinkedHashMap<>();
+        for (Ast.Stmt stmt : body) {
+            if (!(stmt instanceof Ast.LocalTypeDeclStmt local)) continue;
+            Ast.Decl decl = local.declaration();
+            if (decl instanceof Ast.TypeAliasDecl alias) {
+                if (aliases.putIfAbsent(alias.name(), alias) != null || localInterfaces.containsKey(alias.name())) {
+                    throw new IllegalArgumentException("duplicate lexical type '" + alias.name() + "'");
+                }
+            } else if (decl instanceof Ast.InterfaceDecl iface) {
+                if (localInterfaces.putIfAbsent(iface.name(), iface) != null || aliases.containsKey(iface.name())) {
+                    throw new IllegalArgumentException("duplicate lexical type '" + iface.name() + "'");
+                }
+            }
+        }
+        lexicalTypeAliases.push(aliases);
+        lexicalInterfaces.push(localInterfaces);
+    }
+
+    private void popLexicalTypes() {
+        lexicalTypeAliases.pop();
+        lexicalInterfaces.pop();
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.LocalTypeDeclStmt local) {
+            if (local.declaration() instanceof Ast.TypeAliasDecl alias) {
+                Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
+                resolve(alias.target(), aliasGenerics, self);
+            } else if (local.declaration() instanceof Ast.InterfaceDecl iface) {
+                checkInterface(iface);
+            }
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
             boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
@@ -619,18 +656,6 @@ public final class TypeChecker {
             };
         }
         if (expr instanceof Ast.CallExpr call) {
-            if (call.callee() instanceof Ast.NameExpr name
-                    && name.name().equals("init")) {
-                throw new IllegalArgumentException(
-                        "init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
-            }
-            if (call.callee() instanceof Ast.MemberExpr member
-                    && member.member().equals("init")
-                    && member.receiver() instanceof Ast.NameExpr namespace
-                    && modules.containsKey(namespace.name())) {
-                throw new IllegalArgumentException(
-                        "module init is a lifecycle hook and cannot be called directly; startup invokes it exactly once");
-            }
             if (call.callee() instanceof Ast.NameExpr functionName) {
                 Ast.FunctionDecl target = findFunction(functionName.name());
                 if (target != null) {
@@ -2196,13 +2221,18 @@ public final class TypeChecker {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
                 yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
             }
-            case "DynamicStruct" -> {
-                if (ref.inferArguments() || ref.arguments().size() != 1) {
-                    throw new IllegalArgumentException("DynamicStruct requires exactly one explicit value type");
+            case "DynamicStruct" -> throw new IllegalArgumentException(
+                    "DynamicStruct is shelved; use a fixed struct or Map<K,V>");
+            case "Map" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 2) {
+                    throw new IllegalArgumentException("Map requires exactly two explicit type arguments");
                 }
-                Type value = resolve(ref.arguments().getFirst(), generics, self);
-                if (value == Primitive.VOID) throw new IllegalArgumentException("DynamicStruct<void> is invalid");
-                yield new Named("DynamicStruct", List.of(value));
+                Type key = resolve(ref.arguments().get(0), generics, self);
+                Type value = resolve(ref.arguments().get(1), generics, self);
+                if (key == Primitive.VOID || value == Primitive.VOID) {
+                    throw new IllegalArgumentException("Map<void,...> and Map<...,void> are invalid");
+                }
+                yield new Named("Map", List.of(key, value));
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
@@ -2425,11 +2455,19 @@ public final class TypeChecker {
     }
 
     private Ast.InterfaceDecl findInterface(String name) {
+        for (Map<String, Ast.InterfaceDecl> scope : lexicalInterfaces) {
+            Ast.InterfaceDecl local = scope.get(name);
+            if (local != null) return local;
+        }
         if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface name '" + name + "'; qualify it with its module");
         return interfaces.get(name);
     }
 
     private Ast.TypeAliasDecl findTypeAlias(String name) {
+        for (Map<String, Ast.TypeAliasDecl> scope : lexicalTypeAliases) {
+            Ast.TypeAliasDecl local = scope.get(name);
+            if (local != null) return local;
+        }
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
     }
