@@ -1147,6 +1147,11 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
             if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
+            return invoke(staticFunctionInvocation(fn, args));
+        }
+
+        private Object callStaticFunctionRaw(Ast.MethodDecl fn, List<?> args) {
+            if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + fn.name());
             if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
@@ -1156,7 +1161,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
+            } catch (TailCallSignal signal) {
+                return new TailCall(signal.invocation);
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name());
+            }
         }
 
         private Object importedValue(String name) {
