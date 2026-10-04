@@ -1,6 +1,8 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorEntryContract;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.HotReloadManager;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -114,6 +117,237 @@ final class IsolationHotReloadTest {
             assertFalse(generation.started());
             assertThrows(RuntimeException.class, generation::start);
             assertTrue(generation.closed());
+        }
+    }
+
+    @Test
+    void actorEntryStagesExactAbiWithoutExecutingGuestCode() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        String source = """
+                define class Worker extends Actor<int, String, String> as
+                  constructor(seed: int) {
+                    val observed = seed;
+                    return;
+                  }
+
+                  private helper(): int { return 1; }
+
+                  pub receive(message: int): void {
+                    val observed = self.helper();
+                    return;
+                  }
+                end
+
+                export entry Worker;
+                """;
+
+        ActorEntryContract contract = ActorEntryContract.of(
+                "Worker",
+                Ast.ActorKind.SHARED,
+                List.of(Ast.TypeRef.simple("int")),
+                Ast.TypeRef.simple("int"),
+                Ast.TypeRef.simple("String"),
+                Ast.TypeRef.simple("String"));
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var generation = hot.loadActorEntry("worker.ores", source, contract);
+
+            assertFalse(generation.started(),
+                    "actor ABI admission must not execute guest code");
+            assertEquals("Worker", generation.entryExport().orElseThrow().name());
+            assertEquals(
+                    contract.abiDigest(),
+                    generation.actorEntryAbiDigest().orElseThrow());
+            assertEquals(1, hot.liveGenerations());
+        }
+    }
+
+    @Test
+    void genericLoadApisCannotBypassActorEntryContract() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        String source = """
+                define class Worker extends Actor<int, String, String> as
+                  pub receive(message: int): void { return; }
+                end
+
+                export entry Worker;
+                """;
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            IllegalArgumentException generic = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.load("worker.ores", source));
+            assertTrue(generic.getMessage().contains("loadActorEntry"));
+
+            IllegalArgumentException entry = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadEntry("worker.ores", source));
+            assertTrue(entry.getMessage().contains("loadActorEntry"));
+
+            assertEquals(0, hot.liveGenerations(),
+                    "rejected actor entry must not allocate a generation");
+        }
+    }
+
+    @Test
+    void actorEntryRejectsConstructorAndProtocolDriftBeforeStaging() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        ActorEntryContract contract = ActorEntryContract.of(
+                "Worker",
+                Ast.ActorKind.SHARED,
+                List.of(Ast.TypeRef.simple("int")),
+                Ast.TypeRef.simple("int"),
+                Ast.TypeRef.simple("String"),
+                Ast.TypeRef.simple("String"));
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            IllegalArgumentException constructorDrift = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadActorEntry("worker.ores", """
+                            define class Worker extends Actor<int, String, String> as
+                              constructor(seed: String) { return; }
+                              pub receive(message: int): void { return; }
+                            end
+
+                            export entry Worker;
+                            """, contract));
+            assertTrue(constructorDrift.getMessage().contains("constructor"));
+
+            IllegalArgumentException protocolDrift = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadActorEntry("worker.ores", """
+                            define class Worker extends Actor<int, int, String> as
+                              constructor(seed: int) { return; }
+                              pub receive(message: int): void { return; }
+                            end
+
+                            export entry Worker;
+                            """, contract));
+            assertTrue(protocolDrift.getMessage().contains("Actor<Message, Reply, Error>"));
+
+            IllegalArgumentException missingProtocol = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadActorEntry("worker.ores", """
+                            define actor Worker as
+                              constructor(seed: int) { return; }
+                              pub receive(message: int): void { return; }
+                            end
+
+                            export entry Worker;
+                            """, contract));
+            assertTrue(missingProtocol.getMessage().contains("explicitly declare"));
+
+            assertEquals(0, hot.liveGenerations());
+        }
+    }
+
+    @Test
+    void actorEntryDigestIgnoresPrivateImplementationDetails() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        ActorEntryContract contract = ActorEntryContract.of(
+                "Worker",
+                Ast.ActorKind.SHARED,
+                List.of(),
+                Ast.TypeRef.simple("int"),
+                Ast.TypeRef.simple("String"),
+                Ast.TypeRef.simple("String"));
+
+        String v1 = """
+                define class Worker extends Actor<int, String, String> as
+                  private helper(): int { return 1; }
+                  pub receive(message: int): void {
+                    val value = self.helper();
+                    return;
+                  }
+                end
+                export entry Worker;
+                """;
+        String v2 = """
+                define class Worker extends Actor<int, String, String> as
+                  private helper(): int { return 2; }
+                  pub receive(message: int): void {
+                    val value = self.helper();
+                    return;
+                  }
+                end
+                export entry Worker;
+                """;
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var first = hot.loadActorEntry("worker.ores", v1, contract);
+            var second = hot.loadActorEntry("worker.ores", v2, contract);
+
+            assertNotEquals(first.sha256(), second.sha256());
+            assertEquals(
+                    first.actorEntryAbiDigest().orElseThrow(),
+                    second.actorEntryAbiDigest().orElseThrow());
+            assertEquals(contract.abiDigest(), first.actorEntryAbiDigest().orElseThrow());
+        }
+    }
+
+    @Test
+    void isoactorEntryRequiresTrustedIsoactorDomainInPrimaryGraalIsolate() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        String source = """
+                define class Worker extends IsoActor<int, String, String> as
+                  pub receive(message: int): void { return; }
+                end
+                export entry Worker;
+                """;
+        ActorEntryContract contract = ActorEntryContract.of(
+                "Worker",
+                Ast.ActorKind.PRIVATE,
+                List.of(),
+                Ast.TypeRef.simple("int"),
+                Ast.TypeRef.simple("String"),
+                Ast.TypeRef.simple("String"));
+
+        try (HotReloadManager wrongDomain =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> wrongDomain.loadActorEntry(
+                            "worker.ores",
+                            source,
+                            contract));
+            assertTrue(failure.getMessage().contains("TRUSTED_ISOACTOR_JIT"));
+            assertEquals(0, wrongDomain.liveGenerations());
+        }
+
+        try (HotReloadManager isoDomain = new HotReloadManager(
+                policy,
+                policy,
+                ExecutionProfile.serverJit(),
+                HotReloadManager.ExecutionDomain.TRUSTED_ISOACTOR_JIT)) {
+            var generation = isoDomain.loadActorEntry(
+                    "worker.ores",
+                    source,
+                    contract);
+            assertEquals(
+                    HotReloadManager.ExecutionDomain.TRUSTED_ISOACTOR_JIT,
+                    generation.executionDomain());
+            assertFalse(generation.executionDomain().spawnedIsolate(),
+                    "trusted isoactors stay in the primary Graal isolate");
+        }
+    }
+
+    @Test
+    void explicitNonActorEntryStillUsesGenericEntryLoader() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var generation = hot.loadEntry("plugin.ores", """
+                    pub fnc run() -> void { return; }
+                    export entry run;
+                    """);
+
+            assertEquals("run", generation.entryExport().orElseThrow().name());
+            assertTrue(generation.actorEntryAbiDigest().isEmpty());
+            assertFalse(generation.started());
         }
     }
 
