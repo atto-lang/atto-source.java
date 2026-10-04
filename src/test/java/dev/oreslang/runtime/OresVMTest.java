@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -47,11 +49,15 @@ final class OresVMTest {
         assertFalse(Modifier.isPublic(OresVM.class.getModifiers()),
                 "OresVM is a runtime kernel type, not a user/interop API");
 
-        for (Method method : OresContext.class.getMethods()) {
-            assertNotEquals(
-                    OresVM.class,
-                    method.getReturnType(),
-                    "OresContext must never hand guest/interop code the VM object: " + method);
+        for (Class<?> apiType : List.of(OresContext.class, ActorRuntime.class)) {
+            for (Method method : apiType.getMethods()) {
+                assertNotEquals(
+                        OresVM.class,
+                        method.getReturnType(),
+                        apiType.getSimpleName()
+                                + " must never hand guest/interop code the VM object: "
+                                + method);
+            }
         }
     }
 
@@ -113,6 +119,67 @@ final class OresVMTest {
             }
             assertEquals(0, vm.hotReloadManagerCount());
         } finally {
+            vm.shutdownNow();
+        }
+    }
+
+    @Test
+    void actorGenerationLeaseIsAcquiredAtBirthAndReleasedExactlyOnce() {
+        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
+        AtomicInteger activeLeases = new AtomicInteger();
+        AtomicInteger releasedLeases = new AtomicInteger();
+
+        ActorRuntime runtime = ActorRuntime.attachToVm(
+                vm,
+                IsolatePolicy.developer(),
+                ActorRuntime.TurnExecutor.direct(),
+                () -> {
+                    activeLeases.incrementAndGet();
+                    AtomicBoolean released = new AtomicBoolean();
+                    return () -> {
+                        if (released.compareAndSet(false, true)) {
+                            activeLeases.decrementAndGet();
+                            releasedLeases.incrementAndGet();
+                        }
+                    };
+                },
+                ActorRuntime.RuntimePlacement.MAIN_GRAAL_ISOLATE);
+        try {
+            ActorRuntime.ActorRef<String> actor = runtime.spawnPrivate(
+                    IsolatePolicy.developer(),
+                    ignored -> (message, turn) -> { });
+
+            assertEquals(1, activeLeases.get());
+            actor.stop();
+            assertEquals(0, activeLeases.get());
+            assertEquals(1, releasedLeases.get());
+
+            actor.stop();
+            assertEquals(1, releasedLeases.get(),
+                    "actor finalization must never release its generation twice");
+        } finally {
+            runtime.close();
+            vm.shutdownNow();
+        }
+    }
+
+    @Test
+    void mainGraalIsolateRefusesDirectUntrustedActorExecution() {
+        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
+        ActorRuntime runtime = ActorRuntime.attachToVm(
+                vm,
+                IsolatePolicy.developer(),
+                ActorRuntime.TurnExecutor.direct(),
+                () -> () -> { },
+                ActorRuntime.RuntimePlacement.MAIN_GRAAL_ISOLATE);
+        try {
+            SecurityException denied = assertThrows(
+                    SecurityException.class,
+                    () -> runtime.<String>spawnUntrusted(
+                            ignored -> (message, turn) -> { }));
+            assertTrue(denied.getMessage().contains("main Graal isolate"));
+        } finally {
+            runtime.close();
             vm.shutdownNow();
         }
     }
