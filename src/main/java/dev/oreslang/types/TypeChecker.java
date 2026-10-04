@@ -663,7 +663,9 @@ public final class TypeChecker {
             if (local != null) return local.type();
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("Futures")) return new Named("$FuturesFactory", List.of());
-            if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
+            if (name.name().equals("Mutex") || name.name().equals("SharedMutex") || name.name().equals("RwLock")) {
+                return new Named("$" + name.name() + "Factory", List.of());
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -696,10 +698,20 @@ public final class TypeChecker {
                 targetType = binding.type();
                 where = name.name();
             } else if (assignment.target() instanceof Ast.MemberExpr member) {
+                Type rawReceiver = typeOf(member.receiver(), env, generics, self);
+                if (rawReceiver instanceof Borrow borrow && !borrow.mutable()) {
+                    throw new IllegalArgumentException(
+                            "cannot mutate a field through an immutable borrow/read guard");
+                }
                 targetType = memberType(member, env, generics, self);
                 where = member.member();
             } else if (assignment.target() instanceof Ast.IndexExpr indexed) {
-                Type receiver = deref(typeOf(indexed.receiver(), env, generics, self));
+                Type rawReceiver = typeOf(indexed.receiver(), env, generics, self);
+                if (rawReceiver instanceof Borrow borrow && !borrow.mutable()) {
+                    throw new IllegalArgumentException(
+                            "cannot mutate indexed state through an immutable borrow/read guard");
+                }
+                Type receiver = deref(rawReceiver);
                 Type index = typeOf(indexed.index(), env, generics, self);
                 requireAssignable(index, Primitive.INT, "array/list index");
                 if (receiver instanceof ListType list) targetType = list.element();
@@ -830,22 +842,28 @@ public final class TypeChecker {
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
                     && factoryCall.receiver() instanceof Ast.NameExpr factory
-                    && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
+                    && (factory.name().equals("Mutex")
+                            || factory.name().equals("SharedMutex")
+                            || factory.name().equals("RwLock"))
                     && factoryCall.member().equals("new")) {
-                if (factory.name().equals("SharedMutex") && currentActorKind != Ast.ActorKind.NONE) {
+                if ((factory.name().equals("SharedMutex") || factory.name().equals("RwLock"))
+                        && currentActorKind != Ast.ActorKind.NONE) {
                     throw new IllegalArgumentException(
-                            "actor code cannot create writable SharedMutex state; actor mutation is limited to self-owned state");
+                            "actors cannot create external shared mutable state; "
+                                    + "use actor-owned state for writes and receive an explicit RwLock<T> read capability");
                 }
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
                 Type element = typeOf(call.arguments().getFirst(), env, generics, self);
                 if (element instanceof Borrow) {
                     throw new IllegalArgumentException(
-                            factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
+                            factory.name() + "<T> requires owned data; borrowed values cannot become lock state");
                 }
-                if (factory.name().equals("SharedMutex") && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
+                if ((factory.name().equals("SharedMutex") || factory.name().equals("RwLock"))
+                        && !isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
                     throw new IllegalArgumentException(
-                            "SharedMutex<T> requires shared-safe owned data; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
+                            factory.name() + "<T> requires shared-safe owned data; "
+                                    + "borrows, locks/guards, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 return new Named(factory.name(), List.of(element));
             }
@@ -866,7 +884,8 @@ public final class TypeChecker {
                 };
             }
             if (call.callee() instanceof Ast.MemberExpr member) {
-                Type receiver = deref(typeOf(member.receiver(), env, generics, self));
+                Type rawReceiver = typeOf(member.receiver(), env, generics, self);
+                Type receiver = deref(rawReceiver);
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
@@ -998,6 +1017,10 @@ public final class TypeChecker {
                     if (klass != null) {
                         ResolvedMethod target = findMethodTarget(klass, named, member.member(), call.arguments().size(), new LinkedHashSet<>());
                         if (target == null) throw new IllegalArgumentException("no method '" + member.member() + "' with arity " + call.arguments().size() + " on " + named.name());
+                        if (rawReceiver instanceof Borrow borrow && !borrow.mutable()) {
+                            throw new IllegalArgumentException(
+                                    "cannot invoke a potentially mutating method through an immutable borrow/read guard");
+                        }
                         Ast.MethodDecl method = target.method();
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
@@ -1072,6 +1095,8 @@ public final class TypeChecker {
             if (futureMember != null) return futureMember;
             Type actorHandleMember = builtinActorHandleMember(sumReceiver, member.member());
             if (actorHandleMember != null) return actorHandleMember;
+            Type rwLockMember = builtinRwLockMember(receiver, member.member());
+            if (rwLockMember != null) return rwLockMember;
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
             receiver = unwrapMutexGuard(receiver);
@@ -1113,10 +1138,39 @@ public final class TypeChecker {
                         return substituteGenerics(pattern, classGenericBindings(field.owner(), field.ownerType()));
                     }
                     List<Ast.MethodDecl> methods = findMethodsByName(klass, member.member(), new LinkedHashSet<>());
-                    if (!methods.isEmpty()) {
+                    if (!methods.isEmpty() && klass.actorKind() != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
-                                "instance method '" + klass.name() + "." + member.member()
-                                        + "' is not a first-class value; invoke it directly through its receiver");
+                                "actor method '" + klass.name() + "." + member.member()
+                                        + "' is not a first-class value and cannot escape an actor turn");
+                    }
+                    if (methods.size() == 1) {
+                        Ast.MethodDecl method = methods.getFirst();
+                        if (!method.genericParameters().isEmpty()) {
+                            throw new IllegalArgumentException(
+                                    "generic method '" + klass.name() + "." + method.name()
+                                            + "' must be specialized by a direct call; polymorphic bound-method values are not supported yet");
+                        }
+                        ResolvedMethod target = findMethodTarget(
+                                klass, named, member.member(), method.arity(), new LinkedHashSet<>());
+                        if (target == null) {
+                            throw new IllegalArgumentException(
+                                    "cannot resolve method owner for '" + member.member() + "'");
+                        }
+                        Set<String> memberGenerics = new HashSet<>(target.owner().genericParameters());
+                        memberGenerics.addAll(method.genericParameters());
+                        Type signature = functionType(
+                                method.parameters(),
+                                method.returnType(),
+                                memberGenerics,
+                                target.ownerType());
+                        return substituteGenerics(
+                                signature,
+                                classGenericBindings(target.owner(), target.ownerType()));
+                    }
+                    if (methods.size() > 1) {
+                        throw new IllegalArgumentException(
+                                "overloaded method '" + member.member()
+                                        + "' must be called so arity can select the overload");
                     }
                 }
             }
@@ -1532,6 +1586,19 @@ public final class TypeChecker {
             throw new IllegalArgumentException(
                     where + " cannot use writable SharedMutex<T>; actor boundaries admit data, ActorRef capabilities, and explicit read-only external-state capabilities only");
         }
+        if (named.name().equals("RwLock")) {
+            if (actorKind != Ast.ActorKind.SHARED) {
+                throw new IllegalArgumentException(
+                        where + " can use RwLock<T> only with shared actors; "
+                                + "iso/private and untrusted actors cannot access shared external memory");
+            }
+            if (named.arguments().size() != 1
+                    || !isSharedSafe(named.arguments().getFirst(), new LinkedHashSet<>(), Map.of())) {
+                throw new IllegalArgumentException(
+                        where + " requires RwLock<T> to contain shared-safe owned data");
+            }
+            return;
+        }
         if (named.name().equals("ActorRef")) {
             if (named.arguments().size() != 1) {
                 throw new IllegalArgumentException(where + " requires ActorRef<ActorOrProtocol>");
@@ -1603,6 +1670,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
+                || named.name().equals("RwLock") || named.name().equals("RwReadGuard")
+                || named.name().equals("RwWriteGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
                 || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
@@ -1829,6 +1898,61 @@ public final class TypeChecker {
         }
         throw new IllegalArgumentException(
                 operation + " expects only Future<T> elements, found " + type);
+    }
+
+    private static Type rwReadView(Type element) {
+        if (element instanceof Primitive primitive && primitive != Primitive.VOID) {
+            return element;
+        }
+        if (element instanceof StringLiteral) return Primitive.STRING;
+        return new Borrow(element, false);
+    }
+
+    private Type builtinRwLockMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
+        Type element = named.arguments().getFirst();
+
+        if (named.name().equals("RwLock")) {
+            if (currentActorKind != Ast.ActorKind.NONE
+                    && (member.equals("write_lock") || member.equals("try_write_lock"))) {
+                throw new IllegalArgumentException(
+                        "actors cannot acquire an RwLock write guard; "
+                                + "use actor-owned state for writes and RwLock<T> only for external reads");
+            }
+
+            Type readGuard = new Named("RwReadGuard", List.of(element));
+            Type writeGuard = new Named("RwWriteGuard", List.of(element));
+            return switch (member) {
+                case "read_lock" -> new Function(List.of(), readGuard);
+                case "try_read_lock" -> new Function(
+                        List.of(), new Named("Option", List.of(readGuard)));
+                case "write_lock" -> new Function(List.of(), writeGuard);
+                case "try_write_lock" -> new Function(
+                        List.of(), new Named("Option", List.of(writeGuard)));
+                default -> null;
+            };
+        }
+
+        if (named.name().equals("RwReadGuard")) {
+            return switch (member) {
+                case "value" -> new Function(List.of(), rwReadView(element));
+                case "release" -> new Function(List.of(), Primitive.VOID);
+                case "is_released" -> new Function(List.of(), Primitive.BOOL);
+                default -> null;
+            };
+        }
+
+        if (named.name().equals("RwWriteGuard")) {
+            return switch (member) {
+                case "value" -> new Function(List.of(), rwReadView(element));
+                case "replace" -> new Function(List.of(element), Primitive.VOID);
+                case "release" -> new Function(List.of(), Primitive.VOID);
+                case "is_released" -> new Function(List.of(), Primitive.BOOL);
+                default -> null;
+            };
+        }
+
+        return null;
     }
 
     private Type builtinMutexMember(Type receiver, String member) {
@@ -2636,6 +2760,8 @@ public final class TypeChecker {
             }
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
+            case "RwReadGuard", "RwWriteGuard" -> throw new IllegalArgumentException(
+                    ref.name() + "<T> is compiler-managed and cannot be named in source declarations; acquire it from RwLock<T>");
             case "Mutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Mutex requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
@@ -2676,6 +2802,18 @@ public final class TypeChecker {
                             "SharedMutex<T> requires a concrete shared-safe type; borrows, Mutex, MutexGuard, Future, closures, and unresolved generic/dynamic values are not shareable");
                 }
                 yield new Named("SharedMutex", List.of(element));
+            }
+            case "RwLock" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException("RwLock requires exactly one explicit type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) throw new IllegalArgumentException("RwLock<void> is invalid");
+                if (!isSharedSafe(element, new LinkedHashSet<>(), Map.of())) {
+                    throw new IllegalArgumentException(
+                            "RwLock<T> requires a concrete shared-safe type");
+                }
+                yield new Named("RwLock", List.of(element));
             }
             case "Fnc" -> {
                 List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
