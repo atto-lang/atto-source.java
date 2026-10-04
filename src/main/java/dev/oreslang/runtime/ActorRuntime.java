@@ -2674,7 +2674,21 @@ public final class ActorRuntime implements AutoCloseable {
          * blocks the carrier and never runs the continuation inline, even when
          * the stage is already complete.
          */
-        void suspendOn(CompletionStage<?> awaited, ActorContinuation continuation);
+        /**
+         * Preferred Oreslang suspension ABI. OresFuture completion is
+         * runtime-owned and exposes no guest callback execution surface.
+         */
+        void suspendOn(OresFuture<?> awaited, ActorContinuation continuation);
+
+        /**
+         * Host-interop compatibility adapter. The stage is immediately
+         * normalized into an OresFuture before suspension.
+         */
+        default void suspendOn(
+                CompletionStage<?> awaited,
+                ActorContinuation continuation) {
+            suspendOn(OresFuture.from(awaited), continuation);
+        }
 
         /**
          * Schedule actor-local work for a later scheduler turn. nextTick work is
@@ -2793,7 +2807,7 @@ public final class ActorRuntime implements AutoCloseable {
             this.ref = Objects.requireNonNull(ref);
             this.result = Objects.requireNonNull(result);
             this.done = new OresFuture<>(() -> result.cancel(true));
-            result.whenComplete((value, failure) -> {
+            result.whenCompleteRuntime((value, failure) -> {
                 if (failure == null) {
                     done.completeFromRuntime(Boolean.TRUE);
                 } else {
@@ -5926,7 +5940,7 @@ public final class ActorRuntime implements AutoCloseable {
             schedule();
         }
 
-        private void suspendOn(CompletionStage<?> awaited, ActorContinuation continuation) {
+        private void suspendOn(OresFuture<?> awaited, ActorContinuation continuation) {
             Objects.requireNonNull(awaited, "awaited");
             Objects.requireNonNull(continuation, "continuation");
             if (currentActor.get() != this) {
@@ -5939,7 +5953,7 @@ public final class ActorRuntime implements AutoCloseable {
 
             logicalTurnSuspended = true;
             try {
-                awaited.whenComplete((value, failure) -> enqueueContinuation(
+                awaited.whenCompleteRuntime((value, failure) -> enqueueContinuation(
                         readyContinuations,
                         new ContinuationEnvelope(
                                 continuation,
@@ -6128,7 +6142,7 @@ public final class ActorRuntime implements AutoCloseable {
                         return Optional.ofNullable(outboundHttp);
                     }
                     @Override public void suspendOn(
-                            CompletionStage<?> awaited,
+                            OresFuture<?> awaited,
                             ActorContinuation continuation) {
                         ActorCell.this.suspendOn(awaited, continuation);
                     }
