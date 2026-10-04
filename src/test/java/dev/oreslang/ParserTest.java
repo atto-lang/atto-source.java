@@ -180,6 +180,12 @@ final class ParserTest {
                   pub run<T>(T value): void { return; }
                 end
                 """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor MutableEndpoint as
+                  pub run(int mut value): void { return; }
+                end
+                """));
     }
 
     @Test
