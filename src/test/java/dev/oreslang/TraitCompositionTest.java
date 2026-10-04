@@ -296,7 +296,7 @@ final class TraitCompositionTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define module app as
                           define trait Stateful as
-                            private val int state = 1;
+                            pub value() => int { return 1; }
                           end
 
                           fnc bad(Stateful value) => void {
@@ -310,7 +310,7 @@ final class TraitCompositionTest {
                 () -> TypeChecker.check(Parser.parse("""
                         define module app as
                           define trait Stateful as
-                            private val int state = 1;
+                            pub value() => int { return 1; }
                           end
 
                           fnc bad() => void {
