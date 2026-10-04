@@ -1079,7 +1079,7 @@ Borrow rules:
 - ordinary borrows cannot be hidden inside owning lists/tuples/objects/structs/classes/Options until explicit container lifetime relationships are modeled;
 - temporary call borrows end at the call boundary;
 - borrows stored or re-bound in local bindings remain active until every registered alias leaves lexical scope;
-- detached values created by `share(...)` are not ordinary borrows and may be stored, captured, or returned safely.
+- shared owners created by `share(...)` are not ordinary borrows: they retain the same runtime identity while relinquishing unique mutation/take authority. Unqualified storage/return surfaces must fail closed until shared ownership is represented explicitly.
 
 The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
@@ -1103,7 +1103,7 @@ The operations are:
 - `borrow(x)` — immutable borrow of `x`. A persistent binding created from it keeps the owner borrowed until that binding leaves scope.
 - `copy(x)` — produce a new owned value while preserving `x`. `copy(borrow(x))` is valid and returns a new owner.
 - `take(x)` — explicitly transfer ownership. It rejects borrowed values; after taking a move-only owner, the old binding is unusable.
-- `share(x)` — produce an independent, deeply read-only snapshot. It is typed as an immutable view but has no borrow dependency on the source owner, so the source may be mutated afterward and the shared snapshot may safely escape the source's local lifetime.
+- `share(x)` — convert unique ownership into read-only shared ownership of the **same runtime value/reference**. It does not copy or freeze a detached snapshot. The original binding and new alias are readable shared owners, but neither retains unique mutation/take authority.
 
 `copy` intentionally differs by aggregate kind:
 
@@ -1119,7 +1119,7 @@ The four ownership operations are deliberately type-aware rather than aliases fo
 | `copy(x)` | compiler-derived recursive value copy; original remains usable | invokes the concrete class's own verified `copy() => Self`; original identity remains usable |
 | `take(x)` | transfers ownership of the whole value without copying | transfers ownership of the class identity/owning handle without cloning the object graph |
 | `borrow(x)` | temporary immutable view into the owned value; no copy | temporary immutable alias to the same class identity; no ownership transfer |
-| `share(x)` | detached deeply read-only snapshot derived recursively | detached deeply read-only snapshot through the same verified class-copy boundary, then recursively frozen |
+| `share(x)` | read-only shared ownership of the same value/reference; no copy | read-only shared ownership of the same class identity/reference; no copy |
 
 This distinction is semantic, not an optimization hint. Backends may elide physical moves/copies when uniqueness and escape analysis prove that doing so preserves these observable ownership rules.
 
@@ -1148,7 +1148,7 @@ pub copy() => Bucket {
 }
 ```
 
-`share` uses the same guaranteed-copy boundary and then freezes the detached graph. The freeze is recursive and identity-aware, so shared snapshots cannot become a writable alias back into the source graph.
+`share` is deliberately **not** part of the Copy contract. It preserves runtime identity and changes ownership authority rather than constructing independent storage. The same-reference shared-ownership semantics are authoritative in the pointerless-reference stack (#186); this copy-focused draft must not reintroduce detached snapshot/freeze semantics.
 
 The legacy `&T` / `&mut T` syntax remains supported for compatibility. `borrow(x)` is the preferred pointer-free immutable-borrow spelling while the broader Java-like default-borrow parameter model continues to evolve.
 
