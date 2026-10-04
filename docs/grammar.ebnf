@@ -1,11 +1,18 @@
 (* Oreslang v0.6 concrete grammar. Semantic restrictions are described in LANGUAGE.md. *)
 
-source          = [ namespace_decl ] { import_decl } { top_level_item } EOF ;
-namespace_decl  = "namespace" IDENT ";" ;
+source          = { import_decl } { top_level_item } EOF ;
+
+namespace_decl  = ( "define" | "declare" ) "namespace" IDENT "as" namespace_body ;
+namespace_body  = "{" { namespace_member } "}"
+                | { namespace_member } "end" ;
+namespace_member= class_decl
+                | interface_decl
+                | type_decl ;
 
 import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
                 | "module" import_names
+                | "namespace" import_names
                 | "class" import_names
                 | "fnc" import_names ;
 import_names    = IDENT [ "as" IDENT ]
@@ -13,6 +20,7 @@ import_names    = IDENT [ "as" IDENT ]
                 | "*" "as" IDENT ;
 
 top_level_item  = annotated_module_decl
+                | namespace_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
@@ -225,8 +233,7 @@ qualified_name  = IDENT { "." IDENT } ;
 
 (* Semicolons are recommended. stmt_terminator/member_terminator may be omitted
    only at an unambiguous structural boundary such as immediately before
-   "}", "fi", or "end". Imports and namespace declarations keep explicit
-   semicolons in v0.4. *)
+   "}", "fi", or "end". Imports keep explicit semicolons. *)
 
 stmt_terminator   = ";" | SAFE_STRUCTURAL_BOUNDARY ;
 member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
@@ -239,11 +246,18 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - An obj{} literal containing any dynamic key has DynamicStruct<T> type,
      where T is the joined value type. DynamicStruct<T> accepts arbitrary
      string keys and values assignable to T.
-   - Each source file is a separately versioned compilation/code unit and is the
-     default package identity when no explicit namespace is declared.
-   - Source namespaces are flat: namespace a.b; is illegal.
-   - Modules are flat: module names are single identifiers and modules may not
-     contain modules.
+   - Each source file is a separately versioned compilation/code unit. Its
+     canonical Unix-style source path is its package/code-unit identity.
+   - A module is a named scope/namespace in the broad sense, but the namespace
+     keyword declares a distinct type-only container.
+   - Namespace containers may contain only type aliases, interfaces, concrete
+     classes, and abstract classes. They cannot contain functions, routines,
+     actors, bindings/state, init hooks, modules, or nested namespaces.
+   - Modules and namespaces are flat: their names are single identifiers and
+     neither container may contain another module or namespace.
+   - Classes/interfaces/modules/namespaces/type aliases are static program
+     structure; instances and DynamicStruct/map data may still be created
+     dynamically at runtime.
    - fnc declarations may recurse; routines may not participate in a call cycle.
    - nlex on a fnc/routine is a capture barrier inherited by lambdas created
      inside it; an explicit nlex lambda establishes the same barrier.
