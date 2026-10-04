@@ -62,6 +62,69 @@ public final class OresEvalRootNode extends RootNode {
                 : codeUnitDigest;
     }
 
+    /**
+     * Copy contracts are only verifiable for guest values whose mutable graph
+     * the runtime can traverse, plus explicitly recognized immutable
+     * capabilities. Opaque host/FFI references fail closed: otherwise a class
+     * copy() could mutate or retain foreign storage without the verifier being
+     * able to observe the alias.
+     */
+    static void requireInspectableCopyGraph(Object value) {
+        requireInspectableCopyGraph(value, new IdentityHashMap<>());
+    }
+
+    private static void requireInspectableCopyGraph(
+            Object value,
+            IdentityHashMap<Object, Boolean> seen) {
+        if (value == null
+                || value instanceof String
+                || value instanceof Number
+                || value instanceof Boolean
+                || value instanceof Character
+                || value instanceof Complex
+                || value instanceof ActorRuntime.ActorId
+                || value instanceof ActorRuntime.ActorRef<?>
+                || value instanceof ActorRuntime.Shared<?>) {
+            return;
+        }
+        if (seen.put(value, Boolean.TRUE) != null) return;
+
+        if (value instanceof OptionValue option) {
+            if (option.present()) requireInspectableCopyGraph(option.value(), seen);
+            return;
+        }
+        if (value instanceof OresObject object) {
+            for (Object field : object.fields.values()) {
+                requireInspectableCopyGraph(field, seen);
+            }
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) requireInspectableCopyGraph(item, seen);
+            return;
+        }
+        if (value instanceof Set<?> set) {
+            for (Object item : set) requireInspectableCopyGraph(item, seen);
+            return;
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                requireInspectableCopyGraph(entry.getKey(), seen);
+                requireInspectableCopyGraph(entry.getValue(), seen);
+            }
+            return;
+        }
+        if (value instanceof Object[] array) {
+            for (Object item : array) requireInspectableCopyGraph(item, seen);
+            return;
+        }
+
+        throw new IllegalArgumentException(
+                "rt copy cannot verify opaque foreign/host reference of type "
+                        + value.getClass().getName()
+                        + "; provide an explicit immutable/copy adapter instead");
+    }
+
     private static String digestText(String text) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
@@ -1133,6 +1196,10 @@ public final class OresEvalRootNode extends RootNode {
                             + "public, instance-bound, declared directly on the class, and read-only");
                 }
 
+                // Fail closed before running user copy code if the source
+                // contains host/FFI storage whose mutation/alias graph cannot
+                // be inspected by OresVM.
+                requireInspectableCopyGraph(object);
                 Object sourceSnapshot = copySingletonValue(object, new IdentityHashMap<>());
                 copies.put(value, COPY_IN_PROGRESS);
                 Object copied;
@@ -1155,6 +1222,9 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("class '" + dispatchClass.name()
                             + "' copy() must return a fresh instance of the same concrete class");
                 }
+                // Fresh foreign/host references are also rejected until an
+                // explicit adapter defines their copy/immutability contract.
+                requireInspectableCopyGraph(result);
                 assertNoMutableAliases(object, result);
                 copies.put(value, result);
                 return result;
