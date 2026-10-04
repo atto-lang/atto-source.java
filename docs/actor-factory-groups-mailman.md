@@ -512,3 +512,153 @@ state: STARTING | READY | DRAINING | STOPPED | FAILED
 ```
 
 Actors should normally carry `ActorGroupRef` / send capabilities rather than perform ambient global string lookups on every message.
+
+
+## 17. Actor factory catalog and tree shaking
+
+Do **not** make actor/worker definitions self-register at runtime.
+
+A Java/Angular-style eager registry implemented through import-time/static initialization would create several problems:
+
+- merely importing a file could mutate global runtime state;
+- every potentially registering actor definition could become an implicit executable root;
+- tree shaking would have to conservatively retain definitions whose registration side effect might run;
+- hot-reload generations could accidentally share/stomp registry entries;
+- startup order would become observable;
+- sandboxed/untrusted code could gain an ambient discovery surface.
+
+Oreslang instead uses a **compiler/linker-generated actor factory catalog**.
+
+Conceptually:
+
+```text
+source actor factories
+        +
+.ores-actors.toml static group factory references
+        +
+.ores-actors.toml dynamic-template factory references
+        +
+explicitly exported actor factories
+        |
+        v
+closed-world reachability / tree shaking
+        |
+        v
+generated ActorFactoryCatalog for this executable/generation
+```
+
+The catalog is immutable after a code generation becomes active.
+
+It is not populated by executing actor definitions. Actor declarations remain inert until explicitly spawned.
+
+### Build roots
+
+The tree shaker treats the following as roots:
+
+1. the ordinary executable roots such as `main`;
+2. every factory named by a static startup group;
+3. every factory named by a dynamic group template;
+4. every actor factory deliberately exported for runtime/supervisor lookup.
+
+Everything else remains removable.
+
+Example:
+
+```toml
+[[group]]
+name = "workers"
+factory = "workers/worker.ores::worker"
+min_actors = 8
+max_actors = 128
+
+[[group_template]]
+name = "tenant-workers"
+factory = "workers/tenant_worker.ores::worker"
+max_instances = 1024
+min_actors = 0
+max_actors = 32
+```
+
+Those two symbolic factory references are additional build roots. An unrelated actor factory in `workers/experimental.ores` is still tree-shaken if ordinary reachable code does not reference it.
+
+### Explicit discoverability
+
+If an application truly needs name-based actor-factory lookup beyond configured groups/templates, discoverability must be explicit rather than automatic.
+
+Proposed declaration marker:
+
+```ores
+@ExportActorFactory
+pub actor fnc image_worker(Config cfg):
+    ActorBehavior<ImageJob, ImageEvent> {
+  return new ImageWorker(cfg);
+}
+```
+
+`@ExportActorFactory` means:
+
+- retain this actor factory as a build root;
+- add one descriptor to the generated catalog;
+- permit trusted supervisor/root code to resolve it by its canonical factory key.
+
+It does **not** execute the factory, spawn an actor, create a group, or grant ordinary actor code ambient registry access.
+
+Library builds may retain exported actor factories as part of the public ABI. Executable builds retain only config-referenced/reachable/explicitly-exported factories.
+
+### Catalog descriptor
+
+The generated catalog should contain metadata, not live actor objects:
+
+```text
+ActorFactoryDescriptor {
+  key
+  actor_kind
+  input_type
+  output_type
+  abi_digest
+  code_generation
+}
+```
+
+A canonical key should be based on the path-oriented Oreslang dependency model, for example:
+
+```text
+workers/tenant_worker.ores::worker
+```
+
+The descriptor is linked to compiler-generated factory code for that same generation.
+
+Dynamic group creation therefore resolves:
+
+```text
+template.factory key
+       ->
+current generation's immutable ActorFactoryCatalog
+       ->
+validated actor factory descriptor
+       ->
+spawn
+```
+
+No directory scan, reflection, classpath scan, static initializer, or global mutable self-registration is involved.
+
+### Hot reload
+
+Catalogs are generation-scoped.
+
+A new code generation gets a new immutable catalog. Existing actors keep the generation/catalog lease they were spawned from. A dynamic group created through generation N must not silently resolve the same string key against generation N+1 halfway through its lifetime.
+
+This aligns actor-factory discovery with the existing generation-pin model and prevents stale factory handles from becoming valid against unrelated replacement code.
+
+### Why retain a catalog at all?
+
+The catalog still serves useful purposes even though actors do not self-register:
+
+- startup config validation can fail before `main` if a named factory does not exist;
+- dynamic group templates can resolve factories without reflection;
+- type/domain metadata can be validated before reserving actor capacity;
+- observability can report which concrete factory a group uses;
+- hot reload can bind a group to an exact code generation;
+- the backend can emit a compact dispatch table for only retained actor factories.
+
+So the registry concept is useful as **generated link metadata**, but harmful as a runtime side-effect mechanism.
