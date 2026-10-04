@@ -62,16 +62,30 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         for (Ast.ImportDecl imported : program.imports()) {
-            if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
+            if (imported.path() == null || imported.path().isBlank()) {
+                throw new IllegalArgumentException("import path cannot be empty");
+            }
             if (imported.wildcard()) {
-                if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
-                if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
+                if (imported.namespace() == null || imported.namespace().isBlank()) {
+                    throw new IllegalArgumentException("wildcard imports require a namespace alias");
+                }
+                if (!exposed.add(imported.namespace())) {
+                    throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
+                }
                 importedValues.add(imported.namespace());
             } else {
-                if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
-                for (String name : imported.names()) {
-                    if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
+                if (imported.names().isEmpty()) {
+                    throw new IllegalArgumentException("named import must select at least one name");
+                }
+                for (String exportedName : imported.names()) {
+                    String localName = imported.localName(exportedName);
+                    if (!exposed.add(localName)) {
+                        throw new IllegalArgumentException("duplicate imported name '" + localName + "'");
+                    }
+                    if (imported.kind() != Ast.ImportKind.CLASS
+                            && imported.kind() != Ast.ImportKind.ACTOR) {
+                        importedValues.add(localName);
+                    }
                 }
             }
         }
