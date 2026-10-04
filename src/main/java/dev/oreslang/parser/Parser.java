@@ -154,7 +154,7 @@ public final class Parser {
     private Ast.FunctionDecl parseFunction(List<Ast.Annotation> annotations, Modifiers modifiers, Ast.CallableKind kind) {
         if (modifiers.isStatic) throw error(previous(), "'static fnc' is only valid inside a class");
         if (modifiers.isAbstract) throw error(previous(), "top-level/module callables cannot be abstract");
-        String name = consume(IDENT, "expected callable name").lexeme();
+        String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
         consume(LPAREN, "expected '('");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
@@ -820,7 +820,7 @@ public final class Parser {
                 consume(RPAREN, "expected ')' after arguments");
                 expr = new Ast.CallExpr(expr, args);
             } else if (match(DOT)) {
-                String member = consume(IDENT, "expected member name after '.'").lexeme();
+                String member = consumeMemberName();
                 expr = new Ast.MemberExpr(expr, member);
             } else if (match(LBRACKET)) {
                 Ast.Expr index = parseExpression();
@@ -829,6 +829,37 @@ public final class Parser {
             } else break;
         }
         return expr;
+    }
+
+    private String consumeCallableName(String message) {
+        Token token = peek();
+        if (token.type() == IDENT || isReservedCallableName(token.type())) {
+            advance();
+            return token.lexeme();
+        }
+        throw error(token, message);
+    }
+
+    private boolean reservedCallableNameFollowedByInvocation(int nameIndex) {
+        int nextIndex = nameIndex + 1;
+        return nextIndex < tokens.size() && tokens.get(nextIndex).type() == LPAREN;
+    }
+
+    private static boolean isReservedCallableName(Token.Type type) {
+        return type == STOP || type == DO || type == DONE;
+    }
+
+    private String consumeMemberName() {
+        Token token = peek();
+        if (token.type() == IDENT) {
+            advance();
+            return token.lexeme();
+        }
+        if (isReservedCallableName(token.type()) && reservedCallableNameFollowedByInvocation(current)) {
+            advance();
+            return token.lexeme();
+        }
+        throw error(token, "expected member name after '.'");
     }
 
     private Ast.Expr parsePrimary() {
@@ -843,6 +874,9 @@ public final class Parser {
         if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
         if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
         if (match(SELF)) return new Ast.NameExpr("self");
+        if (isReservedCallableName(peek().type()) && reservedCallableNameFollowedByInvocation(current)) {
+            return new Ast.NameExpr(advance().lexeme());
+        }
         if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
         if (match(ACTOR)) {
             Ast.ActorMode mode = match(ISOLATE) ? Ast.ActorMode.ISOLATE : Ast.ActorMode.SHARED;
@@ -894,7 +928,7 @@ public final class Parser {
         if (!check(RBRACE)) {
             do {
                 String name;
-                if (match(IDENT, STRING)) name = previous().lexeme();
+                if (match(IDENT, STRING) || isReservedCallableName(peek().type()) && advance() != null) name = previous().lexeme();
                 else throw error(peek(), "expected object field name");
                 consume(COLON, "expected ':' after object field name");
                 fields.add(new Ast.ObjectField(name, parseExpression()));
