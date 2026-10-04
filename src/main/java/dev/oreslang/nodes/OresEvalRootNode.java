@@ -1447,10 +1447,10 @@ public final class OresEvalRootNode extends RootNode {
                                         + "' must be specialized by a direct call; "
                                         + "polymorphic function values are not supported yet");
                     }
-                    return klass.owner().tailCallable(
-                            args -> klass.owner().callStaticFunctionRaw(fn, objectArguments(args)));
                 }
-                if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
+                if (!functions.isEmpty()) {
+                    return new StaticFunctionValue(klass.owner(), klass.klass(), name);
+                }
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
@@ -1723,6 +1723,27 @@ public final class OresEvalRootNode extends RootNode {
          * backend may lower a non-escaping value to a register/stack "fat
          * pointer" (receiver + resolved slot) instead of heap allocating it.
          */
+        /**
+         * First-class static callable counterpart to BoundMethod.  No receiver
+         * is captured; only the owning class and shared static slot family are
+         * retained.  Invocation arity selects the closed-world static selector.
+         */
+        private static final class StaticFunctionValue implements Invokable {
+            private final Evaluator owner;
+            private final Ast.ClassDecl klass;
+            private final String functionName;
+
+            private StaticFunctionValue(Evaluator owner, Ast.ClassDecl klass, String functionName) {
+                this.owner = owner;
+                this.klass = klass;
+                this.functionName = functionName;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return owner.invokeStaticFunction(klass, functionName, arguments);
+            }
+        }
+
         private static final class BoundMethod implements Invokable {
             private final OresObject receiver;
             private final String methodName;
