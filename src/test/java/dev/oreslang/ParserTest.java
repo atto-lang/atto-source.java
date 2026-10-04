@@ -525,10 +525,10 @@ final class ParserTest {
     }
 
     @Test
-    void actorReceiveCannotReceiveOrAcquireWritableSharedMutexState() {
+    void actorProtocolCannotReceiveOrAcquireWritableSharedMutexState() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Bad as
-                  pub receive(SharedMutex<int> state): void {
+                  pub run(SharedMutex<int> state): void {
                     return;
                   }
                 end
@@ -541,7 +541,7 @@ final class ParserTest {
                     return;
                   }
 
-                  pub receive(int message): void { return; }
+                  pub run(int message): void { return; }
                 end
                 """)));
 
@@ -552,7 +552,7 @@ final class ParserTest {
                     return;
                   }
 
-                  pub receive(int message): void { return; }
+                  pub run(int message): void { return; }
                 end
                 """)));
     }
