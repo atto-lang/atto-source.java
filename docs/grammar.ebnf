@@ -256,9 +256,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - nlex may qualify an actor fnc as an additional capture-free guarantee;
      actor classes and actor/class methods do not accept nlex.
    - fnc and routine declarations do not overload.
-   - instance methods may overload only when arity differs. Instance and actor
-     methods are direct-call-only and are never implicitly reified as bound
-     method values; use an explicit lambda when a callback must call a method.
+   - instance methods may overload only when arity differs. Instance, actor,
+     nominal-interface, and structural-contract methods are direct-call-only and
+     are never implicitly reified as bound method values; use an explicit lambda
+     when a callback must call a method.
    - class-level functions use "static fnc"; they have no self receiver, are
      dispatched through the class namespace, and are reifiable when unambiguous.
    - "=>" belongs to named callable return declarations.
