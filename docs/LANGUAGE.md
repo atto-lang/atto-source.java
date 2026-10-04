@@ -441,7 +441,7 @@ Owned sum values cannot hide lexical borrows until explicit lifetime parameters 
 
 Panics are distinct from ordinary recoverable errors. Normal `try/catch` does not swallow an unwrap panic, while lexical cleanup and `finally` still execute during unwind. Use `unwrap_safe()`, matching, or explicit variant inspection when absence/failure should remain data.
 
-`Option<null>` is accepted only as an explicit type-level escape hatch when an interoperability boundary truly needs to preserve a null marker. The `null` marker cannot escape that direct `Option<null>` position. `Option<void>` is invalid; use `void` when a function returns no value.
+`null` is not a type, including inside generics: `Option<null>` is invalid. An interoperability boundary that receives host null converts it to `None`; passing `None` to an explicitly invoked host API is the only supported way to encode a host-null argument. `Option<void>` is invalid, and `Result` payloads cannot be `void`; `void` means no Oreslang value exists.
 
 ## Numbers
 
@@ -538,9 +538,13 @@ assignment, allocation, `await`, lambdas, container construction, and borrowing 
 mutation are rejected. This keeps clause selection deterministic and prevents a
 guard from creating synchronization/data-race surprises.
 
-A `switch` with no matching clause raises recoverable `PatternMatchError`.
-An unconditional wildcard or binding clause is a catch-all; clauses after it are
-statically unreachable.
+Closed sum switches are checked for coverage. An `Option<T>` switch without a
+catch-all must cover both unguarded `Some(...)` and `None`; a `Result<T,E>`
+switch must cover both unguarded `Ok(...)` and `Err(...)`; and a `bool`
+switch must cover both `true` and `false`. Guarded or payload-refining arms do
+not count as total coverage. An unconditional wildcard or binding clause is a
+catch-all, and clauses after it are statically unreachable. `PatternMatchError`
+remains a runtime defense for unchecked/malformed ASTs and open-domain switches.
 
 Error protocols should prefer nominal error types plus canonical Symbol codes over
 string comparisons. An exported Symbol such as `:timeout` is especially useful at
