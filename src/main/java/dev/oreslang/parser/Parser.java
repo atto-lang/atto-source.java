@@ -66,6 +66,9 @@ public final class Parser {
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
             if (declaration == null) throw error(peek(), "expected module or top-level declaration");
+            if (declaration instanceof Ast.FieldDecl) {
+                throw error(previous(), "file/root bindings are forbidden; put static data inside a named module");
+            }
             rootDeclarations.add(declaration);
         }
 
@@ -190,6 +193,7 @@ public final class Parser {
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
+        if (match(STRUCT)) return parseStructAlias();
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
         return null;
@@ -455,9 +459,36 @@ public final class Parser {
         String name = consume(IDENT, "expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
-        Ast.TypeRef target = parseTypeRef();
+        Ast.TypeRef target = match(STRUCT) ? parseAnonymousStructType() : parseTypeRef();
         consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, generics, target);
+    }
+
+    private Ast.TypeAliasDecl parseStructAlias() {
+        String name = consume(IDENT, "expected struct name").lexeme();
+        if (check(LT)) {
+            throw error(peek(), "generic struct declarations are not implemented yet; use a generic type alias");
+        }
+        Ast.TypeRef target = parseAnonymousStructType();
+        match(SEMICOLON);
+        return new Ast.TypeAliasDecl(name, List.of(), target);
+    }
+
+    private Ast.TypeRef parseAnonymousStructType() {
+        consume(LBRACE, "expected '{' after struct");
+        java.util.LinkedHashMap<String, Ast.TypeRef> fields = new java.util.LinkedHashMap<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            String field = consume(IDENT, "expected struct field name").lexeme();
+            consume(COLON, "expected ':' after struct field name");
+            Ast.TypeRef fieldType = parseTypeRef();
+            if (fields.putIfAbsent(field, fieldType) != null) {
+                throw error(previous(), "duplicate struct field '" + field + "'");
+            }
+            match(COMMA);
+            match(SEMICOLON);
+        }
+        consume(RBRACE, "expected '}' after struct fields");
+        return Ast.TypeRef.recordType(fields);
     }
 
     private List<Ast.Annotation> parseAnnotations() {
@@ -777,6 +808,12 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        if (match(STRUCT)) return new Ast.LocalTypeDeclStmt(parseStructAlias());
+        if (match(TYPE)) return new Ast.LocalTypeDeclStmt(parseTypeAlias());
+        if (match(INTERFACE)) return new Ast.LocalTypeDeclStmt(parseInterface(Ast.Visibility.PRIVATE));
+        if (check(CLASS) || check(MODULE) || check(NAMESPACE) || check(DEFINE)) {
+            throw error(peek(), "class, module, and namespace declarations are top-level only");
+        }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
@@ -1233,7 +1270,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF, STRUCT,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
@@ -1259,7 +1296,11 @@ public final class Parser {
                 && reservedCallableNameFollowedByInvocation(current)) {
             return new Ast.NameExpr(advance().lexeme());
         }
-        if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
+        if (match(IDENT)) {
+            String name = previous().lexeme();
+            if (match(LBRACE)) return parseStructLiteral(Ast.TypeRef.simple(name));
+            return new Ast.NameExpr(name);
+        }
         if (match(NEW)) {
             Ast.TypeRef type = parseTypeRef();
             consume(LPAREN, "expected '(' after new type");
@@ -1267,7 +1308,9 @@ public final class Parser {
             consume(RPAREN, "expected ')' after constructor arguments");
             return new Ast.NewExpr(type, args);
         }
-        if (match(OBJ)) return parseObjectLiteral();
+        if (match(OBJ)) {
+            throw error(previous(), "obj{} is shelved; declare a struct for fixed shape or use Map<K,V> for dynamic keys");
+        }
         if (match(ARR)) {
             consume(LBRACKET, "expected '[' after arr");
             List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
@@ -1299,6 +1342,21 @@ public final class Parser {
             return new Ast.ListExpr(items);
         }
         throw error(peek(), "expected expression");
+    }
+
+    private Ast.StructExpr parseStructLiteral(Ast.TypeRef type) {
+        List<Ast.ObjectField> fields = new ArrayList<>();
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
+        while (!check(RBRACE) && !check(EOF)) {
+            String key = consumeStaticObjectKeyName("expected struct field name");
+            consume(COLON, "expected ':' after struct field name");
+            Ast.Expr value = parseExpression();
+            if (!seen.add(key)) throw error(previous(), "duplicate struct field '" + key + "'");
+            fields.add(Ast.ObjectField.named(key, value));
+            if (!match(COMMA)) match(SEMICOLON);
+        }
+        consume(RBRACE, "expected '}' after struct literal");
+        return new Ast.StructExpr(type, fields);
     }
 
     private Ast.ObjectExpr parseObjectLiteral() {
