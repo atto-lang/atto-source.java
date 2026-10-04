@@ -29,7 +29,7 @@ import java.util.function.Supplier;
  * Future. Guest code may observe state, await, or request cancellation, but it
  * cannot forge a value/failure.</p>
  */
-public final class OresFuture<T> implements Future<T> {
+public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
     private static final Object PENDING = new Object();
 
     private record Success<T>(T value) { }
@@ -135,6 +135,11 @@ public final class OresFuture<T> implements Future<T> {
             waiters.remove(waiter);
             notifyWaiter(waiter, observed);
         }
+    }
+
+    @Override
+    public OresFuture<T> getAwait() {
+        return this;
     }
 
     @Override
