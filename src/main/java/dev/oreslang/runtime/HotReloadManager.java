@@ -180,7 +180,9 @@ public final class HotReloadManager implements AutoCloseable {
         ensureOpen();
         validateStageInput(name, sourceText);
         Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText, entryExport(program).orElse(null));
+        Ast.EntryExportDecl entry = entryExport(program).orElse(null);
+        rejectActorEntryWithoutContract(entry);
+        return stage(name, digest(sourceText), sourceText, entry);
     }
 
     /**
@@ -193,10 +195,7 @@ public final class HotReloadManager implements AutoCloseable {
         validateStageInput(name, sourceText);
         Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
         Ast.EntryExportDecl entry = requireEntryExport(program);
-        if (entry.kind() == Ast.ExportKind.ACTOR) {
-            throw new IllegalArgumentException(
-                    "actor export entries require loadActorEntry(...) with an exact actor ABI contract");
-        }
+        rejectActorEntryWithoutContract(entry);
         return stage(name, digest(sourceText), sourceText, entry);
     }
 
@@ -234,11 +233,13 @@ public final class HotReloadManager implements AutoCloseable {
         Objects.requireNonNull(unit, "unit");
         validateStageInput(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
+        Ast.EntryExportDecl entry = entryExport(unit.program()).orElse(null);
+        rejectActorEntryWithoutContract(entry);
         return stage(
                 unit.unitId(),
                 unit.sourceDigest(),
                 unit.sourceText(),
-                entryExport(unit.program()).orElse(null));
+                entry);
     }
 
     /** Contract-checked entry load for an already compiled code unit. */
@@ -248,10 +249,7 @@ public final class HotReloadManager implements AutoCloseable {
         validateStageInput(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
         Ast.EntryExportDecl entry = requireEntryExport(unit.program());
-        if (entry.kind() == Ast.ExportKind.ACTOR) {
-            throw new IllegalArgumentException(
-                    "actor export entries require loadActorEntry(...) with an exact actor ABI contract");
-        }
+        rejectActorEntryWithoutContract(entry);
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), entry);
     }
 
@@ -575,6 +573,13 @@ public final class HotReloadManager implements AutoCloseable {
         return entryExport(program).orElseThrow(() ->
                 new IllegalArgumentException(
                         "hot-load entry requested but code unit declares no 'export entry <kind> <name>;' marker"));
+    }
+
+    private static void rejectActorEntryWithoutContract(Ast.EntryExportDecl entry) {
+        if (entry != null && entry.kind() == Ast.ExportKind.ACTOR) {
+            throw new IllegalArgumentException(
+                    "actor export entries require loadActorEntry(...) with an exact actor ABI contract");
+        }
     }
 
     private void validateActorEntryExecutionDomain(Ast.ActorKind actorKind) {
