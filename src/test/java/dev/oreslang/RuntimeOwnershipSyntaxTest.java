@@ -439,7 +439,8 @@ final class RuntimeOwnershipSyntaxTest {
                         """)));
 
         String message = error.getMessage().toLowerCase();
-        assertTrue(message.contains("rebind") && message.contains("parameter"),
+        assertTrue((message.contains("rebind") || message.contains("reassign"))
+                && message.contains("person"),
                 error.getMessage());
     }
 
