@@ -381,7 +381,9 @@ val Fnc<int, int> inc = |int x| -> {
 A normal lambda may capture activation-local bindings from its enclosing
 function or block. Captured mutable state remains part of the closure.
 
-## Non-lexical callables (`nlex`)
+## Lexical and non-lexical callables (`lex` / `nlex`)
+
+`lex` explicitly requests the ordinary lexical-capture mode and is the default.
 
 `nlex` is an opt-in **capture barrier**, not a ban on global/module lookup.
 It prevents a callable from capturing bindings owned by an enclosing runtime
@@ -396,11 +398,59 @@ Inside an `nlex` region:
   statically resolvable;
 - enclosing activation-local bindings cannot be captured;
 - lambdas nested in an `nlex fnc`, `nlex routine`, or `nlex` lambda inherit
-  the barrier.
+  the barrier;
+- an explicit nested `lex` cannot weaken an inherited `nlex` barrier and is
+  rejected at parse time.
 
 Actor entry points remain governed by their actor isolation rules. `nlex` may
 add a capture-free guarantee to an actor fnc, but it does not replace mailbox,
 private-slice, or shared-actor isolation.
+
+## Pure callables (`pure`)
+
+`pure` is a compiler-enforced **write-effect** contract. A pure callable may
+read outside/module state, but it cannot write outside state, mutate input
+parameters, or mutate through aliases derived from inputs/outside state. Local
+mutation is allowed.
+
+```ores
+let int threshold = 10;
+
+pure fnc above(int value): bool {
+  return value > threshold; // outside read: allowed
+}
+
+pure fnc local_work(int value): int {
+  let int result = value;
+  result = result + 1;      // local write: allowed
+  return result;
+}
+```
+
+A `mut` parameter is illegal on a pure callable. Calls made by pure code must
+resolve to compiler-proven pure callables; unknown-effect calls fail closed.
+
+`pure` does not imply determinism or referential transparency because outside
+reads are permitted.
+
+## Trapped callables (`trap`)
+
+`trap` places an outer ordinary-error boundary around a synchronous callable.
+The body keeps its declared success return type, while the call expression is a
+two-slot tuple:
+
+```text
+[Option<T>, Option<Exception>]
+```
+
+Success is `[Some(value), None]`; ordinary thrown failure is
+`[None, Some(error)]`. A successful `void` callable uses `Some([])` for its
+unit success slot.
+
+`raise` and `panic` are distinct non-trappable control channels and must
+bypass `trap` toward the nearest `rt recover` boundary. First-class source
+lowering for those control channels is staged separately; the compiler must
+never emulate them with a broad ordinary catch.
 
 ## Conditionals
 
@@ -418,21 +468,44 @@ fi
 
 Within a condition, comma means AND and `|` means OR. Comma binds more tightly.
 
-## Exceptions and defer
+## Exceptions and runtime defer
 
-Both structured exceptions and lexical `defer` are supported:
+Structured `try/catch/finally` handles the ordinary throw channel:
 
 ```ores
 try {
   risky();
 } catch (err) {
-  recover(err);
+  handle(err);
 } finally {
   cleanup();
 }
 ```
 
-`defer` executes in LIFO order when its lexical scope unwinds, including returns and exceptional exits.
+Runtime/compiler intrinsics live behind the reserved, unshadowable `rt`
+namespace. `defer` is therefore never bare:
+
+```ores
+rt defer(|| -> {
+  cleanup();
+  return;
+});
+
+// single-callback syntactic sugar:
+rt defer || -> {
+  cleanup_more();
+  return;
+};
+```
+
+The two forms are equivalent. The callback value is captured when the defer
+statement executes and invoked in LIFO order when the lexical scope unwinds,
+including returns and exceptional exits.
+
+The runtime namespace also reserves `rt copy(...)`, `rt share(...)`,
+`rt take(...)`, `rt borrow(...)`, and `rt recover(...)`. Ownership and
+recovery lowering must fail closed until their dedicated compiler passes
+implement the operation; these names are not shadowable ordinary functions.
 
 ## Callable-only reserved keywords
 
