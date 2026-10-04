@@ -114,6 +114,7 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
     private static final ThreadLocal<ActorRuntime> CURRENT_ROOT_RUNTIME = new ThreadLocal<>();
+    private static final ThreadLocal<ActorRuntime> CURRENT_MAILMAN_RUNTIME = new ThreadLocal<>();
     private static final ThreadLocal<Long> CURRENT_ROOT_DEADLINE_NANOS = new ThreadLocal<>();
 
     private record ActorExecutionContext(
@@ -142,6 +143,10 @@ public final class ActorRuntime implements AutoCloseable {
 
     public static boolean inRootExecution() {
         return CURRENT_ROOT_RUNTIME.get() != null;
+    }
+
+    static boolean inMailmanExecution() {
+        return CURRENT_MAILMAN_RUNTIME.get() != null;
     }
 
     public static ActorRuntime currentRootRuntime() {
@@ -1724,9 +1729,16 @@ public final class ActorRuntime implements AutoCloseable {
         try {
             controlDispatcher.execute(() -> {
                 ACTOR_CARRIER.set(Boolean.TRUE);
+                if (CURRENT_MAILMAN_RUNTIME.get() != null) {
+                    ACTOR_CARRIER.remove();
+                    throw new IllegalStateException(
+                            "nested actor-group mailman execution is forbidden");
+                }
+                CURRENT_MAILMAN_RUNTIME.set(ActorRuntime.this);
                 try {
                     turnExecutor.execute(turn);
                 } finally {
+                    CURRENT_MAILMAN_RUNTIME.remove();
                     ACTOR_CARRIER.remove();
                     relaxControlDispatcherAfterQuantum();
                 }
@@ -1846,6 +1858,7 @@ public final class ActorRuntime implements AutoCloseable {
      * domain is retired. Guest code cannot mutate this hook.
      */
     public void setActorExitHook(Consumer<Object> actorExitHook) {
+        requireSupervisorContext("install actor-exit hook");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         this.actorExitHook = Objects.requireNonNull(actorExitHook, "actorExitHook");
     }
@@ -2610,10 +2623,17 @@ public final class ActorRuntime implements AutoCloseable {
 
     public interface ActorContext<M> {
         ActorRef<M> self();
-        ActorRuntime runtime();
         IsolatePolicy policy();
         ActorKind kind();
         Optional<ActorMemorySlice> privateMemory();
+
+        /**
+         * Narrow actor syscall surface. Actor code never receives the owning
+         * ActorRuntime/OresVM implementation object.
+         */
+        <N> ActorRef<N> spawnPrivate(BehaviorFactory<N> behaviorFactory);
+        <N> ActorRef<N> spawnShared(BehaviorFactory<N> behaviorFactory);
+        <T> Shared<T> shareReadonly(T value);
 
         /**
          * Restricted actor-side group capability. UNTRUSTED actors never receive
@@ -2680,6 +2700,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         private final OresFuture<ActorRef<M>> readiness;
+        private final CompletableFuture<Void> finalization = new CompletableFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
             this.id = id;
@@ -2692,6 +2713,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return id; }
         private OresFuture<ActorRef<M>> readiness() { return readiness; }
+        private CompletionStage<Void> finalization() { return finalization; }
         private void markReady() { readiness.completeFromRuntime(this); }
         private void failReady(Throwable failure) {
             if (!readiness.isDone()) readiness.failFromRuntime(failure);
@@ -2810,14 +2832,16 @@ public final class ActorRuntime implements AutoCloseable {
 
     private void requireCallerRuntimeAffinity(String operation) {
         ActorRuntime caller = currentActorRuntime();
+        if (caller == null) caller = currentRootRuntime();
+        if (caller == null) caller = CURRENT_MAILMAN_RUNTIME.get();
         if (caller != null && caller != this) {
             throw new SecurityException(
-                    "actor cannot " + operation + " through another ActorRuntime");
+                    "guest execution cannot " + operation + " through another ActorRuntime");
         }
     }
 
     private static void requireSupervisorContext(String operation) {
-        if (inActorExecution() || inRootExecution()) {
+        if (inActorExecution() || inRootExecution() || inMailmanExecution()) {
             throw new SecurityException(
                     "guest code cannot " + operation
                             + "; this operation belongs to the host/supervisor");
@@ -3189,7 +3213,8 @@ public final class ActorRuntime implements AutoCloseable {
             return;
         }
         if (value instanceof ActorContext<?> actorContext) {
-            if (!actorContext.self().id().equals(owner) || actorContext.runtime() != this) {
+            if (!actorContext.self().id().equals(owner)
+                    || !actorContext.self().ownedBy(this)) {
                 throw new SecurityException(
                         "private actor behavior captured a foreign actor context in " + fieldName);
             }
@@ -3409,6 +3434,9 @@ public final class ActorRuntime implements AutoCloseable {
 
         IsolatePolicy policy = defaultSpawnPolicy();
         AtomicReference<ActorRef<M>> spawnedRef = new AtomicReference<>();
+        AtomicReference<R> invocationValue = new AtomicReference<>();
+        AtomicReference<Throwable> invocationFailure = new AtomicReference<>();
+        AtomicBoolean invocationReturned = new AtomicBoolean();
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
             if (ref != null && ref.isAlive()) {
@@ -3427,21 +3455,22 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         @SuppressWarnings("unchecked")
                         R frozen = (R) freeze(invocation.run(delivered, turnContext));
-                        completion.completeFromRuntime(frozen);
+                        invocationValue.set(frozen);
+                        invocationReturned.set(true);
                     } catch (VirtualMachineError fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.compareAndSet(null, fatal);
                         throw fatal;
                     } catch (ThreadDeath fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.compareAndSet(null, fatal);
                         throw fatal;
                     } catch (LinkageError fatal) {
-                        completion.failFromRuntime(fatal);
+                        invocationFailure.compareAndSet(null, fatal);
                         throw fatal;
                     } catch (Exception failure) {
-                        completion.failFromRuntime(failure);
+                        invocationFailure.compareAndSet(null, failure);
                         throw failure;
                     } catch (Error failure) {
-                        completion.failFromRuntime(failure);
+                        invocationFailure.compareAndSet(null, failure);
                         throw failure;
                     } finally {
                         turnContext.self().stop();
@@ -3450,9 +3479,24 @@ public final class ActorRuntime implements AutoCloseable {
                 true);
         spawnedRef.set(ref);
         ActorSpawn<M, R> spawn = new ActorSpawn<>(ref, completion);
-        ref.readiness().whenComplete((readyRef, startupFailure) -> {
-            if (startupFailure != null && !completion.isDone()) {
-                completion.failFromRuntime(OresFuture.unwrap(startupFailure));
+
+        // Do not publish a source-level actor result until the actor has fully
+        // finalized and its carrier has left the Truffle context. Otherwise a
+        // root awaiting result() can race Context.close() with the actor turn.
+        ref.finalization().whenComplete((ignored, finalizationFailure) -> {
+            if (completion.isDone()) return;
+            Throwable failure = invocationFailure.get();
+            if (failure == null) failure = ref.terminationCause.get();
+            if (failure == null && finalizationFailure != null) {
+                failure = OresFuture.unwrap(finalizationFailure);
+            }
+            if (failure != null) {
+                completion.failFromRuntime(failure);
+            } else if (invocationReturned.get()) {
+                completion.completeFromRuntime(invocationValue.get());
+            } else {
+                completion.failFromRuntime(new CancellationException(
+                        "actor callable terminated before producing a result"));
             }
         });
 
@@ -5767,6 +5811,7 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (Throwable leaseFailure) {
                 ref.terminationCause.compareAndSet(null, leaseFailure);
             }
+            ref.finalization.complete(null);
             lifecycleLock.notifyAll();
         }
 
@@ -6034,9 +6079,17 @@ public final class ActorRuntime implements AutoCloseable {
             try {
                 ActorContext<M> context = new ActorContext<>() {
                     @Override public ActorRef<M> self() { return ref; }
-                    @Override public ActorRuntime runtime() { return ActorRuntime.this; }
                     @Override public IsolatePolicy policy() { return policy; }
                     @Override public ActorKind kind() { return kind; }
+                    @Override public <N> ActorRef<N> spawnPrivate(BehaviorFactory<N> factory) {
+                        return ActorRuntime.this.spawnPrivate(factory);
+                    }
+                    @Override public <N> ActorRef<N> spawnShared(BehaviorFactory<N> factory) {
+                        return ActorRuntime.this.spawnShared(factory);
+                    }
+                    @Override public <T> Shared<T> shareReadonly(T value) {
+                        return ActorRuntime.this.shareReadonly(value);
+                    }
                     @Override public Optional<ActorMemorySlice> privateMemory() {
                         return Optional.ofNullable(memorySlice);
                     }
