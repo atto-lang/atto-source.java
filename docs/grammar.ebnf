@@ -222,8 +222,7 @@ type_atom       = borrow_type
                 | grouped_type
                 | STRING_LITERAL
                 | "self"
-                | "void"
-                | "null" ;
+                | "void" ;
 
 borrow_type     = "&" [ "mut" ] type_atom ;
 tuple_type      = "[" [ type_ref { "," type_ref } ] "]" ;
@@ -306,8 +305,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      parameter into public-shape compatibility.
    - every loop iteration contains an injected scheduler safepoint.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
-   - standalone null values are illegal.
-   - null is a type marker only directly inside Option<null>.
+   - standalone null values are illegal, and null is not a type.
+   - absence is represented only with Option<T>/None; Option<null> is invalid.
+   - closed Option/Result/bool switches require exhaustive unguarded coverage
+     unless an unguarded wildcard/binding catch-all is present.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" is contextual in parameter position, not globally reserved.
    - self is an immutable receiver borrow and cannot be rebound.
