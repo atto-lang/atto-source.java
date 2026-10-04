@@ -645,4 +645,32 @@ final class OresVMTest {
     }
 
 
+    @Test
+    void terminalFutureReleasesCancellationAuthority() throws Exception {
+        AtomicInteger cancellations = new AtomicInteger();
+        OresFuture<Integer> cancelled =
+                new OresFuture<>(cancellations::incrementAndGet);
+
+        assertTrue(cancelled.cancel(true));
+        assertFalse(cancelled.cancel(true));
+        assertEquals(1, cancellations.get());
+
+        OresFuture<Integer> completed =
+                new OresFuture<>(() -> fail("completed Future must not invoke cancel hook"));
+        assertTrue(completed.completeFromRuntime(7));
+
+        Field cancelHookField = OresFuture.class.getDeclaredField("cancelHook");
+        cancelHookField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        AtomicReference<Runnable> cancelledHook =
+                (AtomicReference<Runnable>) cancelHookField.get(cancelled);
+        @SuppressWarnings("unchecked")
+        AtomicReference<Runnable> completedHook =
+                (AtomicReference<Runnable>) cancelHookField.get(completed);
+
+        assertNull(cancelledHook.get());
+        assertNull(completedHook.get());
+    }
+
+
 }
