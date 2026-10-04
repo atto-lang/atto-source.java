@@ -1462,19 +1462,17 @@ public final class TypeChecker {
                 return gcReportType();
             }
             if (call.callee() instanceof Ast.NameExpr intrinsic
-                    && (intrinsic.name().equals("borrow")
-                    || intrinsic.name().equals("copy")
-                    || intrinsic.name().equals("take")
-                    || intrinsic.name().equals("share"))) {
-                if (intrinsic.name().equals("share")) {
+                    && isOwnershipIntrinsicName(intrinsic.name())) {
+                String operation = ownershipIntrinsicOperation(intrinsic.name());
+                if (operation.equals("share")) {
                     throw new IllegalArgumentException(
-                            "share(...) is reserved for explicit shared capabilities; ordinary ownership cannot be converted implicitly");
+                            "rt share is reserved for explicit shared capabilities; ordinary ownership cannot be converted implicitly");
                 }
                 if (call.arguments().size() != 1) {
-                    throw new IllegalArgumentException(intrinsic.name() + "(...) expects exactly one argument");
+                    throw new IllegalArgumentException("rt " + operation + " expects exactly one argument");
                 }
                 Type value = typeOf(call.arguments().getFirst(), env, generics, self);
-                return intrinsic.name().equals("borrow") ? new Borrow(value, false) : value;
+                return operation.equals("borrow") ? new Borrow(value, false) : value;
             }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
@@ -2278,10 +2276,15 @@ public final class TypeChecker {
     }
 
     private boolean isOwnershipIntrinsicName(String name) {
-        return name.equals("borrow")
-                || name.equals("take")
-                || name.equals("copy")
-                || name.equals("share");
+        String operation = ownershipIntrinsicOperation(name);
+        return operation.equals("borrow")
+                || operation.equals("take")
+                || operation.equals("copy")
+                || operation.equals("share");
+    }
+
+    private String ownershipIntrinsicOperation(String name) {
+        return name.startsWith("$rt$") ? name.substring("$rt$".length()) : name;
     }
 
     private void requireNotOwnershipIntrinsicBinding(String name, String where) {
