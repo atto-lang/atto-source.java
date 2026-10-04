@@ -815,19 +815,19 @@ public final class OresEvalRootNode extends RootNode {
                 return switch (name) {
                     case "get" -> (Invokable) args -> {
                         String key = requireStringArg(args, "DynamicStruct.get");
-                        yield dynamic.fields.containsKey(key)
+                        return dynamic.fields.containsKey(key)
                                 ? new OptionValue(true, dynamic.fields.get(key))
                                 : new OptionValue(false, null);
                     };
                     case "has_key" -> (Invokable) args -> {
                         String key = requireStringArg(args, "DynamicStruct.has_key");
-                        yield dynamic.fields.containsKey(key);
+                        return dynamic.fields.containsKey(key);
                     };
                     case "get_or" -> (Invokable) args -> {
                         if (args.size() != 2 || !(args.getFirst() instanceof String key)) {
                             throw new IllegalArgumentException("DynamicStruct.get_or expects (String key, fallback)");
                         }
-                        yield dynamic.fields.getOrDefault(key, args.get(1));
+                        return dynamic.fields.getOrDefault(key, args.get(1));
                     };
                     default -> {
                         if (!dynamic.fields.containsKey(name)) {
