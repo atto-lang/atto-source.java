@@ -266,6 +266,12 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
         return true;
     }
 
+    private boolean cancelRuntimeWaiter(Waiter<T> waiter) {
+        if (!waiter.claimed.compareAndSet(false, true)) return false;
+        waiters.remove(waiter);
+        return true;
+    }
+
     @SuppressWarnings("unchecked")
     private void notifyWaiter(Waiter<T> waiter, Object terminal) {
         if (!waiter.claimed.compareAndSet(false, true)) return;
