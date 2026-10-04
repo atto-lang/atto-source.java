@@ -137,4 +137,63 @@ final class OresSchedulerTest {
             assertTrue(result.get(5, TimeUnit.SECONDS));
         }
     }
+    @Test
+    void cancellingTaskDetachesPendingAwaitRegistration() throws Exception {
+        try (OresScheduler scheduler = new OresScheduler(1)) {
+            OresFuture<Integer> source = new OresFuture<>();
+            AtomicInteger turns = new AtomicInteger();
+
+            OresFuture<Integer> result = scheduler.start(resume -> {
+                int turn = turns.incrementAndGet();
+                if (turn == 1) return OresScheduler.await(source);
+                return OresScheduler.done((Integer) resume.value());
+            });
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (source.queuedRuntimeWaiters() == 0 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(1, source.queuedRuntimeWaiters());
+
+            assertTrue(result.cancel(false));
+            assertTrue(result.isCancelled());
+            assertEquals(0, source.queuedRuntimeWaiters(),
+                    "task cancellation must release its awaited Future callback");
+
+            assertTrue(source.completeFromRuntime(41));
+            assertTrue(scheduler.startSync(() -> true).get(5, TimeUnit.SECONDS));
+            assertEquals(1, turns.get(),
+                    "late producer completion must not revive a cancelled task");
+        }
+    }
+
+    @Test
+    void closingSchedulerDetachesPendingAwaitRegistration() throws Exception {
+        OresScheduler scheduler = new OresScheduler(1);
+        OresFuture<Integer> source = new OresFuture<>();
+        AtomicInteger turns = new AtomicInteger();
+
+        OresFuture<Integer> result = scheduler.start(resume -> {
+            int turn = turns.incrementAndGet();
+            if (turn == 1) return OresScheduler.await(source);
+            return OresScheduler.done((Integer) resume.value());
+        });
+
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (source.queuedRuntimeWaiters() == 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertEquals(1, source.queuedRuntimeWaiters());
+
+        scheduler.close();
+
+        assertTrue(result.isCancelled());
+        assertEquals(0, source.queuedRuntimeWaiters(),
+                "scheduler close must release every suspended await callback");
+
+        assertTrue(source.completeFromRuntime(9));
+        assertEquals(1, turns.get(),
+                "producer completion after scheduler close must not resume guest code");
+    }
+
 }
