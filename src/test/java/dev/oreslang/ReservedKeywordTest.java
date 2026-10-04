@@ -14,15 +14,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 final class ReservedKeywordTest {
     private static final List<String> RESERVED = List.of(
-            "of", "is", "as", "actor", "isolate", "recover", "panic");
+            "of", "is", "as", "stop", "do", "done", "actor", "isolate", "recover", "panic");
 
     @Test
-    void lexerAlwaysClassifiesOfIsAsAsKeywords() {
-        var tokens = new Lexer("of is as").scan();
+    void lexerClassifiesReservedWordsAsKeywords() {
+        var tokens = new Lexer("of is as stop do done").scan();
 
         assertEquals(Token.Type.OF, tokens.get(0).type());
         assertEquals(Token.Type.IS, tokens.get(1).type());
         assertEquals(Token.Type.AS, tokens.get(2).type());
+        assertEquals(Token.Type.STOP, tokens.get(3).type());
+        assertEquals(Token.Type.DO, tokens.get(4).type());
+        assertEquals(Token.Type.DONE, tokens.get(5).type());
     }
 
     @Test
@@ -44,12 +47,25 @@ final class ReservedKeywordTest {
     }
 
     @Test
-    void reservedWordsCannotBeCallableNames() {
-        assertRejectedEverywhere(keyword -> """
-                fnc %s() => void {
+    void stopDoDoneAreAllowedOnlyAsCallableNames() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc stop() => int { return 1; }
+                fnc do() => int { return 2; }
+                fnc done() => int { return 3; }
+
+                pub routine main() => void {
+                  stdio.println(stop() + do() + done());
                   return;
                 }
-                """.formatted(keyword));
+                """)));
+
+        for (String keyword : List.of("of", "is", "as", "actor", "isolate", "recover", "panic")) {
+            assertReservedFailure("""
+                    fnc %s() => void {
+                      return;
+                    }
+                    """.formatted(keyword), keyword);
+        }
     }
 
     @Test
@@ -176,6 +192,19 @@ final class ReservedKeywordTest {
                   }
                 }
                 """));
+    }
+
+    @Test
+    void stopDoDoneRemainLegalQuotedOrStaticObjectKeys() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub routine main() => void {
+                  val value = obj{stop: 1, 'do': 2, "done": 3};
+                  stdio.println(value["stop"]);
+                  stdio.println(value["do"]);
+                  stdio.println(value["done"]);
+                  return;
+                }
+                """)));
     }
 
     @Test
