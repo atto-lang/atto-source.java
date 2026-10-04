@@ -472,7 +472,7 @@ public final class TreeShaker {
                 }
                 modules.add(new Ast.ModuleDecl(module.name(), module.annotations(), declarations));
             }
-            return new Ast.Program(program.namespace(), program.imports(), modules);
+            return new Ast.Program(program.namespace(), program.imports(), program.namespaces(), modules);
         }
 
         private Ast.Decl rewriteDeclaration(String module, Ast.Decl declaration) {
@@ -1031,7 +1031,7 @@ public final class TreeShaker {
             for (Ast.ImportDecl imported : program.imports()) {
                 if (importIsUsed(imported)) imports.add(imported);
             }
-            return new Ast.Program(program.namespace(), imports, modules);
+            return new Ast.Program(program.namespace(), imports, program.namespaces(), modules);
         }
 
         private boolean importIsUsed(Ast.ImportDecl imported) {
