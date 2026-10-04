@@ -133,4 +133,63 @@ final class OresFuturesTest {
 
         assertEquals(7, race.join());
     }
+    @Test
+    void raceDetachesLoserWithoutCancellingProducer() {
+        OresFuture<Integer> slow = new OresFuture<>();
+        OresFuture<Integer> fast = new OresFuture<>();
+
+        OresFuture<Integer> race = OresFutures.race(List.of(slow, fast));
+        assertEquals(1, slow.queuedRuntimeWaiters());
+        assertEquals(1, fast.queuedRuntimeWaiters());
+
+        assertTrue(fast.completeFromRuntime(7));
+        assertEquals(7, race.join());
+
+        assertEquals(0, slow.queuedRuntimeWaiters(),
+                "completed race must detach the losing Future callback");
+        assertFalse(slow.isCancelled(),
+                "normal race completion must not cancel the losing producer");
+        assertTrue(slow.completeFromRuntime(9),
+                "detached loser must remain independently usable");
+    }
+
+    @Test
+    void failedAllDetachesPendingChildrenWithoutCancellingThem() {
+        OresFuture<Integer> pending = new OresFuture<>();
+        OresFuture<Integer> failed = new OresFuture<>();
+
+        OresFuture<List<Integer>> all = OresFutures.all(List.of(pending, failed));
+        assertEquals(1, pending.queuedRuntimeWaiters());
+        assertEquals(1, failed.queuedRuntimeWaiters());
+
+        assertTrue(failed.failFromRuntime(new IllegalStateException("boom")));
+
+        CompletionException failure =
+                assertThrows(CompletionException.class, all::join);
+        assertInstanceOf(IllegalStateException.class, failure.getCause());
+        assertEquals(0, pending.queuedRuntimeWaiters(),
+                "failed all() must stop retaining unrelated pending children");
+        assertFalse(pending.isCancelled(),
+                "child cancellation remains reserved for explicit aggregate cancellation");
+        assertTrue(pending.completeFromRuntime(1));
+    }
+
+    @Test
+    void cancellingAllSettledDetachesAndCancelsPendingChildren() {
+        OresFuture<Integer> first = new OresFuture<>();
+        OresFuture<Integer> second = new OresFuture<>();
+
+        OresFuture<List<OresFutures.Settled<Integer>>> all =
+                OresFutures.allSettled(List.of(first, second));
+        assertEquals(1, first.queuedRuntimeWaiters());
+        assertEquals(1, second.queuedRuntimeWaiters());
+
+        assertTrue(all.cancel(true));
+
+        assertEquals(0, first.queuedRuntimeWaiters());
+        assertEquals(0, second.queuedRuntimeWaiters());
+        assertTrue(first.isCancelled());
+        assertTrue(second.isCancelled());
+    }
+
 }
