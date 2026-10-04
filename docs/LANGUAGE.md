@@ -912,11 +912,11 @@ Capture rules are ownership-aware:
 
 This makes returned closures safe without retaining raw stack references.
 
-## Parameter ownership: borrow, `mut`, and `take`
+## Parameter ownership: references, `mut`, and `take`
 
-Oreslang deliberately does **not** expose pointer/reference syntax such as `&T`, `&mut T`, or unary `&value`. JVM references remain an implementation detail. The compiler tracks ownership, aliasing, and lifetimes semantically.
+Oreslang deliberately does **not** expose pointer syntax such as `&T`, `&mut T`, `T*`, unary `&value`, or unary dereference. Runtime references are an implementation detail. Source code gets Java-like reference passing plus compiler-enforced ownership, aliasing, and lifetime rules.
 
-An ordinary parameter is a read-only temporary borrow:
+An ordinary non-`Copy` parameter receives the **same object/reference identity** as a temporary read borrow. Passing an argument does not copy it and does not move it:
 
 ```ores
 fnc inspect(Bar value) => void {
@@ -927,15 +927,16 @@ fnc inspect(Bar value) => void {
 fnc example() => void {
   let Bar b = new Bar();
   inspect(b);
-  stdio.println(b.foo); // b was borrowed, not moved
+  inspect(b);
+  stdio.println(b.foo); // same object; b was borrowed, not copied or moved
   return;
 }
 ```
 
-A `mut` parameter is an exclusive temporary mutable borrow:
+A mutable parameter uses canonical type-first syntax `Type mut name`. It is an exclusive temporary mutable reference whose exclusivity ends at the call boundary:
 
 ```ores
-fnc change(mut Bar value) => void {
+fnc change(Bar mut value) => void {
   value.foo = "changed";
   return;
 }
@@ -943,10 +944,12 @@ fnc change(mut Bar value) => void {
 fnc example() => void {
   let Bar b = new Bar();
   change(b);
-  stdio.println(b.foo); // exclusive borrow ended at call boundary
+  stdio.println(b.foo);
   return;
 }
 ```
+
+The older `mut Type name` spelling remains accepted temporarily while existing source is migrated; new source should use `Type mut name`.
 
 A contextual `take` parameter transfers ownership:
 
@@ -958,14 +961,14 @@ fnc save(take Bar value) => void {
 fnc example() => void {
   let Bar b = new Bar();
   save(b);
-  // b.foo; // compile-time error: b was moved
+  // b.foo; // compile-time error: ownership moved
   return;
 }
 ```
 
-`take` is contextual in parameter position rather than a globally reserved identifier. The compiler ABI nevertheless records whether each parameter is `borrow`, `mut`, or `take`, so changing ownership policy is an API/ABI change.
+`take` is contextual in parameter position rather than a globally reserved identifier. The compiler ABI records whether each parameter is read-reference, mutable-reference, or ownership-taking, so changing that policy is an API/ABI change.
 
-Parameter bindings themselves are immutable. `mut Bar value` grants exclusive mutation *through* `value`; it does not permit rebinding the parameter. If a function takes ownership and wants a mutable local owner, move it into a `let` binding:
+Parameter bindings themselves are immutable. `Bar mut value` grants exclusive mutation *through* `value`; it does not permit rebinding the parameter. If a function takes ownership and wants a mutable local owner, move it into a `let` binding:
 
 ```ores
 fnc normalize(take Bar value) => Bar {
@@ -977,41 +980,32 @@ fnc normalize(take Bar value) => Bar {
 
 Local mutation continues to use `let`. `val` and `const` remain immutable. Class fields declared `val`/`const` cannot be assigned after construction; mutable object state must use a `let` field and mutable owner access.
 
-## Ownership, moves, and borrows
+## Ownership operations
 
-Oreslang uses affine ownership and borrow checking while keeping source syntax Java-like.
+Oreslang combines Java-like reference ergonomics with affine ownership/lifetime checking. Copying and ownership transitions are explicit through the reserved `rt` namespace:
 
-The initial implicit `Copy` family is:
+- `rt borrow x` / `rt borrow(x)` creates a stored immutable view tied to `x`'s lifetime;
+- `rt take x` / `rt take(x)` explicitly transfers ownership;
+- `rt copy x` / `rt copy(x)` creates an independent value when the type satisfies the copy contract;
+- `rt share x` / `rt share(x)` establishes the permitted read-only/shared form when the type/runtime supports it.
 
-- integer types;
-- floating/decimal/complex scalar types;
-- booleans;
-- immutable strings.
+The command and call spellings are semantically identical. The command form has unary precedence, so `rt copy x.field + y` means `(rt copy x.field) + y`. Parentheses may be used whenever a wider operand or explicit grouping is desired.
 
-Class instances, arrays/lists, object records, and closures are move-only by default.
+The initial implicit scalar `Copy` family is integers, floating/decimal/complex scalars, booleans, and immutable strings. Identity-bearing classes are references by default; an ordinary call never performs a hidden object copy. Class/aggregate copying requires a concrete copy contract rather than treating a shallow JVM-reference copy as an independent value.
 
-The compiler intrinsics are function-like syntax, not pointer operators:
+The `rt` namespace is compiler-reserved and cannot be shadowed. Legacy bare `borrow(...)`, `take(...)`, `copy(...)`, and `share(...)` spellings remain accepted on this migration stack only; canonical source uses `rt`.
 
-- `borrow(x)` stores an immutable view tied to `x`'s lexical lifetime;
-- `take(x)` explicitly moves an owned value;
-- `copy(x)` creates another owned value only when the type is proven `Copy`;
-- `share(x)` is reserved for explicit shared-capability types and cannot turn ordinary mutable state into shared state.
+Borrowed values cannot currently be returned as owned values. A return of `self`, an ordinary non-`Copy` parameter, a mutable-reference parameter, or `rt borrow x` is rejected unless ownership is actually transferred. The planned provenance form is `T from owner`; until that contract exists, borrowed returns fail closed rather than manufacturing a second owner.
 
-These four names are unshadowable in the value/callable namespace. They are not lexer keywords—so the parser can issue precise diagnostics and future syntax can evolve—but user bindings, parameters, imports, and top-level/module callables cannot redefine their meaning.
+First-class `Fnc` values currently encode parameter types but not ownership modes. Therefore a callable or lambda containing a mutable-reference or `take` parameter—and a method with a `mut self` receiver—is direct-call-only in v0. Extraction is rejected until `Fnc` carries those modes explicitly.
 
-Borrowed values cannot currently be returned as owned values. A return of `self`, an ordinary non-`Copy` parameter, a `mut` parameter, or `borrow(x)` is rejected unless ownership is actually transferred. The planned provenance form is `T from owner`; until that contract exists, borrowed returns fail closed rather than manufacturing a second owner.
-
-First-class `Fnc` values currently encode parameter types but not ownership modes. Therefore a callable or lambda containing a `mut` or `take` parameter—and a method with a `mut self` receiver—is direct-call-only in v0. Extraction is rejected until `Fnc` carries those modes explicitly.
-
-For now, classes are **not** implicitly copyable. `copy(classValue)` is rejected until the class-copy contract proves how to create independent owned storage. This prevents a shallow JVM reference copy from pretending to satisfy language-level copy semantics.
-
-Stored immutable views use `borrow(x)`:
+Stored immutable views use `rt borrow`:
 
 ```ores
 fnc example() => void {
   let Bar b = new Bar();
-  val first = borrow(b);
-  val second = borrow(b);
+  val first = rt borrow b;
+  val second = rt borrow(b);
   stdio.println(first.foo);
   stdio.println(second.foo);
   return;
