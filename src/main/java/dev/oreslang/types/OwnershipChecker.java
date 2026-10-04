@@ -348,6 +348,15 @@ public final class OwnershipChecker {
             return checkCall(call, scope);
         }
         if (expr instanceof Ast.MemberExpr member) {
+            if (member.receiver() instanceof Ast.NameExpr namespace
+                    && namespace.name().equals("Symbol")
+                    && member.member().equals("iterator")
+                    && scope.lookup("Symbol") == null) {
+                return new ValueInfo(
+                        Ast.TypeRef.simple("Symbol"),
+                        ValueKind.COPY,
+                        null);
+            }
             if (member.receiver() instanceof Ast.NameExpr receiverName) {
                 VarState receiverState = scope.lookup(receiverName.name());
                 if (receiverState != null && isScopedMutexReceiver(receiverState)) {
@@ -420,7 +429,10 @@ public final class OwnershipChecker {
                 argumentTypes.add(info.type);
             }
             Ast.TypeRef constructedType = inferConstructedType(created, argumentTypes);
-            return new ValueInfo(constructedType, ValueKind.MOVE_ONLY, null);
+            return new ValueInfo(
+                    constructedType,
+                    created.type().name().equals("Symbol") ? ValueKind.COPY : ValueKind.MOVE_ONLY,
+                    null);
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (mutexCriticalSectionDepth > 0 || scope.hasLiveMutexGuard()) {
@@ -473,6 +485,16 @@ public final class OwnershipChecker {
     }
 
     private ValueInfo checkCall(Ast.CallExpr call, Scope scope) {
+        if (call.callee() instanceof Ast.MemberExpr symbolCall
+                && symbolCall.receiver() instanceof Ast.NameExpr namespace
+                && namespace.name().equals("Symbol")
+                && (symbolCall.member().equals("local")
+                    || symbolCall.member().equals("process")
+                    || symbolCall.member().equals("stable"))) {
+            for (Ast.Expr arg : call.arguments()) checkExpr(arg, scope, true);
+            return new ValueInfo(Ast.TypeRef.simple("Symbol"), ValueKind.COPY, null);
+        }
+
         if (call.callee() instanceof Ast.MemberExpr factoryCall
                 && factoryCall.receiver() instanceof Ast.NameExpr factory
                 && (factory.name().equals("Mutex") || factory.name().equals("SharedMutex"))
@@ -1427,7 +1449,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","SharedMutex","OptionUnwrapError" -> true;
+                    "bool","Bool","string","String","Symbol","void","SharedMutex","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
@@ -1479,6 +1501,7 @@ public final class OwnershipChecker {
         if (value instanceof Double) return Ast.TypeRef.simple("float");
         if (value instanceof String) return Ast.TypeRef.simple("String");
         if (value instanceof Ast.Imaginary) return Ast.TypeRef.simple("complex");
+        if (value instanceof Ast.Symbol) return Ast.TypeRef.simple("Symbol");
         return Ast.TypeRef.inferred();
     }
 
