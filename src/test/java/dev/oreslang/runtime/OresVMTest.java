@@ -62,6 +62,18 @@ final class OresVMTest {
     }
 
     @Test
+    void generationPublicApiDoesNotExposeRawGraalHandles() {
+        for (Method method : HotReloadManager.Generation.class.getMethods()) {
+            Class<?> returned = method.getReturnType();
+            assertNotEquals(org.graalvm.polyglot.Context.class, returned, method.toString());
+            assertNotEquals(org.graalvm.polyglot.Source.class, returned, method.toString());
+            assertNotEquals(org.graalvm.polyglot.Engine.class, returned, method.toString());
+            assertNotEquals(OresVM.class, returned, method.toString());
+            assertNotEquals(ActorRuntime.class, returned, method.toString());
+        }
+    }
+
+    @Test
     void vmOwnsHotReloadManagersAndDedicatedShutdownClosesGenerations() {
         ActorRuntime.DispatcherConfig config = ActorRuntime.DispatcherConfig.defaults();
         OresVM vm = OresVM.dedicated(config);
@@ -217,6 +229,65 @@ final class OresVMTest {
         } finally {
             runtime.close();
             vm.shutdownNow();
+        }
+    }
+
+    @Test
+    void mailmanControlCarrierDoesNotConferSupervisorAuthority() throws Exception {
+        ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
+                1, 1, 1, 8,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.SECONDS.toNanos(1),
+                1,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch attempted = new CountDownLatch(1);
+            AtomicReference<Throwable> denied = new AtomicReference<>();
+
+            ActorGroupConfig.GroupPolicy policy = new ActorGroupConfig.GroupPolicy(
+                    ActorRuntime.ActorKind.SHARED,
+                    0,
+                    4,
+                    32,
+                    32,
+                    ActorGroupConfig.RestartStrategy.ONE_FOR_ONE,
+                    3,
+                    Duration.ofSeconds(5),
+                    ActorGroupConfig.RestartPolicy.PERMANENT,
+                    null);
+
+            ActorGroupRef<String> group = runtime.defineActorGroup(
+                    ActorRuntime.ActorKind.SHARED,
+                    policy,
+                    new ActorMailman<>() {
+                        @Override
+                        public void receiveMail(
+                                ActorMail<String> mail,
+                                ActorGroupContext<String> ignored) {
+                            try {
+                                runtime.executeRootTask(() -> null);
+                            } catch (Throwable failure) {
+                                denied.set(failure);
+                            } finally {
+                                attempted.countDown();
+                            }
+                        }
+                    });
+
+            ActorRuntime.ActorRef<String> actor = runtime.spawnInGroup(
+                    group,
+                    ActorRuntime.ActorKind.SHARED,
+                    IsolatePolicy.developer(),
+                    ignored -> (message, turn) -> turn.emit(message));
+
+            actor.send("mail");
+
+            assertTrue(attempted.await(5, TimeUnit.SECONDS));
+            SecurityException failure = assertInstanceOf(
+                    SecurityException.class,
+                    denied.get());
+            assertTrue(failure.getMessage().contains("host/supervisor"));
         }
     }
 
