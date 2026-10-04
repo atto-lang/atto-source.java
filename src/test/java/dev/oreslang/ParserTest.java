@@ -414,8 +414,7 @@ final class ParserTest {
                           }
 
                           private prepare(): void {
-                            val ready = Futures.completed(1);
-                            await ready;
+                            await 1;
                             return;
                           }
 
