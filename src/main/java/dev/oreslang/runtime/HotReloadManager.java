@@ -190,9 +190,13 @@ public final class HotReloadManager implements AutoCloseable {
         enforceGenerationQuota(codeUnitId);
 
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
-        Context.Builder builder = guestPolicy.restrictedContextBuilder(executionProfile);
+        Context.Builder builder = guestPolicy.restrictedContextBuilder(executionProfile)
+                .arguments(
+                        OresLanguage.ID,
+                        vm.bindApplicationArguments(
+                                guestPolicy.applicationArguments(executionProfile)));
         if (sharedTrustedEngine != null) builder.engine(sharedTrustedEngine);
-        Context context = vm.buildContext(builder);
+        Context context = builder.build();
         try {
             Source source = Source.newBuilder(OresLanguage.ID, sourceText, codeUnitId)
                     .mimeType(OresLanguage.MIME_TYPE)
