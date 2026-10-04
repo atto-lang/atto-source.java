@@ -548,17 +548,40 @@ Qualified names such as `x.y` retain their module namespace.
 
 ## `fnc` versus `routine`
 
-`fnc` is the recursive/function form. It may participate in recursive call graphs. Tail-position calls from `fnc` are optimization-eligible, but v0.3 deliberately does **not** promise that every recursive `fnc` executes in constant stack space yet.
+`fnc` and `routine` may both recurse. Recursion and tail-call optimization are not what distinguishes them: tail-position calls in `fnc`, `routine`, and lambda bodies are subject to the same lowering/optimization rules. v0.3 does **not** yet promise that every eligible tail call executes in constant stack space; that guarantee must be implemented identically for AOT and JIT rather than depending on host-JIT luck.
 
-`routine` is the non-recursive procedural form:
+The distinction is **reifiability**:
+
+- a named `fnc` is a first-class callable value. It may be stored in a `Fnc<...>` binding, passed as a callback, or returned when its type matches;
+- a `routine` is direct-call-only. `run_app()` is valid, but evaluating `run_app` as a value is a compile-time error;
+- an instance/actor method is likewise direct-call-only. `worker.process(x)` is valid, but `worker.process` is not a bound-method value;
+- `static fnc` and lambdas are reifiable first-class callables.
+
+When a callback must invoke a routine or instance method, make the closure explicit:
 
 ```ores
-pub routine main(): void {
-  run_app();
+routine rebuild(int value): void {
+  // ...
+}
+
+define class Worker as
+  pub process(int value): void {
+    // ...
+  }
+end
+
+fnc useCallbacks(Worker worker): void {
+  doWork(|int value| -> {
+    rebuild(value);
+  });
+
+  doWork(|int value| -> {
+    worker.process(value);
+  });
 }
 ```
 
-The static checker rejects direct or indirect call cycles that contain a routine. Routines are not tail-call-optimization targets. This makes entrypoints, orchestration steps, and lifecycle procedures explicit.
+This rule keeps ordinary routine/method calls as direct code-symbol dispatch. The runtime does not manufacture an implicit `(receiver, method)` bound-method object; a closure exists only when source code explicitly asks for one.
 
 Lambdas may recurse when their binding supplies an explicit function type so the closure's own signature is available while its body is checked:
 
