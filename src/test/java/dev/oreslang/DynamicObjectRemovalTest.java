@@ -76,7 +76,7 @@ final class DynamicObjectRemovalTest {
                   pub val int foo;
                 end
 
-                fnc read(value: {foo: int}): int {
+                fnc read({foo: int} value): int {
                   return value.foo;
                 }
 
@@ -86,7 +86,7 @@ final class DynamicObjectRemovalTest {
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                fnc read(value: {foo: int}): int {
+                fnc read({foo: int} value): int {
                   return value["foo"];
                 }
                 """)));
