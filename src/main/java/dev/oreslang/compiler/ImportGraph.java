@@ -127,7 +127,11 @@ final class ImportGraph {
         int matches = 0;
         for (Ast.ModuleDecl module : program.modules()) {
             if (kind == Ast.ImportKind.MODULE) {
-                if (module.name().equals(name)) matches++;
+                if (!module.isNamespace() && module.name().equals(name)) matches++;
+                continue;
+            }
+            if (kind == Ast.ImportKind.NAMESPACE) {
+                if (module.isNamespace() && module.name().equals(name)) matches++;
                 continue;
             }
             for (Ast.Decl decl : module.declarations()) {
