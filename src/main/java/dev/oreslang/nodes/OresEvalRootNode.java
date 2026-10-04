@@ -467,11 +467,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
+            executeBlock(statements, parent, false);
+        }
+
+        private void executeBlock(List<Ast.Stmt> statements, Env parent, boolean inheritedTailBarrier) {
             Env env = new Env(parent);
             ArrayDeque<Ast.Expr> deferred = new ArrayDeque<>();
             boolean abnormalExit = false;
             try {
-                for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred);
+                for (Ast.Stmt stmt : statements) executeStatement(stmt, env, deferred, inheritedTailBarrier);
+            } catch (TailCallSignal signal) {
+                throw signal;
             } catch (ReturnSignal signal) {
                 throw signal;
             } catch (RuntimeException | Error failure) {
@@ -490,7 +496,11 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
-        private void executeStatement(Ast.Stmt stmt, Env env, ArrayDeque<Ast.Expr> deferred) {
+        private void executeStatement(
+                Ast.Stmt stmt,
+                Env env,
+                ArrayDeque<Ast.Expr> deferred,
+                boolean inheritedTailBarrier) {
             if (stmt instanceof Ast.BindingStmt binding) {
                 if (binding.initializer() instanceof Ast.LambdaExpr) {
                     env.reserve(binding.name(), binding.kind());
@@ -521,25 +531,42 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return;
             }
-            if (stmt instanceof Ast.ReturnStmt ret) throw new ReturnSignal(ret.value() == null ? null : eval(ret.value(), env));
+            if (stmt instanceof Ast.ReturnStmt ret) {
+                returnFrom(
+                        ret.value(),
+                        env,
+                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+            }
             if (stmt instanceof Ast.ExprStmt expression) { eval(expression.expression(), env); return; }
             if (stmt instanceof Ast.DeferStmt defer) { deferred.push(defer.expression()); return; }
             if (stmt instanceof Ast.IfStmt ifStmt) {
                 for (Ast.IfBranch branch : ifStmt.branches()) {
-                    if (truth(eval(branch.condition(), env))) { executeBlock(branch.body(), env); return; }
+                    if (truth(eval(branch.condition(), env))) {
+                        executeBlock(
+                                branch.body(),
+                                env,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                        return;
+                    }
                 }
-                executeBlock(ifStmt.elseBody(), env);
+                executeBlock(
+                        ifStmt.elseBody(),
+                        env,
+                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                 return;
             }
             if (stmt instanceof Ast.TryStmt tried) {
-                try { executeBlock(tried.body(), env); }
+                // A call under catch/finally is not a proper tail call: the
+                // caller still owns exception/cleanup semantics after the call.
+                try { executeBlock(tried.body(), env, true); }
+                catch (TailCallSignal signal) { throw signal; }
                 catch (ReturnSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
-                    executeBlock(tried.catchBody(), catchEnv);
-                } finally { executeBlock(tried.finallyBody(), env); }
+                    executeBlock(tried.catchBody(), catchEnv, true);
+                } finally { executeBlock(tried.finallyBody(), env, true); }
                 return;
             }
             if (stmt instanceof Ast.ForOfStmt loop) {
@@ -548,16 +575,28 @@ public final class OresEvalRootNode extends RootNode {
                     context.schedulerSafepoint();
                     Env iteration = new Env(env);
                     iteration.define(loop.bindingName(), item, loop.bindingKind());
-                    executeBlock(loop.body(), iteration);
+                    executeBlock(
+                            loop.body(),
+                            iteration,
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                 }
                 return;
             }
             if (stmt instanceof Ast.ForStmt loop) {
                 Env loopEnv = new Env(env);
-                if (loop.initializer() != null) executeStatement(loop.initializer(), loopEnv, new ArrayDeque<>());
+                if (loop.initializer() != null) {
+                    executeStatement(
+                            loop.initializer(),
+                            loopEnv,
+                            new ArrayDeque<>(),
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                }
                 while (loop.condition() == null || truth(eval(loop.condition(), loopEnv))) {
                     context.schedulerSafepoint();
-                    executeBlock(loop.body(), loopEnv);
+                    executeBlock(
+                            loop.body(),
+                            loopEnv,
+                            inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                     if (loop.update() != null) eval(loop.update(), loopEnv);
                 }
             }
