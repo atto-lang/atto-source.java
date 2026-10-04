@@ -10,6 +10,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresRwLock;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.OresFuture;
 import dev.oreslang.runtime.ActorRuntime;
@@ -463,6 +464,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("Futures")) return new FuturesFacade();
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
+                if (name.name().equals("RwLock")) return new RwLockFactory(context);
                 if (name.name().equals("print")) return (Invokable) args -> {
                     context.requireCapability(IsolatePolicy.Capability.STDOUT, "print");
                     requireOne(args, "print"); context.output().print(display(args.getFirst())); context.output().flush(); return null;
@@ -793,8 +795,59 @@ public final class OresEvalRootNode extends RootNode {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
             }
+            if (receiver instanceof RwLockFactory factory) {
+                if (!name.equals("new")) throw new IllegalArgumentException("unknown RwLock factory member " + name);
+                return (Invokable) factory::create;
+            }
             if (receiver instanceof OptionValue option) return optionMember(option, name);
             if (receiver instanceof ResultValue result) return resultMember(result, name);
+            if (receiver instanceof OresRwLock<?> rwLock) return rwLockMember(rwLock, name);
+            if (receiver instanceof OresRwLock.ReadGuard<?> guard) {
+                return switch (name) {
+                    case "value" -> (Invokable) args -> {
+                        requireZero(args, "RwReadGuard.value");
+                        return guard.value();
+                    };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "RwReadGuard.release");
+                        guard.close();
+                        return null;
+                    };
+                    case "is_released" -> (Invokable) args -> {
+                        requireZero(args, "RwReadGuard.is_released");
+                        return guard.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown RwReadGuard member " + name);
+                };
+            }
+            if (receiver instanceof OresRwLock.WriteGuard<?> guard) {
+                return switch (name) {
+                    case "value" -> (Invokable) args -> {
+                        requireZero(args, "RwWriteGuard.value");
+                        return guard.value();
+                    };
+                    case "replace" -> (Invokable) args -> {
+                        requireOne(args, "RwWriteGuard.replace");
+                        @SuppressWarnings("unchecked")
+                        OresRwLock.WriteGuard<Object> writable =
+                                (OresRwLock.WriteGuard<Object>) guard;
+                        writable.replace(args.getFirst());
+                        return null;
+                    };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "RwWriteGuard.release");
+                        guard.close();
+                        return null;
+                    };
+                    case "is_released" -> (Invokable) args -> {
+                        requireZero(args, "RwWriteGuard.is_released");
+                        return guard.closed();
+                    };
+                    default -> throw new IllegalArgumentException(
+                            "unknown RwWriteGuard member " + name);
+                };
+            }
             if (receiver instanceof OresMutex.Lock<?> lock) return mutexMember(lock, name);
             if (receiver instanceof OresMutex.Guard<?> guard) {
                 return switch (name) {
@@ -825,9 +878,12 @@ public final class OresEvalRootNode extends RootNode {
                     return value;
                 }
                 if (hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
-                    throw new IllegalArgumentException(
-                            "instance method '" + object.klass.name() + "." + name
-                                    + "' is not a first-class value; invoke it directly through its receiver");
+                    if (object.klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor method '" + object.klass.name() + "." + name
+                                        + "' is not a first-class value and cannot escape an actor turn");
+                    }
+                    return new BoundMethod(object.owner, object, name);
                 }
                 throw new IllegalArgumentException("unknown member " + object.klass.name() + "." + name);
             }
@@ -891,6 +947,37 @@ public final class OresEvalRootNode extends RootNode {
                     return result.ok() ? result.value() : args.getFirst();
                 };
                 default -> throw new IllegalArgumentException("unknown Result member " + name);
+            };
+        }
+
+        @SuppressWarnings("unchecked")
+        private Object rwLockMember(OresRwLock<?> rawLock, String name) {
+            context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "RwLock." + name);
+            OresRwLock<Object> lock = (OresRwLock<Object>) rawLock;
+            return switch (name) {
+                case "read_lock" -> (Invokable) args -> {
+                    requireZero(args, "RwLock.read_lock");
+                    return lock.readLock();
+                };
+                case "try_read_lock" -> (Invokable) args -> {
+                    requireZero(args, "RwLock.try_read_lock");
+                    var guard = lock.tryReadLock();
+                    return guard.isPresent()
+                            ? new OptionValue(true, guard.get())
+                            : new OptionValue(false, null);
+                };
+                case "write_lock" -> (Invokable) args -> {
+                    requireZero(args, "RwLock.write_lock");
+                    return lock.writeLock();
+                };
+                case "try_write_lock" -> (Invokable) args -> {
+                    requireZero(args, "RwLock.try_write_lock");
+                    var guard = lock.tryWriteLock();
+                    return guard.isPresent()
+                            ? new OptionValue(true, guard.get())
+                            : new OptionValue(false, null);
+                };
+                default -> throw new IllegalArgumentException("unknown RwLock member " + name);
             };
         }
 
@@ -989,6 +1076,27 @@ public final class OresEvalRootNode extends RootNode {
                 executeBlock(fn.body(), env);
                 return null;
             } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
+        }
+
+        /**
+         * Ordinary classes may expose first-class bound method values. Actor
+         * methods are rejected before this object can be constructed because
+         * an actor receiver must never escape its serialized mailbox turn.
+         */
+        private static final class BoundMethod implements Invokable {
+            private final Evaluator owner;
+            private final OresObject receiver;
+            private final String methodName;
+
+            private BoundMethod(Evaluator owner, OresObject receiver, String methodName) {
+                this.owner = owner;
+                this.receiver = receiver;
+                this.methodName = methodName;
+            }
+
+            @Override public Object call(List<Object> arguments) {
+                return owner.invokeMethod(receiver, methodName, arguments);
+            }
         }
 
         private Object importedValue(String name) {
@@ -1569,6 +1677,14 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return;
             }
+            if (value instanceof OresRwLock.ReadGuard<?> guard) {
+                if (!guard.closed()) guard.close();
+                return;
+            }
+            if (value instanceof OresRwLock.WriteGuard<?> guard) {
+                if (!guard.closed()) guard.close();
+                return;
+            }
             if (!seen.add(value)) return;
 
             if (value instanceof OptionValue option) {
@@ -1654,6 +1770,22 @@ public final class OresEvalRootNode extends RootNode {
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
+    private record RwLockFactory(OresContext context) {
+        private Object create(List<Object> args) {
+            requireOne(args, "RwLock.new");
+            context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "RwLock.new");
+            Object value = args.getFirst();
+            if (!MutexFactory.runtimeSharedSafe(
+                    value,
+                    java.util.Collections.newSetFromMap(
+                            new java.util.IdentityHashMap<>()))) {
+                throw new IllegalArgumentException(
+                        "RwLock<T> runtime admission rejected non-shared-safe state");
+            }
+            return new OresRwLock<>(value);
+        }
+    }
+
     private record MutexFactory(boolean shared, OresContext context) {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
