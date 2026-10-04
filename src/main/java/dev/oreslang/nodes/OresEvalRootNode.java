@@ -351,8 +351,11 @@ public final class OresEvalRootNode extends RootNode {
                 return List.of(
                         new OptionValue(true, success),
                         new OptionValue(false, null));
+            } catch (OresRaise raise) {
+                // raise is a stronger recovery signal and must bypass trap.
+                throw raise;
             } catch (OresPanic panic) {
-                // trap is intentionally narrower than panic/recovery semantics.
+                // panic is a stronger recovery signal and must bypass trap.
                 throw panic;
             } catch (RuntimeException failure) {
                 return List.of(
@@ -467,6 +470,7 @@ public final class OresEvalRootNode extends RootNode {
             if (stmt instanceof Ast.TryStmt tried) {
                 try { executeBlock(tried.body(), env); }
                 catch (ReturnSignal signal) { throw signal; }
+                catch (OresRaise raise) { throw raise; }
                 catch (OresPanic panic) { throw panic; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
@@ -1759,6 +1763,14 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record OptionUnwrapError(String reason) {
         @Override public String toString(){return "OptionUnwrapError(" + reason + ")";}
+    }
+    /**
+     * Internal non-trappable recovery carrier reserved for source-level raise lowering.
+     * Keeping this distinct now prevents future raise semantics from accidentally
+     * entering ordinary try/catch or trap RuntimeException paths.
+     */
+    private static final class OresRaise extends RuntimeException {
+        private OresRaise(String message) { super(message, null, false, false); }
     }
     private static final class OresPanic extends RuntimeException {
         private OresPanic(String message) { super(message, null, false, false); }
