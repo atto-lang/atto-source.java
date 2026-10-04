@@ -1030,8 +1030,17 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
             Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
-            if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
-            return callMethod(receiver, method, args);
+            if (method != null) return callMethod(receiver, method, args);
+
+            Object fieldValue = receiver.fields.get(name);
+            if (fieldValue instanceof Invokable invokable) return invokable.call(args);
+            if (receiver.fields.containsKey(name)) {
+                throw new IllegalArgumentException(
+                        "field " + receiver.klass.name() + "." + name + " is not callable");
+            }
+            throw new IllegalArgumentException(
+                    "no method or callable field " + receiver.klass.name() + "." + name
+                            + " with arity " + args.size());
         }
 
         private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
