@@ -1534,7 +1534,7 @@ public final class OresEvalRootNode extends RootNode {
                             yield (Invokable) args -> handle.call(
                                     args,
                                     (state, delivered) ->
-                                            callStatefulModuleFunction(state, ref.module(), fn, delivered));
+                                            callStatefulModuleFunction(state, module, fn, delivered));
                         }
                     };
                 }
