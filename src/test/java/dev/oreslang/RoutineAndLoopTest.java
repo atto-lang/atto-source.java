@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
 
@@ -229,7 +230,7 @@ final class RoutineAndLoopTest {
 
     @Test
     void forOfDestructuringRejectsArityMismatch() {
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> run("""
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> run("""
                 pub routine main() => void {
                   for [k, v] of arr[arr[1]] {
                     stdio.stdout.write(k);
@@ -327,7 +328,7 @@ final class RoutineAndLoopTest {
 
     @Test
     void loopDoDoneRequiresDoneNotEnd() {
-        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> run("""
+        PolyglotException failure = assertThrows(PolyglotException.class, () -> run("""
                 pub routine main() => void {
                   for item of arr[1] do
                     stdio.stdout.write(item)
