@@ -66,11 +66,6 @@ final class LanguageHardeningTest {
                 end
 
                 define module app
-                  define class Person as
-                    pub val string name;
-                    pub val int age;
-                  end
-
                   pub fnc main(): void {
                     val answer = math.add(40, 2);
                     stdio.println(answer);
@@ -155,6 +150,11 @@ final class LanguageHardeningTest {
     void declaredObjectArrTupleIndexAndLetAssignmentAreStaticallyChecked() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
+                  define class Person as
+                    pub val string name;
+                    pub val int age;
+                  end
+
                   pub fnc main(): void {
                     val person = new Person("ore", 1);
                     val values = arr[10, 20, 30];
