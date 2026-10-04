@@ -97,7 +97,10 @@ public final class TypeChecker {
 
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
-            if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
+            if (module.isNamespace()) validateNamespaceContainer(module);
+            if (modules.putIfAbsent(module.name(), module) != null) {
+                throw new IllegalArgumentException("duplicate top-level module/namespace '" + module.name() + "'");
+            }
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
@@ -112,6 +115,16 @@ public final class TypeChecker {
                     putQualified(typeAliases, ambiguousTypeAliases, module.name(), alias.name(), alias, "type alias");
                 }
             }
+        }
+    }
+
+    private void validateNamespaceContainer(Ast.ModuleDecl namespace) {
+        for (Ast.Decl decl : namespace.declarations()) {
+            if (decl instanceof Ast.TypeAliasDecl || decl instanceof Ast.InterfaceDecl) continue;
+            if (decl instanceof Ast.ClassDecl klass && klass.actorKind() == Ast.ActorKind.NONE) continue;
+            throw new IllegalArgumentException(
+                    "namespace '" + namespace.name()
+                            + "' is type-only; only class, abstract class, interface, and type declarations are allowed");
         }
     }
 
@@ -147,6 +160,7 @@ public final class TypeChecker {
     }
 
     private void checkModuleAdherence(Ast.ModuleDecl module) {
+        if (module.isNamespace()) return;
         for (Ast.Annotation annotation : module.annotations()) {
             if (!annotation.name().equals("AdheresTo")) continue;
             if (annotation.arguments().isEmpty()) throw new IllegalArgumentException("@AdheresTo requires at least one interface");
