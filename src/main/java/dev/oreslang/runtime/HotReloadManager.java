@@ -446,7 +446,9 @@ public final class HotReloadManager implements AutoCloseable {
         // UntrustedActor ambient authority is deny-by-default. Narrow request/
         // response and Recipient capabilities are object capabilities and are not
         // represented by this ambient capability set.
-        IsolatePolicy ceiling = IsolatePolicy.untrustedActor();
+        // Current-main hard sandbox ceiling. The dedicated UntrustedActor runtime
+        // may impose tighter per-actor limits on top of this guest-context ceiling.
+        IsolatePolicy ceiling = IsolatePolicy.strictFaas();
         return new IsolatePolicy(
                 Set.of(),
                 Math.min(isolated.maxHeapBytes(), ceiling.maxHeapBytes()),
