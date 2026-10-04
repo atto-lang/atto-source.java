@@ -2633,6 +2633,9 @@ public final class ActorRuntime implements AutoCloseable {
          */
         <N> ActorRef<N> spawnPrivate(BehaviorFactory<N> behaviorFactory);
         <N> ActorRef<N> spawnShared(BehaviorFactory<N> behaviorFactory);
+        <N, Out> ActorRef<N> spawnInGroup(
+                ActorGroupHandle<Out> group,
+                BehaviorFactory<N> behaviorFactory);
         <T> Shared<T> shareReadonly(T value);
 
         /**
@@ -6086,6 +6089,16 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                     @Override public <N> ActorRef<N> spawnShared(BehaviorFactory<N> factory) {
                         return ActorRuntime.this.spawnShared(factory);
+                    }
+                    @Override public <N, Out> ActorRef<N> spawnInGroup(
+                            ActorGroupHandle<Out> group,
+                            BehaviorFactory<N> factory) {
+                        Objects.requireNonNull(group, "group");
+                        return ActorRuntime.this.spawnInGroup(
+                                group,
+                                group.kind(),
+                                policy,
+                                factory);
                     }
                     @Override public <T> Shared<T> shareReadonly(T value) {
                         return ActorRuntime.this.shareReadonly(value);
