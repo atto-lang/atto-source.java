@@ -483,9 +483,9 @@ public final class Parser {
             boolean structural = false;
             Ast.ParamMode mode = Ast.ParamMode.BORROW;
 
-            // Ownership transfer remains contextual before the type. Mutable
+            // Ownership transfer stays contextual before the type. Mutable
             // access is canonical in type-first form: Type mut name. Keep the
-            // older mut Type name spelling accepted while existing source migrates.
+            // older mut Type name spelling accepted during migration.
             if (match(MUT)) mode = Ast.ParamMode.MUT;
             else if (check(IDENT) && peek().lexeme().equals("take")) {
                 advance();
@@ -526,12 +526,12 @@ public final class Parser {
             Ast.TypeRef type = parseTypeRef();
             if (match(MUT)) {
                 if (mode == Ast.ParamMode.TAKE) {
-                    throw error(previous(), "a take parameter owns its value and cannot also be a temporary mut borrow");
+                    throw error(previous(), "a take parameter owns its value and cannot also be a temporary mut reference");
+                }
+                if (structural) {
+                    throw error(previous(), "structural parameters are read-only views and cannot use mut or take");
                 }
                 mode = Ast.ParamMode.MUT;
-            }
-            if (structural && mode != Ast.ParamMode.BORROW) {
-                throw error(previous(), "structural parameters are read-only views and cannot use mut or take");
             }
             String name = consume(IDENT, "expected parameter name").lexeme();
             params.add(new Ast.Param(type, name, structural, mode));
@@ -936,212 +936,13 @@ public final class Parser {
             argument = parseExpression();
             consume(RPAREN, "expected ')' after rt " + name + " argument");
         } else {
-            // Command form has unary precedence: rt copy x.field + y parses as
-            // (rt copy x.field) + y. Parentheses explicitly widen the operand.
+            // Command form has unary precedence. Parentheses widen the operand.
             argument = parseUnary();
         }
 
-        // The synthetic name contains characters guest identifiers cannot
-        // spell, so user code cannot forge or shadow this compiler intrinsic.
-        return new Ast.CallExpr(new Ast.NameExpr("\u0024rt\u0024" + name), List.of(argument));
-    }
-
-    private Ast.Expr parsePostfix() {
-        Ast.Expr expr = parsePrimary();
-        while (true) {
-            if (match(LPAREN)) {
-                List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
-                consume(RPAREN, "expected ')' after arguments");
-                expr = new Ast.CallExpr(expr, args);
-            } else if (match(DOT)) {
-                String member = consume(IDENT, "expected member name after '.'").lexeme();
-                expr = new Ast.MemberExpr(expr, member);
-            } else if (match(LBRACKET)) {
-                Ast.Expr index = parseExpression();
-                consume(RBRACKET, "expected ']' after index");
-                expr = new Ast.IndexExpr(expr, index);
-            } else break;
-        }
-        return expr;
-    }
-
-    private Ast.Expr parsePrimary() {
-        if (match(INT)) return new Ast.LiteralExpr(Long.parseLong(previous().lexeme().replace("_", "")));
-        if (match(FLOAT)) return new Ast.LiteralExpr(Double.parseDouble(previous().lexeme().replace("_", "")));
-        if (match(IMAG)) {
-            String raw = previous().lexeme().substring(0, previous().lexeme().length() - 1).replace("_", "");
-            return new Ast.LiteralExpr(new Ast.Imaginary(Double.parseDouble(raw)));
-        }
-        if (match(STRING)) return new Ast.LiteralExpr(previous().lexeme());
-        if (match(TRUE)) return new Ast.LiteralExpr(Boolean.TRUE);
-        if (match(FALSE)) return new Ast.LiteralExpr(Boolean.FALSE);
-        if (match(NULL)) throw error(previous(), "standalone null values are forbidden; use Option<T>");
-        if (match(SELF)) return new Ast.NameExpr("self");
-        if (match(IDENT)) return new Ast.NameExpr(previous().lexeme());
-        if (match(NEW)) {
-            Ast.TypeRef type = parseTypeRef();
-            consume(LPAREN, "expected '(' after new type");
-            List<Ast.Expr> args = parseArgumentsUntil(RPAREN);
-            consume(RPAREN, "expected ')' after constructor arguments");
-            return new Ast.NewExpr(type, args);
-        }
-        if (match(OBJ)) return parseObjectLiteral();
-        if (match(ARR)) {
-            consume(LBRACKET, "expected '[' after arr");
-            List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
-            consume(RBRACKET, "expected ']' after arr literal");
-            return new Ast.ListExpr(items);
-        }
-        if (check(PIPE)) return parsePipeLambda();
-        if (check(LPAREN) && looksLikeLambda()) return parseLambda();
-        if (match(LPAREN)) {
-            Ast.Expr first = parseExpression();
-            if (match(COMMA)) {
-                List<Ast.Expr> items = new ArrayList<>();
-                items.add(first);
-                do items.add(parseExpression()); while (match(COMMA));
-                consume(RPAREN, "expected ')' after tuple");
-                return new Ast.TupleExpr(items);
-            }
-            consume(RPAREN, "expected ')' after expression");
-            return first;
-        }
-        if (match(LBRACKET)) {
-            List<Ast.Expr> items = parseArgumentsUntil(RBRACKET);
-            consume(RBRACKET, "expected ']'");
-            return new Ast.ListExpr(items);
-        }
-        throw error(peek(), "expected expression");
-    }
-
-    private Ast.ObjectExpr parseObjectLiteral() {
-        consume(LBRACE, "expected '{' after obj");
-        List<Ast.ObjectField> fields = new ArrayList<>();
-        if (!check(RBRACE)) {
-            do {
-                String name;
-                if (match(IDENT, STRING)) name = previous().lexeme();
-                else throw error(peek(), "expected object field name");
-                consume(COLON, "expected ':' after object field name");
-                fields.add(new Ast.ObjectField(name, parseExpression()));
-            } while (match(COMMA));
-        }
-        consume(RBRACE, "expected '}' after obj literal");
-        return new Ast.ObjectExpr(fields);
-    }
-
-    private Ast.LambdaExpr parseLambda() {
-        consume(LPAREN, "expected '('");
-        List<Ast.Param> params = parseParametersUntil(RPAREN);
-        consume(RPAREN, "expected ')' after lambda parameters");
-        consume(ARROW, "expected '->' after lambda parameters");
-        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '-> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock());
-    }
-
-    private Ast.LambdaExpr parsePipeLambda() {
-        consume(PIPE, "expected '|'");
-        List<Ast.Param> params = new ArrayList<>();
-        if (!check(PIPE)) {
-            do {
-                if (check(IDENT) && (checkNext(COMMA) || checkNext(PIPE))) {
-                    String name = advance().lexeme();
-                    params.add(new Ast.Param(Ast.TypeRef.inferred(), name, false, Ast.ParamMode.BORROW));
-                } else {
-                    Ast.ParamMode mode = Ast.ParamMode.BORROW;
-                    if (match(MUT)) mode = Ast.ParamMode.MUT;
-                    else if (check(IDENT) && peek().lexeme().equals("take")) {
-                        advance();
-                        mode = Ast.ParamMode.TAKE;
-                    }
-                    Ast.TypeRef type = parseTypeRef();
-                    if (match(MUT)) throw error(previous(), "put mut before the lambda parameter type: 'mut Type name'");
-                    String name = consume(IDENT, "expected lambda parameter name").lexeme();
-                    params.add(new Ast.Param(type, name, false, mode));
-                }
-            } while (match(COMMA));
-        }
-        consume(PIPE, "expected closing '|' after lambda parameters");
-        consume(ARROW, "lambdas use the slim arrow '->'");
-        if (!check(LBRACE)) throw error(peek(), "lambdas always require a block body; use '|args| -> { ... }'");
-        return new Ast.LambdaExpr(params, null, parseBlock());
-    }
-
-    private boolean looksLikeLambda() {
-        int depth = 0;
-        for (int i = current; i < tokens.size(); i++) {
-            Token.Type type = tokens.get(i).type();
-            if (type == LPAREN) depth++;
-            else if (type == RPAREN) {
-                depth--;
-                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
-            }
-        }
-        return false;
-    }
-
-    private List<Ast.Expr> parseArgumentsUntil(Token.Type terminator) {
-        if (check(terminator)) return List.of();
-        List<Ast.Expr> args = new ArrayList<>();
-        do args.add(parseExpression()); while (match(COMMA));
-        return args;
-    }
-
-    private void consumeMemberTerminator(Token.Type structuralTerminator, String message) {
-        if (match(SEMICOLON) || check(structuralTerminator)) return;
-        throw error(peek(), message);
-    }
-
-    private void consumeStatementTerminator(String message) {
-        if (match(SEMICOLON) || isSafeStatementBoundary()) return;
-        throw error(peek(), message);
-    }
-
-    private boolean isSafeStatementBoundary() {
-        return check(RBRACE) || check(FI) || check(END) || check(ELSE) || check(ELSEIF)
-                || check(CATCH) || check(FINALLY) || check(EOF);
-    }
-
-    private Ast.BindingKind parseBindingKind() {
-        if (match(CONST)) return Ast.BindingKind.CONST;
-        if (match(VAL)) return Ast.BindingKind.VAL;
-        if (match(LET)) return Ast.BindingKind.LET;
-        throw error(peek(), "expected const, val, or let");
-    }
-
-    private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
-
-    private boolean match(Token.Type... types) {
-        for (Token.Type type : types) {
-            if (check(type)) { advance(); return true; }
-        }
-        return false;
-    }
-
-    private Token consume(Token.Type type, String message) {
-        if (check(type)) return advance();
-        throw error(peek(), message);
-    }
-
-    private boolean check(Token.Type type) { return peek().type() == type; }
-    private boolean checkNext(Token.Type type) { return current + 1 < tokens.size() && tokens.get(current + 1).type() == type; }
-    private boolean checkNextLexeme(String lexeme) {
-        return current + 1 < tokens.size() && tokens.get(current + 1).type() == IDENT
-                && tokens.get(current + 1).lexeme().equals(lexeme);
-    }
-    private Token advance() { if (!check(EOF)) current++; return previous(); }
-    private Token peek() { return tokens.get(current); }
-    private Token previous() { return tokens.get(current - 1); }
-
-    private IllegalArgumentException error(Token token, String message) {
-        return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
-    }
-
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean isStatic, boolean isAbstract) { }
-}
- is not a legal source identifier, so this compiler-internal name
-        // cannot be forged or shadowed by guest code.
-        return new Ast.CallExpr(new Ast.NameExpr("$rt$" + name), List.of(argument));
+        // This compiler-only spelling cannot be produced by the guest lexer.
+        String intrinsic = "$" + "rt" + "$" + name;
+        return new Ast.CallExpr(new Ast.NameExpr(intrinsic), List.of(argument));
     }
 
     private Ast.Expr parsePostfix() {
