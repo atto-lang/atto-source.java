@@ -325,6 +325,64 @@ public final class OresEvalRootNode extends RootNode {
             return result instanceof HostObjectFacade host ? host.value() : result;
         }
 
+        private Object invoke(Invocation initial) {
+            Invocation current = initial;
+            int tailHops = 0;
+            while (true) {
+                Object result = current.owner().executeRaw(current);
+                if (!(result instanceof TailCall tail)) return result;
+                current = tail.invocation();
+                tailHops++;
+                if (tailHops % TAIL_SAFEPOINT_INTERVAL == 0) {
+                    current.owner().context.schedulerSafepoint();
+                }
+            }
+        }
+
+        private Object executeRaw(Invocation invocation) {
+            return switch (invocation.kind()) {
+                case FUNCTION -> callFunctionRaw(
+                        (Ast.FunctionDecl) invocation.target(),
+                        invocation.arguments());
+                case FUNCTION_BODY -> callFunctionBodyRaw(
+                        (Ast.FunctionDecl) invocation.target(),
+                        invocation.arguments());
+                case METHOD -> callMethodRaw(
+                        (OresObject) invocation.receiver(),
+                        (Ast.MethodDecl) invocation.target(),
+                        invocation.arguments());
+                case STATIC_FUNCTION -> callStaticFunctionRaw(
+                        (Ast.MethodDecl) invocation.target(),
+                        invocation.arguments());
+                case INVOKABLE -> ((Invokable) invocation.target()).call(invocation.arguments());
+            };
+        }
+
+        private Invocation functionInvocation(Ast.FunctionDecl fn, List<?> args) {
+            return new Invocation(this, InvocationKind.FUNCTION, null, fn, objectArguments(args));
+        }
+
+        private Invocation functionBodyInvocation(Ast.FunctionDecl fn, List<?> args) {
+            return new Invocation(this, InvocationKind.FUNCTION_BODY, null, fn, objectArguments(args));
+        }
+
+        private Invocation methodInvocation(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            return new Invocation(this, InvocationKind.METHOD, receiver, method, objectArguments(args));
+        }
+
+        private Invocation staticFunctionInvocation(Ast.MethodDecl fn, List<?> args) {
+            return new Invocation(this, InvocationKind.STATIC_FUNCTION, null, fn, objectArguments(args));
+        }
+
+        private Invocation invokableInvocation(Invokable callable, List<?> args) {
+            return new Invocation(this, InvocationKind.INVOKABLE, null, callable, objectArguments(args));
+        }
+
+        @SuppressWarnings("unchecked")
+        private static List<Object> objectArguments(List<?> args) {
+            return (List<Object>) args;
+        }
+
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
             return invoke(functionInvocation(fn, args));
         }
