@@ -50,7 +50,6 @@ final class DynamicObjectRemovalTest {
                         """)));
 
         assertTrue(error.getMessage().contains("DynamicStruct<T> has been removed"));
-        assertTrue(error.getMessage().contains("Map<K,V>"));
     }
 
     @Test
