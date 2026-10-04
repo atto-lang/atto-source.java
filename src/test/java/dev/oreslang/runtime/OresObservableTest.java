@@ -100,6 +100,27 @@ final class OresObservableTest {
     }
 
     @Test
+    void cancellingSharedFutureSubscriptionDetachesWithoutCancellingProducer()
+            throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        OresSubscription<Integer> subscription =
+                OresObservable.fromFuture(source).subscribe();
+
+        OresFuture<OresNotification<Integer>> pull = subscription.next();
+        assertTrue(subscription.cancel());
+        assertTrue(pull.isCancelled());
+        assertFalse(source.isCancelled());
+
+        var waitersField = OresFuture.class.getDeclaredField("waiters");
+        waitersField.setAccessible(true);
+        var waiters = (java.util.concurrent.ConcurrentLinkedQueue<?>)
+                waitersField.get(source);
+        assertTrue(
+                waiters.isEmpty(),
+                "cancelled subscription must detach from a shared producer Future");
+    }
+
+    @Test
     void sharedFutureCancellationRemainsCancellationForPulledDemand() {
         OresFuture<Integer> source = new OresFuture<>();
         OresSubscription<Integer> subscription =
