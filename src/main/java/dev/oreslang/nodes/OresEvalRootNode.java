@@ -1373,7 +1373,8 @@ public final class OresEvalRootNode extends RootNode {
                             future,
                             (result, failure) -> failure == null
                                     ? asyncPure(result)
-                                    : asyncFailure(unwrapFutureFailure(failure)));
+                                    : asyncFailure(unwrapFutureFailure(failure)),
+                            traceSite(awaited.site()));
                 });
             }
 
@@ -1698,6 +1699,12 @@ public final class OresEvalRootNode extends RootNode {
             };
 
             List<?> normalized = normalizeFunctionArguments(fn, evaluated);
+            OresAsyncTrace.Trace actorTrace =
+                    traceForInvocation(functionTraceFrame(fn));
+            actorTrace.boundary(
+                    OresAsyncTrace.BoundaryKind.ACTOR_MESSAGE,
+                    functionTraceFrame(fn).site());
+
             return context.actors().spawnSuspendingInvocation(
                     runtimeKind,
                     normalized,
@@ -1707,7 +1714,8 @@ public final class OresEvalRootNode extends RootNode {
                                 (ActorRuntime.InvocationCompletion<Object>) completion;
                         ActorPlanRunner runner = new ActorPlanRunner(
                                 asyncFunctionPlan(fn, delivered),
-                                result);
+                                result,
+                                actorTrace);
                         runner.start(actorContext);
                     });
         }
