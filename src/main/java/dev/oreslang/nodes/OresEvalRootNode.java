@@ -848,7 +848,9 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown name " + name.name());
             }
             if (expr instanceof Ast.AssignExpr assignment) {
-                Object value = eval(assignment.value(), env);
+                Object value = requireGuestValue(
+                        eval(assignment.value(), env),
+                        "assignment value");
                 if (assignment.target() instanceof Ast.NameExpr target) {
                     env.assign(target.name(), value);
                     return value;
@@ -1551,7 +1553,9 @@ public final class OresEvalRootNode extends RootNode {
                             "stateful module field has no initializer: "
                                     + module.name() + "." + field.name());
                 }
-                Object value = eval(field.initializer(), env);
+                Object value = requireGuestValue(
+                        eval(field.initializer(), env),
+                        "stateful module field " + module.name() + "." + field.name());
                 if (field.bindingKind() != Ast.BindingKind.CONST) {
                     fields.put(field.name(), value);
                 }
@@ -1730,6 +1734,9 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException(
                             "missing constructor field " + klass.name() + "." + field.name());
                 }
+                value = requireGuestValue(
+                        value,
+                        "class field " + klass.name() + "." + field.name());
                 fields.put(field.name(), value);
                 env.define(field.name(), value, field.bindingKind());
             }
