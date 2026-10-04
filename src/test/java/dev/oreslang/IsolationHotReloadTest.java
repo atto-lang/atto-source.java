@@ -128,6 +128,11 @@ final class IsolationHotReloadTest {
                   markerBrand: 'marking/branding'
                 }
 
+                define class Branded as
+                  pub val 'brand' marker;
+                  pub val 'marking/branding' markerBrand;
+                end
+
                 fnc first(y structural Foo): void {
                   return;
                 }
@@ -142,7 +147,7 @@ final class IsolationHotReloadTest {
                 }
 
                 pub routine main(): void {
-                  val branded = obj{marker: "brand", markerBrand: "marking/branding"};
+                  val branded = new Branded("brand", "marking/branding");
                   first(branded);
                   second(branded);
                   third(branded);
@@ -158,10 +163,14 @@ final class IsolationHotReloadTest {
                   marker: 'brand'
                 }
 
+                define class Branded as
+                  pub val 'brand' marker;
+                end
+
                 fnc nominal(Foo y): void { return; }
 
                 pub routine main(): void {
-                  val branded = obj{marker: "brand"};
+                  val branded = new Branded("brand");
                   nominal(branded);
                   return;
                 }
