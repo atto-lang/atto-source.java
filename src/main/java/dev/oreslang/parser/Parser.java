@@ -97,10 +97,15 @@ public final class Parser {
                 namespace = consume(IDENT, "expected import namespace").lexeme();
             } else if (match(LBRACE)) {
                 if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consume(IDENT, "expected imported name").lexeme()); while (match(COMMA));
+                do names.add(kind == Ast.ImportKind.FUNCTION
+                        ? consumeCallableName("expected imported function name")
+                        : consume(IDENT, "expected imported name").lexeme());
+                while (match(COMMA));
                 consume(RBRACE, "expected '}' after imported names");
             } else {
-                names.add(consume(IDENT, "expected imported name").lexeme());
+                names.add(kind == Ast.ImportKind.FUNCTION
+                        ? consumeCallableName("expected imported function name")
+                        : consume(IDENT, "expected imported name").lexeme());
             }
         }
 
