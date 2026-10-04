@@ -2,7 +2,12 @@ package dev.oreslang;
 
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -130,6 +135,86 @@ final class RuntimeOwnershipSyntaxTest {
     }
 
     @Test
+    void rtCopyUsesExplicitClassCopyContractAndProducesIndependentIdentity() throws Exception {
+        String output = run("""
+                define class Person as
+                  pub let String name = "Alex";
+
+                  pub copy() => self {
+                    return new Person();
+                  }
+                end
+
+                fnc rename(Person mut person) => void {
+                  person.name = "Taylor";
+                  return;
+                }
+
+                pub routine main() => void {
+                  let Person original = new Person();
+                  let Person copied = rt copy original;
+                  rename(copied);
+                  stdio.stdout.write(original.name);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(copied.name);
+                  return;
+                }
+                """);
+
+        assertTrue(output.equals("Alex:Taylor"), output);
+    }
+
+    @Test
+    void rtCopyRejectsIdentityClassWithoutCopyContract() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Person as
+                          pub val String name = "Alex";
+                        end
+
+                        fnc bad() => void {
+                          let Person p = new Person();
+                          let Person q = rt copy p;
+                          stdio.println(q.name);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("copy"), error.getMessage());
+    }
+
+    @Test
+    void rtShareCreatesReadOnlyDetachedSnapshot() {
+        IllegalArgumentException error = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Person as
+                          pub let String name = "Alex";
+
+                          pub copy() => self {
+                            return new Person();
+                          }
+                        end
+
+                        fnc rename(Person mut person) => void {
+                          person.name = "Taylor";
+                          return;
+                        }
+
+                        fnc bad() => void {
+                          let Person p = new Person();
+                          val shared = rt share p;
+                          rename(shared);
+                          return;
+                        }
+                        """)));
+
+        assertTrue(error.getMessage().toLowerCase().contains("shared")
+                || error.getMessage().toLowerCase().contains("mut"), error.getMessage());
+    }
+
+    @Test
     void rtParenthesesCanGroupWiderExpression() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc grouped(int left, int right) => int {
@@ -140,5 +225,19 @@ final class RuntimeOwnershipSyntaxTest {
                   return rt copy left + right;
                 }
                 """)));
+    }
+
+    private static String run(String program) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "rt-ownership.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+        return output.toString(StandardCharsets.UTF_8);
     }
 }
