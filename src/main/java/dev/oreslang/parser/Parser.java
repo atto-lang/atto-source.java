@@ -32,6 +32,7 @@ public final class Parser {
         List<Ast.ImportDecl> imports = new ArrayList<>();
         while (match(IMPORT)) imports.add(parseImport());
 
+        List<Ast.NamespaceDecl> namespaces = new ArrayList<>();
         List<Ast.ModuleDecl> modules = new ArrayList<>();
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
@@ -39,9 +40,27 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (match(DECLARE)) {
+                if (!annotations.isEmpty() || modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async
+                        || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    throw error(previous(), "namespace declarations do not accept annotations or function/class modifiers");
+                }
+                consume(NAMESPACE, "'declare' currently applies only to namespaces");
+                namespaces.add(parseNamespace(Ast.NamespaceMode.DECLARE));
+                continue;
+            }
+
             if (match(DEFINE)) {
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+                }
+                if (match(NAMESPACE)) {
+                    if (!annotations.isEmpty() || modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async
+                            || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                        throw error(previous(), "namespaces do not accept annotations or function/class modifiers");
+                    }
+                    namespaces.add(parseNamespace(Ast.NamespaceMode.DEFINE));
+                    continue;
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
@@ -72,8 +91,74 @@ public final class Parser {
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), rootDeclarations));
         }
-        if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(namespace, imports, modules);
+        if (modules.isEmpty() && namespaces.isEmpty()) {
+            throw error(peek(), "a source file must define at least one namespace, module, or top-level declaration");
+        }
+        return new Ast.Program(namespace, imports, namespaces, modules);
+    }
+
+    private Ast.NamespaceDecl parseNamespace(Ast.NamespaceMode mode) {
+        String name = consume(IDENT, "expected flat namespace name").lexeme();
+        if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
+        consume(AS, "expected 'as' after namespace name");
+
+        boolean braceStyle = match(LBRACE);
+        Token.Type terminator = braceStyle ? RBRACE : END;
+        List<Ast.Decl> declarations = new ArrayList<>();
+        while (!check(terminator) && !check(EOF)) {
+            declarations.add(parseNamespaceMember());
+        }
+        consume(terminator, braceStyle
+                ? "expected '}' to close namespace " + name
+                : "expected 'end' to close namespace " + name);
+        return new Ast.NamespaceDecl(name, mode, declarations);
+    }
+
+    private Ast.Decl parseNamespaceMember() {
+        List<Ast.Annotation> annotations = parseAnnotations();
+        Modifiers modifiers = parseModifiers();
+
+        if (match(DEFINE)) {
+            if (match(NAMESPACE, MODULE)) {
+                throw error(previous(), "namespaces and modules are top-level and cannot be nested");
+            }
+            if (match(INTERFACE)) {
+                if (!annotations.isEmpty() || modifiers.async || modifiers.nonLexical || modifiers.isStatic
+                        || modifiers.isAbstract || modifiers.shared) {
+                    throw error(previous(), "namespace interfaces do not accept executable modifiers or annotations");
+                }
+                return parseInterface(modifiers.visibility);
+            }
+            throw error(previous(), "namespace members may only define interfaces or type aliases");
+        }
+
+        if (match(DECLARE)) {
+            throw error(previous(), "'declare' is only valid on a top-level namespace declaration");
+        }
+        if (check(MODULE) || check(NAMESPACE)) {
+            throw error(peek(), "namespaces and modules are top-level and cannot be nested");
+        }
+        if (match(INTERFACE)) {
+            if (!annotations.isEmpty() || modifiers.async || modifiers.nonLexical || modifiers.isStatic
+                    || modifiers.isAbstract || modifiers.shared) {
+                throw error(previous(), "namespace interfaces do not accept executable modifiers or annotations");
+            }
+            return parseInterface(modifiers.visibility);
+        }
+        if (match(TYPE)) {
+            if (!annotations.isEmpty() || modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async
+                    || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                throw error(previous(), "namespace type aliases do not accept modifiers or annotations");
+            }
+            return parseTypeAlias();
+        }
+
+        throw error(peek(),
+                "namespace '" + (modeNameForError()) + "' is type-only; expected interface or type declaration");
+    }
+
+    private String modeNameForError() {
+        return "member";
     }
 
     private Ast.ImportDecl parseImport() {
