@@ -657,6 +657,19 @@ final class ParserTest {
     }
 
     @Test
+    void initIsAnOrdinaryFunctionName() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc init(value: int) -> int {
+                  return value + 1;
+                }
+
+                fnc call_it() -> int {
+                  return init(41);
+                }
+                """)));
+    }
+
+    @Test
     void actorFunctionCannotBeProgramMain() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 pub actor fnc main() => void {
