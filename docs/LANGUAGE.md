@@ -22,17 +22,46 @@ define module app
 end
 ```
 
-Imports are explicit about what kind of symbol is entering the compilation unit:
+Imports are explicit about what kind of symbol is entering the compilation unit. Actors are classes semantically, but `import actor` is a distinct import contract so an ordinary class cannot silently satisfy an actor import:
 
 ```ores
-import module foo from "../xyz";
-import module {foo, bar} from "../xyz";
-import class {x} from '../xyz';
-import fnc * as funcs from '../xyz';
-import * as x from './xyz';
+import module Helpers from "../xyz";
+import class PlainType from "../xyz";
+import actor Foo from "../actors";
+
+// Aliases are local names only; the linker still resolves the original export.
+import actor Foo as F from "../actors";
+import actor (Foo as F2) from "../actors";
+import actor {Foo: F3, Bar as B} from "../actors";
+
+import fnc * as funcs from "../xyz";
+import * as X from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+Oreslang has **no JavaScript/TypeScript-style default import**. A bare form such as `import Foo from "./x"` is invalid: normal imports name the declaration kind and exported symbol explicitly. Wildcard imports always require a namespace alias and never inject all exports into local scope.
+
+Alias collisions fail closed, including collisions between a named alias and a wildcard namespace. `import class` matches only ordinary classes; `import actor` matches only actor classes (`Actor`, `IsoActor`, or `UntrustedActor` domains). `import * as X` may expose both through the explicit namespace `X`.
+
+Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+
+### Hot-load entry export
+
+Foreign/hot-loaded code may expose one explicit code-unit entrypoint without introducing ordinary default imports:
+
+```ores
+export entry actor Worker;
+
+define actor Worker {
+  pub receive(ActorMessage message): void {
+    // runtime-owned mailbox turn
+    return;
+  }
+}
+```
+
+The general marker is `export entry <kind> <Name>;`, where `<kind>` is `actor`, `class`, `module`, or `fnc`. A code unit may declare at most one entry marker. The target must be a local top-level declaration of the declared kind; actor/class mismatches fail closed, and a `fnc` entry must be public.
+
+This entry marker is loader metadata, not a JavaScript-style default export. Normal Oreslang source still imports by explicit kind/name, and `import Foo from "./plugin"` remains invalid. A hot loader may resolve the entry marker when the embedding protocol intentionally asks for the artifact's canonical entrypoint.
 
 ### Circular imports and file initialization
 
