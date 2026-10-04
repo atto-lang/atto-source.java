@@ -583,6 +583,11 @@ public final class TypeChecker {
                 validateLambdaAgainstExpected(lambda, expectedFunction, env, generics, self);
             }
             Type actual = typeOfAgainstExpected(binding.initializer(), declaredAhead, env, generics, self);
+            if (actual == Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "void is not a storable value; '" + binding.name()
+                                + "' must receive a real value or an explicit Option<T>");
+            }
             Type declared = declaredAhead == null ? actual : declaredAhead;
             requireAssignable(actual, declared, "initializer for " + binding.name());
             if (binding.kind() == Ast.BindingKind.CONST && !constant(binding.initializer())) {
@@ -649,6 +654,7 @@ public final class TypeChecker {
                         && (clause.pattern() instanceof Ast.WildcardPattern
                             || clause.pattern() instanceof Ast.BindingPattern);
             }
+            validateClosedSwitchCoverage(subject, switched.clauses(), catchAllSeen);
             return;
         }
         if (stmt instanceof Ast.TryStmt attempted) {
@@ -674,6 +680,74 @@ public final class TypeChecker {
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
         }
+    }
+
+    private void validateClosedSwitchCoverage(
+            Type subject,
+            List<Ast.SwitchClause> clauses,
+            boolean hasCatchAll) {
+        if (hasCatchAll) return;
+
+        if (subject instanceof Named named && named.name().equals("Option")) {
+            requireExhaustiveVariants("Option", Set.of("Some", "None"), clauses);
+            return;
+        }
+        if (subject instanceof Named named && named.name().equals("Result")) {
+            requireExhaustiveVariants("Result", Set.of("Ok", "Err"), clauses);
+            return;
+        }
+        if (subject == Primitive.BOOL) {
+            boolean seenTrue = false;
+            boolean seenFalse = false;
+            for (Ast.SwitchClause clause : clauses) {
+                if (clause.guard() != null || !(clause.pattern() instanceof Ast.LiteralPattern literal)
+                        || !(literal.value() instanceof Boolean value)) {
+                    continue;
+                }
+                if (value) {
+                    if (seenTrue) throw new IllegalArgumentException("duplicate unguarded true switch pattern");
+                    seenTrue = true;
+                } else {
+                    if (seenFalse) throw new IllegalArgumentException("duplicate unguarded false switch pattern");
+                    seenFalse = true;
+                }
+            }
+            if (!seenTrue || !seenFalse) {
+                throw new IllegalArgumentException(
+                        "non-exhaustive bool switch; cover both true and false or add an unguarded catch-all");
+            }
+        }
+    }
+
+    private void requireExhaustiveVariants(
+            String typeName,
+            Set<String> required,
+            List<Ast.SwitchClause> clauses) {
+        Set<String> covered = new LinkedHashSet<>();
+        for (Ast.SwitchClause clause : clauses) {
+            if (clause.guard() != null || !(clause.pattern() instanceof Ast.VariantPattern variant)) continue;
+            if (!required.contains(variant.name())) continue;
+            boolean totalVariant = variant.arguments().isEmpty()
+                    || (variant.arguments().size() == 1
+                        && isIrrefutablePayloadPattern(variant.arguments().getFirst()));
+            if (!totalVariant) continue;
+            if (!covered.add(variant.name())) {
+                throw new IllegalArgumentException(
+                        "duplicate unguarded " + variant.name() + " switch pattern");
+            }
+        }
+        if (!covered.containsAll(required)) {
+            Set<String> missing = new LinkedHashSet<>(required);
+            missing.removeAll(covered);
+            throw new IllegalArgumentException(
+                    "non-exhaustive " + typeName + " switch; missing unguarded variant(s) "
+                            + missing + " or an unguarded catch-all");
+        }
+    }
+
+    private static boolean isIrrefutablePayloadPattern(Ast.Pattern pattern) {
+        return pattern instanceof Ast.WildcardPattern
+                || pattern instanceof Ast.BindingPattern;
     }
 
     private void bindPatternTypes(
@@ -745,8 +819,11 @@ public final class TypeChecker {
         }
         if (pattern instanceof Ast.VariantPattern variant) {
             if (subject instanceof Named named && named.name().equals("Result")
-                    && named.arguments().size() == 2
-                    && (variant.name().equals("Ok") || variant.name().equals("Err"))) {
+                    && named.arguments().size() == 2) {
+                if (!variant.name().equals("Ok") && !variant.name().equals("Err")) {
+                    throw new IllegalArgumentException(
+                            "Result switch patterns must use Ok(...) or Err(...), got " + variant.name());
+                }
                 if (variant.arguments().size() != 1) {
                     throw new IllegalArgumentException(
                             variant.name() + " pattern expects exactly one payload pattern");
@@ -774,6 +851,8 @@ public final class TypeChecker {
                     }
                     return;
                 }
+                throw new IllegalArgumentException(
+                        "Option switch patterns must use Some(...) or None, got " + variant.name());
             }
             Ast.ClassDecl patternClass = findClass(variant.name());
             if (patternClass != null) {
@@ -1048,6 +1127,10 @@ public final class TypeChecker {
                     throw new IllegalArgumentException(name.name() + " expects exactly one value");
                 }
                 Type value = widenCollectionElement(typeOf(call.arguments().getFirst(), env, generics, self));
+                if (value == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            name.name() + " requires a concrete non-void payload; use None for absence");
+                }
                 return switch (name.name()) {
                     case "Some" -> new Named("Option", List.of(value));
                     case "Ok" -> new Named("Result", List.of(value, Unknown.INSTANCE));
@@ -2619,29 +2702,25 @@ public final class TypeChecker {
     }
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
-        return resolve(ref, generics, self, false);
-    }
-
-    private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self, boolean allowNullMarker) {
         if (ref == null) return Unknown.INSTANCE;
-        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self, allowNullMarker), ref.mutableBorrow());
+        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self), ref.mutableBorrow());
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) return self == null ? Unknown.INSTANCE : self;
         if (ref.name().equals("null")) {
-            if (!allowNullMarker) throw new IllegalArgumentException("null is not a standalone type; it is only legal as Option<null>");
-            return Primitive.NULL;
+            throw new IllegalArgumentException(
+                    "null is not an Oreslang type; represent absence with Option<T> and None");
         }
         if (ref.isUnion()) {
-            return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self, allowNullMarker)).toList());
+            return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self)).toList());
         }
         if (ref.isTupleType()) {
-            return new Tuple(ref.arguments().stream().map(element -> resolve(element, generics, self, allowNullMarker)).toList());
+            return new Tuple(ref.arguments().stream().map(element -> resolve(element, generics, self)).toList());
         }
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
-                members.put(member.getKey(), resolve(member.getValue(), generics, self, allowNullMarker));
+                members.put(member.getKey(), resolve(member.getValue(), generics, self));
             }
             return new Record(members);
         }
@@ -2659,7 +2738,7 @@ public final class TypeChecker {
                 for (int i = 0; i < alias.genericParameters().size(); i++) {
                     substitutions.put(alias.genericParameters().get(i), ref.arguments().get(i));
                 }
-                return resolve(substituteAliasType(alias.target(), substitutions), generics, self, allowNullMarker);
+                return resolve(substituteAliasType(alias.target(), substitutions), generics, self);
             } finally {
                 resolvingAliases.remove(alias);
             }
@@ -2712,7 +2791,7 @@ public final class TypeChecker {
             }
             case "Option" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Option requires exactly one explicit type argument");
-                Type element = resolve(ref.arguments().getFirst(), generics, self, true);
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
                 if (element == Primitive.VOID) throw new IllegalArgumentException("Option<void> is invalid; use void for no return value");
                 yield new Named("Option", List.of(element));
             }
@@ -2720,9 +2799,13 @@ public final class TypeChecker {
                 if (ref.inferArguments() || ref.arguments().size() != 2) {
                     throw new IllegalArgumentException("Result requires exactly two explicit type arguments");
                 }
-                yield new Named("Result", List.of(
-                        resolve(ref.arguments().get(0), generics, self),
-                        resolve(ref.arguments().get(1), generics, self)));
+                Type ok = resolve(ref.arguments().get(0), generics, self);
+                Type err = resolve(ref.arguments().get(1), generics, self);
+                if (ok == Primitive.VOID || err == Primitive.VOID) {
+                    throw new IllegalArgumentException(
+                            "Result payloads must be concrete values; use a dedicated unit type rather than void");
+                }
+                yield new Named("Result", List.of(ok, err));
             }
             case "MutexGuard" -> throw new IllegalArgumentException(
                     "MutexGuard<T> is compiler-managed and cannot be named in source declarations; acquire it from lock()/try_lock()/lock_async()");
