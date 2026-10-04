@@ -1517,7 +1517,9 @@ public final class OresEvalRootNode extends RootNode {
                             && field.visibility() == Ast.Visibility.PUBLIC
                             && field.name().equals(name)) {
                         if (field.initializer() == null) throw new IllegalArgumentException("exported binding has no initializer: " + name);
-                        return eval(field.initializer(), new Env(null));
+                        return requireGuestValue(
+                                eval(field.initializer(), new Env(null)),
+                                "exported binding " + name);
                     }
                 }
             }
@@ -1786,7 +1788,9 @@ public final class OresEvalRootNode extends RootNode {
                                     "module const has no initializer: "
                                             + module.name() + "." + name);
                         }
-                        return eval(field.initializer(), new Env(null));
+                        return requireGuestValue(
+                                eval(field.initializer(), new Env(null)),
+                                "module const " + module.name() + "." + name);
                     }
                     return switch (module.storage()) {
                         case ORDINARY -> {
@@ -1795,7 +1799,9 @@ public final class OresEvalRootNode extends RootNode {
                                         "module field has no initializer: "
                                                 + module.name() + "." + name);
                             }
-                            yield eval(field.initializer(), new Env(null));
+                            yield requireGuestValue(
+                                    eval(field.initializer(), new Env(null)),
+                                    "module field " + module.name() + "." + name);
                         }
                         case GLOBAL -> globalHandle(module).call(
                                 List.of(),
@@ -2125,7 +2131,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private IllegalArgumentException returnTypeMismatch(String callable, Ast.TypeRef declared, Object value) {
-            return new IllegalArgumentException(callable + " returned " + (value == null ? "null" : value.getClass().getSimpleName())
+            return new IllegalArgumentException(callable + " returned "
+                    + (value == null ? "void/no value" : value.getClass().getSimpleName())
                     + " but declared " + declared);
         }
 
@@ -2164,24 +2171,30 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Object value, Ast.BindingKind kind) {
-            Objects.requireNonNull(value,
-                    "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
+            }
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void reserve(String name, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void initialize(String name, Object value) {
-            Objects.requireNonNull(value,
-                    "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
+            }
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
-            Objects.requireNonNull(value,
-                    "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
+            }
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
@@ -2340,7 +2353,9 @@ public final class OresEvalRootNode extends RootNode {
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
     private record HostObjectFacade(Object value) {
         private HostObjectFacade {
-            Objects.requireNonNull(value, "host object facade cannot wrap null");
+            if (value == null) {
+                throw new IllegalArgumentException("host object facade cannot wrap null");
+            }
         }
         @Override public String toString() { return String.valueOf(value); }
     }
@@ -2434,7 +2449,9 @@ public final class OresEvalRootNode extends RootNode {
         private static final OptionValue NONE = new OptionValue(false, NoValue.INSTANCE);
 
         private OptionValue {
-            Objects.requireNonNull(value, "Option storage cannot contain raw null");
+            if (value == null) {
+                throw new IllegalArgumentException("Option storage cannot contain raw null");
+            }
             if (present && value == NoValue.INSTANCE) {
                 throw new IllegalArgumentException("Some requires a concrete non-null value");
             }
@@ -2444,8 +2461,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static OptionValue some(Object value) {
-            Objects.requireNonNull(value,
-                    "Some requires a concrete non-null value; use None for absence");
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "Some requires a concrete non-null value; use None for absence");
+            }
             if (value == NoValue.INSTANCE) {
                 throw new IllegalArgumentException("Some cannot wrap the internal absence marker");
             }
@@ -2461,8 +2480,10 @@ public final class OresEvalRootNode extends RootNode {
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
         private ResultValue {
-            Objects.requireNonNull(value,
-                    "Result payload cannot be raw null/void; use a concrete value");
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "Result payload cannot be raw null/void; use a concrete value");
+            }
             if (value == NoValue.INSTANCE) {
                 throw new IllegalArgumentException("Result cannot contain the Option absence marker");
             }
