@@ -1267,6 +1267,10 @@ public final class TypeChecker {
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
             Ast.FunctionDecl fn = findFunction(name.name());
             if (fn != null) {
+                if (fn.kind() == Ast.CallableKind.ROUTINE) {
+                    throw new IllegalArgumentException("routine '" + fn.name()
+                            + "' is declaration-only and cannot be used as a first-class value; invoke it directly");
+                }
                 if (!fn.genericParameters().isEmpty()) {
                     throw new IllegalArgumentException("generic callable '" + fn.name()
                             + "' must be invoked directly; polymorphic function values are not supported yet");
