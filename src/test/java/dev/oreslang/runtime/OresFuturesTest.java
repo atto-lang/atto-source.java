@@ -286,6 +286,17 @@ final class OresFuturesTest {
         assertInstanceOf(java.util.concurrent.CancellationException.class, values.get(1).error());
     }
 
+
+    @Test
+    void allAllowsNullSuccessPayloadsWithoutHanging() {
+        OresFuture<Integer> nullValue = OresFuture.completed(null);
+        OresFuture<Integer> one = OresFuture.completed(1);
+
+        OresFuture<List<Integer>> all = OresFutures.all(List.of(nullValue, one));
+
+        assertEquals(java.util.Arrays.asList(null, 1), all.join());
+    }
+
     private static java.util.concurrent.ConcurrentLinkedQueue<?> runtimeWaiters(
             OresFuture<?> future) throws Exception {
         var field = OresFuture.class.getDeclaredField("waiters");
