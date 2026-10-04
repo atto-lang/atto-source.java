@@ -45,6 +45,29 @@ public final class OresFuture<T> implements Future<T> {
         }
     }
 
+    /**
+     * Runtime-only subscription handle. Detaching is idempotent and guarantees
+     * that a callback which has not already been claimed will never run.
+     */
+    static final class RuntimeWaiterRegistration {
+        private static final RuntimeWaiterRegistration DETACHED =
+                new RuntimeWaiterRegistration(() -> { });
+
+        private final Runnable detach;
+
+        private RuntimeWaiterRegistration(Runnable detach) {
+            this.detach = detach;
+        }
+
+        void detach() {
+            detach.run();
+        }
+
+        private static RuntimeWaiterRegistration detached() {
+            return DETACHED;
+        }
+    }
+
     private final Runnable cancelHook;
     private final AtomicBoolean cancelHookRun = new AtomicBoolean();
     private final AtomicReference<Object> state = new AtomicReference<>(PENDING);
@@ -110,15 +133,40 @@ public final class OresFuture<T> implements Future<T> {
      * dependent Future, enqueue a continuation, or release runtime accounting.
      * They must never execute Oreslang guest code directly.</p>
      */
-    void whenCompleteRuntime(BiConsumer<? super T, ? super Throwable> callback) {
+    RuntimeWaiterRegistration whenCompleteRuntime(
+            BiConsumer<? super T, ? super Throwable> callback) {
         Objects.requireNonNull(callback, "callback");
         Waiter<T> waiter = new Waiter<>(callback);
-        waiters.add(waiter);
 
+        // Fast path for an already-terminal Future: notify directly without
+        // ever retaining the waiter in the queue.
         Object observed = state.get();
         if (observed != PENDING) {
             notifyWaiter(waiter, observed);
+            return RuntimeWaiterRegistration.detached();
         }
+
+        waiters.add(waiter);
+
+        // Close the race where settlement happened after the first state read
+        // but before this waiter entered the queue. If settle() already polled
+        // the waiter, it owns notification; otherwise remove and notify here.
+        observed = state.get();
+        if (observed != PENDING && waiters.remove(waiter)) {
+            notifyWaiter(waiter, observed);
+            return RuntimeWaiterRegistration.detached();
+        }
+
+        return new RuntimeWaiterRegistration(() -> detachWaiter(waiter));
+    }
+
+    private void detachWaiter(Waiter<T> waiter) {
+        if (!waiter.claimed.compareAndSet(false, true)) return;
+        waiters.remove(waiter);
+    }
+
+    int queuedRuntimeWaiters() {
+        return waiters.size();
     }
 
     @Override
@@ -185,16 +233,21 @@ public final class OresFuture<T> implements Future<T> {
         boolean interrupted = false;
         if (observed == PENDING) {
             java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-            whenCompleteRuntime((value, failure) -> done.countDown());
-            for (;;) {
-                try {
-                    done.await();
-                    break;
-                } catch (InterruptedException interruption) {
-                    interrupted = true;
+            RuntimeWaiterRegistration registration =
+                    whenCompleteRuntime((value, failure) -> done.countDown());
+            try {
+                for (;;) {
+                    try {
+                        done.await();
+                        break;
+                    } catch (InterruptedException interruption) {
+                        interrupted = true;
+                    }
                 }
+                observed = state.get();
+            } finally {
+                registration.detach();
             }
-            observed = state.get();
         }
         if (interrupted) Thread.currentThread().interrupt();
         return reportJoin(observed);
@@ -249,14 +302,22 @@ public final class OresFuture<T> implements Future<T> {
         if (observed != PENDING) return observed;
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
+        RuntimeWaiterRegistration registration =
+                whenCompleteRuntime((value, failure) -> done.countDown());
 
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                Object afterTimeout = state.get();
+                return afterTimeout == PENDING ? PENDING : afterTimeout;
+            }
+            return state.get();
+        } finally {
+            // Timeout and interruption must not leave a latch callback rooted
+            // on a Future that may never settle.
+            registration.detach();
         }
-        return state.get();
     }
 
     @SuppressWarnings("unchecked")
