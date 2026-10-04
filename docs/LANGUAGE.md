@@ -135,7 +135,7 @@ define module math as
 end
 ```
 
-Only exported (`pub`) callable members satisfy an interface contract. `@AdheresTo(A, B)` may name more than one interface. Data layout is intentionally not part of an interface; reusable stored state belongs in a trait or class.
+Only exported (`pub`) callable members satisfy an interface contract. `@AdheresTo(A, B)` may name more than one interface. Data layout is intentionally not part of an interface; reusable stored state belongs in a class or struct; traits are storage-free.
 
 ## Functions and returns
 
@@ -179,7 +179,7 @@ pub fnc use_it() => void {
 
 The name `T` is not visible in `use_it`. The compiler gives the escaped local struct an internal nominal identity and carries its shape through the return type, so callers may infer the result and use its fields/methods without adding `T` to shared file/module scope. Two unrelated callables may each declare a different local `T` without collision.
 
-Nested block type declarations remain block-scoped. Local interfaces are still storage-free method contracts. Local traits are compile-time-only composition units: they may contribute initialized state and behavior to local structs, are flattened before later compiler/runtime passes, and cannot be used as runtime value types. Generic local structs, traits, and interfaces use the same explicit generic rules as their module-level equivalents. Callable-local `type` aliases are also supported; aliases erase to their resolved type when they escape, so the alias name itself never enters module/file scope.
+Nested block type declarations remain block-scoped. Local interfaces are still storage-free method contracts. Traits are declaration-level composition units and cannot be declared inside callables. Local interfaces remain legal because they are contracts only. Generic local structs and interfaces use the same explicit generic rules as their module-level equivalents. Callable-local `type` aliases are also supported; aliases erase to their resolved type when they escape, so the alias name itself never enters module/file scope.
 
 Both compact and long forms are accepted:
 
@@ -238,7 +238,7 @@ pub fnc boxed() => View<int> {
 
 Callers may infer and use the resolved return shapes, but names such as `Answer`, `View`, and `Box` are not visible outside the declaring callable. A nested block may shadow an outer local type name; the shadow ends with that block.
 
-The type namespace is separate from the value namespace, so a block may contain both a local type `T` and a value binding named `T`. Generic type parameters are part of the type namespace, however, so a callable-local `struct T`, `trait T`, `interface T`, or `type T = ...` may not reuse an in-scope generic parameter named `T`. This is rejected instead of relying on name-resolution order.
+The type namespace is separate from the value namespace, so a block may contain both a local type `T` and a value binding named `T`. Generic type parameters are part of the type namespace, however, so a callable-local `struct T`, `interface T`, or `type T = ...` may not reuse an in-scope generic parameter named `T`. This is rejected instead of relying on name-resolution order.
 
 
 ## Bindings
@@ -267,7 +267,7 @@ Destructuring carries mutability per element:
 Oreslang keeps four distinct concepts instead of blending them:
 
 - `interface` — storage-free method contract only.
-- `trait` — non-instantiable compile-time composition of reusable instance state and behavior.
+- `trait` — non-instantiable, storage-free compile-time composition of reusable behavior. Traits may require host behavior but never own instance fields.
 - `struct` — concrete value-semantic aggregate with nominal named identity.
 - `class` — concrete reference/identity type with lifecycle/allocation semantics.
 
@@ -301,7 +301,7 @@ bump(self &mut self)() => int {
 }
 ```
 
-The receiver variable name is always `self`. Mutating instance/trait state requires an explicit mutable receiver such as `self &mut self`; ownership analysis treats ordinary implicit `self` as immutable.
+The receiver variable name is always `self`. Mutating instance state requires an explicit mutable receiver such as `self &mut self`; ownership analysis treats ordinary implicit `self` as immutable.
 
 A class may list multiple parent classes, satisfy interfaces with `is`, and compose reusable state/behavior with `with`:
 
@@ -382,7 +382,7 @@ Anonymous struct values are structural:
 val p = struct { x = 3, y = 4 };
 ```
 
-An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. Every caller-supplied field must be declared by the struct and type-compatible; required host fields must be present, defaulted host fields may be omitted, and trait-owned composed state is never caller-supplied. Arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
+An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. Every caller-supplied field must be declared by the struct and type-compatible; required host fields must be present, defaulted host fields may be omitted, and traits never contribute stored state. Arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
 
 Struct equality is value equality within the same named struct identity. Copy semantics are derived structurally: a struct is Copy when all of its fields are Copy (including composed trait state); otherwise it is move-only. This keeps small data structs inexpensive while resource-owning structs retain move safety.
 
