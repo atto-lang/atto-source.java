@@ -159,7 +159,7 @@ final class ActorGroupRuntime<Out> {
         if (stopped.get()) return;
         if (!scheduled.compareAndSet(false, true)) return;
         try {
-            runtime.executeActorGroupMailman(kind, this::runMailmanQuantum);
+            runtime.executeActorGroupMailman(this::runMailmanQuantum);
         } catch (RuntimeException failure) {
             scheduled.set(false);
             throw failure;
