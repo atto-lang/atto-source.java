@@ -54,6 +54,7 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        checker.validateEntryExport(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
         OwnershipChecker.check(program);
@@ -63,19 +64,70 @@ public final class TypeChecker {
     private void validateImports(Ast.Program program) {
         Set<String> exposed = new HashSet<>();
         for (Ast.ImportDecl imported : program.imports()) {
-            if (imported.path() == null || imported.path().isBlank()) throw new IllegalArgumentException("import path cannot be empty");
+            if (imported.path() == null || imported.path().isBlank()) {
+                throw new IllegalArgumentException("import path cannot be empty");
+            }
             if (imported.wildcard()) {
-                if (imported.namespace() == null || imported.namespace().isBlank()) throw new IllegalArgumentException("wildcard imports require a namespace alias");
-                if (!exposed.add(imported.namespace())) throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
+                if (imported.kind() == Ast.ImportKind.ENTRY) {
+                    throw new IllegalArgumentException("entry imports cannot be wildcard imports");
+                }
+                if (imported.namespace() == null || imported.namespace().isBlank()) {
+                    throw new IllegalArgumentException("wildcard imports require a namespace alias");
+                }
+                if (!exposed.add(imported.namespace())) {
+                    throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
+                }
                 importedValues.add(imported.namespace());
-            } else {
-                if (imported.names().isEmpty()) throw new IllegalArgumentException("named import must select at least one name");
-                for (String name : imported.names()) {
-                    if (!exposed.add(name)) throw new IllegalArgumentException("duplicate imported name '" + name + "'");
-                    if (imported.kind() != Ast.ImportKind.CLASS) importedValues.add(name);
+                continue;
+            }
+            if (imported.names().isEmpty()) {
+                throw new IllegalArgumentException("named import must select at least one name");
+            }
+            for (String importedName : imported.names()) {
+                String localName = imported.localName(importedName);
+                if (localName == null || localName.isBlank()) {
+                    throw new IllegalArgumentException("import alias cannot be blank");
+                }
+                if (!exposed.add(localName)) {
+                    throw new IllegalArgumentException("duplicate imported name '" + localName + "'");
+                }
+                if (imported.kind() != Ast.ImportKind.CLASS
+                        && imported.kind() != Ast.ImportKind.ACTOR) {
+                    importedValues.add(localName);
                 }
             }
         }
+    }
+
+    private void validateEntryExport(Ast.Program program) {
+        List<Ast.EntryExportDecl> entries = new ArrayList<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (decl instanceof Ast.EntryExportDecl entry) entries.add(entry);
+            }
+        }
+        if (entries.size() > 1) {
+            throw new IllegalArgumentException(
+                    "a code unit may declare at most one 'export entry <name>'; ordinary default exports are not supported");
+        }
+        if (entries.isEmpty()) return;
+
+        String name = entries.getFirst().name();
+        if (findClass(name) != null) return;
+
+        Ast.FunctionDecl fn = findFunction(name);
+        if (fn != null) {
+            if (fn.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException("entry function '" + name + "' must be public");
+            }
+            return;
+        }
+
+        Ast.ModuleDecl module = modules.get(name);
+        if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return;
+
+        throw new IllegalArgumentException(
+                "export entry '" + name + "' must name a class/actor, public fnc/routine, or named module in this code unit");
     }
 
     private void collect(Ast.Program program) {
@@ -304,7 +356,16 @@ public final class TypeChecker {
             }
         }
 
-        if (klass.actorKind() != Ast.ActorKind.NONE) validateActorReceiveContract(klass);
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            if (!klass.actorProtocolTypes().isEmpty() && klass.actorProtocolTypes().size() != 3) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name() + "' protocol must be <Message, Reply, Error>");
+            }
+            for (Ast.TypeRef protocolType : klass.actorProtocolTypes()) {
+                resolve(protocolType, classGenerics, self);
+            }
+            validateActorReceiveContract(klass);
+        }
 
         for (Ast.FieldDecl field : klass.fields()) {
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
@@ -359,7 +420,10 @@ public final class TypeChecker {
             boolean actorEndpoint = klass.actorKind() != Ast.ActorKind.NONE
                     && !method.isStatic()
                     && method.visibility() == Ast.Visibility.PUBLIC
-                    && !method.name().equals("constructor");
+                    && method.name().equals("receive");
+            boolean actorIngress = klass.actorKind() != Ast.ActorKind.NONE
+                    && !method.isStatic()
+                    && (method.name().equals("receive") || method.name().equals("constructor"));
             if (klass.actorKind() != Ast.ActorKind.NONE && method.isStatic()) {
                 throw new IllegalArgumentException(
                         "actor class '" + klass.name()
@@ -379,12 +443,13 @@ public final class TypeChecker {
 
             for (Ast.Param param : method.parameters()) {
                 Type parameterType = resolveParam(param, generics, callableSelf);
-                if (actorEndpoint) {
+                if (actorIngress) {
                     validateActorCallableBoundaryType(
                             parameterType,
                             klass.actorKind(),
                             false,
-                            "parameter '" + param.name() + "' of actor method '"
+                            "parameter '" + param.name() + "' of actor "
+                                    + (method.name().equals("constructor") ? "constructor '" : "receive method '")
                                     + module + "." + klass.name() + "." + method.name() + "'");
                 }
                 env.define(
@@ -442,51 +507,47 @@ public final class TypeChecker {
                         && !method.name().equals("constructor"))
                 .toList();
 
-        for (Ast.MethodDecl endpoint : publicInstance) {
-            if (!endpoint.genericParameters().isEmpty()) {
-                throw new IllegalArgumentException(
-                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
-                                + "' cannot declare method generic parameters");
-            }
-            if (endpoint.explicitReceiverType() != null) {
-                throw new IllegalArgumentException(
-                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
-                                + "' must use implicit self");
-            }
-            if (endpoint.parameters().stream().anyMatch(Ast.Param::mutable)) {
-                throw new IllegalArgumentException(
-                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
-                                + "' cannot accept 'mut' parameters; mutable authority cannot cross the mailbox boundary");
-            }
-        }
-
-        Record effectiveProtocol = publicClassShape(klass, new LinkedHashSet<>());
-        if (effectiveProtocol.members().isEmpty()) {
+        if (publicInstance.size() != 1 || !publicInstance.getFirst().name().equals("receive")) {
             throw new IllegalArgumentException(
                     "actor '" + klass.name()
-                            + "' must expose at least one public protocol method, locally or through actor inheritance");
+                            + "' must expose exactly one public receive(message) mailbox ingress and no other public instance methods");
         }
 
-        // Actor protocol visibility is monotone: a child cannot shadow a
-        // public inherited mailbox endpoint with a private method of the same
-        // name/arity, because doing so would make ActorRef dispatch depend on
-        // the static reference type.
-        Named selfType = nominalClassType(klass);
-        for (Ast.MethodDecl local : klass.methods()) {
-            if (local.isStatic() || local.visibility() == Ast.Visibility.PUBLIC
-                    || local.name().equals("constructor")) continue;
-            for (Ast.TypeRef parentRef : klass.parents()) {
-                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-                if (parent == null) continue;
-                Named parentType = concreteParentType(parentRef, klass, selfType);
-                ResolvedMethod inherited = findMethodTarget(
-                        parent, parentType, local.name(), local.arity(), new LinkedHashSet<>());
-                if (inherited != null
-                        && inherited.method().visibility() == Ast.Visibility.PUBLIC) {
-                    throw new IllegalArgumentException(
-                            "actor '" + klass.name() + "' cannot narrow inherited public protocol method '"
-                                    + local.name() + "'/" + local.arity() + " to private");
-                }
+        Ast.MethodDecl receive = publicInstance.getFirst();
+        if (!receive.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor receive method '" + klass.name() + ".receive' cannot declare method generic parameters");
+        }
+        if (receive.explicitReceiverType() != null) {
+            throw new IllegalArgumentException(
+                    "actor receive method '" + klass.name() + ".receive' must use implicit self");
+        }
+        if (receive.parameters().size() != 1) {
+            throw new IllegalArgumentException(
+                    "actor receive method '" + klass.name() + ".receive' must accept exactly one message parameter");
+        }
+        if (receive.parameters().getFirst().mutable()) {
+            throw new IllegalArgumentException(
+                    "actor receive message cannot be 'mut'; mutable caller authority cannot cross the mailbox boundary");
+        }
+
+        Set<String> generics = new HashSet<>(klass.genericParameters());
+        Type self = nominalClassType(klass);
+        Type returns = resolve(receive.returnType(), generics, self);
+        if (returns != Primitive.VOID) {
+            throw new IllegalArgumentException(
+                    "actor receive method '" + klass.name()
+                            + ".receive' returns void; replies/errors travel through explicit response capabilities");
+        }
+
+        if (klass.actorProtocolTypes().size() == 3) {
+            Type declaredMessage = resolve(klass.actorProtocolTypes().getFirst(), generics, self);
+            Type receiveMessage = resolveParam(receive.parameters().getFirst(), generics, self);
+            if (!assignable(receiveMessage, declaredMessage)
+                    || !assignable(declaredMessage, receiveMessage)) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name()
+                                + "' receive message type must exactly match Actor<Message, Reply, Error>'s Message type");
             }
         }
     }
