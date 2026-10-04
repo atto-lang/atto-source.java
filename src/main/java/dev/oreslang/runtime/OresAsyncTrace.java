@@ -260,7 +260,10 @@ public final class OresAsyncTrace {
         Objects.requireNonNull(failure, "failure");
         if (trace == null) return failure;
         for (Throwable suppressed : failure.getSuppressed()) {
-            if (suppressed instanceof LogicalAsyncStackTrace) return failure;
+            if (suppressed instanceof LogicalAsyncStackTrace logical
+                    && logical.trace == trace) {
+                return failure;
+            }
         }
         failure.addSuppressed(new LogicalAsyncStackTrace(trace));
         return failure;
@@ -277,11 +280,13 @@ public final class OresAsyncTrace {
      * Polyglot, Native Image, logs, and test tooling.
      */
     public static final class LogicalAsyncStackTrace extends RuntimeException {
+        private final Trace trace;
         private final String logicalTrace;
         private final long elidedEvents;
 
         private LogicalAsyncStackTrace(Trace trace) {
             super("Oreslang logical async stack\n" + trace.render(), null, false, true);
+            this.trace = trace;
             this.logicalTrace = trace.render();
             this.elidedEvents = trace.elidedEvents();
             setStackTrace(trace.toJavaStackTrace());
