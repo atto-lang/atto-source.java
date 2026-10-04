@@ -56,7 +56,7 @@ public final class OresAsyncTrace {
         }
     }
 
-    public sealed interface Event permits CallEvent, AwaitEvent, TailEvent {
+    public sealed interface Event permits CallEvent, AwaitEvent, TailEvent, BoundaryEvent {
         SourceSite site();
     }
 
@@ -72,6 +72,17 @@ public final class OresAsyncTrace {
     public record AwaitEvent(Frame frame, SourceSite site)
             implements Event {
         public AwaitEvent {
+            Objects.requireNonNull(frame, "frame");
+            Objects.requireNonNull(site, "site");
+        }
+    }
+
+    public record BoundaryEvent(
+            BoundaryKind kind,
+            Frame frame,
+            SourceSite site) implements Event {
+        public BoundaryEvent {
+            Objects.requireNonNull(kind, "kind");
             Objects.requireNonNull(frame, "frame");
             Objects.requireNonNull(site, "site");
         }
@@ -149,6 +160,13 @@ public final class OresAsyncTrace {
             addBounded(new AwaitEvent(current, Objects.requireNonNull(site, "site")));
         }
 
+        public void boundary(BoundaryKind kind, SourceSite site) {
+            addBounded(new BoundaryEvent(
+                    Objects.requireNonNull(kind, "kind"),
+                    current,
+                    Objects.requireNonNull(site, "site")));
+        }
+
         public void tailAwait(Frame target, SourceSite site) {
             Objects.requireNonNull(target, "target");
             Objects.requireNonNull(site, "site");
@@ -190,6 +208,12 @@ public final class OresAsyncTrace {
                                     + (tail.repetitions() == 1
                                             ? ""
                                             : " repeated " + tail.repetitions() + " times"));
+                } else if (event instanceof BoundaryEvent boundary) {
+                    appendBoundary(
+                            out,
+                            boundary.kind().name().toLowerCase().replace('_', '-'),
+                            boundary.site(),
+                            boundary.frame().symbol());
                 }
             }
             if (elidedEvents > 0) {
@@ -219,6 +243,10 @@ public final class OresAsyncTrace {
                             + (tail.repetitions() == 1 ? "" : " x" + tail.repetitions())
                             + ">";
                     result.add(toStackTraceElement(label, tail.site()));
+                } else if (event instanceof BoundaryEvent boundary) {
+                    result.add(toStackTraceElement(
+                            "<" + boundary.kind().name().toLowerCase().replace('_', '-') + ">",
+                            boundary.site()));
                 }
             }
 
