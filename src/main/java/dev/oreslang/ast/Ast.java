@@ -64,6 +64,7 @@ public final class Ast {
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
     public enum ActorKind { NONE, PRIVATE, SHARED }
+    public enum AggregateKind { CLASS, STRUCT }
 
     public record Annotation(String name, List<TypeRef> arguments) {
         public Annotation { arguments = List.copyOf(arguments); }
@@ -180,6 +181,7 @@ public final class Ast {
 
     public record ClassDecl(
             String name,
+            AggregateKind kind,
             boolean isAbstract,
             ActorKind actorKind,
             List<String> genericParameters,
@@ -193,16 +195,36 @@ public final class Ast {
             interfaces = List.copyOf(interfaces);
             fields = List.copyOf(fields);
             methods = List.copyOf(methods);
+            if (kind == AggregateKind.STRUCT && isAbstract) {
+                throw new IllegalArgumentException("structs cannot be abstract");
+            }
+            if (kind == AggregateKind.STRUCT && actorKind != ActorKind.NONE) {
+                throw new IllegalArgumentException("structs cannot be actors");
+            }
+            if (kind == AggregateKind.STRUCT && !parents.isEmpty()) {
+                throw new IllegalArgumentException("structs cannot extend classes");
+            }
+        }
+        public ClassDecl(String name, boolean isAbstract, ActorKind actorKind, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, List<MethodDecl> methods) {
+            this(name, AggregateKind.CLASS, isAbstract, actorKind, genericParameters, parents, interfaces, fields, methods);
+        }
+        public ClassDecl(String name, AggregateKind kind, boolean isAbstract, List<String> genericParameters,
+                         List<TypeRef> parents, List<TypeRef> interfaces,
+                         List<FieldDecl> fields, List<MethodDecl> methods) {
+            this(name, kind, isAbstract, ActorKind.NONE, genericParameters, parents, interfaces, fields, methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<TypeRef> parents, List<TypeRef> interfaces,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, parents, interfaces, fields, methods);
+            this(name, AggregateKind.CLASS, isAbstract, ActorKind.NONE, genericParameters, parents, interfaces, fields, methods);
         }
         public ClassDecl(String name, boolean isAbstract, List<String> genericParameters,
                          List<FieldDecl> fields, List<MethodDecl> methods) {
-            this(name, isAbstract, ActorKind.NONE, genericParameters, List.of(), List.of(), fields, methods);
+            this(name, AggregateKind.CLASS, isAbstract, ActorKind.NONE, genericParameters, List.of(), List.of(), fields, methods);
         }
+        public boolean isStruct() { return kind == AggregateKind.STRUCT; }
     }
 
     public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
@@ -276,8 +298,19 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits TypeDeclStmt, BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
             IfStmt, TryStmt, ForOfStmt, ForStmt { }
+
+    /** Compile-time lexical type declaration. It never executes at runtime. */
+    public record TypeDeclStmt(Decl declaration) implements Stmt {
+        public TypeDeclStmt {
+            boolean localStruct = declaration instanceof ClassDecl klass && klass.isStruct();
+            boolean localInterface = declaration instanceof InterfaceDecl;
+            if (!localStruct && !localInterface) {
+                throw new IllegalArgumentException("local type declarations are limited to struct and interface");
+            }
+        }
+    }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) {
