@@ -53,7 +53,7 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
-    private static final long CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(2);
+    private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -2497,7 +2497,7 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             throw new IllegalStateException(
-                    "ActorRuntime close did not observe full runtime termination: "
+                    "ActorRuntime close did not observe full actor termination/carrier exit: "
                             + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
                             + dispatchersTerminated);
         }
