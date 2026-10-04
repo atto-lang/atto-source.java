@@ -946,11 +946,8 @@ public final class OresEvalRootNode extends RootNode {
                 LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
                 for (Ast.FieldDecl field : struct.fields()) {
                     if (field.composed()) {
-                        if (field.initializer() == null) {
-                            throw new IllegalArgumentException("composed trait state has no initializer " + struct.name() + "." + field.name());
-                        }
-                        fields.put(field.name(), eval(field.initializer(), env));
-                        continue;
+                        throw new IllegalStateException("storage-free traits cannot contribute struct fields: "
+                                + struct.name() + "." + field.name());
                     }
                     Ast.Expr value = supplied.get(field.name());
                     if (value != null) fields.put(field.name(), eval(value, env));
