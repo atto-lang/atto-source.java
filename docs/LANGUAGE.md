@@ -481,27 +481,45 @@ The three domains use separate dispatcher pools. Every actor owns exactly one
 logical mailbox and at most one actor turn may execute at a time; carrier
 threads may change between turns.
 
-### Actor receive protocol
+### Actor protocol and hidden receive loop
 
-Every concrete actor must implement exactly one public mailbox ingress:
+Public actor instance methods define the typed actor protocol:
 
 ```ores
-pub receive(message: Message): void {
-  // one actor turn
+pub run1(value: int): void {
+  self.count += value;
+}
+
+pub run2(value: int) -> int {
+  return self.count + value;
 }
 ```
 
-All other actor instance methods are private implementation helpers. Returning
-from `receive` completes the current turn; it does **not** terminate the actor.
-The runtime owns the Erlang-style receive loop: it dequeues the next message,
-acquires the actor execution lease, invokes `receive(message)`, and then
-releases/yields the turn. User code therefore cannot pin a carrier thread by
-implementing its own permanent mailbox loop.
+Those methods are **not** separate mailbox loops. The compiler assigns stable
+protocol slots/envelopes and lowers every external `ActorRef` call through one
+runtime-owned mailbox dispatcher. The runtime owns the Erlang-style receive
+loop, acquires the actor execution lease, dispatches one protocol message, and
+then releases/yields the turn. User code therefore cannot pin a carrier thread
+by implementing its own permanent mailbox loop.
+
+Private actor methods remain direct implementation helpers within the current
+turn. Public actor methods cannot be generic and use implicit `self`, keeping
+the protocol statically describable for AOT, hot loading, and ABI checks.
 
 `define actor X ...` and `define class X extends Actor ...` have the same
-actor-class semantics and the same receive contract. The compiler and type
-checker both enforce the contract so programmatically constructed ASTs cannot
-bypass it.
+actor-class semantics and the same generated protocol machinery. Source code
+does not declare or override the hidden mailbox ingress.
+
+Actor classes do not support static functions. Until a separate effect-safe,
+non-instance actor utility construct exists, allowing static actor methods would
+create an execution path outside the actor ownership/effect context. Put
+ordinary reusable code in a top-level/module `fnc` with its own checked
+effects instead.
+
+External mutable state is read-only from actor code. In particular, source
+actors cannot create, receive, or acquire writable `SharedMutex<T>` state.
+Runtime-owned read capabilities such as `OresRwLock<T>` may expose synchronized
+reads to SHARED actors, while write acquisition remains forbidden.
 
 Actor/class method return declarations canonically use `: T` or `-> T`.
 Historical `=> T` callable-return syntax remains parse-compatible during the
