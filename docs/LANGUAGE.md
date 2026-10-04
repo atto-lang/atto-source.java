@@ -4,7 +4,7 @@ Oreslang is a statically typed guest language for GraalVM/Truffle. Named types a
 
 ## Files, modules, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A source file may contain multiple named modules. A module is a namespace-like **executable container**, but it is deliberately different from the `namespace` declaration keyword. Modules may own functions/routines, actor declarations, bindings/state, classes, interfaces, and type aliases. Exported members are accessed through the module name, such as `math.add(1, 2)`.
 
 ```ores
 define module math
@@ -78,6 +78,82 @@ without observing an "unloaded module" state. If application state requires a
 specific sequencing relationship *between* two init hooks in the same cycle,
 that relationship should be made explicit in application code rather than
 inferred from the import edges.
+
+## Declaration namespaces and AOT-safe program structure
+
+A declaration namespace is a flat, compile-time, **type-only** container. It has
+no runtime initialization or free executable state.
+
+```ores
+define namespace domain as
+  type Id = int;
+
+  define interface Named
+    String name;
+  end
+
+  define abstract class Base as
+  end
+
+  define class User extends Base implements Named as
+    pub val String name;
+  end
+end
+
+declare namespace transport as {
+  type Port = int;
+}
+```
+
+`define namespace` and `declare namespace` are equivalent namespace-declaration
+forms for now. `define` is the normal definition spelling; `declare` is reserved
+so future foreign/header-only declaration semantics can be added without stealing
+an identifier later. Both require `as`. A namespace body may use braces or
+`end`.
+
+Namespace members are limited to:
+
+- type aliases;
+- interfaces;
+- concrete classes;
+- abstract classes.
+
+A concrete class still contains executable methods, but the **class declaration**
+itself is static program structure. The namespace cannot contain free `fnc` or
+`routine` declarations, actors, values/bindings, module state, init hooks,
+modules, or another namespace.
+
+Modules and namespaces are both flat. Neither may be dynamically declared inside
+a function, loop, actor turn, conditional, lambda, class method, or other executable
+block. Classes and interfaces follow the same closed-world rule: their definitions
+are compile-time declarations at file/module/namespace scope, while instances may
+be created dynamically anywhere ordinary expressions are legal.
+
+This is the AOT rule Oreslang follows:
+
+- **known/static code graph + dynamic values** is supported;
+- dynamic instances such as `new Foo()` are supported;
+- dynamic `obj{...}` / `DynamicStruct<T>` data is supported;
+- runtime dispatch across statically known classes/interfaces is supported;
+- runtime creation of new classes/modules/namespaces/interfaces is not supported;
+- arbitrary runtime type lookup, source `eval`, and runtime bytecode/type
+  generation are outside the core language model.
+
+Hot loading does not weaken this rule. A hot-loaded actor/module generation is a
+separately compiled artifact that must satisfy a statically known ABI before OresVM
+admits it; guest code does not manufacture new declaration types inside the running
+program.
+
+`DynamicStruct<T>` remains map-like dynamic data rather than a dynamic class.
+String keys may be added at runtime, values must be assignable to `T`, and reads
+of absent keys fail rather than fabricating a new field/type.
+
+For casts, Oreslang should prefer checked **pattern narrowing** over an unchecked
+general-purpose cast operator. Upcasts to known supertypes/interfaces can remain
+ordinary static conversions; downcasts should be expressed as a type pattern in
+the guarded pattern-matching work, so failure is explicit and the compiler can
+narrow the bound value in the matching branch. The `as` keyword therefore stays
+reserved for declaration/import syntax rather than becoming an unchecked cast.
 
 ## Module interfaces / OCaml-style module signatures
 
