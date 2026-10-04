@@ -47,19 +47,19 @@ public final class Parser {
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
                     modules.add(parseModule(annotations));
                     continue;
                 }
                 if (match(CLASS)) {
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                    if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'lex', 'nlex', 'pure', and 'trap' apply only to fnc/routine declarations or lambdas where applicable");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                    if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'lex', 'nlex', 'pure', and 'trap' apply only to fnc/routine declarations or lambdas where applicable");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -151,11 +151,11 @@ public final class Parser {
             }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'lex', 'nlex', 'pure', and 'trap' apply only to fnc/routine declarations or lambdas where applicable");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
             if (match(INTERFACE)) {
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'lex', 'nlex', 'pure', and 'trap' apply only to fnc/routine declarations or lambdas where applicable");
                 return parseInterface(modifiers.visibility);
             }
             throw error(previous(), "expected class or interface after 'define'");
@@ -182,7 +182,7 @@ public final class Parser {
             }
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
-            if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
+            if (modifiers.async || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic || modifiers.isAbstract) {
                 throw error(actorToken, "actor declarations do not accept async, nlex, static, or abstract modifiers");
             }
             return parseActorClass(actorKind);
@@ -190,7 +190,7 @@ public final class Parser {
         if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
-        if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
+        if (modifiers.hasCallableOnlyModifiers()) throw error(peek(), "'lex', 'nlex', 'pure', and 'trap' apply only to fnc/routine declarations or lambdas where applicable");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
@@ -250,7 +250,7 @@ public final class Parser {
                 if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
             }
-            if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
+            if (mods.hasCallableOnlyModifiers()) throw error(peek(), "'lex', 'nlex', 'pure', and 'trap' are currently restricted to top-level/module fnc and routine declarations");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(annotations, mods.visibility));
@@ -292,7 +292,7 @@ public final class Parser {
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
             }
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
-            if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
+            if (mods.hasCallableOnlyModifiers()) throw error(previous(), "'lex', 'nlex', 'pure', and 'trap' are not valid actor member modifiers");
 
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "actor state cannot be static");
@@ -328,7 +328,10 @@ public final class Parser {
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
             parseAnnotations();
-            parseModifiers();
+            Modifiers mods = parseModifiers();
+            if (mods.hasCallableOnlyModifiers()) {
+                throw error(previous(), "'lex', 'nlex', 'pure', and 'trap' are not interface member modifiers");
+            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
