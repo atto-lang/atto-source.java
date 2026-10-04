@@ -265,6 +265,16 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void typedForInitializerUsesFullTypeGrammar() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                pub routine main() => void {
+                  for pkg.Counter<int> item = source; false; item = item {
+                  }
+                }
+                """));
+    }
+
+    @Test
     void whileSupportsBraceAndDoDoneBodies() throws Exception {
         String output = run("""
                 pub routine main() => void {
