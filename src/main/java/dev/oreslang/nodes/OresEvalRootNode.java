@@ -762,18 +762,12 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "ActorRef.is_alive");
                         return ref.isAlive();
                     };
-                    case "send" -> (Invokable) args -> {
-                        requireOne(args, "ActorRef.send");
-                        @SuppressWarnings("unchecked")
-                        ActorRuntime.ActorRef<Object> typed =
-                                (ActorRuntime.ActorRef<Object>) ref;
-                        typed.send(args.getFirst());
-                        return null;
-                    };
-                    case "receive", "mailbox" -> throw new IllegalArgumentException(
-                            "actor receive/mailbox is runtime-owned; use ActorRef.send(message)");
+                    case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
+                            "raw ActorRef mailbox operations are runtime-private; "
+                                    + "invoke a declared typed actor protocol method instead");
                     default -> throw new IllegalArgumentException(
-                            "unknown ActorRef member '" + name + "'");
+                            "actor protocol methods are not first-class values; invoke '"
+                                    + name + "(...)' directly through the ActorRef");
                 };
             }
             if (receiver instanceof OresFuture<?> future) {
