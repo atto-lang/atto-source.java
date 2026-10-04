@@ -330,4 +330,29 @@ final class OresObservableTest {
                                 || java.util.function.Function.class.isAssignableFrom(type)),
                 "initial rx-ores surface must not run guest callbacks on producer threads");
     }
+    @Test
+    void cancellingSharedFutureSubscriptionDetachesProducerWaiter() throws Exception {
+        OresFuture<Integer> source = new OresFuture<>();
+        OresSubscription<Integer> subscription =
+                OresObservable.fromFuture(source).subscribe();
+
+        OresFuture<OresNotification<Integer>> pull = subscription.next();
+        assertFalse(runtimeWaiters(source).isEmpty());
+
+        assertTrue(subscription.cancel());
+        assertThrows(CancellationException.class, pull::join);
+        assertFalse(source.isCancelled(),
+                "detaching a subscriber must not cancel the shared producer");
+        assertTrue(runtimeWaiters(source).isEmpty(),
+                "cancelled subscriber must not stay rooted by a never-settling shared Future");
+    }
+
+    private static java.util.concurrent.ConcurrentLinkedQueue<?> runtimeWaiters(
+            OresFuture<?> future) throws Exception {
+        var field = OresFuture.class.getDeclaredField("waiters");
+        field.setAccessible(true);
+        return (java.util.concurrent.ConcurrentLinkedQueue<?>) field.get(future);
+    }
+
+
 }
