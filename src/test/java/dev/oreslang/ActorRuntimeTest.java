@@ -360,4 +360,29 @@ final class ActorRuntimeTest {
             assertNotNull(shared.value());
         }
     }
+
+    @Test
+    void sendableCannotSmuggleMutableHostState() {
+        ActorRuntime.Sendable smuggler = () -> new StringBuilder("mutable");
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(smuggler));
+    }
+
+    @Test
+    void sendableCannotReturnItselfAsFrozenRepresentation() {
+        final class SelfSendable implements ActorRuntime.Sendable {
+            @Override public Object freezeForSend() { return this; }
+        }
+        assertThrows(IllegalArgumentException.class, () -> ActorRuntime.freeze(new SelfSendable()));
+    }
+
+    @Test
+    void cyclicMutableGraphsFailClosedBeforeActorDelivery() {
+        ArrayList<Object> cycle = new ArrayList<>();
+        cycle.add(cycle);
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> ActorRuntime.freeze(cycle));
+        assertTrue(failure.getMessage().contains("cyclic mutable graphs"));
+    }
+
 }
