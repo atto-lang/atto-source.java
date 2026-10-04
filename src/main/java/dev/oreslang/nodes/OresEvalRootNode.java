@@ -13,6 +13,7 @@ import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.OresRwLock;
 import dev.oreslang.runtime.OresFutures;
 import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresAsyncTrace;
 import dev.oreslang.runtime.OresScheduler;
 import dev.oreslang.runtime.ActorRuntime;
 
@@ -237,9 +238,56 @@ public final class OresEvalRootNode extends RootNode {
             return current != null ? current : context.actors().rootScheduler();
         }
 
+        private OresAsyncTrace.SourceSite traceSite(Ast.SourceSite site) {
+            Ast.SourceSite actual = site == null ? Ast.SourceSite.UNKNOWN : site;
+            return new OresAsyncTrace.SourceSite(
+                    codeUnitId,
+                    actual.line(),
+                    actual.column(),
+                    context.codeGenerationId());
+        }
+
+        private OresAsyncTrace.Frame functionTraceFrame(Ast.FunctionDecl fn) {
+            return new OresAsyncTrace.Frame(fn.name(), traceSite(fn.site()));
+        }
+
+        private OresAsyncTrace.Frame methodTraceFrame(
+                Ast.ClassDecl klass,
+                Ast.MethodDecl method) {
+            return new OresAsyncTrace.Frame(
+                    klass.name() + "." + method.name(),
+                    traceSite(method.site()));
+        }
+
+        private OresAsyncTrace.Frame lambdaTraceFrame() {
+            return new OresAsyncTrace.Frame(
+                    "<async-lambda>",
+                    OresAsyncTrace.SourceSite.unknown(
+                            codeUnitId,
+                            context.codeGenerationId()));
+        }
+
+        private OresAsyncTrace.Trace traceForInvocation(OresAsyncTrace.Frame frame) {
+            OresAsyncTrace.Trace parent = OresAsyncTrace.current();
+            return parent == null
+                    ? OresAsyncTrace.root(frame)
+                    : parent.child(frame, frame.site());
+        }
+
+        private record AsyncCallableContext(
+                Ast.TypeRef returnType,
+                boolean tailTransfersAllowed) {
+            private AsyncCallableContext withTailTransfers(boolean allowed) {
+                if (tailTransfersAllowed == allowed) return this;
+                return new AsyncCallableContext(returnType, allowed);
+            }
+        }
+
         private OresFuture<Object> startAsyncFunction(Ast.FunctionDecl fn, List<?> args) {
             return asyncScheduler().start(
-                    new AsyncPlanTask(asyncFunctionPlan(fn, args)));
+                    new AsyncPlanTask(
+                            asyncFunctionPlan(fn, args),
+                            traceForInvocation(functionTraceFrame(fn))));
         }
 
         private AsyncPlan asyncFunctionPlan(Ast.FunctionDecl fn, List<?> args) {
@@ -252,7 +300,10 @@ public final class OresEvalRootNode extends RootNode {
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
 
-            AsyncPlan body = asyncBlock(fn.body(), base);
+            AsyncCallableContext callable = new AsyncCallableContext(
+                    fn.returnType(),
+                    fn.actorKind() == Ast.ActorKind.NONE);
+            AsyncPlan body = asyncBlock(fn.body(), base, callable);
             return asyncFlatMap(body, flow -> {
                 Object raw =
                         flow instanceof AsyncReturn returned
@@ -269,6 +320,17 @@ public final class OresEvalRootNode extends RootNode {
                 OresObject receiver,
                 Ast.MethodDecl method,
                 List<?> args) {
+            AsyncPlan completed = asyncMethodPlan(receiver, method, args);
+            return asyncScheduler().start(
+                    new AsyncPlanTask(
+                            completed,
+                            traceForInvocation(methodTraceFrame(receiver.klass, method))));
+        }
+
+        private AsyncPlan asyncMethodPlan(
+                OresObject receiver,
+                Ast.MethodDecl method,
+                List<?> args) {
             Env base = new Env(null);
             if (!method.isStatic()) base.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
@@ -279,18 +341,31 @@ public final class OresEvalRootNode extends RootNode {
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
 
-            AsyncPlan body = asyncBlock(method.body(), base);
-            AsyncPlan completed = asyncFlatMap(body, flow -> {
+            AsyncCallableContext callable = new AsyncCallableContext(
+                    method.returnType(),
+                    receiver.klass.actorKind() == Ast.ActorKind.NONE);
+            AsyncPlan body = asyncBlock(method.body(), base, callable);
+            return asyncFlatMap(body, flow -> {
                 Object raw = flow instanceof AsyncReturn returned ? returned.value() : null;
                 return asyncPure(shapeReturnedValue(
                         method.returnType(),
                         raw,
                         "method " + method.name()));
             });
-            return asyncScheduler().start(new AsyncPlanTask(completed));
         }
 
         private OresFuture<Object> startAsyncStaticFunction(
+                Ast.ClassDecl klass,
+                Ast.MethodDecl fn,
+                List<?> args) {
+            AsyncPlan completed = asyncStaticFunctionPlan(klass, fn, args);
+            return asyncScheduler().start(
+                    new AsyncPlanTask(
+                            completed,
+                            traceForInvocation(methodTraceFrame(klass, fn))));
+        }
+
+        private AsyncPlan asyncStaticFunctionPlan(
                 Ast.ClassDecl klass,
                 Ast.MethodDecl fn,
                 List<?> args) {
@@ -303,15 +378,17 @@ public final class OresEvalRootNode extends RootNode {
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
 
-            AsyncPlan body = asyncBlock(fn.body(), base);
-            AsyncPlan completed = asyncFlatMap(body, flow -> {
+            AsyncCallableContext callable = new AsyncCallableContext(
+                    fn.returnType(),
+                    klass.actorKind() == Ast.ActorKind.NONE);
+            AsyncPlan body = asyncBlock(fn.body(), base, callable);
+            return asyncFlatMap(body, flow -> {
                 Object raw = flow instanceof AsyncReturn returned ? returned.value() : null;
                 return asyncPure(shapeReturnedValue(
                         fn.returnType(),
                         raw,
                         "static function " + klass.name() + "." + fn.name()));
             });
-            return asyncScheduler().start(new AsyncPlanTask(completed));
         }
 
         private OresFuture<Object> startAsyncLambda(
@@ -338,10 +415,16 @@ public final class OresEvalRootNode extends RootNode {
                         args.get(i),
                         param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
-            AsyncPlan body = asyncBlock(lambda.blockBody(), base);
+            AsyncCallableContext callable = new AsyncCallableContext(
+                    Ast.TypeRef.inferred(),
+                    false);
+            AsyncPlan body = asyncBlock(lambda.blockBody(), base, callable);
             AsyncPlan completed = asyncFlatMap(body, flow ->
                     asyncPure(flow instanceof AsyncReturn returned ? returned.value() : null));
-            return scheduler.start(new AsyncPlanTask(completed));
+            return scheduler.start(
+                    new AsyncPlanTask(
+                            completed,
+                            traceForInvocation(lambdaTraceFrame())));
         }
 
         private final class AsyncLambdaValue implements Invokable {
