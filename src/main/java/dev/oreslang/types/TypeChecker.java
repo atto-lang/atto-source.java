@@ -154,7 +154,8 @@ public final class TypeChecker {
             if (decl instanceof Ast.FunctionDecl fn && fn.visibility() == Ast.Visibility.PUBLIC
                     && fn.actorKind() == Ast.ActorKind.NONE) {
                 Type signature = callableContractType(
-                        fn.genericParameters(), fn.parameters(), fn.returnType(), Set.of(), null);
+                        fn.genericParameters(), fn.parameters(), fn.returnType(),
+                        fn.async(), Set.of(), null);
                 mergeMember(members, fn.name(), signature, "module " + module.name());
                 mergeMember(members,
                         methodContractKey(fn.name(), fn.parameters().size(), fn.genericParameters().size()),
@@ -172,7 +173,11 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
-            if (findInterface(parentRef.name()) == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            if (!parentRef.name().equals("Awaitable")
+                    && findInterface(parentRef.name()) == null) {
+                throw new IllegalArgumentException(
+                        "unknown parent interface '" + parentRef.name() + "' for " + iface.name());
+            }
             resolve(parentRef, generics, null);
         }
 
@@ -1733,7 +1738,8 @@ public final class TypeChecker {
             if (method.isStatic()) continue;
             mergeMember(members,
                     methodContractKey(method.name(), method.arity(), method.genericParameters().size()),
-                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(), generics, self),
+                    callableContractType(method.genericParameters(), method.parameters(), method.returnType(),
+                            method.async(), generics, self),
                     "class " + klass.name());
         }
         stack.remove(klass);
@@ -1776,12 +1782,27 @@ public final class TypeChecker {
         if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
         Map<String, Type> members = new LinkedHashMap<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
-            Ast.InterfaceDecl parent = findInterface(parentRef.name());
-            if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
             Type resolvedParent = resolve(parentRef, generics, null);
             if (!(resolvedParent instanceof Named parentType)) {
                 throw new IllegalArgumentException("parent interface must resolve to a named type");
             }
+
+            if (parentType.name().equals("Awaitable")) {
+                if (parentType.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Awaitable<T> requires exactly one payload type");
+                }
+                mergeMember(
+                        members,
+                        methodContractKey("getAwait", 0, 0),
+                        new Function(
+                                List.of(),
+                                new Named("Future", List.of(parentType.arguments().getFirst()))),
+                        "interface inheritance of " + iface.name());
+                continue;
+            }
+
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
             Map<String, Type> parentBindings = genericBindings(parent.genericParameters(), parentType.arguments(),
                     "interface " + parent.name());
             for (Map.Entry<String, Type> inherited : interfaceShape(parent, Set.copyOf(parent.genericParameters()), stack).members().entrySet()) {
@@ -2014,9 +2035,30 @@ public final class TypeChecker {
             Ast.TypeRef returns,
             Set<String> ownerGenerics,
             Type self) {
+        return callableContractType(
+                callableGenerics,
+                params,
+                returns,
+                false,
+                ownerGenerics,
+                self);
+    }
+
+    private Function callableContractType(
+            List<String> callableGenerics,
+            List<Ast.Param> params,
+            Ast.TypeRef returns,
+            boolean async,
+            Set<String> ownerGenerics,
+            Type self) {
         Set<String> all = new HashSet<>(ownerGenerics);
         all.addAll(callableGenerics);
         Function raw = functionType(params, returns, all, self);
+        if (async) {
+            raw = new Function(
+                    raw.parameters(),
+                    new Named("Future", List.of(raw.result())));
+        }
         if (callableGenerics.isEmpty()) return raw;
 
         Map<String, Type> canonical = new HashMap<>();
