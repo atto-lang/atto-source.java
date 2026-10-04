@@ -35,7 +35,7 @@ module_member   = actor_decl
 visibility      = [ "pub" | "private" ] ;
 callable_modifier = "abstract" | "async" | "nlex" ;
 method_modifier   = "abstract" | "async" ;
-actor_method_modifier = "abstract" ;
+actor_method_modifier = "" ; (* actor methods are concrete; actor suspension is implicit *)
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
@@ -71,7 +71,7 @@ actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
-                = { annotation } visibility { actor_method_modifier } [ "fnc" ] method_name [ generic_params ]
+                = { annotation } visibility [ "fnc" ] method_name [ generic_params ]
                   method_head method_return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
