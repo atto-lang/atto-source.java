@@ -388,13 +388,13 @@ Option matching participates in pointerless ownership:
 - `match maybe { ... }` reads/borrows a non-`Copy` option; the option remains
   usable after the match and a non-`Copy` payload is a read borrow inside
   `Some(...)`.
-- `match borrow(maybe) { ... }` makes that read borrow explicit.
-- `match take(maybe) { ... }` consumes a non-`Copy` option and gives the
+- `match rt borrow(maybe) { ... }` makes that read borrow explicit.
+- `match rt take(maybe) { ... }` consumes a non-`Copy` option and gives the
   `Some` arm ownership of a non-`Copy` payload.
-- `match copy(maybe) { ... }` is legal only when `Option<T>` is proven
+- `match rt copy(maybe) { ... }` is legal only when `Option<T>` is proven
   `Copy`. `Option<T>` is `Copy` exactly when `T` is `Copy`.
 - `Some(value)` owns its payload. Constructing `Some(x)` therefore moves a
-  non-`Copy` `x`; use `Some(copy(x))` only when the payload type satisfies
+  non-`Copy` `x`; use `Some(rt copy(x))` only when the payload type satisfies
   the copy contract.
 - Storing a borrow inside `Some(...)` is currently rejected until container
   borrow provenance is represented explicitly; this prevents a borrow from
@@ -1022,7 +1022,7 @@ Borrow rules are compiler guarantees:
 - a borrow of a local value may not escape the owner's lifetime;
 - temporary parameter borrows end at the call boundary;
 - multiple arguments in one call are checked as overlapping for the entire call, so `f(mut x, mut x)` and `f(mut x, x)` are rejected;
-- stored `borrow(x)` bindings remain active until their lexical scope ends;
+- stored `rt borrow x` / `rt borrow(x)` bindings remain active until their lexical scope ends;
 - structural parameters are read-only views and never consume the supplied value.
 
 The checker is deliberately conservative around uncertain branch/loop lifetimes. Future non-lexical-lifetime analysis may accept more programs, but it must not weaken these invariants.
