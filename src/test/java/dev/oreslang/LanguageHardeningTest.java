@@ -147,11 +147,16 @@ final class LanguageHardeningTest {
     }
 
     @Test
-    void objArrTupleIndexAndLetAssignmentAreStaticallyChecked() {
+    void staticClassArrTupleIndexAndLetAssignmentAreStaticallyChecked() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define module app
+                  define class Person as
+                    pub val String name;
+                    pub val int age;
+                  end
+
                   pub fnc main(): void {
-                    val person = obj{name: "ore", age: 1};
+                    val person = new Person("ore", 1);
                     val values = arr[10, 20, 30];
                     val first = values[0];
                     [const left, let right] = (1, "two");
