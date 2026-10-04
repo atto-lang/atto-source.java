@@ -195,7 +195,9 @@ public final class Parser {
         consume(ROUTINE, "expected 'routine' after 'init'");
         consume(LPAREN, "init routine requires '()'");
         consume(RPAREN, "init routine cannot accept parameters");
-        consume(FAT_ARROW, "init routine requires explicit '=> void'");
+        if (!match(ARROW, COLON)) {
+            throw error(peek(), "init routine requires explicit '-> void' or ': void'");
+        }
         consume(VOID, "init routine must return void");
         return new Ast.InitDecl(parseBlock());
     }
