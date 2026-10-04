@@ -69,6 +69,20 @@ final class ReservedKeywordTest {
     }
 
     @Test
+    void stopDoDoneCanBeImportedAsFunctionNames() {
+        assertDoesNotThrow(() -> Parser.parse("""
+                import fnc {stop, do, done} from './dependency.ores';
+
+                pub routine main() => void {
+                  stop();
+                  do();
+                  done();
+                  return;
+                }
+                """));
+    }
+
+    @Test
     void reservedWordsCannotBeModuleClassMethodOrFieldNames() {
         for (String keyword : RESERVED) {
             assertReservedFailure("""
