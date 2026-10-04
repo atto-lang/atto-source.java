@@ -1024,7 +1024,7 @@ public final class OresEvalRootNode extends RootNode {
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
                     Ast.MethodDecl fn = functions.getFirst();
-                    return (Invokable) args -> klass.owner().callStaticFunction(klass.klass(), fn, args);
+                    return (Invokable) args -> klass.owner().callStaticFunctionRaw(fn, objectArguments(args));
                 }
                 if (functions.size() > 1) throw new IllegalArgumentException("overloaded static function " + klass.klass().name() + "." + name + " must be called so arity can select it");
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
