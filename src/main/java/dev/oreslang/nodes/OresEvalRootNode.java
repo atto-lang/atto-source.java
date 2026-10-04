@@ -812,10 +812,30 @@ public final class OresEvalRootNode extends RootNode {
                 return new BoundMethod(object.owner, object, name);
             }
             if (receiver instanceof DynamicStructValue dynamic) {
-                if (!dynamic.fields.containsKey(name)) {
-                    throw new IllegalArgumentException("unknown DynamicStruct member " + name);
-                }
-                return dynamic.fields.get(name);
+                return switch (name) {
+                    case "get" -> (Invokable) args -> {
+                        String key = requireStringArg(args, "DynamicStruct.get");
+                        yield dynamic.fields.containsKey(key)
+                                ? new OptionValue(true, dynamic.fields.get(key))
+                                : new OptionValue(false, null);
+                    };
+                    case "has_key" -> (Invokable) args -> {
+                        String key = requireStringArg(args, "DynamicStruct.has_key");
+                        yield dynamic.fields.containsKey(key);
+                    };
+                    case "get_or" -> (Invokable) args -> {
+                        if (args.size() != 2 || !(args.getFirst() instanceof String key)) {
+                            throw new IllegalArgumentException("DynamicStruct.get_or expects (String key, fallback)");
+                        }
+                        yield dynamic.fields.getOrDefault(key, args.get(1));
+                    };
+                    default -> {
+                        if (!dynamic.fields.containsKey(name)) {
+                            throw new IllegalArgumentException("unknown DynamicStruct member " + name);
+                        }
+                        yield dynamic.fields.get(name);
+                    }
+                };
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -1107,8 +1127,15 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
-                    if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    if (module == null || module.isNamespace()) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
                     yield new ModuleFacade(this, module);
+                }
+                case NAMESPACE -> {
+                    Ast.ModuleDecl namespace = modules.get(name);
+                    if (namespace == null || !namespace.isNamespace()) {
+                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export namespace '" + name + "'");
+                    }
+                    yield new ModuleFacade(this, namespace);
                 }
                 case ALL -> exportAny(name);
             };
@@ -1164,6 +1191,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
                     return new ClassFacade(this, klass);
                 }
+                if (module.isNamespace()) continue;
                 if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
                     return (Invokable) args -> callFunction(fn, args);
                 }
@@ -1171,6 +1199,9 @@ public final class OresEvalRootNode extends RootNode {
                     if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
                     return eval(field.initializer(), new Env(null));
                 }
+            }
+            if (module.isNamespace()) {
+                throw new IllegalArgumentException("namespace '" + module.name() + "' is type-only and does not export runtime member '" + name + "'");
             }
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
         }
