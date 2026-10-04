@@ -53,6 +53,7 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        checker.validateEntryExport(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
         OwnershipChecker.check(program);
@@ -86,6 +87,66 @@ public final class TypeChecker {
                             && imported.kind() != Ast.ImportKind.ACTOR) {
                         importedValues.add(localName);
                     }
+                }
+            }
+        }
+    }
+
+    private void validateEntryExport(Ast.Program program) {
+        Ast.EntryExportDecl entry = null;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.EntryExportDecl candidate)) continue;
+                if (!module.name().equals(Parser.ROOT_MODULE)) {
+                    throw new IllegalArgumentException(
+                            "export entry is code-unit metadata and may appear only at top level");
+                }
+                if (entry != null) {
+                    throw new IllegalArgumentException(
+                            "a code unit may declare exactly one export entry marker");
+                }
+                entry = candidate;
+            }
+        }
+        if (entry == null) return;
+
+        switch (entry.kind()) {
+            case MODULE -> {
+                Ast.ModuleDecl module = modules.get(entry.name());
+                if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
+                    throw new IllegalArgumentException(
+                            "entry export module '" + entry.name() + "' does not name a local module");
+                }
+            }
+            case CLASS -> {
+                Ast.ClassDecl klass = findClass(entry.name());
+                if (klass == null
+                        || klass.actorKind() != Ast.ActorKind.NONE
+                        || !Parser.ROOT_MODULE.equals(classOwners.get(klass))) {
+                    throw new IllegalArgumentException(
+                            "entry export class '" + entry.name()
+                                    + "' must name one top-level ordinary class in this code unit");
+                }
+            }
+            case ACTOR -> {
+                Ast.ClassDecl actor = findClass(entry.name());
+                if (actor == null
+                        || actor.actorKind() == Ast.ActorKind.NONE
+                        || !Parser.ROOT_MODULE.equals(classOwners.get(actor))) {
+                    throw new IllegalArgumentException(
+                            "entry export actor '" + entry.name()
+                                    + "' must name one top-level actor class in this code unit");
+                }
+            }
+            case FUNCTION -> {
+                Ast.FunctionDecl fn = findFunction(entry.name());
+                if (fn == null
+                        || fn.visibility() != Ast.Visibility.PUBLIC
+                        || fn.actorKind() != Ast.ActorKind.NONE
+                        || !Parser.ROOT_MODULE.equals(functionOwners.get(fn))) {
+                    throw new IllegalArgumentException(
+                            "entry export fnc '" + entry.name()
+                                    + "' must name one public top-level non-actor fnc/routine in this code unit");
                 }
             }
         }
