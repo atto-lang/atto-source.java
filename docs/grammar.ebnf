@@ -33,7 +33,7 @@ module_member   = actor_decl
                 | binding_decl ;
 
 visibility      = [ "pub" | "private" ] ;
-callable_modifier = "abstract" | "async" | "nlex" ;
+callable_modifier = "async" | "lex" | "nlex" | "pure" | "trap" ;
 method_modifier   = "abstract" | "async" ;
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
@@ -41,7 +41,7 @@ callable_decl   = { annotation } visibility { callable_modifier } callable_kind 
 callable_kind   = "fnc" | "routine" ;
 
 actor_callable_decl
-                = { annotation } visibility [ "async" ] [ "nlex" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
+                = { annotation } visibility [ "async" ] [ "lex" | "nlex" ] [ "shared" ] "actor" "fnc" IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
 
 actor_decl      = visibility [ "shared" ] "actor" IDENT [ generic_params ]
@@ -54,7 +54,7 @@ actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
-                = { annotation } visibility { callable_modifier } [ "fnc" ] method_name [ generic_params ]
+                = { annotation } visibility { method_modifier } [ "fnc" ] method_name [ generic_params ]
                   method_head return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
@@ -129,7 +129,9 @@ statement       = binding_decl
                 | expression stmt_terminator ;
 
 return_stmt     = "return" [ expression ] stmt_terminator ;
-defer_stmt      = "defer" expression stmt_terminator ;
+defer_stmt      = "rt" "defer"
+                  ( "(" expression ")" | lambda )
+                  stmt_terminator ;
 
 if_stmt         = "if" condition [ ";" ] "do" { statement }
                   { "elseif" condition [ ";" ] "do" { statement } }
@@ -166,6 +168,7 @@ primary         = literal
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
+                | runtime_call
                 | lambda
                 | tuple_literal
                 | array_literal
@@ -173,7 +176,9 @@ primary         = literal
                 | object_literal
                 | "(" expression ")" ;
 
-lambda          = [ "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
+runtime_call    = "rt" ( "copy" | "share" | "take" | "borrow" | "recover" )
+                  "(" expression ")" ;
+lambda          = [ "lex" | "nlex" ] ( pipe_lambda | typed_legacy_lambda ) ;
 pipe_lambda     = "|" [ lambda_param { "," lambda_param } ] "|" "->" block ;
 lambda_param    = IDENT | type_ref IDENT ;
 typed_legacy_lambda
