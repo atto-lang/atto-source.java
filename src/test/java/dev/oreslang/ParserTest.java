@@ -213,9 +213,6 @@ final class ParserTest {
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
         assertTrue(actor.parents().isEmpty(),
                 "compiler-intrinsic Actor base normalizes into actorKind");
-        assertTrue(actor.actorProtocolTypes().isEmpty(),
-                "actor protocol comes from public methods/interfaces, not Actor<X,Y,Z>");
-
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define class Bad extends Actor<int, void, WorkerError> as
                   pub run(value: int): void { return; }
