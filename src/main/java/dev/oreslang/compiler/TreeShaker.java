@@ -211,6 +211,9 @@ public final class TreeShaker {
             if (expression instanceof Ast.NewExpr created) {
                 return created.arguments().stream().anyMatch(this::containsLambda);
             }
+            if (expression instanceof Ast.StructInitExpr created) {
+                return created.fields().stream().anyMatch(field -> containsLambda(field.value()));
+            }
             if (expression instanceof Ast.AwaitExpr awaited) return containsLambda(awaited.expression());
             if (expression instanceof Ast.ListExpr list) {
                 return list.elements().stream().anyMatch(this::containsLambda);
@@ -306,6 +309,15 @@ public final class TreeShaker {
                     arguments.add(substitute(argument, substitutions, shadowed));
                 }
                 return new Ast.NewExpr(created.type(), arguments);
+            }
+            if (expression instanceof Ast.StructInitExpr created) {
+                List<Ast.ObjectField> fields = new ArrayList<>();
+                for (Ast.ObjectField field : created.fields()) {
+                    fields.add(Ast.ObjectField.named(
+                            field.name(),
+                            substitute(field.value(), substitutions, shadowed)));
+                }
+                return new Ast.StructInitExpr(created.type(), fields);
             }
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(substitute(awaited.expression(), substitutions, shadowed));
@@ -724,6 +736,15 @@ public final class TreeShaker {
                 }
                 return new Ast.NewExpr(created.type(), arguments);
             }
+            if (expression instanceof Ast.StructInitExpr created) {
+                List<Ast.ObjectField> fields = new ArrayList<>();
+                for (Ast.ObjectField field : created.fields()) {
+                    fields.add(Ast.ObjectField.named(
+                            field.name(),
+                            rewriteExpression(field.value(), module, locals)));
+                }
+                return new Ast.StructInitExpr(created.type(), fields);
+            }
             if (expression instanceof Ast.AwaitExpr awaited) {
                 return new Ast.AwaitExpr(rewriteExpression(awaited.expression(), module, locals));
             }
@@ -996,6 +1017,9 @@ public final class TreeShaker {
             } else if (expression instanceof Ast.NewExpr created) {
                 scanType(created.type());
                 for (Ast.Expr argument : created.arguments()) scanExpression(module, argument, locals);
+            } else if (expression instanceof Ast.StructInitExpr created) {
+                scanType(created.type());
+                for (Ast.ObjectField field : created.fields()) scanExpression(module, field.value(), locals);
             } else if (expression instanceof Ast.AwaitExpr awaited) {
                 scanExpression(module, awaited.expression(), locals);
             } else if (expression instanceof Ast.ListExpr list) {
