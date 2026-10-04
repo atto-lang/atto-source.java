@@ -233,9 +233,9 @@ final class OresVM {
     }
 
     /**
-     * VM-owned hot loader. Trusted generations may share the main Graal engine;
-     * isolated/untrusted generations are created through their sandboxed
-     * Context policy. Loader authority remains control-plane only.
+     * VM-owned hot loader. Trusted shared actors and trusted isoactors remain
+     * in the primary Graal isolate; only untrusted generations use a spawned
+     * Graal isolate. Loader authority remains control-plane only.
      */
     HotReloadManager newHotReloadManager(
             IsolatePolicy supervisorPolicy,
