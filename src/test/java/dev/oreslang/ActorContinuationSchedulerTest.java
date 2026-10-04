@@ -93,6 +93,49 @@ final class ActorContinuationSchedulerTest {
     }
 
     @Test
+    void suspendedMailboxMessageStaysMemoryChargedUntilContinuationFinishes() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                singleCarrierConfig())) {
+            CompletableFuture<String> awaited = new CompletableFuture<>();
+            CountDownLatch suspended = new CountDownLatch(1);
+            CountDownLatch resumed = new CountDownLatch(1);
+
+            var actor = runtime.<String>spawnPrivate(() -> (message, context) -> {
+                suspended.countDown();
+                context.suspendOn(awaited, (value, failure, resumeContext) -> {
+                    assertNull(failure);
+                    assertEquals(message, "payload-kept-alive");
+                    resumed.countDown();
+                });
+            });
+
+            actor.send("payload-kept-alive");
+            assertTrue(suspended.await(2, TimeUnit.SECONDS));
+
+            long chargedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            while (runtime.privateMemoryBytes() == 0L && System.nanoTime() < chargedDeadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(
+                    runtime.privateMemoryBytes() > 0L,
+                    "suspended message graph must remain charged while its continuation can still reference it");
+
+            awaited.complete("done");
+            assertTrue(resumed.await(2, TimeUnit.SECONDS));
+
+            long releasedDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            while (runtime.privateMemoryBytes() != 0L && System.nanoTime() < releasedDeadline) {
+                Thread.sleep(1);
+            }
+            assertEquals(
+                    0L,
+                    runtime.privateMemoryBytes(),
+                    "message reservation must be released when the logical mailbox turn completes");
+        }
+    }
+
+    @Test
     void alreadyCompletedAwaitStillYieldsToALaterSchedulerTurn() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime(
                 IsolatePolicy.developer(),
