@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import dev.oreslang.OresLanguage;
+import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.compiler.OresCompiler;
 import org.graalvm.polyglot.Context;
@@ -17,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -177,8 +179,21 @@ public final class HotReloadManager implements AutoCloseable {
     public synchronized Generation load(String name, String sourceText) {
         ensureOpen();
         validateStageInput(name, sourceText);
-        OresCompiler.validateForIsolate(sourceText, guestPolicy);
-        return stage(name, digest(sourceText), sourceText);
+        Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        return stage(name, digest(sourceText), sourceText, entryExport(program).orElse(null));
+    }
+
+    /**
+     * Stages a code unit that must declare one explicit {@code export entry}.
+     * The entry is validated by the compiler and retained as generation
+     * metadata; loading never guesses a JavaScript-style default export.
+     */
+    public synchronized Generation loadEntry(String name, String sourceText) {
+        ensureOpen();
+        validateStageInput(name, sourceText);
+        Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(program);
+        return stage(name, digest(sourceText), sourceText, entry);
     }
 
     /**
@@ -191,10 +206,28 @@ public final class HotReloadManager implements AutoCloseable {
         Objects.requireNonNull(unit, "unit");
         validateStageInput(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
-        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText());
+        return stage(
+                unit.unitId(),
+                unit.sourceDigest(),
+                unit.sourceText(),
+                entryExport(unit.program()).orElse(null));
     }
 
-    private Generation stage(String codeUnitId, String sourceDigest, String sourceText) {
+    /** Contract-checked entry load for an already compiled code unit. */
+    public synchronized Generation loadEntry(IncrementalCompiler.CompiledUnit unit) {
+        ensureOpen();
+        Objects.requireNonNull(unit, "unit");
+        validateStageInput(unit.unitId(), unit.sourceText());
+        CapabilityChecker.check(unit.program(), guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(unit.program());
+        return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), entry);
+    }
+
+    private Generation stage(
+            String codeUnitId,
+            String sourceDigest,
+            String sourceText,
+            Ast.EntryExportDecl entryExport) {
         enforceGenerationQuota(codeUnitId);
 
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
@@ -232,7 +265,8 @@ public final class HotReloadManager implements AutoCloseable {
                     executionProfile,
                     executionDomain,
                     guestPolicy,
-                    generationBindingToken);
+                    generationBindingToken,
+                    entryExport);
             generations.put(id, generation);
             boundGeneration.set(generation);
             return generation;
@@ -251,6 +285,14 @@ public final class HotReloadManager implements AutoCloseable {
         Generation generation = load(name, sourceText);
         // Never hold the manager monitor across guest evaluation. Actor startup
         // may acquire/release generation leases on different carrier threads.
+        generation.start();
+        activate(generation);
+        return generation;
+    }
+
+    /** Stage, start, and activate a code unit that must expose an entry export. */
+    public Generation loadEntryAndStart(String name, String sourceText) {
+        Generation generation = loadEntry(name, sourceText);
         generation.start();
         activate(generation);
         return generation;
@@ -441,6 +483,27 @@ public final class HotReloadManager implements AutoCloseable {
         }
     }
 
+    private static Optional<Ast.EntryExportDecl> entryExport(Ast.Program program) {
+        Ast.EntryExportDecl found = null;
+        for (Ast.ModuleDecl module : program.modules()) {
+            for (Ast.Decl declaration : module.declarations()) {
+                if (!(declaration instanceof Ast.EntryExportDecl entry)) continue;
+                if (found != null) {
+                    throw new IllegalArgumentException(
+                            "a code unit may declare exactly one export entry marker");
+                }
+                found = entry;
+            }
+        }
+        return Optional.ofNullable(found);
+    }
+
+    private static Ast.EntryExportDecl requireEntryExport(Ast.Program program) {
+        return entryExport(program).orElseThrow(() ->
+                new IllegalArgumentException(
+                        "hot-load entry requested but code unit declares no 'export entry <kind> <name>;' marker"));
+    }
+
     private void validateStageInput(String codeUnitId, String sourceText) {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(sourceText, "sourceText");
@@ -589,6 +652,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final ExecutionDomain executionDomain;
         private final IsolatePolicy guestPolicy;
         private final String generationBindingToken;
+        private final Ast.EntryExportDecl entryExport;
         private final AtomicReference<GenerationState> state =
                 new AtomicReference<>(GenerationState.STAGED);
         private final AtomicInteger pins = new AtomicInteger();
@@ -604,7 +668,8 @@ public final class HotReloadManager implements AutoCloseable {
                 ExecutionProfile executionProfile,
                 ExecutionDomain executionDomain,
                 IsolatePolicy guestPolicy,
-                String generationBindingToken) {
+                String generationBindingToken,
+                Ast.EntryExportDecl entryExport) {
             this.owner = owner;
             this.id = id;
             this.codeUnitId = codeUnitId;
@@ -616,6 +681,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.guestPolicy = guestPolicy;
             this.generationBindingToken =
                     Objects.requireNonNull(generationBindingToken, "generationBindingToken");
+            this.entryExport = entryExport;
         }
 
         public long id() { return id; }
@@ -626,6 +692,7 @@ public final class HotReloadManager implements AutoCloseable {
         public ExecutionProfile executionProfile() { return executionProfile; }
         public ExecutionDomain executionDomain() { return executionDomain; }
         public IsolatePolicy guestPolicy() { return guestPolicy; }
+        public Optional<Ast.EntryExportDecl> entryExport() { return Optional.ofNullable(entryExport); }
         public GenerationState state() { return state.get(); }
         public int pinCount() { return pins.get(); }
         public boolean started() {
