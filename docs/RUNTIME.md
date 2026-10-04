@@ -78,7 +78,9 @@ OresVM implements proper tail calls itself instead of relying on GraalVM to infe
 
 The trampoline performs a scheduler safepoint every 64 tail transfers. This prevents a very long recursive chain from becoming an uncooperative scheduling loophole.
 
-Tail transfer is deliberately blocked when caller-owned cleanup still exists: active `defer`, catch/finally semantics, or live mutex guards. Those calls use ordinary call/return behavior so cleanup ordering and lock lifetime remain correct. Arbitrary Java/host `Invokable` values are also not tail-transferred; only Oreslang-origin first-class callables are marked tail-transferable, preserving the caller's runtime return-shape validation across interop.
+Tail transfer is deliberately blocked when caller-owned cleanup still exists: active `defer`, catch/finally semantics, or live mutex guards. Those calls use ordinary call/return behavior so cleanup ordering and lock lifetime remain correct. Arbitrary Java/host `Invokable` values are also not tail-transferred.
+
+Tail-transferable first-class Oreslang callables carry the evaluator that owns their validated contract. A target owned by another linked code unit is treated as a contract barrier because imports are currently typed as `Unknown` within an individual unit. The caller waits for that imported invocation and performs its own declared return-shape validation. Internal tail calls in the target evaluator still trampoline normally. This avoids weakening runtime contracts while keeping retained heap state O(1); no return-validator chain is accumulated across recursive depth.
 
 This mechanism is part of Oreslang semantics and runs identically inside the JVM/Graal JIT runtime, the Native Image AOT launcher, and the AOT-host/guest-JIT hybrid launcher.
 
