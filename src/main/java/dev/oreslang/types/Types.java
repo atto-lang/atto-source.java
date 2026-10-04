@@ -10,7 +10,7 @@ public final class Types {
     public sealed interface Type permits Primitive, Named, Borrow, ClassNamespace, Record, Function, ListType, Tuple, Union, Generic, StringLiteral, Unknown { }
 
     public enum Primitive implements Type {
-        INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID, NULL
+        INT, FLOAT, DECIMAL, COMPLEX, BOOL, STRING, VOID
     }
 
     public record Named(String name, List<Type> arguments) implements Type {
