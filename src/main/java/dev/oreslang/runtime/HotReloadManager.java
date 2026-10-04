@@ -415,14 +415,23 @@ public final class HotReloadManager implements AutoCloseable {
     }
 
     private Generation detachForCloseLocked(Generation generation) {
-        generations.remove(generation.id(), generation);
+        // Keep the generation in the ownership map until its Context is
+        // actually closed. If VM shutdown races a queued control-plane cleanup,
+        // manager.close() can still discover and reclaim it.
         active.compareAndSet(generation, null);
         activeByCodeUnit.remove(generation.codeUnitId(), generation);
         return generation;
     }
 
-    private static void closeDetached(Generation generation) {
-        if (generation != null) generation.closeContext();
+    private void closeDetached(Generation generation) {
+        if (generation == null) return;
+        try {
+            generation.closeContext();
+        } finally {
+            synchronized (this) {
+                generations.remove(generation.id(), generation);
+            }
+        }
     }
 
     private void validateStageInput(String codeUnitId, String sourceText) {
