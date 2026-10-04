@@ -956,7 +956,7 @@ public final class TypeChecker {
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
-                    return checkGenericCallable(
+                    Type result = checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
                             target.returnType(),
@@ -965,6 +965,10 @@ public final class TypeChecker {
                             null,
                             explicitGenericBindings(target.genericParameters(), call.typeArguments(), generics, self, label),
                             label);
+                    Ast.ModuleDecl owner = modules.get(namespace.name());
+                    return owner != null && owner.storage() == Ast.ModuleStorage.GLOBAL
+                            ? new Named("Future", List.of(result))
+                            : result;
                 }
             }
             if (call.callee() instanceof Ast.MemberExpr factoryCall
@@ -1021,6 +1025,40 @@ public final class TypeChecker {
                             label);
                 }
                 if (receiver instanceof Named named) {
+                    if ((named.name().equals("GlobalRef") || named.name().equals("SingletonRef"))
+                            && named.arguments().size() == 1
+                            && named.arguments().getFirst() instanceof Named targetModule) {
+                        Ast.ModuleDecl module = modules.get(targetModule.name());
+                        if (module == null) {
+                            throw new IllegalArgumentException(
+                                    "unknown module referenced by " + named.name() + ": " + targetModule.name());
+                        }
+                        Ast.FunctionDecl target = functions.get(module.name() + "." + member.member());
+                        if (target == null || target.visibility() != Ast.Visibility.PUBLIC) {
+                            throw new IllegalArgumentException(
+                                    named.name() + "<" + module.name()
+                                            + "> has no public function '" + member.member() + "'");
+                        }
+                        String label = named.name() + " " + module.name() + "." + member.member();
+                        validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+                        Type result = checkGenericCallable(
+                                target.genericParameters(),
+                                target.parameters(),
+                                target.returnType(),
+                                call.arguments(),
+                                env, generics, self,
+                                null,
+                                explicitGenericBindings(
+                                        target.genericParameters(),
+                                        call.typeArguments(),
+                                        generics,
+                                        self,
+                                        label),
+                                label);
+                        return named.name().equals("GlobalRef")
+                                ? new Named("Future", List.of(result))
+                                : result;
+                    }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && member.member().equals("with_lock")) {
@@ -1090,7 +1128,17 @@ public final class TypeChecker {
                                 "generic callable '" + namespace.name() + "." + member.member()
                                         + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                     }
-                    return functionType(moduleFunction.parameters(), moduleFunction.returnType(), Set.of(), null);
+                    Function signature = (Function) functionType(
+                            moduleFunction.parameters(),
+                            moduleFunction.returnType(),
+                            Set.of(),
+                            null);
+                    Ast.ModuleDecl owner = modules.get(namespace.name());
+                    return owner != null && owner.storage() == Ast.ModuleStorage.GLOBAL
+                            ? new Function(
+                                    signature.parameters(),
+                                    new Named("Future", List.of(signature.result())))
+                            : signature;
                 }
                 Ast.ClassDecl memberClass = classes.get(namespace.name() + "." + member.member());
                 if (memberClass != null) return new ClassNamespace(qualifiedClassName(memberClass));
@@ -1110,6 +1158,24 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
+            if (receiver instanceof Named refType
+                    && (refType.name().equals("GlobalRef") || refType.name().equals("SingletonRef"))
+                    && refType.arguments().size() == 1
+                    && refType.arguments().getFirst() instanceof Named targetModule) {
+                Ast.FunctionDecl target = functions.get(targetModule.name() + "." + member.member());
+                if (target == null || target.visibility() != Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            refType.name() + "<" + targetModule.name()
+                                    + "> has no public function '" + member.member() + "'");
+                }
+                Function signature = (Function) functionType(
+                        target.parameters(), target.returnType(), Set.copyOf(target.genericParameters()), null);
+                return refType.name().equals("GlobalRef")
+                        ? new Function(
+                                signature.parameters(),
+                                new Named("Future", List.of(signature.result())))
+                        : signature;
+            }
             receiver = unwrapMutexGuard(receiver);
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
@@ -1231,15 +1297,24 @@ public final class TypeChecker {
             }
 
             List<ResolvedField> fields = effectiveFieldTargets(klass, nominal, new LinkedHashSet<>());
-            if (created.arguments().size() > fields.size()) throw new IllegalArgumentException("constructor for " + klass.name() + " received too many positional fields");
-            for (int i = 0; i < fields.size(); i++) {
-                ResolvedField resolvedField = fields.get(i);
+            long ordinaryFields = fields.stream()
+                    .filter(field -> !injectedField(field.field()))
+                    .count();
+            if (created.arguments().size() > ordinaryFields) {
+                throw new IllegalArgumentException(
+                        "constructor for " + klass.name() + " received too many positional fields; "
+                                + "injected fields are not constructor arguments");
+            }
+            int argumentIndex = 0;
+            for (ResolvedField resolvedField : fields) {
                 Ast.FieldDecl field = resolvedField.field();
-                if (i < created.arguments().size()) {
+                if (injectedField(field)) continue;
+                if (argumentIndex < created.arguments().size()) {
                     Type fieldPattern = classFieldType(resolvedField.owner(), field);
                     Type expected = substituteGenerics(fieldPattern, classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
-                    requireAssignable(typeOf(created.arguments().get(i), env, generics, self),
+                    requireAssignable(typeOf(created.arguments().get(argumentIndex), env, generics, self),
                             expected, "constructor field " + field.name());
+                    argumentIndex++;
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
                 }
@@ -1497,6 +1572,12 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
+        if (named.name().equals("GlobalRef") || named.name().equals("SingletonRef")) {
+            throw new IllegalArgumentException(
+                    where + " cannot transport " + named.name()
+                            + " across an actor boundary; reacquire/inject it in the destination domain");
+        }
+        if (named.name().equals("Symbol")) return;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
@@ -1577,6 +1658,8 @@ public final class TypeChecker {
         }
         if (!(type instanceof Named named)) return false;
 
+        if (named.name().equals("Symbol")) return named.arguments().isEmpty();
+        if (named.name().equals("GlobalRef") || named.name().equals("SingletonRef")) return false;
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("DynamicStruct")) {
@@ -2479,6 +2562,31 @@ public final class TypeChecker {
             case "complex64", "complex128", "complex" -> Primitive.COMPLEX;
             case "bool", "Bool" -> Primitive.BOOL;
             case "string", "String" -> Primitive.STRING;
+            case "Symbol" -> {
+                if (ref.inferArguments() || !ref.arguments().isEmpty()) {
+                    throw new IllegalArgumentException("Symbol does not accept type arguments");
+                }
+                yield new Named("Symbol", List.of());
+            }
+            case "GlobalRef", "SingletonRef" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " requires exactly one explicit target module type");
+                }
+                Ast.ModuleDecl target = modules.get(ref.arguments().getFirst().name());
+                if (target == null) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " references unknown module '" + ref.arguments().getFirst().name() + "'");
+                }
+                Ast.ModuleStorage expected = ref.name().equals("GlobalRef")
+                        ? Ast.ModuleStorage.GLOBAL : Ast.ModuleStorage.SINGLETON;
+                if (target.storage() != expected) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " target '" + target.name() + "' must be "
+                                    + expected.name().toLowerCase() + " module");
+                }
+                yield new Named(ref.name(), List.of(new Named(target.name(), List.of())));
+            }
             case "void" -> Primitive.VOID;
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
@@ -2749,6 +2857,19 @@ public final class TypeChecker {
                         && definitelyReturns(conditional.elseBody());
                 if (allBranches) return true;
             }
+            if (stmt instanceof Ast.SwitchStmt switched) {
+                boolean allReturn = !switched.clauses().isEmpty();
+                boolean catchAll = false;
+                for (Ast.SwitchClause clause : switched.clauses()) {
+                    allReturn &= definitelyReturns(clause.body());
+                    if (clause.guard() == null
+                            && (clause.pattern() instanceof Ast.WildcardPattern
+                                || clause.pattern() instanceof Ast.BindingPattern)) {
+                        catchAll = true;
+                    }
+                }
+                if (allReturn && catchAll) return true;
+            }
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
@@ -2812,6 +2933,12 @@ public final class TypeChecker {
                 for (Ast.Stmt nested : b.body()) collectCalls(nested, module, out);
             }
             for (Ast.Stmt nested : s.elseBody()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.SwitchStmt s) {
+            collectCalls(s.subject(), module, out);
+            for (Ast.SwitchClause clause : s.clauses()) {
+                if (clause.guard() != null) collectCalls(clause.guard(), module, out);
+                for (Ast.Stmt nested : clause.body()) collectCalls(nested, module, out);
+            }
         } else if (stmt instanceof Ast.TryStmt s) {
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
             for (Ast.Stmt nested : s.catchBody()) collectCalls(nested, module, out);
