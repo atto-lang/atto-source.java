@@ -117,10 +117,11 @@ final class NamespaceAotHardeningTest {
                 define class Foo as
                 end
 
-                fnc build(int count): DynamicStruct<Foo> {
-                  let DynamicStruct<Foo> values = new DynamicStruct<Foo>();
+                fnc build(int count): DynamicStruct<int> {
+                  let DynamicStruct<int> values = new DynamicStruct<int>();
                   for (let i = 0; i < count; i = i + 1) {
-                    values["last"] = new Foo();
+                    val Foo item = new Foo();
+                    values["last"] = i;
                   }
                   return values;
                 }
