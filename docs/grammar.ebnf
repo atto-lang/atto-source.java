@@ -259,14 +259,12 @@ struct_field_terminator = ";" | "," | STRUCT_CLOSING_BOUNDARY | NEXT_NAME_COLON_
      aliases for "is".
    - Traits may contain concrete methods and abstract method
      requirements, but are never directly instantiated and have no object identity.
-     Trait state is flattened into the host class before runtime.
+     Traits contribute behavior only; stored state belongs to classes or structs.
    - Traits are composition units, not runtime types. Trait names are rejected in
      parameter/field/return/alias/generic-argument type positions, and a trait name
      may not collide with a class/interface/type alias in the same module.
-   - Trait fields require initializers and are not positional constructor parameters.
-     Private trait state remains lexical to the defining trait.
-   - Multiple traits that contribute the same field are rejected. Multiple concrete
-     methods with the same name/arity require an explicit class override.
+   - Traits cannot declare fields or stored state. Private trait methods remain lexical to the defining trait.
+   - Multiple concrete trait methods with the same name/arity require an explicit class override.
    - v0 trait composition is module-local so flattening cannot silently change a
      trait method's lexical module environment.
    - "init routine() => void { ... }" is a lifecycle declaration, not an ordinary
