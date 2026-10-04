@@ -637,9 +637,63 @@ fnc find(bool found): Option<int> {
 }
 ```
 
+## Standalone lexical blocks and conditional bodies
+
+A standalone lexical scope is explicit:
+
+```ores
+block {
+  val hidden = "local";
+}
+```
+
+`block { ... }` creates a new lexical scope. Oreslang has no declaration hoisting; bindings declared in the block are not visible after it. The block has no scheduler or concurrency semantics of its own.
+
+Conditionals support two equivalent body styles. Brace form:
+
+```ores
+if condition {
+  work();
+} elseif other_condition {
+  recover();
+} else {
+  fallback();
+}
+```
+
+Keyword-delimited form:
+
+```ores
+if condition then
+  work();
+elseif other_condition then
+  recover();
+else
+  fallback();
+fi
+```
+
+The older `do ... fi` spelling remains accepted for source compatibility, but `then ... fi` is canonical for keyword-delimited conditionals.
+
 ## Loops, iterators, and scheduler safepoints
 
-Oreslang supports conventional imperative loops:
+Oreslang supports an explicit infinite loop:
+
+```ores
+loop {
+  if should_skip() {
+    continue;
+  }
+  if should_stop() {
+    break;
+  }
+  work();
+}
+```
+
+`break` exits the nearest enclosing `loop` or `for`. `continue` starts the next iteration of the nearest enclosing loop. `return` still exits the enclosing callable, even when nested inside one or more loops.
+
+Oreslang also supports conventional imperative loops:
 
 ```ores
 for (let i = 0; i < 10; i = i + 1) {
@@ -665,7 +719,7 @@ define class Bag as
 end
 ```
 
-The compiler/runtime inserts a scheduler safepoint on **every loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
+The compiler/runtime inserts a scheduler safepoint on **every `loop`, conventional `for`, and iterator-loop iteration**. The current runtime hook checks cancellation/interruption and yields execution; it is intentionally centralized so actor supervisor/control-mailbox polling can evolve without changing source syntax. User code does not receive ambient thread-control capability.
 
 This means Oreslang does not require recursion as the only way to loop, while still giving actor/isolate schedulers a compulsory cooperation point inside generated loop execution.
 
