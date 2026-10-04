@@ -282,16 +282,19 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - self is an immutable receiver borrow by default and cannot be rebound.
      "mut self" is the exclusive mutable receiver form.
      contextual "take self" transfers receiver ownership into the method.
-   - Parameters are immutable bindings. Type name is a temporary read borrow;
-     "mut Type name" is an exclusive temporary mutable borrow; contextual
-     "take Type name" transfers ownership to the callee.
-   - Oreslang exposes no pointer/reference borrow syntax: "&T", "&mut T",
+   - Parameters are immutable bindings. Type name is a temporary read reference;
+     "Type mut name" is an exclusive temporary mutable reference; contextual
+     "take Type name" transfers ownership to the callee. "mut Type name" is a
+     migration spelling only.
+   - Oreslang exposes no pointer/reference syntax: "&T", "&mut T", "T*",
      unary "&value", and dereference "*value" are not language forms. STAR is
      multiplication only.
-   - borrow(value), take(value), copy(value), and share(value) are compiler
-     intrinsics expressed as ordinary call syntax rather than pointer operators.
-   - Those intrinsic names are unshadowable in the value/callable namespace even
-     though they are not lexer keywords.
+   - Ownership operations live under the reserved rt namespace. Both command and
+     call forms are valid and equivalent: "rt borrow value"/"rt borrow(value)",
+     "rt take value"/"rt take(value)", "rt copy value"/"rt copy(value)", and
+     "rt share value"/"rt share(value)".
+   - The non-parenthesized rt form has unary precedence; parentheses widen/group
+     the operand when needed. rt is unshadowable compiler syntax.
    - Borrowed values cannot be returned as owned values until an explicit
      provenance contract (planned: T from owner) is implemented.
    - Fnc does not yet encode ownership modes, so callables with mut/take
