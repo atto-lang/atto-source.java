@@ -56,7 +56,7 @@ final class TraitClassInterfaceDelineationTest {
                         "state",
                         Ast.Visibility.PRIVATE,
                         Ast.BindingKind.LET,
-                        new Ast.TypeRef("int", List.of(), false, false),
+                        new Ast.TypeRef("int", List.of(), false),
                         new Ast.LiteralExpr(1))),
                 List.of());
         Ast.Program program = new Ast.Program(List.of(
