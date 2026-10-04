@@ -65,6 +65,7 @@ public final class TypeChecker {
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
                 "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Symbol", "GlobalRef", "SingletonRef",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
@@ -130,6 +131,7 @@ public final class TypeChecker {
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
         for (Ast.ModuleDecl module : program.modules()) {
+            checkModuleStorage(module);
             checkModuleAdherence(module);
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) checkFunction(module.name(), fn);
@@ -139,8 +141,112 @@ public final class TypeChecker {
                     Set<String> aliasGenerics = uniqueGenerics(alias.genericParameters(), "type alias " + alias.name());
                     resolve(alias.target(), aliasGenerics, null);
                 }
-                else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(field);
+                else if (decl instanceof Ast.FieldDecl field) checkModuleBinding(module, field);
             }
+        }
+    }
+
+    private void checkModuleStorage(Ast.ModuleDecl module) {
+        if (module.name().equals(Parser.ROOT_MODULE)
+                && module.storage() != Ast.ModuleStorage.ORDINARY) {
+            throw new IllegalArgumentException(
+                    "root source declarations cannot be global/singleton modules");
+        }
+        if (module.storage() == Ast.ModuleStorage.ORDINARY) return;
+
+        for (Ast.Decl decl : module.declarations()) {
+            if (decl instanceof Ast.FunctionDecl fn && fn.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        module.storage().name().toLowerCase()
+                                + " module '" + module.name()
+                                + "' cannot contain actor fnc/routine entries");
+            }
+            if (decl instanceof Ast.FieldDecl field
+                    && field.bindingKind() == Ast.BindingKind.LET
+                    && field.visibility() == Ast.Visibility.PUBLIC) {
+                throw new IllegalArgumentException(
+                        "mutable field '" + module.name() + "." + field.name()
+                                + "' must be private; expose mutation through serialized module functions");
+            }
+        }
+    }
+
+    private static Ast.Annotation annotation(Ast.FieldDecl field, String name) {
+        Ast.Annotation found = null;
+        for (Ast.Annotation annotation : field.annotations()) {
+            if (!annotation.name().equals(name)) continue;
+            if (found != null) {
+                throw new IllegalArgumentException(
+                        "duplicate @" + name + " on field '" + field.name() + "'");
+            }
+            found = annotation;
+        }
+        return found;
+    }
+
+    private static boolean injectedField(Ast.FieldDecl field) {
+        return annotation(field, "InjectGlobal") != null
+                || annotation(field, "InjectSingleton") != null;
+    }
+
+    private void validateInjectionField(Ast.FieldDecl field) {
+        Ast.Annotation global = annotation(field, "InjectGlobal");
+        Ast.Annotation singleton = annotation(field, "InjectSingleton");
+        if (global == null && singleton == null) return;
+        if (global != null && singleton != null) {
+            throw new IllegalArgumentException(
+                    "field '" + field.name() + "' cannot combine @InjectGlobal and @InjectSingleton");
+        }
+        if (field.visibility() != Ast.Visibility.PRIVATE) {
+            throw new IllegalArgumentException(
+                    "injected capability field '" + field.name() + "' must be private");
+        }
+        if (field.bindingKind() == Ast.BindingKind.LET) {
+            throw new IllegalArgumentException(
+                    "injected capability field '" + field.name() + "' is immutable; use val/const");
+        }
+        if (field.initializer() != null) {
+            throw new IllegalArgumentException(
+                    "injected field '" + field.name() + "' cannot also declare an initializer");
+        }
+        if (field.type() == null) {
+            throw new IllegalArgumentException(
+                    "injected field '" + field.name() + "' requires an explicit capability type");
+        }
+
+        Ast.Annotation selected = global != null ? global : singleton;
+        String wrapper = global != null ? "GlobalRef" : "SingletonRef";
+        Ast.ModuleStorage expectedStorage =
+                global != null ? Ast.ModuleStorage.GLOBAL : Ast.ModuleStorage.SINGLETON;
+
+        if (!field.type().name().equals(wrapper)
+                || field.type().inferArguments()
+                || field.type().arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    "@" + selected.name() + " field '" + field.name()
+                            + "' must have type " + wrapper + "<TargetModule>");
+        }
+
+        Ast.TypeRef targetRef;
+        if (selected.arguments().isEmpty()) {
+            targetRef = field.type().arguments().getFirst();
+        } else {
+            if (selected.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "@" + selected.name() + " accepts exactly one module type argument");
+            }
+            targetRef = selected.arguments().getFirst();
+            if (!targetRef.name().equals(field.type().arguments().getFirst().name())) {
+                throw new IllegalArgumentException(
+                        "@" + selected.name() + " target does not match " + wrapper + " field type");
+            }
+        }
+
+        Ast.ModuleDecl target = modules.get(targetRef.name());
+        if (target == null || target.storage() != expectedStorage) {
+            throw new IllegalArgumentException(
+                    "@" + selected.name() + " target '" + targetRef.name()
+                            + "' must be a " + expectedStorage.name().toLowerCase() + " module");
         }
     }
 
@@ -310,6 +416,7 @@ public final class TypeChecker {
         }
 
         for (Ast.FieldDecl field : klass.fields()) {
+            validateInjectionField(field);
             if (klass.actorKind() != Ast.ActorKind.NONE && field.visibility() == Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
@@ -404,12 +511,40 @@ public final class TypeChecker {
         return env;
     }
 
-    private void checkModuleBinding(Ast.FieldDecl field) {
+    private void checkModuleBinding(Ast.ModuleDecl module, Ast.FieldDecl field) {
+        if (injectedField(field)) {
+            throw new IllegalArgumentException(
+                    "dependency injection annotations are only valid on class/actor fields, not module bindings");
+        }
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
         if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
             throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
+        }
+
+        Ast.Annotation exported = annotation(field, "ExportToUntrusted");
+        if (exported != null) {
+            if (!exported.arguments().isEmpty()) {
+                throw new IllegalArgumentException("@ExportToUntrusted takes no arguments");
+            }
+            if (module.storage() != Ast.ModuleStorage.GLOBAL) {
+                throw new IllegalArgumentException(
+                        "@ExportToUntrusted Symbol declarations must live in a global module");
+            }
+            if (field.bindingKind() != Ast.BindingKind.CONST) {
+                throw new IllegalArgumentException(
+                        "@ExportToUntrusted Symbol declaration must be const");
+            }
+            if (!(field.initializer() instanceof Ast.LiteralExpr literal
+                    && literal.value() instanceof Ast.Symbol)) {
+                throw new IllegalArgumentException(
+                        "@ExportToUntrusted currently requires a static :symbol literal initializer");
+            }
+            if (field.type() != null && !field.type().name().equals("Symbol")) {
+                throw new IllegalArgumentException(
+                        "@ExportToUntrusted field must have type Symbol");
+            }
         }
     }
 
