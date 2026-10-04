@@ -199,6 +199,8 @@ public final class ActorRuntime implements AutoCloseable {
     private final IsolatePolicy policyCeiling;
     private final DispatcherConfig dispatcherConfig;
     private final TurnExecutor turnExecutor;
+    private final HotReloadManager hotReloadManager;
+    private final String hotReloadCodeUnitId;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
     private final ExecutorService privateDispatcher;
     private final ExecutorService sharedDispatcher;
@@ -232,9 +234,33 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             DispatcherConfig dispatcherConfig,
             TurnExecutor turnExecutor) {
+        this(policyCeiling, dispatcherConfig, turnExecutor, null, null);
+    }
+
+    /**
+     * Creates an actor runtime whose supervisor spawns are pinned to the active
+     * hot-load generation for {@code hotReloadCodeUnitId}. Actor-to-actor spawns
+     * inherit the parent's exact generation lease, including while that
+     * generation is draining.
+     */
+    public ActorRuntime(
+            IsolatePolicy policyCeiling,
+            DispatcherConfig dispatcherConfig,
+            TurnExecutor turnExecutor,
+            HotReloadManager hotReloadManager,
+            String hotReloadCodeUnitId) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
         this.turnExecutor = Objects.requireNonNull(turnExecutor);
+        if ((hotReloadManager == null) != (hotReloadCodeUnitId == null)) {
+            throw new IllegalArgumentException(
+                    "hotReloadManager and hotReloadCodeUnitId must either both be set or both be null");
+        }
+        if (hotReloadCodeUnitId != null && hotReloadCodeUnitId.isBlank()) {
+            throw new IllegalArgumentException("hotReloadCodeUnitId cannot be blank");
+        }
+        this.hotReloadManager = hotReloadManager;
+        this.hotReloadCodeUnitId = hotReloadCodeUnitId;
         this.privateDispatcher = newDispatcher(
                 dispatcherConfig.privateParallelism(),
                 dispatcherConfig.maxActors(),
@@ -1041,6 +1067,15 @@ public final class ActorRuntime implements AutoCloseable {
         return spawnInternal(kind, policy, behaviorFactory, false);
     }
 
+    private HotReloadManager.GenerationLease acquireGenerationLeaseForSpawn() {
+        ActorCell<?> parent = currentActor.get();
+        if (parent != null && parent.generationLease != null) {
+            return parent.generationLease.retain();
+        }
+        if (hotReloadManager == null) return null;
+        return hotReloadManager.pinActive(hotReloadCodeUnitId);
+    }
+
     private <M> ActorRef<M> spawnInternal(
             ActorKind kind,
             IsolatePolicy policy,
@@ -1071,12 +1106,15 @@ public final class ActorRuntime implements AutoCloseable {
 
             ActorId id = ActorId.create();
             ActorRef<M> ref = new ActorRef<>(id, kind);
+            HotReloadManager.GenerationLease generationLease = null;
             try {
+                generationLease = acquireGenerationLeaseForSpawn();
                 ActorCell<M> cell = new ActorCell<>(
-                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory);
+                    ref, kind, effectivePolicy, behaviorFactory, trustedFactory, generationLease);
                 actors.put(id, cell);
                 return ref;
             } catch (RuntimeException | Error failure) {
+                if (generationLease != null) generationLease.close();
                 actorCount.decrementAndGet();
                 throw failure;
             }
@@ -2520,6 +2558,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
+        private final HotReloadManager.GenerationLease generationLease;
         private final BlockingQueue<MessageEnvelope> mailbox;
         private final ActorMemorySlice memorySlice;
         private final AtomicBoolean scheduled = new AtomicBoolean();
@@ -2537,12 +2576,14 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorKind kind,
                 IsolatePolicy policy,
                 BehaviorFactory<M> behaviorFactory,
-                boolean trustedFactory) {
+                boolean trustedFactory,
+                HotReloadManager.GenerationLease generationLease) {
             this.ref = ref;
             this.kind = kind;
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
+            this.generationLease = generationLease;
             this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
             this.memorySlice = kind == ActorKind.PRIVATE
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
@@ -2591,15 +2632,19 @@ public final class ActorRuntime implements AutoCloseable {
             drainMailboxReservations();
             if (memorySlice != null) memorySlice.close();
             try {
-                actorExitHook.accept(executionDomain);
-            } catch (VirtualMachineError | ThreadDeath fatal) {
-                throw fatal;
-            } catch (Throwable ignored) {
-                // Actor termination must still complete. Runtime cleanup hooks
-                // are best-effort and retryable by the process collector.
+                try {
+                    actorExitHook.accept(executionDomain);
+                } catch (VirtualMachineError | ThreadDeath fatal) {
+                    throw fatal;
+                } catch (Throwable ignored) {
+                    // Actor termination must still complete. Runtime cleanup hooks
+                    // are best-effort and retryable by the process collector.
+                }
+            } finally {
+                if (generationLease != null) generationLease.close();
+                unregisterActor(this);
+                lifecycleLock.notifyAll();
             }
-            unregisterActor(this);
-            lifecycleLock.notifyAll();
         }
 
         private boolean finalized() {
