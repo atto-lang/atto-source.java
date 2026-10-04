@@ -123,7 +123,9 @@ public final class OresEvalRootNode extends RootNode {
                 if (imported.wildcard()) {
                     namespaceImports.put(imported.namespace(), imported);
                 } else {
-                    for (String name : imported.names()) namedImports.put(name, imported);
+                    for (String importedName : imported.names()) {
+                        namedImports.put(imported.localName(importedName), imported);
+                    }
                 }
             }
         }
@@ -194,16 +196,50 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object spawnFunction(Ast.CallExpr call, Env env) {
-            Ast.FunctionDecl fn;
+            Ast.FunctionDecl fn = null;
+            Ast.ClassDecl klass = null;
+            Evaluator owner = this;
+
             if (call.callee() instanceof Ast.NameExpr name) {
                 fn = findFunction(name.name());
+                klass = findClass(name.name());
+                if (fn == null && klass == null) {
+                    Object imported = importedValue(name.name());
+                    if (imported instanceof ClassFacade externalClass) {
+                        owner = externalClass.owner();
+                        klass = externalClass.klass();
+                    }
+                }
             } else if (call.callee() instanceof Ast.MemberExpr member
                     && member.receiver() instanceof Ast.NameExpr namespace) {
                 fn = functions.get(namespace.name() + "." + member.member());
+                klass = classes.get(namespace.name() + "." + member.member());
+                if (fn == null && klass == null) {
+                    Object candidate = eval(call.callee(), env);
+                    if (candidate instanceof ClassFacade externalClass) {
+                        owner = externalClass.owner();
+                        klass = externalClass.klass();
+                    }
+                }
             } else {
                 throw new IllegalArgumentException(
-                        "spawn requires a direct actor fnc/routine call");
+                        "spawn requires a direct actor class or actor fnc/routine call");
             }
+
+            if (fn != null && klass != null) {
+                throw new IllegalArgumentException("spawn target is ambiguous between actor class and actor callable");
+            }
+
+            List<Object> evaluated = call.arguments().stream().map(arg -> eval(arg, env)).toList();
+
+            if (klass != null) {
+                if (klass.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "spawn target class '" + klass.name() + "' is not an actor class");
+                }
+                return owner.spawnActorClass(klass, evaluated);
+            }
+
             if (fn == null) throw new IllegalArgumentException("unknown spawn target");
             if (fn.actorKind() == Ast.ActorKind.NONE) {
                 throw new IllegalArgumentException(
@@ -215,16 +251,47 @@ public final class OresEvalRootNode extends RootNode {
                 case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
                 case SHARED -> ActorRuntime.ActorKind.SHARED;
                 case UNTRUSTED -> throw new SecurityException(
-                        "untrusted actor callables require GraalWasm sandbox lowering; "
+                        "untrusted actor callables require isolation-aware lowering; "
                                 + "the ordinary JVM interpreter must not execute hostile guest code");
             };
 
-            List<Object> evaluated = call.arguments().stream().map(arg -> eval(arg, env)).toList();
             List<?> normalized = normalizeFunctionArguments(fn, evaluated);
             return context.actors().spawnInvocation(
                     runtimeKind,
                     normalized,
                     (delivered, actorContext) -> callFunctionBody(fn, delivered));
+        }
+
+        private ActorRuntime.ActorRef<Object> spawnActorClass(
+                Ast.ClassDecl klass,
+                List<Object> constructorArguments) {
+            if (klass.actorKind() != Ast.ActorKind.SHARED) {
+                throw new SecurityException(
+                        "the reference evaluator executes only SHARED source actor classes; "
+                                + klass.actorKind()
+                                + " actor classes require their isolation-aware OresVM lowering");
+            }
+
+            List<Object> prepared = constructorArguments.stream()
+                    .map(context.actors()::prepareSourceSharedActorInput)
+                    .toList();
+
+            Ast.MethodDecl receive = findMethod(
+                    klass,
+                    "receive",
+                    1,
+                    new LinkedHashSet<>());
+            if (receive == null || receive.visibility() != Ast.Visibility.PUBLIC) {
+                throw new IllegalStateException(
+                        "actor class '" + klass.name()
+                                + "' has no public receive(message) method");
+            }
+
+            return context.actors().spawnSourceSharedActor(actorContext -> {
+                OresObject actor = instantiateActorState(klass, prepared);
+                return (message, turnContext) ->
+                        callMethod(actor, receive, List.of(message));
+            });
         }
 
         private List<?> normalizeFunctionArguments(Ast.FunctionDecl fn, List<?> args) {
@@ -671,6 +738,16 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "ActorRef.is_alive");
                         return ref.isAlive();
                     };
+                    case "send" -> (Invokable) args -> {
+                        requireOne(args, "ActorRef.send");
+                        @SuppressWarnings("unchecked")
+                        ActorRuntime.ActorRef<Object> typed =
+                                (ActorRuntime.ActorRef<Object>) ref;
+                        typed.send(args.getFirst());
+                        return null;
+                    };
+                    case "receive" -> throw new IllegalArgumentException(
+                            "actor receive(message) is runtime-owned; use ActorRef.send(message)");
                     default -> throw new IllegalArgumentException("unknown ActorRef member " + name);
                 };
             }
@@ -737,7 +814,15 @@ public final class OresEvalRootNode extends RootNode {
                 throw new IllegalArgumentException("unknown static member " + klass.klass().name() + "." + name);
             }
             if (receiver instanceof OresObject object) {
-                if (object.fields.containsKey(name)) return object.fields.get(name);
+                if (object.fields.containsKey(name)) {
+                    Object value = object.fields.get(name);
+                    if (value == UninitializedActorField.INSTANCE) {
+                        throw new IllegalStateException(
+                                "actor/class field '" + object.klass.name() + "." + name
+                                        + "' was read before initialization");
+                    }
+                    return value;
+                }
                 if (hasInstanceMethodNamed(object.klass, name, new LinkedHashSet<>())) {
                     throw new IllegalArgumentException(
                             "instance method '" + object.klass.name() + "." + name
@@ -907,7 +992,14 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object importedValue(String name) {
             Ast.ImportDecl direct = namedImports.get(name);
-            if (direct != null) return importedTarget(direct).exportValue(direct.kind(), name);
+            if (direct != null) {
+                String importedName = direct.importedName(name);
+                if (importedName == null) {
+                    throw new IllegalStateException(
+                            "import alias table has no source name for local binding '" + name + "'");
+                }
+                return importedTarget(direct).exportValue(direct.kind(), importedName);
+            }
             Ast.ImportDecl namespace = namespaceImports.get(name);
             if (namespace != null) return new ImportedNamespace(importedTarget(namespace), namespace.kind());
             return Env.MISSING;
@@ -944,22 +1036,62 @@ public final class OresEvalRootNode extends RootNode {
                 case FUNCTION -> {
                     Ast.FunctionDecl fn = findFunction(name);
                     if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
-                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export function '" + name + "'");
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId
+                                        + "' does not export function '" + name + "'");
                     }
                     yield (Invokable) args -> callFunction(fn, args);
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
-                    if (klass == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export class '" + name + "'");
+                    if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId
+                                        + "' does not export ordinary class '" + name + "'");
+                    }
+                    yield new ClassFacade(this, klass);
+                }
+                case ACTOR -> {
+                    Ast.ClassDecl klass = findClass(name);
+                    if (klass == null || klass.actorKind() == Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId
+                                        + "' does not export actor class '" + name + "'");
+                    }
                     yield new ClassFacade(this, klass);
                 }
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
-                    if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId
+                                        + "' does not export named module '" + name + "'");
+                    }
                     yield new ModuleFacade(this, module);
                 }
+                case ENTRY -> exportEntry();
                 case ALL -> exportAny(name);
             };
+        }
+
+        private Object exportEntry() {
+            Ast.EntryExportDecl entry = null;
+            for (Ast.ModuleDecl module : program.modules()) {
+                for (Ast.Decl decl : module.declarations()) {
+                    if (!(decl instanceof Ast.EntryExportDecl candidate)) continue;
+                    if (entry != null) {
+                        throw new IllegalStateException(
+                                "code unit '" + codeUnitId
+                                        + "' has multiple entry exports");
+                    }
+                    entry = candidate;
+                }
+            }
+            if (entry == null) {
+                throw new IllegalArgumentException(
+                        "code unit '" + codeUnitId + "' has no 'export entry'");
+            }
+            return exportAny(entry.name());
         }
 
         private Object exportAny(String name) {
@@ -1000,6 +1132,56 @@ public final class OresEvalRootNode extends RootNode {
                 fields.put(field.name(), value);
             }
             return new OresObject(this, klass, fields);
+        }
+
+        private OresObject instantiateActorState(
+                Ast.ClassDecl klass,
+                List<Object> constructorArguments) {
+            if (klass.actorKind() == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "instantiateActorState requires an actor class");
+            }
+
+            List<Ast.FieldDecl> classFields =
+                    effectiveFields(klass, new LinkedHashSet<>());
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : classFields) {
+                fields.put(field.name(), UninitializedActorField.INSTANCE);
+            }
+
+            OresObject actor = new OresObject(this, klass, fields);
+            Env initializerEnv = new Env(null);
+            initializerEnv.define("self", actor, Ast.BindingKind.VAL);
+            for (Ast.FieldDecl field : classFields) {
+                if (field.initializer() != null) {
+                    fields.put(field.name(), eval(field.initializer(), initializerEnv));
+                }
+            }
+
+            Ast.MethodDecl constructor = findMethod(
+                    klass,
+                    "constructor",
+                    constructorArguments.size(),
+                    new LinkedHashSet<>());
+            if (constructor == null) {
+                if (!constructorArguments.isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "actor class '" + klass.name()
+                                    + "' has no constructor with arity "
+                                    + constructorArguments.size());
+                }
+            } else {
+                callMethod(actor, constructor, constructorArguments);
+            }
+
+            for (Map.Entry<String, Object> field : fields.entrySet()) {
+                if (field.getValue() == UninitializedActorField.INSTANCE) {
+                    throw new IllegalStateException(
+                            "actor field '" + klass.name() + "." + field.getKey()
+                                    + "' was not initialized by a field initializer or constructor");
+                }
+            }
+            return actor;
         }
 
         private static String normalizeUnitId(String id) {
@@ -1452,6 +1634,8 @@ public final class OresEvalRootNode extends RootNode {
         private Complex div(Complex o){double d=o.real*o.real+o.imaginary*o.imaginary;return new Complex((real*o.real+imaginary*o.imaginary)/d,(imaginary*o.real-real*o.imaginary)/d);}
         @Override public String toString(){return real+(imaginary<0?"":"+")+imaginary+"i";}
     }
+
+    private enum UninitializedActorField { INSTANCE }
 
     private static final class OresObject implements OresMutex.SharedState {
         private final Evaluator owner;
