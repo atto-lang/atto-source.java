@@ -186,6 +186,25 @@ final class GpuKeywordTest {
     }
 
     @Test
+    void gpuCapabilityCannotBeHiddenBehindTypeAliases() {
+        String source = """
+                type DeviceInts = GpuArray<int>;
+
+                pub routine main() => void {
+                  let DeviceInts device = GpuArray.from_cpu(arr[1, 2, 3]);
+                  return;
+                }
+                """;
+
+        assertThrows(SecurityException.class,
+                () -> OresCompiler.validateForIsolate(source, IsolatePolicy.strictFaas()));
+
+        assertDoesNotThrow(() -> OresCompiler.validateForIsolate(
+                source,
+                IsolatePolicy.strictFaas().withCapabilities(IsolatePolicy.Capability.GPU)));
+    }
+
+    @Test
     void coreGpuResourcesRequireGpuCapabilityAtAdmission() {
         String source = """
                 pub routine main() => void {
