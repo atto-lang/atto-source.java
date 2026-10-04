@@ -280,7 +280,7 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      Some(binding) arm and one None arm. There is no unchecked unwrap form.
    - Option<T> is Copy iff T is Copy. Some(value) owns its payload; a non-Copy
      payload is moved into the option. match borrows by default, match rt take(...)
-     consumes, and match copy(...) requires a proven Copy option.
+     consumes, and match rt copy(...) requires a proven Copy option.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" and "take" are contextual in parameter position, not globally reserved.
    - self is an immutable receiver borrow by default and cannot be rebound.
