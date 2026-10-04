@@ -119,7 +119,15 @@ public final class TypeChecker {
             if (namespaces.putIfAbsent(namespace.name(), namespace) != null) {
                 throw new IllegalArgumentException("duplicate namespace '" + namespace.name() + "'");
             }
+            Set<String> namespaceTypeNames = new HashSet<>();
             for (Ast.Decl decl : namespace.declarations()) {
+                String typeName = decl instanceof Ast.InterfaceDecl iface ? iface.name()
+                        : decl instanceof Ast.TypeAliasDecl alias ? alias.name()
+                        : null;
+                if (typeName != null && !namespaceTypeNames.add(typeName)) {
+                    throw new IllegalArgumentException(
+                            "duplicate type name '" + namespace.name() + "." + typeName + "' in namespace");
+                }
                 if (decl instanceof Ast.InterfaceDecl iface) {
                     putQualified(interfaces, ambiguousInterfaces, namespace.name(), iface.name(), iface, "interface");
                     interfaceOwners.put(iface, namespace.name());
