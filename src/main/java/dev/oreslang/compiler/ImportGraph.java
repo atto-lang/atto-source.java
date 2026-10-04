@@ -129,9 +129,9 @@ final class ImportGraph {
     }
 
     /**
-     * Dependency-first SCC order. Members inside one SCC are lexicographically
-     * ordered so init order is deterministic even though the cycle itself does
-     * not define an order.
+     * Dependency-first SCC/link order. Members inside one SCC are
+     * lexicographically ordered only so build/link planning is deterministic.
+     * Linking is inert and never invokes user init hooks.
      */
     static List<List<String>> initializationGroups(Map<String, Set<String>> dependencies) {
         if (dependencies.isEmpty()) return List.of();
