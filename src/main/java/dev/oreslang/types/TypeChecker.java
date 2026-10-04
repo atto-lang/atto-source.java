@@ -463,20 +463,6 @@ public final class TypeChecker {
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
-        if (stmt instanceof Ast.YieldStmt yielded) {
-            if (currentGenerator == null) {
-                throw new IllegalArgumentException(
-                        "yield is only legal inside a callable declared to return Generator<...>");
-            }
-            Type actual = typeOfAgainstExpected(
-                    yielded.value(),
-                    currentGenerator.yielded(),
-                    env,
-                    generics,
-                    self);
-            requireAssignable(actual, currentGenerator.yielded(), "yield value");
-            return;
-        }
         if (stmt instanceof Ast.ExprStmt expression) { typeOf(expression.expression(), env, generics, self); return; }
         if (stmt instanceof Ast.DeferStmt defer) { typeOf(defer.expression(), env, generics, self); return; }
         if (stmt instanceof Ast.IfStmt conditional) {
@@ -1009,6 +995,22 @@ public final class TypeChecker {
             }
             return Unknown.INSTANCE;
         }
+        if (expr instanceof Ast.YieldExpr yielded) {
+            if (currentGenerator == null) {
+                throw new IllegalArgumentException(
+                        "yield is only legal inside a callable declared to return Generator<...>");
+            }
+            Type actual = typeOfAgainstExpected(
+                    yielded.expression(),
+                    currentGenerator.yielded(),
+                    env,
+                    generics,
+                    self);
+            requireAssignable(actual, currentGenerator.yielded(), "yield value");
+            // The value produced by generator.next(value) becomes the result of
+            // the suspended yield expression when the frame resumes.
+            return currentGenerator.sent();
+        }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
             Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
@@ -1323,6 +1325,7 @@ public final class TypeChecker {
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
+                || named.name().equals("Generator")
                 || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
@@ -1578,6 +1581,9 @@ public final class TypeChecker {
             return result;
         }
         if (iterable instanceof Named named) {
+            if (named.name().equals("Generator") && named.arguments().size() == 3) {
+                return named.arguments().getFirst();
+            }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
                 ResolvedMethod iteratorTarget = findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
@@ -1593,7 +1599,7 @@ public final class TypeChecker {
                 }
             }
         }
-        throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
+        throw new IllegalArgumentException("for-of requires an array/list, tuple, Generator<T,...>, or a class with [Symbol.iterator]()");
     }
 
     private Type widenCollectionElement(Type type) {
@@ -1974,8 +1980,6 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
-            } else if (statement instanceof Ast.YieldStmt yielded) {
-                rejectStaticClassGenericReferences(yielded.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ExprStmt expression) {
                 rejectStaticClassGenericReferences(expression.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DeferStmt defer) {
@@ -2042,6 +2046,8 @@ public final class TypeChecker {
             }
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.YieldExpr yielded) {
+            rejectStaticClassGenericReferences(yielded.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.SpawnExpr spawned) {
             rejectStaticClassGenericReferences(spawned.call(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ListExpr list) {
@@ -2658,7 +2664,6 @@ public final class TypeChecker {
         if (stmt instanceof Ast.BindingStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.DestructureStmt s) collectCalls(s.initializer(), module, out);
         else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
-        else if (stmt instanceof Ast.YieldStmt s) collectCalls(s.value(), module, out);
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.IfStmt s) {
@@ -2698,6 +2703,7 @@ public final class TypeChecker {
         else if (expr instanceof Ast.IndexExpr e) { collectCalls(e.receiver(), module, out); collectCalls(e.index(), module, out); }
         else if (expr instanceof Ast.NewExpr e) for (Ast.Expr arg : e.arguments()) collectCalls(arg, module, out);
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
+        else if (expr instanceof Ast.YieldExpr e) collectCalls(e.expression(), module, out);
         else if (expr instanceof Ast.SpawnExpr e) collectCalls(e.call(), module, out);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
