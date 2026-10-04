@@ -354,6 +354,49 @@ final class CallableLocalTypeTest {
                 """)));
     }
 
+
+    @Test
+    void outerSignatureTypeIsNotSilentlyReboundByShadowingInnerStruct() {
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module app as
+                          struct R { foo: string }
+
+                          pub fnc foo() => R {
+                            struct R { bar: string }
+                            return R { bar = "bar" };
+                          }
+                        end
+                        """)));
+
+        assertTrue(error.getMessage().contains("return"));
+    }
+
+    @Test
+    void nestedInterfacesShadowLexicallyAndRestoreTheOuterContract() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app as
+                  interface R {
+                    fnc outer() => string;
+                  }
+
+                  pub fnc use() => void {
+                    interface R {
+                      fnc inner() => string;
+                    }
+
+                    struct Inner is R {
+                      pub inner() => string { return "inner"; }
+                    }
+
+                    val R value = Inner {};
+                    value.inner();
+                    return;
+                  }
+                end
+                """)));
+    }
+
     @Test
     void nestedBlocksCanShadowLocalTypesWithoutChangingTheOuterBinding() throws Exception {
         String output = runProgram("""
