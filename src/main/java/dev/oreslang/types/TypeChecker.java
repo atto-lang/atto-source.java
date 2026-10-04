@@ -321,7 +321,9 @@ public final class TypeChecker {
             } else {
                 Ast.InterfaceFieldDecl field = (Ast.InterfaceFieldDecl) member;
                 if (!memberKeys.add(field.name())) throw new IllegalArgumentException("duplicate interface member '" + iface.name() + "." + field.name() + "'");
-                resolve(field.type(), generics, null);
+                requireValueType(
+                        resolve(field.type(), generics, null),
+                        "interface field " + iface.name() + "." + field.name());
             }
         }
     }
@@ -432,9 +434,13 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("actor state field '" + klass.name() + "." + field.name()
                         + "' cannot be public; expose state through mailbox-dispatched methods");
             }
-            Type fieldType = classFieldType(klass, field);
+            Type fieldType = requireValueType(
+                    classFieldType(klass, field),
+                    "field " + klass.name() + "." + field.name());
             if (field.initializer() != null && field.type() != null) {
-                Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                Type actual = requireValueType(
+                        typeOf(field.initializer(), new Env(null), classGenerics, self),
+                        "field initializer " + klass.name() + "." + field.name());
                 requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
             }
             if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
@@ -514,9 +520,11 @@ public final class TypeChecker {
         if (module == null) return env;
         for (Ast.Decl declaration : module.declarations()) {
             if (!(declaration instanceof Ast.FieldDecl field) || field.initializer() == null) continue;
-            Type type = field.type() == null
-                    ? typeOf(field.initializer(), env, Set.of(), null)
-                    : resolve(field.type(), Set.of(), null);
+            Type type = requireValueType(
+                    field.type() == null
+                            ? typeOf(field.initializer(), env, Set.of(), null)
+                            : resolve(field.type(), Set.of(), null),
+                    "module binding " + module.name() + "." + field.name());
             env.define(field.name(), type, field.bindingKind());
         }
         return env;
@@ -536,8 +544,15 @@ public final class TypeChecker {
                     "dependency injection annotations are only valid on class/actor fields, not module bindings");
         }
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
-        Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
-        if (field.type() != null) requireAssignable(actual, resolve(field.type(), Set.of(), null), "initializer for " + field.name());
+        Type actual = requireValueType(
+                typeOf(field.initializer(), new Env(null), Set.of(), null),
+                "initializer for " + module.name() + "." + field.name());
+        if (field.type() != null) {
+            Type declared = requireValueType(
+                    resolve(field.type(), Set.of(), null),
+                    "module binding " + module.name() + "." + field.name());
+            requireAssignable(actual, declared, "initializer for " + field.name());
+        }
         if (field.bindingKind() == Ast.BindingKind.CONST && !constant(field.initializer())) {
             throw new IllegalArgumentException("const '" + field.name() + "' needs a compile-time constant initializer");
         }
@@ -1011,18 +1026,26 @@ public final class TypeChecker {
                 }
                 where = "index";
             } else throw new IllegalArgumentException("unsupported assignment target");
-            Type value = typeOf(assignment.value(), env, generics, self);
+            Type value = requireValueType(
+                    typeOf(assignment.value(), env, generics, self),
+                    "assignment to " + where);
             requireAssignable(value, targetType, "assignment to " + where);
             return targetType;
         }
         if (expr instanceof Ast.ConditionalExpr conditional) {
             requireAssignable(typeOf(conditional.condition(), env, generics, self), Primitive.BOOL, "ternary condition");
-            Type left = typeOf(conditional.whenTrue(), env, generics, self);
-            Type right = typeOf(conditional.whenFalse(), env, generics, self);
+            Type left = requireValueType(
+                    typeOf(conditional.whenTrue(), env, generics, self),
+                    "ternary true branch");
+            Type right = requireValueType(
+                    typeOf(conditional.whenFalse(), env, generics, self),
+                    "ternary false branch");
             return commonType(left, right);
         }
         if (expr instanceof Ast.UnaryExpr unary) {
-            Type operand = typeOf(unary.operand(), env, generics, self);
+            Type operand = requireValueType(
+                    typeOf(unary.operand(), env, generics, self),
+                    "unary operand");
             if (unary.operator().equals("&")) return new Borrow(operand, false);
             if (unary.operator().equals("&mut")) return new Borrow(operand, true);
             if (unary.operator().equals("!")) {
@@ -1037,8 +1060,12 @@ public final class TypeChecker {
             return operand;
         }
         if (expr instanceof Ast.BinaryExpr binary) {
-            Type left = typeOf(binary.left(), env, generics, self);
-            Type right = typeOf(binary.right(), env, generics, self);
+            Type left = requireValueType(
+                    typeOf(binary.left(), env, generics, self),
+                    "binary left operand");
+            Type right = requireValueType(
+                    typeOf(binary.right(), env, generics, self),
+                    "binary right operand");
             return switch (binary.operator()) {
                 case "&&", "||", "^^" -> {
                     requireAssignable(left, Primitive.BOOL, "logical operand");
@@ -1121,7 +1148,9 @@ public final class TypeChecker {
                     && factoryCall.member().equals("new")) {
                 if (call.typeArgumentsPresent()) throw new IllegalArgumentException(factory.name() + ".new does not accept call-site type arguments");
                 if (call.arguments().size() != 1) throw new IllegalArgumentException(factory.name() + ".new expects exactly one value");
-                Type element = typeOf(call.arguments().getFirst(), env, generics, self);
+                Type element = requireValueType(
+                        typeOf(call.arguments().getFirst(), env, generics, self),
+                        factory.name() + ".new payload");
                 if (element instanceof Borrow) {
                     throw new IllegalArgumentException(
                             factory.name() + "<T> requires owned data; borrowed values cannot become mutex state");
@@ -1258,12 +1287,24 @@ public final class TypeChecker {
             if (call.typeArgumentsPresent()) {
                 throw new IllegalArgumentException("call-site type arguments require a declared generic function or method");
             }
-            Type callee = typeOf(call.callee(), env, generics, self);
-            if (!(callee instanceof Function fn)) return Unknown.INSTANCE;
+            Type callee = requireValueType(
+                    typeOf(call.callee(), env, generics, self),
+                    "call target");
+            if (!(callee instanceof Function fn)) {
+                for (int i = 0; i < call.arguments().size(); i++) {
+                    requireValueType(
+                            typeOf(call.arguments().get(i), env, generics, self),
+                            "argument " + (i + 1));
+                }
+                return Unknown.INSTANCE;
+            }
             if (fn.parameters().size() != call.arguments().size()) throw new IllegalArgumentException("call arity mismatch");
             for (int i = 0; i < fn.parameters().size(); i++) {
                 validateLambdaArgument(call.arguments().get(i), fn.parameters().get(i), env, generics, self);
-                requireAssignable(typeOf(call.arguments().get(i), env, generics, self), fn.parameters().get(i), "argument " + (i + 1));
+                Type actual = requireValueType(
+                        typeOf(call.arguments().get(i), env, generics, self),
+                        "argument " + (i + 1));
+                requireAssignable(actual, fn.parameters().get(i), "argument " + (i + 1));
             }
             return fn.result();
         }
@@ -1466,9 +1507,13 @@ public final class TypeChecker {
                 if (injectedField(field)) continue;
                 if (argumentIndex < created.arguments().size()) {
                     Type fieldPattern = classFieldType(resolvedField.owner(), field);
-                    Type expected = substituteGenerics(fieldPattern, classGenericBindings(resolvedField.owner(), resolvedField.ownerType()));
-                    requireAssignable(typeOf(created.arguments().get(argumentIndex), env, generics, self),
-                            expected, "constructor field " + field.name());
+                    Type expected = requireValueType(
+                            substituteGenerics(fieldPattern, classGenericBindings(resolvedField.owner(), resolvedField.ownerType())),
+                            "constructor field " + field.name());
+                    Type actual = requireValueType(
+                            typeOf(created.arguments().get(argumentIndex), env, generics, self),
+                            "constructor field " + field.name());
+                    requireAssignable(actual, expected, "constructor field " + field.name());
                     argumentIndex++;
                 } else if (field.initializer() == null) {
                     throw new IllegalArgumentException("constructor for " + klass.name() + " is missing field '" + field.name() + "'");
@@ -1483,21 +1528,34 @@ public final class TypeChecker {
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
-            Type element = widenCollectionElement(typeOf(list.elements().getFirst(), env, generics, self));
+            Type element = widenCollectionElement(requireValueType(
+                    typeOf(list.elements().getFirst(), env, generics, self),
+                    "list element 1"));
             for (int i = 1; i < list.elements().size(); i++) {
-                element = collectionElementJoin(element, widenCollectionElement(typeOf(list.elements().get(i), env, generics, self)));
+                Type next = requireValueType(
+                        typeOf(list.elements().get(i), env, generics, self),
+                        "list element " + (i + 1));
+                element = collectionElementJoin(element, widenCollectionElement(next));
             }
             return new ListType(element);
         }
         if (expr instanceof Ast.TupleExpr tuple) {
-            return new Tuple(tuple.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
+            List<Type> elements = new ArrayList<>(tuple.elements().size());
+            for (int i = 0; i < tuple.elements().size(); i++) {
+                elements.add(requireValueType(
+                        typeOf(tuple.elements().get(i), env, generics, self),
+                        "tuple element " + (i + 1)));
+            }
+            return new Tuple(elements);
         }
         if (expr instanceof Ast.ObjectExpr object) {
             Map<String, Type> members = new LinkedHashMap<>();
             boolean dynamicKeys = false;
             Type dynamicValue = null;
             for (Ast.ObjectField field : object.fields()) {
-                Type exactValueType = typeOf(field.value(), env, generics, self);
+                Type exactValueType = requireValueType(
+                        typeOf(field.value(), env, generics, self),
+                        "object field " + (field.isDynamic() ? "<dynamic>" : field.name()));
                 Type dynamicValueType = widenCollectionElement(exactValueType);
                 dynamicValue = dynamicValue == null
                         ? dynamicValueType
@@ -2024,6 +2082,26 @@ public final class TypeChecker {
         return Unknown.INSTANCE;
     }
 
+    private Type requireValueType(Type type, String where) {
+        if (containsVoidData(type)) {
+            throw new IllegalArgumentException(
+                    where + " cannot use void as a value type; use Option<T> for absence");
+        }
+        return type;
+    }
+
+    private boolean containsVoidData(Type type) {
+        if (type == Primitive.VOID) return true;
+        if (type instanceof Function) return false; // a callable returning void is still a real value
+        if (type instanceof Borrow borrow) return containsVoidData(borrow.target());
+        if (type instanceof ListType list) return containsVoidData(list.element());
+        if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsVoidData);
+        if (type instanceof Union union) return union.options().stream().anyMatch(this::containsVoidData);
+        if (type instanceof Record record) return record.members().values().stream().anyMatch(this::containsVoidData);
+        if (type instanceof Named named) return named.arguments().stream().anyMatch(this::containsVoidData);
+        return false;
+    }
+
     private void requireInteger(Type type, String where) {
         if (type != Primitive.INT) throw new IllegalArgumentException(where + " must be an integer type");
     }
@@ -2362,21 +2440,29 @@ public final class TypeChecker {
     }
 
     private Type resolveParam(Ast.Param param, Set<String> generics, Type self) {
-        if (!param.structural()) return resolve(param.type(), generics, self);
-        Type concrete = resolve(param.type(), generics, self);
-        Ast.InterfaceDecl iface = findInterface(param.type().name());
-        if (iface != null) {
-            if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural interface must resolve to a named type");
-            Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
-            return substituteGenerics(shape, genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+        Type resolved;
+        if (!param.structural()) {
+            resolved = resolve(param.type(), generics, self);
+        } else {
+            Type concrete = resolve(param.type(), generics, self);
+            Ast.InterfaceDecl iface = findInterface(param.type().name());
+            if (iface != null) {
+                if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural interface must resolve to a named type");
+                Type shape = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+                resolved = substituteGenerics(shape, genericBindings(iface.genericParameters(), named.arguments(), "interface " + iface.name()));
+            } else {
+                Ast.ClassDecl klass = findClass(param.type().name());
+                if (klass == null) {
+                    throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
+                }
+                if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural class must resolve to a named type");
+                Type shape = publicClassShape(klass, new LinkedHashSet<>());
+                resolved = substituteGenerics(shape, classGenericBindings(klass, named));
+            }
         }
-        Ast.ClassDecl klass = findClass(param.type().name());
-        if (klass != null) {
-            if (!(concrete instanceof Named named)) throw new IllegalArgumentException("@Structural class must resolve to a named type");
-            Type shape = publicClassShape(klass, new LinkedHashSet<>());
-            return substituteGenerics(shape, classGenericBindings(klass, named));
-        }
-        throw new IllegalArgumentException("@Structural requires a known class or interface type, got '" + param.type().name() + "'");
+        return requireValueType(
+                resolved,
+                "parameter '" + param.name() + "'");
     }
 
     private void rejectStaticClassGenericReferences(
@@ -2609,7 +2695,9 @@ public final class TypeChecker {
         List<Type> patterns = params.stream().map(p -> resolveParam(p, unique, callableSelf)).toList();
 
         for (int i = 0; i < arguments.size(); i++) {
-            Type actual = typeOf(arguments.get(i), env, callerGenerics, callerSelf);
+            Type actual = requireValueType(
+                    typeOf(arguments.get(i), env, callerGenerics, callerSelf),
+                    "argument " + (i + 1) + " to " + label);
             inferGenericBindings(patterns.get(i), actual, bindings, fixedBindings, label);
         }
         Set<String> unbound = new HashSet<>(unique);
@@ -2621,7 +2709,10 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("cannot infer all generic parameters for " + label + " from argument " + (i + 1));
             }
             validateLambdaArgument(arguments.get(i), expected, env, callerGenerics, callerSelf);
-            requireAssignable(typeOf(arguments.get(i), env, callerGenerics, callerSelf), expected, "argument " + (i + 1));
+            Type actual = requireValueType(
+                    typeOf(arguments.get(i), env, callerGenerics, callerSelf),
+                    "argument " + (i + 1) + " to " + label);
+            requireAssignable(actual, expected, "argument " + (i + 1));
         }
 
         Type result = substituteGenerics(resolve(returnRef, unique, callableSelf), bindings);
@@ -2717,7 +2808,12 @@ public final class TypeChecker {
 
     private Type resolve(Ast.TypeRef ref, Set<String> generics, Type self) {
         if (ref == null) return Unknown.INSTANCE;
-        if (ref.isBorrow()) return new Borrow(resolve(ref.borrowedTarget(), generics, self), ref.mutableBorrow());
+        if (ref.isBorrow()) {
+            Type target = requireValueType(
+                    resolve(ref.borrowedTarget(), generics, self),
+                    "borrow target");
+            return new Borrow(target, ref.mutableBorrow());
+        }
         if (ref.isStringLiteral()) return new StringLiteral(ref.stringLiteralValue());
         if (ref.name().equals("$infer$")) return Unknown.INSTANCE;
         if (ref.name().equals("self")) return self == null ? Unknown.INSTANCE : self;
@@ -2726,15 +2822,31 @@ public final class TypeChecker {
                     "null is not an Oreslang type; represent absence with Option<T> and None");
         }
         if (ref.isUnion()) {
-            return Types.unionOf(ref.arguments().stream().map(option -> resolve(option, generics, self)).toList());
+            List<Type> options = new ArrayList<>(ref.arguments().size());
+            for (Ast.TypeRef option : ref.arguments()) {
+                options.add(requireValueType(
+                        resolve(option, generics, self),
+                        "union member"));
+            }
+            return Types.unionOf(options);
         }
         if (ref.isTupleType()) {
-            return new Tuple(ref.arguments().stream().map(element -> resolve(element, generics, self)).toList());
+            List<Type> elements = new ArrayList<>(ref.arguments().size());
+            for (Ast.TypeRef element : ref.arguments()) {
+                elements.add(requireValueType(
+                        resolve(element, generics, self),
+                        "tuple type element"));
+            }
+            return new Tuple(elements);
         }
         if (ref.isRecordType()) {
             Map<String, Type> members = new LinkedHashMap<>();
             for (Map.Entry<String, Ast.TypeRef> member : ref.recordMembers().entrySet()) {
-                members.put(member.getKey(), resolve(member.getValue(), generics, self));
+                members.put(
+                        member.getKey(),
+                        requireValueType(
+                                resolve(member.getValue(), generics, self),
+                                "record field " + member.getKey()));
             }
             return new Record(members);
         }
@@ -2793,7 +2905,12 @@ public final class TypeChecker {
             case "void" -> Primitive.VOID;
             case "Array", "List" -> {
                 if (!ref.inferArguments() && ref.arguments().size() != 1) throw new IllegalArgumentException(ref.name() + " requires exactly one type argument");
-                yield new ListType(ref.arguments().isEmpty() ? Unknown.INSTANCE : resolve(ref.arguments().getFirst(), generics, self));
+                Type element = ref.arguments().isEmpty()
+                        ? Unknown.INSTANCE
+                        : requireValueType(
+                                resolve(ref.arguments().getFirst(), generics, self),
+                                ref.name() + " element type");
+                yield new ListType(element);
             }
             case "DynamicStruct" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
@@ -2851,25 +2968,47 @@ public final class TypeChecker {
             case "Fnc" -> {
                 List<Type> args = ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList();
                 if (args.isEmpty()) throw new IllegalArgumentException("Fnc requires at least a result type");
-                yield new Function(args.subList(0, args.size() - 1), args.getLast());
+                List<Type> parameters = new ArrayList<>(args.size() - 1);
+                for (int i = 0; i < args.size() - 1; i++) {
+                    parameters.add(requireValueType(
+                            args.get(i),
+                            "Fnc parameter type " + (i + 1)));
+                }
+                yield new Function(parameters, args.getLast());
             }
             default -> {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
-                    yield new Named(qualifiedClassName(knownClass),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                    List<Type> arguments = new ArrayList<>(ref.arguments().size());
+                    for (Ast.TypeRef argument : ref.arguments()) {
+                        arguments.add(requireValueType(
+                                resolve(argument, generics, self),
+                                "type argument for class " + knownClass.name()));
+                    }
+                    yield new Named(qualifiedClassName(knownClass), arguments);
                 }
                 Ast.InterfaceDecl knownInterface = findInterface(ref.name());
                 if (knownInterface != null) {
                     validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
-                    yield new Named(qualifiedInterfaceName(knownInterface),
-                            ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                    List<Type> arguments = new ArrayList<>(ref.arguments().size());
+                    for (Ast.TypeRef argument : ref.arguments()) {
+                        arguments.add(requireValueType(
+                                resolve(argument, generics, self),
+                                "type argument for interface " + knownInterface.name()));
+                    }
+                    yield new Named(qualifiedInterfaceName(knownInterface), arguments);
                 }
                 if (ref.inferArguments()) {
                     throw new IllegalArgumentException("cannot infer type arguments for unknown type '" + ref.name() + "<>'");
                 }
-                yield new Named(ref.name(), ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+                List<Type> arguments = new ArrayList<>(ref.arguments().size());
+                for (Ast.TypeRef argument : ref.arguments()) {
+                    arguments.add(requireValueType(
+                            resolve(argument, generics, self),
+                            "type argument for " + ref.name()));
+                }
+                yield new Named(ref.name(), arguments);
             }
         };
     }
