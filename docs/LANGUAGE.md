@@ -481,7 +481,7 @@ The three domains use separate dispatcher pools. Every actor owns exactly one
 logical mailbox and at most one actor turn may execute at a time; carrier
 threads may change between turns.
 
-### Actor receive protocol and runtime-owned loop
+### Typed actor protocol and runtime-owned loop
 
 Every concrete actor has exactly one **runtime-owned mailbox ingress**, but that
 ingress is not a user-visible source method. Public actor instance methods form a
