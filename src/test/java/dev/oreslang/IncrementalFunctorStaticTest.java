@@ -21,17 +21,27 @@ final class IncrementalFunctorStaticTest {
     @Test
     void namespacesAndModulesAreFlat() {
         var program = TypeChecker.check(Parser.parse("""
-                namespace payments;
+                define namespace payments as
+                  type ReceiptId = int;
+                end
 
                 define module api
                   pub fnc ping(): int { return 1; }
                 end
                 """));
-        assertEquals("payments", program.namespace());
-        assertEquals("api", program.modules().getFirst().name());
+        assertNull(program.namespace());
+        assertEquals("payments", program.modules().get(0).name());
+        assertTrue(program.modules().get(0).isNamespace());
+        assertEquals("api", program.modules().get(1).name());
+        assertFalse(program.modules().get(1).isNamespace());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                namespace company.payments;
+                define namespace company.payments as
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                namespace payments;
                 fnc x(): void { return; }
                 """));
 
@@ -53,7 +63,6 @@ final class IncrementalFunctorStaticTest {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> firstSources = new LinkedHashMap<>();
         firstSources.put("math.ores", """
-                namespace mathpkg;
                 pub fnc answer(): int { return 42; }
                 """);
         firstSources.put("app.ores", """
@@ -70,7 +79,7 @@ final class IncrementalFunctorStaticTest {
 
         var first = compiler.compile(firstSources);
         assertEquals(4, first.rebuiltUnits().size());
-        assertEquals("mathpkg", first.units().get("math.ores").packageId());
+        assertEquals("math", first.units().get("math.ores").packageId());
         assertEquals("app", first.units().get("app.ores").packageId());
 
         var second = compiler.compile(firstSources);
@@ -79,7 +88,6 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> changed = new LinkedHashMap<>(firstSources);
         changed.put("math.ores", """
-                namespace mathpkg;
                 pub fnc answer(): int { return 43; }
                 """);
 
@@ -91,7 +99,6 @@ final class IncrementalFunctorStaticTest {
 
         Map<String, String> abiChanged = new LinkedHashMap<>(changed);
         abiChanged.put("math.ores", """
-                namespace mathpkg;
                 pub fnc answer(): String { return "43"; }
                 """);
 
