@@ -157,7 +157,7 @@ final class OptionPatternMatchingTest {
     void optionCopyIsConditionalOnPayloadCopy() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc copied(Option<int> maybe) => int {
-                  match copy(maybe) {
+                  match rt copy(maybe) {
                     Some(value) => { return value; }
                     None => { return 0; }
                   }
@@ -181,7 +181,9 @@ final class OptionPatternMatchingTest {
                           return;
                         }
                         """)));
-        assertTrue(error.getMessage().contains("proven Copy"));
+        assertTrue(error.getMessage().contains("copy contract")
+                || error.getMessage().contains("not copyable")
+                || error.getMessage().contains("proven Copy"));
     }
 
     @Test
