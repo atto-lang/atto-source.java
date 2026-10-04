@@ -2254,15 +2254,14 @@ public final class ActorRuntime implements AutoCloseable {
                             detachAwaitRegistration();
                             releaseRootTask(this);
                         }
-                        return;
-                    }
-
-                    // Already-settled Futures still create a later scheduler
-                    // turn: their waiter only filled resumeEnvelope while this
-                    // carrier was unwinding.
-                    if (resumeEnvelope.get() != null
-                            && phase.compareAndSet(SUSPENDED, QUEUED)) {
-                        scheduleResume();
+                    } else {
+                        // Already-settled Futures still create a later scheduler
+                        // turn: their waiter only filled resumeEnvelope while this
+                        // carrier was unwinding.
+                        if (resumeEnvelope.get() != null
+                                && phase.compareAndSet(SUSPENDED, QUEUED)) {
+                            scheduleResume();
+                        }
                     }
                 } else {
                     phase.set(FINISHED);
