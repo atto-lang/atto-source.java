@@ -481,32 +481,49 @@ The three domains use separate dispatcher pools. Every actor owns exactly one
 logical mailbox and at most one actor turn may execute at a time; carrier
 threads may change between turns.
 
-### Typed actor protocol and runtime-owned loop
+### Single actor ingress and runtime-owned loop
 
-Every concrete actor has exactly one **runtime-owned mailbox ingress**, but that
-ingress is not a user-visible source method. Public actor instance methods form a
-typed protocol:
+Every concrete actor exposes exactly one public source-level mailbox ingress:
 
 ```ores
-pub run1(value: int): void {
-  self.count = self.count + value;
-}
-
-pub run2(value: int): int {
-  return self.count + value;
+pub receive(Message message): void {
+  // one serialized actor turn
+  return;
 }
 ```
 
-The compiler lowers those endpoints into one hidden mailbox message union and
-dispatcher. Private methods remain direct self calls inside the active actor
-turn. Returning from one public protocol method completes one actor turn; it
-does not terminate the actor. User code therefore cannot pin a carrier thread
-by writing its own permanent mailbox loop.
+All other actor instance methods are private helpers. Actor classes do not form
+Java/RPC-style public method bags. The runtime owns the permanent mailbox loop,
+dequeues one admitted message, invokes `receive`, and completes that actor turn
+when `receive` returns. User source cannot write or replace the permanent receive
+loop, so it cannot pin a carrier thread by keeping that loop on-stack.
 
-`define actor X ...` and `define class X extends Actor ...` have the same
-actor-class semantics and typed protocol rules. External actor references send
-typed messages to the hidden mailbox dispatcher rather than gaining direct
-access to actor-owned fields or private helper methods.
+Code outside the actor never calls `receive` directly. A typed actor reference
+enqueues through `send`:
+
+```ores
+val worker = spawn Worker();
+worker.send(message);
+```
+
+`ActorRef<ConcreteActor>.send(message)` is checked against that actor's exact
+`receive` parameter type and returns after mailbox admission; execution remains
+asynchronous. Direct `worker.receive(message)` is rejected because `receive` is
+runtime-owned.
+
+A protocol interface may be used behind `ActorRef<Protocol>` only when its
+effective public shape is exactly one monomorphic
+`receive(Message): void`. Arbitrary multi-method actor protocol interfaces are
+rejected. This preserves interface abstraction without creating additional actor
+entrypoints.
+
+`define actor X ...` and `define class X extends Actor ...` normalize to the
+same actor-class semantics. The intrinsic bases may optionally carry
+`Actor<Message, Reply, Error>` (and the equivalent `IsoActor` /
+`UntrustedActor` forms). `Message` must exactly match the source `receive`
+parameter. `Reply` and `Error` describe response-channel protocol metadata;
+they do not turn `receive` into a returning source method—replies and failures
+travel through explicit runtime response capabilities.
 
 Actor classes do not support static functions. Until a separate effect-safe,
 non-instance actor utility construct exists, allowing static actor methods would
@@ -553,9 +570,9 @@ forbidden:
 ```
 
 Actor fields are private mailbox-owned state. `let` actor fields may mutate
-during the actor's exclusive turn without a lock. Public endpoint parameter and
-return types are checked at the actor boundary; unsafe borrows, guards, futures,
-and domain-incompatible shared-mutable capabilities are rejected.
+during the actor's exclusive turn without a lock. The public `receive` message
+type is checked at the actor boundary; unsafe borrows, guards, futures, and
+domain-incompatible shared-mutable capabilities are rejected.
 
 A constructor is runtime-only initialization, not a mailbox endpoint. Actor
 constructors are non-public, non-static, non-generic, non-suspending, return
@@ -565,9 +582,9 @@ forbidden; actor identity/state must be created by the actor runtime.
 ### References, factories, and launch
 
 Code outside an actor never receives the mutable actor object. It receives an
-`ActorRef<Protocol>`/typed actor reference. The reference is a capability:
-it carries actor identity and only the operations permitted by its protocol and
-sandbox policy.
+`ActorRef<ConcreteActor>` or a receive-only `ActorRef<Protocol>` capability.
+The reference carries actor identity plus bounded `send(message)` authority; it
+does not expose the mutable actor object or its private helpers.
 
 Persistent actor factories remain useful as explicit launch adapters for actor
 groups, configured factory catalogs, hot loading, and dependency injection.
@@ -576,7 +593,7 @@ persistent-actor ABI is the actor reference/mailbox, not a raw class pointer.
 A launch ticket separates identity/readiness/lifecycle from actor application
 messages.
 
-This model preserves the existing ActorGroup/ActorMailman architecture: public protocol method calls enqueue bounded typed messages into the actor's mailbox; actors
+This model preserves the existing ActorGroup/ActorMailman architecture: `ActorRef.send` enqueues bounded typed messages into the actor's mailbox; actors
 emit bounded group output; one logical serialized mailman consumes the group's
 outbox; supervisors remain responsible for lifecycle/restart policy.
 
