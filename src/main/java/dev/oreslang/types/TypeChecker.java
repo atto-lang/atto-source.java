@@ -349,6 +349,18 @@ public final class TypeChecker {
         }
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(null, fn.nonLexical());
+
+        Ast.ModuleDecl ownerModule = modules.get(module);
+        if (ownerModule != null) {
+            for (Ast.Decl declaration : ownerModule.declarations()) {
+                if (!(declaration instanceof Ast.FieldDecl field)) continue;
+                Type fieldType = field.type() != null
+                        ? resolve(field.type(), Set.of(), null)
+                        : typeOf(field.initializer(), env, Set.of(), null);
+                env.define(field.name(), fieldType, field.bindingKind());
+            }
+        }
+
         for (Ast.Param param : fn.parameters()) {
             Type parameterType = resolveParam(param, generics, null);
             if (fn.actorKind() != Ast.ActorKind.NONE) {
