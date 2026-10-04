@@ -2243,6 +2243,15 @@ public final class TypeChecker {
         }
         if (generics.contains(ref.name())) return new Generic(ref.name());
 
+        Ast.ClassDecl lexicalClass = findLexicalClass(ref.name());
+        if (lexicalClass != null) return nominalLocalType(lexicalClass, ref, generics, self);
+        Ast.InterfaceDecl lexicalInterface = findLexicalInterface(ref.name());
+        if (lexicalInterface != null) {
+            validateGenericArity(ref, lexicalInterface.genericParameters(), "interface " + lexicalInterface.name());
+            return new Named(qualifiedInterfaceName(lexicalInterface),
+                    ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+        }
+
         Ast.TypeAliasDecl alias = findTypeAlias(ref.name());
         if (alias != null) {
             if (alias.genericParameters().size() != ref.arguments().size()) {
@@ -2362,11 +2371,15 @@ public final class TypeChecker {
     }
 
     private String qualifiedClassName(Ast.ClassDecl klass) {
+        String local = localClassIdentities.get(klass);
+        if (local != null) return local;
         String owner = classOwners.get(klass);
         return owner == null || owner.equals("__root__") ? klass.name() : owner + "." + klass.name();
     }
 
     private String qualifiedInterfaceName(Ast.InterfaceDecl iface) {
+        String local = localInterfaceIdentities.get(iface);
+        if (local != null) return local;
         String owner = interfaceOwners.get(iface);
         return owner == null || owner.equals("__root__") ? iface.name() : owner + "." + iface.name();
     }
@@ -2497,11 +2510,27 @@ public final class TypeChecker {
     }
 
     private Ast.ClassDecl findClass(String name) {
-        if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class name '" + name + "'; qualify it with its module");
+        if (!name.contains(".")) {
+            for (Map<String, Ast.ClassDecl> scope : localClassScopes) {
+                Ast.ClassDecl local = scope.get(name);
+                if (local != null) return local;
+            }
+        }
+        Ast.ClassDecl escaped = escapedLocalClasses.get(name);
+        if (escaped != null) return escaped;
+        if (ambiguousClasses.contains(name)) throw new IllegalArgumentException("ambiguous class/struct name '" + name + "'; qualify it with its module");
         return classes.get(name);
     }
 
     private Ast.InterfaceDecl findInterface(String name) {
+        if (!name.contains(".")) {
+            for (Map<String, Ast.InterfaceDecl> scope : localInterfaceScopes) {
+                Ast.InterfaceDecl local = scope.get(name);
+                if (local != null) return local;
+            }
+        }
+        Ast.InterfaceDecl escaped = escapedLocalInterfaces.get(name);
+        if (escaped != null) return escaped;
         if (ambiguousInterfaces.contains(name)) throw new IllegalArgumentException("ambiguous interface name '" + name + "'; qualify it with its module");
         return interfaces.get(name);
     }
@@ -2509,6 +2538,112 @@ public final class TypeChecker {
     private Ast.TypeAliasDecl findTypeAlias(String name) {
         if (ambiguousTypeAliases.contains(name)) throw new IllegalArgumentException("ambiguous type alias '" + name + "'; qualify it with its module");
         return typeAliases.get(name);
+    }
+
+    private Ast.ClassDecl findLexicalClass(String name) {
+        if (name.contains(".")) return null;
+        for (Map<String, Ast.ClassDecl> scope : localClassScopes) {
+            Ast.ClassDecl local = scope.get(name);
+            if (local != null) return local;
+        }
+        return null;
+    }
+
+    private Ast.InterfaceDecl findLexicalInterface(String name) {
+        if (name.contains(".")) return null;
+        for (Map<String, Ast.InterfaceDecl> scope : localInterfaceScopes) {
+            Ast.InterfaceDecl local = scope.get(name);
+            if (local != null) return local;
+        }
+        return null;
+    }
+
+    private void rejectLocalTypeGenericCollisions(List<Ast.Stmt> body, Set<String> generics) {
+        if (generics.isEmpty()) return;
+        for (Ast.Stmt stmt : body) {
+            if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
+            String name = local.declaration() instanceof Ast.ClassDecl struct ? struct.name()
+                    : local.declaration() instanceof Ast.InterfaceDecl iface ? iface.name() : null;
+            if (name != null && generics.contains(name)) {
+                throw new IllegalArgumentException("callable-local type '" + name
+                        + "' collides with an in-scope generic type parameter");
+            }
+        }
+    }
+
+    private void pushLocalTypeScope(List<Ast.Stmt> body) {
+        Map<String, Ast.ClassDecl> classesHere = new LinkedHashMap<>();
+        Map<String, Ast.InterfaceDecl> interfacesHere = new LinkedHashMap<>();
+        Set<String> names = new HashSet<>();
+        for (Ast.Stmt stmt : body) {
+            if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
+            if (local.declaration() instanceof Ast.ClassDecl struct) {
+                if (!names.add(struct.name())) throw new IllegalArgumentException("duplicate callable-local type '" + struct.name() + "'");
+                classesHere.put(struct.name(), struct);
+                String identity = localClassIdentities.computeIfAbsent(struct,
+                        ignored -> "$local$" + (nextLocalTypeIdentity++) + "." + struct.name());
+                escapedLocalClasses.put(identity, struct);
+            } else if (local.declaration() instanceof Ast.InterfaceDecl iface) {
+                if (!names.add(iface.name())) throw new IllegalArgumentException("duplicate callable-local type '" + iface.name() + "'");
+                interfacesHere.put(iface.name(), iface);
+                String identity = localInterfaceIdentities.computeIfAbsent(iface,
+                        ignored -> "$local$" + (nextLocalTypeIdentity++) + "." + iface.name());
+                escapedLocalInterfaces.put(identity, iface);
+            }
+        }
+        localClassScopes.push(classesHere);
+        localInterfaceScopes.push(interfacesHere);
+    }
+
+    private void popLocalTypeScope() {
+        localClassScopes.pop();
+        localInterfaceScopes.pop();
+    }
+
+    private Type resolveInLocalScope(Ast.TypeRef ref, Set<String> generics, Type self, List<Ast.Stmt> body) {
+        rejectLocalTypeGenericCollisions(body, generics);
+        pushLocalTypeScope(body);
+        try {
+            return resolve(ref, generics, self);
+        } finally {
+            popLocalTypeScope();
+        }
+    }
+
+    private Type resolveParamInLocalScope(Ast.Param param, Set<String> generics, Type self, List<Ast.Stmt> body) {
+        rejectLocalTypeGenericCollisions(body, generics);
+        pushLocalTypeScope(body);
+        try {
+            return resolveParam(param, generics, self);
+        } finally {
+            popLocalTypeScope();
+        }
+    }
+
+    private Type nominalLocalType(Ast.ClassDecl klass, Ast.TypeRef ref, Set<String> generics, Type self) {
+        if (!klass.isStruct()) throw new IllegalArgumentException("callable-local classes are not supported");
+        if (ref.inferArguments()) throw new IllegalArgumentException("struct '" + klass.name() + "' requires explicit type arguments in type positions");
+        validateGenericArity(ref, klass.genericParameters(), "struct " + klass.name());
+        return new Named(qualifiedClassName(klass),
+                ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
+    }
+
+    private void validateStructRecord(Ast.ClassDecl struct, Named nominal, Record record, String where) {
+        Map<String, Type> substitutions = classGenericBindings(struct, nominal);
+        LinkedHashMap<String, Ast.FieldDecl> expected = new LinkedHashMap<>();
+        for (Ast.FieldDecl field : struct.fields()) expected.put(field.name(), field);
+        LinkedHashSet<String> extras = new LinkedHashSet<>(record.members().keySet());
+        extras.removeAll(expected.keySet());
+        if (!extras.isEmpty()) throw new IllegalArgumentException(where + " has unknown fields " + extras);
+        for (Ast.FieldDecl field : expected.values()) {
+            Type supplied = record.members().get(field.name());
+            if (supplied == null) {
+                if (field.initializer() == null) throw new IllegalArgumentException(where + " is missing field '" + field.name() + "'");
+                continue;
+            }
+            Type expectedType = substituteGenerics(classFieldType(struct, field), substitutions);
+            requireAssignable(supplied, expectedType, where + "." + field.name());
+        }
     }
 
     private Set<String> uniqueGenerics(List<String> names, String owner) {
