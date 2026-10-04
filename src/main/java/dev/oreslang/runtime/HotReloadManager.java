@@ -193,7 +193,35 @@ public final class HotReloadManager implements AutoCloseable {
         validateStageInput(name, sourceText);
         Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
         Ast.EntryExportDecl entry = requireEntryExport(program);
+        if (entry.kind() == Ast.ExportKind.ACTOR) {
+            throw new IllegalArgumentException(
+                    "actor export entries require loadActorEntry(...) with an exact actor ABI contract");
+        }
         return stage(name, digest(sourceText), sourceText, entry);
+    }
+
+    /**
+     * Contract-check and stage a persistent actor export entry without executing
+     * guest code. Actor isolation and the public receive ABI are verified before
+     * a generation is allocated.
+     */
+    public synchronized Generation loadActorEntry(
+            String name,
+            String sourceText,
+            ActorEntryContract contract) {
+        ensureOpen();
+        validateStageInput(name, sourceText);
+        Objects.requireNonNull(contract, "contract");
+        Ast.Program program = OresCompiler.validateForIsolate(sourceText, guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(program);
+        ActorEntryContract.Verification verification = contract.verify(program, entry);
+        validateActorEntryExecutionDomain(verification.actorKind());
+        return stage(
+                name,
+                digest(sourceText),
+                sourceText,
+                entry,
+                verification.abiDigest());
     }
 
     /**
@@ -220,7 +248,31 @@ public final class HotReloadManager implements AutoCloseable {
         validateStageInput(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
         Ast.EntryExportDecl entry = requireEntryExport(unit.program());
+        if (entry.kind() == Ast.ExportKind.ACTOR) {
+            throw new IllegalArgumentException(
+                    "actor export entries require loadActorEntry(...) with an exact actor ABI contract");
+        }
         return stage(unit.unitId(), unit.sourceDigest(), unit.sourceText(), entry);
+    }
+
+    /** Contract-checked actor entry load for an already compiled code unit. */
+    public synchronized Generation loadActorEntry(
+            IncrementalCompiler.CompiledUnit unit,
+            ActorEntryContract contract) {
+        ensureOpen();
+        Objects.requireNonNull(unit, "unit");
+        Objects.requireNonNull(contract, "contract");
+        validateStageInput(unit.unitId(), unit.sourceText());
+        CapabilityChecker.check(unit.program(), guestPolicy);
+        Ast.EntryExportDecl entry = requireEntryExport(unit.program());
+        ActorEntryContract.Verification verification = contract.verify(unit.program(), entry);
+        validateActorEntryExecutionDomain(verification.actorKind());
+        return stage(
+                unit.unitId(),
+                unit.sourceDigest(),
+                unit.sourceText(),
+                entry,
+                verification.abiDigest());
     }
 
     private Generation stage(
@@ -228,6 +280,15 @@ public final class HotReloadManager implements AutoCloseable {
             String sourceDigest,
             String sourceText,
             Ast.EntryExportDecl entryExport) {
+        return stage(codeUnitId, sourceDigest, sourceText, entryExport, null);
+    }
+
+    private Generation stage(
+            String codeUnitId,
+            String sourceDigest,
+            String sourceText,
+            Ast.EntryExportDecl entryExport,
+            String actorEntryAbiDigest) {
         enforceGenerationQuota(codeUnitId);
 
         long id = PROCESS_GENERATION_SEQUENCE.incrementAndGet();
@@ -266,7 +327,8 @@ public final class HotReloadManager implements AutoCloseable {
                     executionDomain,
                     guestPolicy,
                     generationBindingToken,
-                    entryExport);
+                    entryExport,
+                    actorEntryAbiDigest);
             generations.put(id, generation);
             boundGeneration.set(generation);
             return generation;
@@ -290,9 +352,20 @@ public final class HotReloadManager implements AutoCloseable {
         return generation;
     }
 
-    /** Stage, start, and activate a code unit that must expose an entry export. */
+    /** Stage, start, and activate a non-actor code unit with an entry export. */
     public Generation loadEntryAndStart(String name, String sourceText) {
         Generation generation = loadEntry(name, sourceText);
+        generation.start();
+        activate(generation);
+        return generation;
+    }
+
+    /** Contract-check, start, and activate a persistent actor entry. */
+    public Generation loadActorEntryAndStart(
+            String name,
+            String sourceText,
+            ActorEntryContract contract) {
+        Generation generation = loadActorEntry(name, sourceText, contract);
         generation.start();
         activate(generation);
         return generation;
@@ -504,6 +577,22 @@ public final class HotReloadManager implements AutoCloseable {
                         "hot-load entry requested but code unit declares no 'export entry <kind> <name>;' marker"));
     }
 
+    private void validateActorEntryExecutionDomain(Ast.ActorKind actorKind) {
+        ExecutionDomain required = switch (actorKind) {
+            case SHARED -> ExecutionDomain.TRUSTED_JIT;
+            case PRIVATE -> ExecutionDomain.TRUSTED_ISOACTOR_JIT;
+            case UNTRUSTED -> ExecutionDomain.UNTRUSTED_JIT;
+            case NONE -> throw new IllegalArgumentException(
+                    "actor entry contract cannot use non-actor isolation");
+        };
+        if (executionDomain != required) {
+            throw new SecurityException(
+                    "actor entry isolation " + actorKind
+                            + " requires execution domain " + required
+                            + ", found " + executionDomain);
+        }
+    }
+
     private void validateStageInput(String codeUnitId, String sourceText) {
         Objects.requireNonNull(codeUnitId, "codeUnitId");
         Objects.requireNonNull(sourceText, "sourceText");
@@ -653,6 +742,7 @@ public final class HotReloadManager implements AutoCloseable {
         private final IsolatePolicy guestPolicy;
         private final String generationBindingToken;
         private final Ast.EntryExportDecl entryExport;
+        private final String actorEntryAbiDigest;
         private final AtomicReference<GenerationState> state =
                 new AtomicReference<>(GenerationState.STAGED);
         private final AtomicInteger pins = new AtomicInteger();
@@ -669,7 +759,8 @@ public final class HotReloadManager implements AutoCloseable {
                 ExecutionDomain executionDomain,
                 IsolatePolicy guestPolicy,
                 String generationBindingToken,
-                Ast.EntryExportDecl entryExport) {
+                Ast.EntryExportDecl entryExport,
+                String actorEntryAbiDigest) {
             this.owner = owner;
             this.id = id;
             this.codeUnitId = codeUnitId;
@@ -682,6 +773,7 @@ public final class HotReloadManager implements AutoCloseable {
             this.generationBindingToken =
                     Objects.requireNonNull(generationBindingToken, "generationBindingToken");
             this.entryExport = entryExport;
+            this.actorEntryAbiDigest = actorEntryAbiDigest;
         }
 
         public long id() { return id; }
@@ -693,6 +785,9 @@ public final class HotReloadManager implements AutoCloseable {
         public ExecutionDomain executionDomain() { return executionDomain; }
         public IsolatePolicy guestPolicy() { return guestPolicy; }
         public Optional<Ast.EntryExportDecl> entryExport() { return Optional.ofNullable(entryExport); }
+        public Optional<String> actorEntryAbiDigest() {
+            return Optional.ofNullable(actorEntryAbiDigest);
+        }
         public GenerationState state() { return state.get(); }
         public int pinCount() { return pins.get(); }
         public boolean started() {
