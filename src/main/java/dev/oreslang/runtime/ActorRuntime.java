@@ -2894,6 +2894,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ActorKind kind;
         private final AtomicReference<Throwable> terminationCause = new AtomicReference<>();
         private final OresFuture<ActorRef<M>> readiness;
+        private final OresFuture<Boolean> termination;
         private final CompletableFuture<Void> finalization = new CompletableFuture<>();
 
         private ActorRef(ActorId id, ActorKind kind) {
@@ -2903,10 +2904,16 @@ public final class ActorRuntime implements AutoCloseable {
                 ActorCell<?> cell = actors.get(id);
                 if (cell != null) cell.stop();
             });
+            this.termination = new OresFuture<>(() -> {
+                ActorCell<?> cell = actors.get(id);
+                if (cell != null) cell.stop();
+            });
         }
 
         public ActorId id() { return id; }
         private OresFuture<ActorRef<M>> readiness() { return readiness; }
+        /** Awaitable lifecycle join handle; completes after full actor finalization. */
+        public OresFuture<Boolean> done() { return termination; }
         private CompletionStage<Void> finalization() { return finalization; }
         private void markReady() { readiness.completeFromRuntime(this); }
         private void failReady(Throwable failure) {
@@ -2938,10 +2945,9 @@ public final class ActorRuntime implements AutoCloseable {
         public boolean awaitTermination(long timeout, TimeUnit unit) throws InterruptedException {
             Objects.requireNonNull(unit);
             if (timeout < 0) throw new IllegalArgumentException("timeout must be non-negative");
-            ActorExecutionContext caller = CURRENT_ACTOR_EXECUTION.get();
-            if (caller != null && caller.kind() == ActorKind.UNTRUSTED) {
-                throw new SecurityException(
-                        "untrusted actors cannot synchronously await actor termination; use messages/monitoring");
+            if (ActorRuntime.isOresCarrierThread()) {
+                throw new IllegalStateException(
+                        "ActorRef.awaitTermination cannot block an OresVM carrier; await ref.done() instead");
             }
             ActorCell<?> cell = actors.get(id);
             if (cell == null) return true;
@@ -3725,10 +3731,10 @@ public final class ActorRuntime implements AutoCloseable {
                     "synchronous actor-callable invocation from an actor turn is forbidden; "
                             + "use spawn/mailbox-oriented actor composition");
         }
-        if (inRootExecution() && policyCeiling.adversarial()) {
-            throw new SecurityException(
-                    "adversarial root/main execution cannot synchronously invoke an actor; "
-                            + "use nonblocking spawn and continuation-based await");
+        if (inRootExecution()) {
+            throw new IllegalStateException(
+                    "synchronous actor-callable invocation from a root task is forbidden; "
+                            + "spawn the actor and await its result/done Future");
         }
 
         ActorSpawn<M, R> spawn = spawnInvocation(kind, message, invocation);
@@ -6013,6 +6019,7 @@ public final class ActorRuntime implements AutoCloseable {
             // while this finalizer is still unregistering the actor.
             finalized = true;
             ref.finalization.complete(null);
+            ref.termination.completeFromRuntime(Boolean.TRUE);
             } finally {
                 finalizing = false;
                 lifecycleLock.notifyAll();
