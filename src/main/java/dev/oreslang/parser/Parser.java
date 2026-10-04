@@ -941,7 +941,10 @@ public final class Parser {
             argument = parseUnary();
         }
 
-        // '
+        // The synthetic name contains characters guest identifiers cannot
+        // spell, so user code cannot forge or shadow this compiler intrinsic.
+        return new Ast.CallExpr(new Ast.NameExpr("\u0024rt\u0024" + name), List.of(argument));
+    }
 
     private Ast.Expr parsePostfix() {
         Ast.Expr expr = parsePrimary();
