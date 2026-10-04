@@ -3047,6 +3047,23 @@ public final class ActorRuntime implements AutoCloseable {
         return spawn(ActorKind.SHARED, defaultSpawnPolicy(), behaviorFactory);
     }
 
+    /**
+     * Compiler/interpreter-only lowering target for persistent source-level
+     * shared actor classes. The factory may capture compiler/runtime-owned
+     * declaration state, but guest code never receives the factory or mutable
+     * actor object. PRIVATE/UNTRUSTED source actor classes require their
+     * isolation-aware lowering and must not use this trusted shared-state path.
+     */
+    public <M> ActorRef<M> spawnSourceSharedActor(BehaviorFactory<M> behaviorFactory) {
+        Objects.requireNonNull(behaviorFactory, "behaviorFactory");
+        requireCallerRuntimeAffinity("spawn source shared actor classes");
+        return spawnInternal(
+                ActorKind.SHARED,
+                defaultSpawnPolicy(),
+                behaviorFactory,
+                true);
+    }
+
     public <M> ActorRef<M> spawnShared(
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
