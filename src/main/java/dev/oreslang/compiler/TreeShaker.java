@@ -218,6 +218,11 @@ public final class TreeShaker {
             if (expression instanceof Ast.TupleExpr tuple) {
                 return tuple.elements().stream().anyMatch(this::containsLambda);
             }
+            if (expression instanceof Ast.StructExpr struct) {
+                for (Ast.ObjectField field : struct.fields()) {
+                    if (containsLambda(field.value())) return true;
+                }
+            }
             if (expression instanceof Ast.ObjectExpr object) {
                 for (Ast.ObjectField field : object.fields()) {
                     if (field.isDynamic() && containsLambda(field.dynamicName())) return true;
@@ -323,6 +328,15 @@ public final class TreeShaker {
                     elements.add(substitute(element, substitutions, shadowed));
                 }
                 return new Ast.TupleExpr(elements);
+            }
+            if (expression instanceof Ast.StructExpr struct) {
+                List<Ast.ObjectField> fields = new ArrayList<>();
+                for (Ast.ObjectField field : struct.fields()) {
+                    fields.add(Ast.ObjectField.named(
+                            field.name(),
+                            substitute(field.value(), substitutions, shadowed)));
+                }
+                return new Ast.StructExpr(struct.type(), fields);
             }
             if (expression instanceof Ast.ObjectExpr object) {
                 List<Ast.ObjectField> fields = new ArrayList<>();
@@ -912,7 +926,20 @@ public final class TreeShaker {
 
         private void scanStatements(String module, List<Ast.Stmt> statements, LinkedHashSet<String> locals) {
             for (Ast.Stmt statement : statements) {
-                if (statement instanceof Ast.BindingStmt binding) {
+                if (statement instanceof Ast.LocalTypeDeclStmt localType) {
+                    if (localType.declaration() instanceof Ast.TypeAliasDecl alias) {
+                        scanType(alias.target());
+                    } else if (localType.declaration() instanceof Ast.InterfaceDecl iface) {
+                        for (Ast.TypeRef parent : iface.parents()) scanType(parent);
+                        for (Ast.InterfaceMember member : iface.members()) {
+                            if (member instanceof Ast.InterfaceFieldDecl field) scanType(field.type());
+                            else if (member instanceof Ast.InterfaceFunctionDecl fn) {
+                                for (Ast.Param param : fn.parameters()) scanType(param.type());
+                                scanType(fn.returnType());
+                            }
+                        }
+                    }
+                } else if (statement instanceof Ast.BindingStmt binding) {
                     scanType(binding.declaredType());
                     scanExpression(module, binding.initializer(), locals);
                     locals.add(binding.name());
