@@ -306,6 +306,65 @@ final class ParserTest {
     }
 
     @Test
+    void actorMayImplementProtocolInterfaceAndActorRefMayNarrowToIt() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface WorkerAPI
+                  fnc run(value: int): int;
+                  fnc stop(): void;
+                end
+
+                define actor Worker implements WorkerAPI as
+                  pub run(value: int): int {
+                    return value + 1;
+                  }
+
+                  pub stop(): void {
+                    return;
+                  }
+                end
+
+                async fnc exercise() -> void {
+                  val concrete = spawn Worker();
+                  val ActorRef<WorkerAPI> worker = concrete;
+                  val value = await worker.run(41);
+                  await worker.stop();
+                  stdio.println(value);
+                  return;
+                }
+                """)));
+    }
+
+    @Test
+    void actorWithoutLocalOrInheritedPublicProtocolIsRejected() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          private helper(): int { return 1; }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("must expose at least one public protocol method"));
+    }
+
+    @Test
+    void actorProtocolMethodsAreNotFirstClassBoundCallbacks() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub run(value: int): int { return value; }
+                        end
+
+                        fnc bad() -> void {
+                          val worker = spawn Worker();
+                          val callback = worker.run;
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("actor protocol methods are not first-class values"));
+    }
+
+    @Test
     void actorImportAliasesAndEntrySyntaxParseWithoutDefaultExports() {
         Ast.Program imports = Parser.parse("""
                 import actor Foo from "../../actor-mod";
