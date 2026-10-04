@@ -200,6 +200,143 @@ final class RoutineAndLoopTest {
         assertEquals("45", output);
     }
 
+    @Test
+    void forOfSupportsDoDoneAndImplicitVal() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for item of arr[1, 2, 3] do
+                    stdio.stdout.write(item)
+                  done
+                }
+                """);
+        assertEquals("123", output);
+    }
+
+    @Test
+    void forOfSupportsSequenceDestructuring() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for [k, v] of arr[arr[1, 10], arr[2, 20]] do
+                    stdio.stdout.write(k);
+                    stdio.stdout.write(":");
+                    stdio.stdout.write(v);
+                    stdio.stdout.write(";")
+                  done
+                }
+                """);
+        assertEquals("1:10;2:20;", output);
+    }
+
+    @Test
+    void forOfDestructuringRejectsArityMismatch() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> run("""
+                pub routine main() => void {
+                  for [k, v] of arr[arr[1]] {
+                    stdio.stdout.write(k);
+                  }
+                }
+                """));
+        assertTrue(failure.getMessage().contains("arity mismatch"));
+    }
+
+    @Test
+    void cStyleForSupportsTypedInitializerPostfixAndDoDone() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for int i = 0; i < 3; i++ do
+                    stdio.stdout.write(i)
+                  done
+                }
+                """);
+        assertEquals("012", output);
+    }
+
+    @Test
+    void cStyleForSupportsTypedInitializerAndBracesWithoutParentheses() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  for int i = 0; i < 3; i++ {
+                    stdio.stdout.write(i);
+                  }
+                }
+                """);
+        assertEquals("012", output);
+    }
+
+    @Test
+    void whileSupportsBraceAndDoDoneBodies() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  let i = 0;
+                  while i < 2 {
+                    stdio.stdout.write(i);
+                    i = i + 1;
+                  }
+                  while i < 4 do
+                    stdio.stdout.write(i);
+                    i = i + 1
+                  done
+                }
+                """);
+        assertEquals("0123", output);
+    }
+
+    @Test
+    void infiniteWhileShorthandCanExitThroughReturn() throws Exception {
+        String output = run("""
+                pub routine emit_brace() => void {
+                  while {
+                    stdio.stdout.write("a");
+                    return;
+                  }
+                }
+
+                pub routine emit_done() => void {
+                  while do
+                    stdio.stdout.write("b");
+                    return
+                  done
+                }
+
+                pub routine main() => void {
+                  emit_brace();
+                  emit_done();
+                }
+                """);
+        assertEquals("ab", output);
+    }
+
+    @Test
+    void doWhileSupportsBraceAndDoneForms() throws Exception {
+        String output = run("""
+                pub routine main() => void {
+                  let i = 0;
+                  do {
+                    stdio.stdout.write(i);
+                    i = i + 1;
+                  } while (i < 2);
+
+                  do
+                    stdio.stdout.write(i);
+                    i = i + 1
+                  done while i < 4;
+                }
+                """);
+        assertEquals("0123", output);
+    }
+
+    @Test
+    void loopDoDoneRequiresDoneNotEnd() {
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> run("""
+                pub routine main() => void {
+                  for item of arr[1] do
+                    stdio.stdout.write(item)
+                  end
+                }
+                """));
+        assertTrue(failure.getMessage().contains("parse error"));
+    }
+
     private static String run(String program) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, program, "together.ores")
