@@ -1305,7 +1305,7 @@ public final class OresEvalRootNode extends RootNode {
             return candidate;
         }
 
-        private Object invokeImportedCallable(Ast.ImportKind kind, String name, List<Object> args) {
+        private Invocation prepareImportedInvocation(Ast.ImportKind kind, String name, List<Object> args) {
             Ast.FunctionDecl fn = findFunction(name);
             if (fn == null || fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("code unit '" + codeUnitId
@@ -1316,13 +1316,17 @@ public final class OresEvalRootNode extends RootNode {
                     throw new IllegalArgumentException("import fnc requires a reifiable non-actor fnc; '" + name
                             + "' is direct-call-only or actor-scheduled");
                 }
-                return callFunction(fn, args);
+                return functionInvocation(fn, args);
             }
             if (kind == Ast.ImportKind.ALL) {
-                return callFunction(fn, args);
+                return functionInvocation(fn, args);
             }
             throw new IllegalArgumentException("import namespace kind " + kind
                     + " does not expose direct callable '" + name + "'");
+        }
+
+        private Object invokeImportedCallable(Ast.ImportKind kind, String name, List<Object> args) {
+            return invoke(prepareImportedInvocation(kind, name, args));
         }
 
         private Object exportValue(Ast.ImportKind kind, String name) {
@@ -1421,16 +1425,20 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
         }
 
-        private Object invokeModuleFunction(Ast.ModuleDecl module, String name, List<Object> args) {
+        private Invocation prepareModuleInvocation(Ast.ModuleDecl module, String name, List<Object> args) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn
                         && fn.name().equals(name)
                         && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    return callFunction(fn, args);
+                    return functionInvocation(fn, args);
                 }
             }
             throw new IllegalArgumentException("module '" + module.name()
                     + "' does not export callable '" + name + "'");
+        }
+
+        private Object invokeModuleFunction(Ast.ModuleDecl module, String name, List<Object> args) {
+            return invoke(prepareModuleInvocation(module, name, args));
         }
 
         private boolean hasInstanceMethodNamed(Ast.ClassDecl klass, String name, Set<Ast.ClassDecl> seen) {
