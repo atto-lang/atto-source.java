@@ -1,0 +1,32 @@
+// Oreslang core reactive primitives.
+//
+// This is intentionally the small, dependency-free RX nucleus. Operators are
+// separate std/rx/... units so applications do not retain operator code they
+// never import.
+
+define module rx
+  pub interface Subscription
+    fnc unsubscribe() => void;
+    fnc is_closed() => bool;
+  end
+
+  pub interface Observer<T>
+    fnc next(T value) => void;
+    fnc error(String error) => void;
+    fnc complete() => void;
+  end
+
+  type Subscribe<T> = (Observer<T>) => Subscription;
+
+  define class Observable<T> as
+    private val Subscribe<T> subscribe_fn;
+
+    pub subscribe(Observer<T> observer): Subscription {
+      return self.subscribe_fn(observer);
+    }
+  end
+
+  pub fnc create<T>(Subscribe<T> subscribe_fn): Observable<T> {
+    return new Observable<T>(subscribe_fn);
+  }
+end
