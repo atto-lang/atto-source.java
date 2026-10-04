@@ -15,6 +15,7 @@ public final class Ast {
     }
 
     public enum ImportKind { MODULE, CLASS, ACTOR, FUNCTION, ALL }
+    public enum ExportKind { MODULE, CLASS, ACTOR, FUNCTION }
 
     public record ImportDecl(
             ImportKind kind,
@@ -60,7 +61,18 @@ public final class Ast {
         public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
     }
 
-    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
+    public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl, EntryExportDecl { }
+
+    /**
+     * One explicit code-unit entrypoint for foreign/hot-load admission.
+     * This is loader metadata, not a JavaScript-style default import.
+     */
+    public record EntryExportDecl(ExportKind kind, String name) implements Decl {
+        public EntryExportDecl {
+            if (kind == null) throw new IllegalArgumentException("entry export kind cannot be null");
+            if (name == null || name.isBlank()) throw new IllegalArgumentException("entry export name cannot be blank");
+        }
+    }
 
     public enum Visibility { PRIVATE, PUBLIC }
     public enum CallableKind { FNC, ROUTINE }
