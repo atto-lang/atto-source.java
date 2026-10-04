@@ -2,9 +2,11 @@
 
 Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
-## Files, modules, and imports
+## Files, modules, namespaces, and imports
 
-A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
+A **module** is a named scope (and therefore a namespace in the broad computer-science sense), but it is deliberately different from the Oreslang `namespace` keyword.
+
+A module may own runnable/value declarations as well as types: functions, routines, actor declarations, bindings/state, classes, interfaces, and type aliases. Exported members are accessed through the module name, such as `math.add(1, 2)`.
 
 ```ores
 define module math
@@ -12,15 +14,34 @@ define module math
     return a + b;
   }
 end
-
-define module app
-  pub fnc main(): void {
-    val answer = math.add(40, 2);
-    stdio.println(answer);
-    return;
-  }
-end
 ```
+
+A `namespace` keyword declaration is a **static, type-only container**. It may contain type aliases, interfaces, concrete classes, and abstract classes. It may not directly contain functions, routines, actor declarations, bindings/state, init hooks, modules, or another namespace.
+
+Both `define namespace` and `declare namespace` are accepted. `define namespace` is the canonical spelling; `declare namespace` is a reserved synonym for the same type-container semantics so the keyword remains available for future declaration-only/FFI work.
+
+```ores
+define namespace domain as
+  type UserId = int;
+
+  define interface Named
+    String name;
+  end
+
+  define abstract class Entity implements Named as
+    pub val String name;
+  end
+
+  define class User extends Entity as
+  end
+end
+
+declare namespace wire as {
+  type RequestId = String;
+}
+```
+
+Namespaces and modules are **flat**. Neither can be nested in a module, namespace, function, loop, class body, actor body, or other executable scope. A namespace name is also a single identifier rather than a dotted declaration such as `company.payments`.
 
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
@@ -28,13 +49,14 @@ Imports are explicit about what kind of symbol is entering the compilation unit:
 import module foo from "../xyz";
 import module foo as apiFoo from "../xyz";
 import module {foo, bar} from "../xyz";
+import namespace domain from "../xyz";
 import class Widget as ApiWidget from "../xyz";
 import fnc add as apiAdd from "../xyz";
 import fnc * as funcs from "../xyz";
 import * as package from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. A single named module/class/function import may use `as` to choose its local binding; the original source name still controls export resolution. This avoids namespace pollution while supporting Kotlin-style disambiguation. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+Wildcard imports always require a namespace alias. A single named module/namespace/class/function import may use `as` to choose its local binding; the original source name still controls export resolution. This avoids namespace pollution while supporting Kotlin-style disambiguation. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
 
 Java host classes use an explicit `java:` URI and the same alias syntax:
 
@@ -274,6 +296,19 @@ An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
 `T` is the joined value type. A `DynamicStruct<T>` can also be created
 directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
 only values assignable to `T`.
+
+Dynamic structs are dynamic **data**, not dynamic types, so they remain AOT-friendly. Bracket/dot lookup is strict and fails when the key is absent. Code that needs presence-aware lookup uses map-style methods instead of an ambient `null`/undefined value:
+
+```ores
+let DynamicStruct<int> bag = new DynamicStruct<int>();
+bag["answer"] = 42;
+
+val present = bag.has_key("answer");     // bool
+val maybe = bag.get("answer");           // Option<int>
+val value = bag.get_or("missing", 0);    // int
+```
+
+The method names `get`, `has_key`, and `get_or` are reserved as DynamicStruct API names; a data key with one of those names remains accessible with bracket syntax.
 
 Inline array:
 
@@ -803,23 +838,37 @@ Each source file is a separately versioned **code unit**:
 - source digest;
 - checked AST / future serialized Ores IR;
 - explicit import dependencies;
-- package identity;
+- package identity derived from the canonical Unix-style source path;
 - zero or more flat modules;
-- optional flat source namespace.
+- zero or more flat type-only namespaces.
 
-With no explicit namespace, the file/code-unit identity is its default package identity. An explicit namespace is written once at the top of the file:
+The `namespace X;` file-header form is intentionally not part of the language. Package/code-unit identity comes from the source path, while `define namespace X as ... end` declares a type container inside that code unit. Keeping those concepts separate avoids making namespace syntax double as build-system identity.
+
+### Static declaration graph and AOT
+
+Oreslang follows a **known code/type graph + dynamic data/instances** model.
+
+Static program structure includes modules, namespaces, classes, abstract classes, interfaces, and type aliases. Those declarations cannot be created conditionally inside a function, loop, actor turn, or runtime expression. This is a deliberate closed-world/AOT rule.
+
+Runtime creation remains fully dynamic when the declared type is known:
 
 ```ores
-namespace payments;
+define class Worker as
+  val int id;
+end
 
-import fnc {authorize} from "./auth.ores";
-
-pub fnc charge(): void {
+fnc make(Array<int> ids): void {
+  for (val id of ids) {
+    val worker = new Worker(id);       // dynamic instance: AOT-friendly
+    val DynamicStruct<int> data = new DynamicStruct<int>(); // dynamic data: AOT-friendly
+  }
   return;
 }
 ```
 
-Namespaces are flat. `namespace company.payments;` is illegal. Modules are also flat: a module name is one identifier and a module may not contain another module.
+Hot loading is a separate mechanism: a new code generation is compiled as an artifact and admitted through a known ABI. It does not dynamically define classes/modules/namespaces inside the running language scope. Open-ended reflection, arbitrary runtime type lookup by attacker/runtime-generated strings, source `eval`, and runtime class definition are outside the normal language model.
+
+For type conversion, Oreslang should prefer **checked type-pattern refinement** over unchecked casts. A successful pattern narrows the value to the matched type; a non-match remains ordinary control flow. This keeps type discovery bounded to statically known types and composes with the guarded pattern-matching work rather than introducing Java-style unchecked cast syntax.
 
 The incremental compiler uses separate **source** and **ABI** digests:
 
