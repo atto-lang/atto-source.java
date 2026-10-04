@@ -11,7 +11,8 @@ import java.util.List;
  *
  * This is deliberately not a public FFI facility. Guest code reaches this
  * object only through the reserved native_net builtin, and every operation
- * requires NETWORK from both the context and the current actor policy.
+ * requires NETWORK plus the trusted NETWORK_RAW transport capability from
+ * both the context and the current actor policy.
  * HTTP, URI and other protocol semantics belong in .ores source.
  */
 public final class NativeNetBuiltin implements BuiltinValue {
@@ -80,6 +81,7 @@ public final class NativeNetBuiltin implements BuiltinValue {
 
     private void admit(String operation) {
         context.requireCapability(IsolatePolicy.Capability.NETWORK, "native_net." + operation);
+        context.requireCapability(IsolatePolicy.Capability.NETWORK_RAW, "native_net." + operation);
     }
 
     private static void require(List<Object> args, int count, String operation) {
