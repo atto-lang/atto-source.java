@@ -1419,6 +1419,16 @@ public final class ActorRuntime implements AutoCloseable {
             }
         }
 
+        /**
+         * Admit one ordinary/root OresScheduler turn onto the CONTROL pool.
+         * Unlike maintenance work, saturation is surfaced to the scheduler so
+         * task failure/backpressure is explicit rather than silently retried.
+         */
+        void executeControlTask(Runnable task) {
+            Objects.requireNonNull(task, "task");
+            controlDispatcher.execute(task);
+        }
+
         void shutdownNow() {
             controlDispatcher.shutdownNow();
             privateDispatcher.shutdownNow();
@@ -2008,7 +2018,7 @@ public final class ActorRuntime implements AutoCloseable {
             armRootDeadline();
             if (closed.get()) carrier.interrupt();
             try {
-                turnExecutor.execute(() -> {
+                vm.rootScheduler().runBound(() -> turnExecutor.execute(() -> {
                     try {
                         schedulerSafepoint();
                         completion.complete(task.get());
@@ -2018,7 +2028,7 @@ public final class ActorRuntime implements AutoCloseable {
                         if (failure instanceof ThreadDeath fatal) throw fatal;
                         if (failure instanceof LinkageError fatal) throw fatal;
                     }
-                });
+                }));
             } catch (Throwable failure) {
                 completion.completeExceptionally(failure);
                 if (failure instanceof VirtualMachineError fatal) throw fatal;
