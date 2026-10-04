@@ -260,10 +260,16 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
         // winning terminal transition.
         cancelHook.set(null);
 
+        Error fatal = null;
         Waiter<T> waiter;
         while ((waiter = waiters.poll()) != null) {
-            notifyWaiter(waiter, terminal);
+            try {
+                notifyWaiter(waiter, terminal);
+            } catch (VirtualMachineError | ThreadDeath | LinkageError waiterFatal) {
+                if (fatal == null) fatal = waiterFatal;
+            }
         }
+        if (fatal != null) throw fatal;
         return true;
     }
 
