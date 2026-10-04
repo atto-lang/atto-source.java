@@ -7,12 +7,22 @@ import_decl     = "import" import_spec "from" STRING_LITERAL ";" ;
 import_spec     = "*" "as" IDENT
                 | "module" import_names
                 | "class" import_names
+                | "actor" import_names
                 | "fnc" import_names ;
-import_names    = IDENT
-                | "{" IDENT { "," IDENT } "}"
+import_names    = import_name
+                | "(" grouped_import_name { "," grouped_import_name } ")"
+                | "{" grouped_import_name { "," grouped_import_name } "}"
                 | "*" "as" IDENT ;
+import_name     = IDENT [ "as" IDENT ] ;
+grouped_import_name
+                = IDENT [ ( "as" | ":" ) IDENT ] ;
+(* Bare/default imports such as "import Foo from ..." are intentionally invalid. *)
 
-top_level_item  = annotated_module_decl
+entry_export_decl
+                = "export" "entry" ( "module" | "class" | "actor" | "fnc" ) IDENT ";" ;
+
+top_level_item  = entry_export_decl
+                | annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
