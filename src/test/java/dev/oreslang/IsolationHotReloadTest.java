@@ -2,6 +2,7 @@ package dev.oreslang;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ActorEntryContract;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
 import dev.oreslang.runtime.HotReloadManager;
@@ -134,6 +135,99 @@ final class IsolationHotReloadTest {
             assertEquals(Ast.ExportKind.ACTOR, entry.kind());
             assertEquals("Worker", entry.name());
             assertFalse(generation.started(), "entry resolution must not execute guest code");
+        }
+    }
+
+    @Test
+    void actorEntryRequiresExactContractAndRetainsAbiDigest() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            String source = """
+                    export entry actor Worker;
+
+                    define actor Worker {
+                      pub receive(int message): void { return; }
+                    }
+                    """;
+
+            IllegalArgumentException genericBypass = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadEntry("worker.ores", source));
+            assertTrue(genericBypass.getMessage().contains("loadActorEntry"));
+
+            ActorEntryContract contract = ActorEntryContract.of(
+                    "Worker",
+                    Ast.ActorKind.SHARED,
+                    Ast.TypeRef.simple("int"));
+            var generation = hot.loadActorEntry("worker.ores", source, contract);
+
+            assertEquals(contract.abiDigest(), generation.actorEntryAbiDigest().orElseThrow());
+            assertEquals(Ast.ExportKind.ACTOR, generation.entryExport().orElseThrow().kind());
+            assertFalse(generation.started(), "ABI admission must not execute guest code");
+        }
+    }
+
+    @Test
+    void actorEntryRejectsReceiveAbiDriftBeforeStaging() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            String source = """
+                    export entry actor Worker;
+
+                    define actor Worker {
+                      pub receive(String message): void { return; }
+                    }
+                    """;
+
+            ActorEntryContract contract = ActorEntryContract.of(
+                    "Worker",
+                    Ast.ActorKind.SHARED,
+                    Ast.TypeRef.simple("int"));
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadActorEntry("worker.ores", source, contract));
+            assertTrue(failure.getMessage().contains("receive ABI mismatch"));
+            assertEquals(0, hot.liveGenerations(),
+                    "failed ABI admission must not allocate a generation");
+        }
+    }
+
+    @Test
+    void actorEntryIsolationMustMatchExecutionDomain() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        String source = """
+                export entry actor Worker;
+
+                define isoactor Worker {
+                  pub receive(int message): void { return; }
+                }
+                """;
+        ActorEntryContract contract = ActorEntryContract.of(
+                "Worker",
+                Ast.ActorKind.PRIVATE,
+                Ast.TypeRef.simple("int"));
+
+        try (HotReloadManager wrongDomain =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> wrongDomain.loadActorEntry("worker.ores", source, contract));
+            assertTrue(failure.getMessage().contains("TRUSTED_ISOACTOR_JIT"));
+            assertEquals(0, wrongDomain.liveGenerations());
+        }
+
+        try (HotReloadManager correctDomain = new HotReloadManager(
+                policy,
+                policy,
+                ExecutionProfile.serverJit(),
+                HotReloadManager.ExecutionDomain.TRUSTED_ISOACTOR_JIT)) {
+            var generation = correctDomain.loadActorEntry("worker.ores", source, contract);
+            assertEquals(
+                    HotReloadManager.ExecutionDomain.TRUSTED_ISOACTOR_JIT,
+                    generation.executionDomain());
+            assertFalse(generation.executionDomain().spawnedIsolate(),
+                    "trusted isoactors stay in the primary Graal isolate");
         }
     }
 
