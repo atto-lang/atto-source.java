@@ -203,4 +203,99 @@ final class StatefulModuleInjectionTest {
                 SecurityException.class,
                 () -> CapabilityChecker.check(injected, IsolatePolicy.strictFaas()));
     }
+    @Test
+    void persistentStateRequiresExplicitSchemaType() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define global module Counter
+                          let value = 0;
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("explicit type"));
+        assertTrue(failure.getMessage().contains("schema"));
+    }
+
+    @Test
+    void globalValReadsAreFutureTypedButConstsRemainImmediate() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define global module Config
+                  pub val int revision = 1;
+                  pub const Symbol ready = :ready;
+                end
+
+                fnc revision() : int {
+                  return await Config.revision;
+                }
+
+                fnc ready() : Symbol {
+                  return Config.ready;
+                }
+                """)));
+    }
+
+    @Test
+    void privateInjectedCapabilityCannotBeReadThroughAnotherObject() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define global module Secret
+                          pub const Symbol ready = :ready;
+                        end
+
+                        define class Holder as
+                          @InjectGlobal(Secret)
+                          private val GlobalRef<Secret> secret;
+                        end
+
+                        fnc leak(Holder holder) : GlobalRef<Secret> {
+                          return holder.secret;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("private field"));
+    }
+
+    @Test
+    void failedGlobalTurnDoesNotPublishPartialBindingReplacement() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, """
+                define global module Counter
+                  let int value = 0;
+
+                  pub fnc fail() : int {
+                    value = 99;
+                    switch :miss {
+                      :other -> { return value; }
+                    }
+                    return value;
+                  }
+
+                  pub fnc get() : int {
+                    return value;
+                  }
+                end
+
+                pub fnc main() : void {
+                  try {
+                    val int ignored = await Counter.fail();
+                  } catch (err) {
+                    stdio.println(await Counter.get());
+                  }
+                  return;
+                }
+                """, "global-failed-turn.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertEquals("0", output.toString(StandardCharsets.UTF_8).trim());
+    }
+
+
 }
