@@ -164,6 +164,27 @@ public final class OwnershipChecker {
             }
             return;
         }
+        if (stmt instanceof Ast.YieldStmt yielded) {
+            if (mutexCriticalSectionDepth > 0) {
+                throw error("with_lock/recover critical-section callbacks cannot yield a value");
+            }
+            if (yielded.value() instanceof Ast.UnaryExpr unary
+                    && (unary.operator().equals("&") || unary.operator().equals("&mut"))) {
+                VarState owner = borrowOwner(unary.operand(), scope);
+                if (owner.origin == Origin.LOCAL) {
+                    throw error("cannot yield a borrow of local value '" + owner.debugName
+                            + "'; the generator consumer could outlive the borrow");
+                }
+                if (isActorConfinedBorrow(owner)) {
+                    throw error("actor-confined state cannot escape its mailbox turn through yield");
+                }
+            }
+            ValueInfo value = checkExpr(yielded.value(), scope, true);
+            if (containsMutexGuardType(value.type)) {
+                throw error("MutexGuard values are lexical and cannot be yielded from a generator");
+            }
+            return;
+        }
         if (stmt instanceof Ast.ExprStmt expression) {
             ValueInfo value = checkExpr(expression.expression(), scope, false);
             if (containsMutexGuardType(value.type)) {
@@ -908,6 +929,8 @@ public final class OwnershipChecker {
                 }
             } else if (stmt instanceof Ast.ReturnStmt ret && ret.value() != null) {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
+            } else if (stmt instanceof Ast.YieldStmt yielded) {
+                scanExpr(yielded.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.IfStmt s) {
