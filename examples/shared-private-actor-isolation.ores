@@ -12,7 +12,7 @@ shared actor SharedCounter {
   let SharedMutex<CounterState> shared_count =
       SharedMutex.new(new CounterState());
 
-  pub receive_message(int delta) => void {
+  pub receive(int delta) => void {
     if delta > 0; do
       self.increment();
     fi
