@@ -608,6 +608,30 @@ public final class TypeChecker {
             checkBlock(conditional.elseBody(), env, generics, expectedReturn, self);
             return;
         }
+        if (stmt instanceof Ast.SwitchStmt switched) {
+            Type subject = deref(typeOf(switched.subject(), env, generics, self));
+            boolean catchAllSeen = false;
+            for (Ast.SwitchClause clause : switched.clauses()) {
+                if (catchAllSeen) {
+                    throw new IllegalArgumentException(
+                            "unreachable switch clause after wildcard/binding catch-all");
+                }
+                Env clauseEnv = new Env(env);
+                bindPatternTypes(clause.pattern(), subject, clauseEnv, generics, self);
+                if (clause.guard() != null) {
+                    requirePurePatternGuard(clause.guard());
+                    requireAssignable(
+                            typeOf(clause.guard(), clauseEnv, generics, self),
+                            Primitive.BOOL,
+                            "switch pattern guard");
+                }
+                checkBlock(clause.body(), clauseEnv, generics, expectedReturn, self);
+                catchAllSeen = clause.guard() == null
+                        && (clause.pattern() instanceof Ast.WildcardPattern
+                            || clause.pattern() instanceof Ast.BindingPattern);
+            }
+            return;
+        }
         if (stmt instanceof Ast.TryStmt attempted) {
             checkBlock(attempted.body(), env, generics, expectedReturn, self);
             Env caught = new Env(env);
@@ -633,6 +657,148 @@ public final class TypeChecker {
         }
     }
 
+    private void bindPatternTypes(
+            Ast.Pattern pattern,
+            Type subject,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        subject = deref(subject);
+        if (pattern instanceof Ast.WildcardPattern) return;
+        if (pattern instanceof Ast.BindingPattern binding) {
+            env.define(binding.name(), subject, Ast.BindingKind.VAL);
+            return;
+        }
+        if (pattern instanceof Ast.LiteralPattern literal) {
+            Type literalType;
+            if (literal.value() instanceof Long) literalType = Primitive.INT;
+            else if (literal.value() instanceof Double) literalType = Primitive.FLOAT;
+            else if (literal.value() instanceof Boolean) literalType = Primitive.BOOL;
+            else if (literal.value() instanceof String s) literalType = new StringLiteral(s);
+            else if (literal.value() instanceof Ast.Symbol) literalType = new Named("Symbol", List.of());
+            else literalType = Unknown.INSTANCE;
+            if (subject != Unknown.INSTANCE && literalType != Unknown.INSTANCE
+                    && !assignable(literalType, subject)
+                    && !assignable(subject, literalType)) {
+                throw new IllegalArgumentException(
+                        "switch literal pattern has type " + literalType
+                                + " but subject has incompatible type " + subject);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.TypePattern typed) {
+            Type narrowed = resolve(typed.type(), generics, self);
+            if (typed.bindingName() != null) {
+                env.define(typed.bindingName(), narrowed, Ast.BindingKind.VAL);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            List<Type> elements = new ArrayList<>();
+            if (subject instanceof Tuple tuple) {
+                elements.addAll(tuple.elements());
+            } else if (subject instanceof ListType list) {
+                for (int i = 0; i < sequence.elements().size(); i++) elements.add(list.element());
+            } else if (subject == Unknown.INSTANCE) {
+                for (int i = 0; i < sequence.elements().size(); i++) elements.add(Unknown.INSTANCE);
+            } else {
+                throw new IllegalArgumentException(
+                        "sequence switch pattern requires tuple/list subject, got " + subject);
+            }
+            if (elements.size() != sequence.elements().size()) {
+                throw new IllegalArgumentException(
+                        "sequence switch pattern arity " + sequence.elements().size()
+                                + " does not match subject arity " + elements.size());
+            }
+            for (int i = 0; i < elements.size(); i++) {
+                bindPatternTypes(sequence.elements().get(i), elements.get(i), env, generics, self);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.ObjectPattern object) {
+            for (Ast.ObjectPatternField field : object.fields()) {
+                bindPatternTypes(
+                        field.pattern(),
+                        objectDestructureMemberType(subject, field.name()),
+                        env, generics, self);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.VariantPattern variant) {
+            if (subject instanceof Named named && named.name().equals("Result")
+                    && named.arguments().size() == 2
+                    && (variant.name().equals("Ok") || variant.name().equals("Err"))) {
+                if (variant.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            variant.name() + " pattern expects exactly one payload pattern");
+                }
+                Type payload = variant.name().equals("Ok")
+                        ? named.arguments().get(0) : named.arguments().get(1);
+                bindPatternTypes(variant.arguments().getFirst(), payload, env, generics, self);
+                return;
+            }
+            if (subject instanceof Named named && named.name().equals("Option")
+                    && named.arguments().size() == 1) {
+                if (variant.name().equals("Some")) {
+                    if (variant.arguments().size() != 1) {
+                        throw new IllegalArgumentException("Some pattern expects exactly one payload pattern");
+                    }
+                    bindPatternTypes(
+                            variant.arguments().getFirst(),
+                            named.arguments().getFirst(),
+                            env, generics, self);
+                    return;
+                }
+                if (variant.name().equals("None")) {
+                    if (!variant.arguments().isEmpty()) {
+                        throw new IllegalArgumentException("None pattern takes no payload");
+                    }
+                    return;
+                }
+            }
+            for (Ast.Pattern child : variant.arguments()) {
+                bindPatternTypes(child, Unknown.INSTANCE, env, generics, self);
+            }
+            return;
+        }
+        throw new IllegalArgumentException(
+                "unsupported switch pattern " + pattern.getClass().getSimpleName());
+    }
+
+    private static void requirePurePatternGuard(Ast.Expr expr) {
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return;
+        if (expr instanceof Ast.MemberExpr member) {
+            requirePurePatternGuard(member.receiver());
+            return;
+        }
+        if (expr instanceof Ast.IndexExpr indexed) {
+            requirePurePatternGuard(indexed.receiver());
+            requirePurePatternGuard(indexed.index());
+            return;
+        }
+        if (expr instanceof Ast.UnaryExpr unary) {
+            if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
+                throw new IllegalArgumentException("switch guard cannot borrow/mutate state");
+            }
+            requirePurePatternGuard(unary.operand());
+            return;
+        }
+        if (expr instanceof Ast.BinaryExpr binary) {
+            requirePurePatternGuard(binary.left());
+            requirePurePatternGuard(binary.right());
+            return;
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            requirePurePatternGuard(conditional.condition());
+            requirePurePatternGuard(conditional.whenTrue());
+            requirePurePatternGuard(conditional.whenFalse());
+            return;
+        }
+        throw new IllegalArgumentException(
+                "switch guard must be pure/read-only; calls, assignment, allocation, await, "
+                        + "lambdas, and container construction are forbidden");
+    }
+
     private Type typeOf(Ast.Expr expr, Env env, Set<String> generics, Type self) {
         if (expr instanceof Ast.LiteralExpr literal) {
             Object value = literal.value();
@@ -641,6 +807,7 @@ public final class TypeChecker {
             if (value instanceof Double) return Primitive.FLOAT;
             if (value instanceof Boolean) return Primitive.BOOL;
             if (value instanceof String s) return new StringLiteral(s);
+            if (value instanceof Ast.Symbol) return new Named("Symbol", List.of());
             if (value instanceof Ast.Imaginary) return Primitive.COMPLEX;
             return Unknown.INSTANCE;
         }
