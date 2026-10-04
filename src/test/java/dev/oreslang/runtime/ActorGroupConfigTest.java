@@ -182,4 +182,80 @@ final class ActorGroupConfigTest {
                 UnsupportedOperationException.class,
                 () -> process.staticGroupsByName().clear());
     }
+
+    @Test
+    void factoryCatalogValidatesGenerationAndActorDomainBeforeMain() {
+        ActorFactoryCatalog catalog = new ActorFactoryCatalog(
+                7,
+                List.of(new ActorFactoryCatalog.Descriptor(
+                        ActorFactoryCatalog.FactoryKey.parse(
+                                "workers/tenant_worker.ores::worker"),
+                        ActorRuntime.ActorKind.SHARED,
+                        "TenantJob",
+                        "TenantEvent",
+                        "sha256:abc",
+                        7)));
+
+        ActorGroupConfig.DynamicGroupTemplate template =
+                new ActorGroupConfig.DynamicGroupTemplate(
+                        "tenant-workers",
+                        sharedPolicy(
+                                0,
+                                32,
+                                "workers/tenant_worker.ores::worker"),
+                        1024);
+
+        ActorGroupConfig.ProcessConfig process =
+                new ActorGroupConfig.ProcessConfig(
+                        2048,
+                        1024,
+                        16_384,
+                        List.of(),
+                        List.of(template));
+
+        assertDoesNotThrow(() -> process.validateFactories(catalog));
+
+        ActorFactoryCatalog wrongDomain = new ActorFactoryCatalog(
+                7,
+                List.of(new ActorFactoryCatalog.Descriptor(
+                        ActorFactoryCatalog.FactoryKey.parse(
+                                "workers/tenant_worker.ores::worker"),
+                        ActorRuntime.ActorKind.PRIVATE,
+                        "TenantJob",
+                        "TenantEvent",
+                        "sha256:def",
+                        7)));
+
+        IllegalArgumentException mismatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> process.validateFactories(wrongDomain));
+        assertTrue(mismatch.getMessage().contains("declares actor kind"));
+    }
+
+    @Test
+    void configRejectsMalformedFactoryKeysAndMissingCatalogEntries() {
+        IllegalArgumentException malformed = assertThrows(
+                IllegalArgumentException.class,
+                () -> sharedPolicy(0, 8, "workers/worker.ores"));
+        assertTrue(malformed.getMessage().contains("<path>::<symbol>"));
+
+        ActorGroupConfig.StaticGroupSpec group =
+                new ActorGroupConfig.StaticGroupSpec(
+                        "workers",
+                        sharedPolicy(1, 8, "workers/worker.ores::worker"));
+        ActorGroupConfig.ProcessConfig process =
+                new ActorGroupConfig.ProcessConfig(
+                        16,
+                        8,
+                        64,
+                        List.of(group),
+                        List.of());
+
+        ActorFactoryCatalog empty = new ActorFactoryCatalog(11, List.of());
+        IllegalArgumentException missing = assertThrows(
+                IllegalArgumentException.class,
+                () -> process.validateFactories(empty));
+        assertTrue(missing.getMessage().contains("not present in code generation 11"));
+    }
+
 }
