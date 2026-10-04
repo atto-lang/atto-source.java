@@ -43,6 +43,81 @@ final class OresVMTest {
     }
 
     @Test
+    void vmKernelTypeIsNotPublicAndContextDoesNotExposeIt() {
+        assertFalse(Modifier.isPublic(OresVM.class.getModifiers()),
+                "OresVM is a runtime kernel type, not a user/interop API");
+
+        for (Method method : OresContext.class.getMethods()) {
+            assertNotEquals(
+                    OresVM.class,
+                    method.getReturnType(),
+                    "OresContext must never hand guest/interop code the VM object: " + method);
+        }
+    }
+
+    @Test
+    void vmOwnsHotReloadManagersAndDedicatedShutdownClosesGenerations() {
+        ActorRuntime.DispatcherConfig config = ActorRuntime.DispatcherConfig.defaults();
+        OresVM vm = OresVM.dedicated(config);
+
+        HotReloadManager hot = vm.newHotReloadManager(
+                IsolatePolicy.developer(),
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                HotReloadManager.ExecutionDomain.TRUSTED_JIT);
+
+        assertEquals(1, vm.hotReloadManagerCount());
+
+        HotReloadManager.Generation generation = hot.loadAndStart(
+                "vm-owned.ores",
+                """
+                pub routine main() => void {
+                  return;
+                }
+                """);
+        assertEquals(HotReloadManager.GenerationState.ACTIVE, generation.state());
+
+        vm.shutdownNow();
+
+        assertTrue(vm.shutdown());
+        assertEquals(0, vm.hotReloadManagerCount());
+        assertTrue(generation.closed(),
+                "dedicated VM shutdown must retire contexts/generations it owns");
+        assertThrows(
+                IllegalStateException.class,
+                () -> hot.load("after-shutdown.ores", "pub routine main() => void { return; }"));
+    }
+
+    @Test
+    void untrustedHotLoadDomainIsFailClosedAndMarkedForSpawnedIsolate() {
+        OresVM vm = OresVM.dedicated(ActorRuntime.DispatcherConfig.defaults());
+        try {
+            HotReloadManager hot = vm.newHotReloadManager(
+                    IsolatePolicy.developer(),
+                    IsolatePolicy.developer().withCapabilities(
+                            IsolatePolicy.Capability.FFI,
+                            IsolatePolicy.Capability.NATIVE,
+                            IsolatePolicy.Capability.REFLECTION,
+                            IsolatePolicy.Capability.THREAD_CREATE,
+                            IsolatePolicy.Capability.POLYGLOT),
+                    ExecutionProfile.serverJit(),
+                    HotReloadManager.ExecutionDomain.UNTRUSTED_JIT);
+            try {
+                assertTrue(hot.executionDomain().spawnedIsolate());
+                assertTrue(hot.executionDomain().untrusted());
+                assertTrue(hot.guestPolicy().adversarial());
+                assertTrue(hot.guestPolicy().capabilities().isEmpty(),
+                        "untrusted generations receive no ambient host authority");
+            } finally {
+                hot.close();
+            }
+            assertEquals(0, vm.hotReloadManagerCount());
+        } finally {
+            vm.shutdownNow();
+        }
+    }
+
+    @Test
     void controlPlaneRunsRootAndMailmanOffSharedActorCarriers() throws Exception {
         ActorRuntime.DispatcherConfig config = new ActorRuntime.DispatcherConfig(
                 1,
