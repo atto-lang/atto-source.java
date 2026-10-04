@@ -74,6 +74,9 @@ public final class ActorGroupConfig {
             }
 
             factory = normalizeOptional(factory);
+            if (factory != null) {
+                factory = ActorFactoryCatalog.FactoryKey.parse(factory).canonical();
+            }
             if (minActors > 0 && factory == null) {
                 throw new IllegalArgumentException(
                         "minActors > 0 requires a factory so the supervisor can maintain the floor");
@@ -264,6 +267,44 @@ public final class ActorGroupConfig {
                         "unknown dynamic actor group template '" + request.template() + "'");
             }
             return template.ceiling().withRequestedDynamicCapacity(request);
+        }
+
+        /**
+         * Link configured symbolic factory keys against the immutable catalog
+         * for the exact code generation that will execute this process.
+         *
+         * This must run before main() is admitted. It is intentionally separate
+         * from actor construction: resolving a descriptor never executes guest
+         * code or self-registers an actor definition.
+         */
+        public void validateFactories(ActorFactoryCatalog catalog) {
+            Objects.requireNonNull(catalog, "catalog");
+            for (StaticGroupSpec group : staticGroups) {
+                validateFactory(
+                        "static actor group '" + group.name() + "'",
+                        group.policy(),
+                        catalog);
+            }
+            for (DynamicGroupTemplate template : dynamicTemplates) {
+                validateFactory(
+                        "dynamic actor group template '" + template.name() + "'",
+                        template.ceiling(),
+                        catalog);
+            }
+        }
+
+        private static void validateFactory(
+                String owner,
+                GroupPolicy policy,
+                ActorFactoryCatalog catalog) {
+            if (!policy.hasFactory()) return;
+            ActorFactoryCatalog.Descriptor descriptor = catalog.require(policy.factory());
+            if (descriptor.actorKind() != policy.actorKind()) {
+                throw new IllegalArgumentException(
+                        owner + " declares actor kind " + policy.actorKind()
+                                + " but factory '" + descriptor.key()
+                                + "' is " + descriptor.actorKind());
+            }
         }
     }
 
