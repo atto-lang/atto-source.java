@@ -430,6 +430,16 @@ public final class TypeChecker {
         }
     }
 
+    private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
+        int previousLoopDepth = loopDepth;
+        loopDepth = 0;
+        try {
+            checkBlock(body, parent, generics, expectedReturn, self);
+        } finally {
+            loopDepth = previousLoopDepth;
+        }
+    }
+
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
         if (stmt instanceof Ast.BindingStmt binding) {
             Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
@@ -1038,7 +1048,7 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
-            checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
+            checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
             return new Function(parameters, Unknown.INSTANCE);
         }
         return Unknown.INSTANCE;
@@ -1131,7 +1141,7 @@ public final class TypeChecker {
         requireAssignable(declared, expectedParameter, "mutex callback parameter " + param.name());
         Env lambdaEnv = new Env(parent);
         lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-        checkBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
+        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, Primitive.VOID, self);
     }
 
 
@@ -1158,7 +1168,7 @@ public final class TypeChecker {
             requireAssignable(declared, expectedParam, "lambda parameter " + param.name());
             lambdaEnv.define(param.name(), declared, param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
-        checkBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
+        checkCallableBlock(lambda.blockBody(), lambdaEnv, generics, expected.result(), self);
         if (expected.result() != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
@@ -1884,6 +1894,10 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(expression.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DeferStmt defer) {
                 rejectStaticClassGenericReferences(defer.expression(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.BlockStmt block) {
+                rejectStaticClassGenericReferences(block.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.LoopStmt loop) {
+                rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
             } else if (statement instanceof Ast.IfStmt conditional) {
                 for (Ast.IfBranch branch : conditional.branches()) {
                     rejectStaticClassGenericReferences(branch.condition(), classGenerics, klass, method);
@@ -2480,6 +2494,8 @@ public final class TypeChecker {
     private boolean definitelyReturns(List<Ast.Stmt> body) {
         for (Ast.Stmt stmt : body) {
             if (stmt instanceof Ast.ReturnStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block && definitelyReturns(block.body())) return true;
+            if (stmt instanceof Ast.LoopStmt loop && !containsBreakForCurrentLoop(loop.body())) return true;
             if (stmt instanceof Ast.IfStmt conditional) {
                 boolean allBranches = !conditional.branches().isEmpty()
                         && conditional.branches().stream().allMatch(branch -> definitelyReturns(branch.body()))
@@ -2491,6 +2507,25 @@ public final class TypeChecker {
                 if (definitelyReturns(attempted.finallyBody())) return true;
                 if (definitelyReturns(attempted.body()) && definitelyReturns(attempted.catchBody())) return true;
             }
+        }
+        return false;
+    }
+
+    private boolean containsBreakForCurrentLoop(List<Ast.Stmt> body) {
+        for (Ast.Stmt stmt : body) {
+            if (stmt instanceof Ast.BreakStmt) return true;
+            if (stmt instanceof Ast.BlockStmt block && containsBreakForCurrentLoop(block.body())) return true;
+            if (stmt instanceof Ast.IfStmt conditional) {
+                for (Ast.IfBranch branch : conditional.branches()) {
+                    if (containsBreakForCurrentLoop(branch.body())) return true;
+                }
+                if (containsBreakForCurrentLoop(conditional.elseBody())) return true;
+            } else if (stmt instanceof Ast.TryStmt attempted) {
+                if (containsBreakForCurrentLoop(attempted.body())
+                        || containsBreakForCurrentLoop(attempted.catchBody())
+                        || containsBreakForCurrentLoop(attempted.finallyBody())) return true;
+            }
+            // Breaks inside nested loops target those loops, not the loop being analyzed.
         }
         return false;
     }
@@ -2544,6 +2579,12 @@ public final class TypeChecker {
         else if (stmt instanceof Ast.ReturnStmt s && s.value() != null) collectCalls(s.value(), module, out);
         else if (stmt instanceof Ast.ExprStmt s) collectCalls(s.expression(), module, out);
         else if (stmt instanceof Ast.DeferStmt s) collectCalls(s.expression(), module, out);
+        else if (stmt instanceof Ast.BlockStmt s) {
+            for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        }
+        else if (stmt instanceof Ast.LoopStmt s) {
+            for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        }
         else if (stmt instanceof Ast.IfStmt s) {
             for (Ast.IfBranch b : s.branches()) {
                 collectCalls(b.condition(), module, out);
