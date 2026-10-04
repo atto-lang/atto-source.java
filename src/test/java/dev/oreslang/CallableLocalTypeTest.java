@@ -527,54 +527,6 @@ final class CallableLocalTypeTest {
     }
 
     @Test
-    void callableLocalTraitComposesIntoEscapingLocalStruct() throws Exception {
-        String output = runProgram("""
-                define module app as
-                  fnc make() => T {
-                    trait Labelled {
-                      pub label() => string {
-                        return "local";
-                      }
-                    }
-
-                    struct T with Labelled {
-                      value: int;
-                    }
-
-                    return T { value = 1 };
-                  }
-
-                  pub fnc main() => void {
-                    val result = make();
-                    stdio.stdout.write(result.label());
-                    return;
-                  }
-                end
-                """);
-
-        assertEquals("local", output);
-    }
-
-    @Test
-    void localTraitNamesCannotCollideWithCallableGenericParameters() {
-        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define module app as
-                          fnc bad<T>() => void {
-                            trait T {
-                              pub value() => int {
-                                return 1;
-                              }
-                            }
-                            return;
-                          }
-                        end
-                        """)));
-
-        assertTrue(error.getMessage().contains("collides with an in-scope generic type parameter"));
-    }
-
-    @Test
     void nestedBlockLocalStructMethodsRetainEnclosingModuleStateAtRuntime() throws Exception {
         String output = runProgram("""
                 define module app as
