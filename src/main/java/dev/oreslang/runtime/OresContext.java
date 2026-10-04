@@ -33,6 +33,8 @@ public final class OresContext implements AutoCloseable {
     private final ReentrantLock adversarialActorTurnLock = new ReentrantLock(true);
     private final Map<String, Object> linkedCodeUnits = new HashMap<>();
     private final Set<AutoCloseable> nativeResources = ConcurrentHashMap.newKeySet();
+    private final Object nativeResourceLifecycleLock = new Object();
+    private boolean nativeResourceRegistrationClosed;
 
     public OresContext(OresLanguage language, TruffleLanguage.Env env) {
         this.language = language;
@@ -113,11 +115,27 @@ public final class OresContext implements AutoCloseable {
     public long schedulerSafepoints() { return schedulerSafepoints.get(); }
 
     public void registerNativeResource(AutoCloseable resource) {
-        nativeResources.add(resource);
+        java.util.Objects.requireNonNull(resource, "resource");
+        synchronized (nativeResourceLifecycleLock) {
+            if (nativeResourceRegistrationClosed) {
+                try {
+                    resource.close();
+                } catch (Exception closeFailure) {
+                    throw new IllegalStateException(
+                            "Oreslang context is closed and late native resource cleanup failed",
+                            closeFailure);
+                }
+                throw new IllegalStateException(
+                        "Oreslang context is closed; native resources cannot be registered");
+            }
+            nativeResources.add(resource);
+        }
     }
 
     public void unregisterNativeResource(AutoCloseable resource) {
-        nativeResources.remove(resource);
+        synchronized (nativeResourceLifecycleLock) {
+            nativeResources.remove(resource);
+        }
     }
 
     /**
@@ -178,12 +196,16 @@ public final class OresContext implements AutoCloseable {
             synchronized (this) {
                 linkedCodeUnits.clear();
             }
-            AutoCloseable[] resources = nativeResources.toArray(AutoCloseable[]::new);
+            AutoCloseable[] resources;
+            synchronized (nativeResourceLifecycleLock) {
+                nativeResourceRegistrationClosed = true;
+                resources = nativeResources.toArray(AutoCloseable[]::new);
+                nativeResources.clear();
+            }
             for (AutoCloseable resource : resources) {
                 try { resource.close(); }
                 catch (Exception ignored) { }
             }
-            nativeResources.clear();
             garbageCollector.close();
             output.flush();
         }
