@@ -3064,6 +3064,20 @@ public final class ActorRuntime implements AutoCloseable {
                 true);
     }
 
+    /**
+     * Apply the same ownership/sendability validation used by shared actor
+     * transport before constructor data is captured by compiler/runtime state.
+     * This preserves ActorRef/OresRwLock capabilities from this runtime while
+     * deeply freezing ordinary data.
+     */
+    public Object prepareSourceSharedActorInput(Object value) {
+        requireCallerRuntimeAffinity("prepare source actor constructor input");
+        validateMessageGraph(value);
+        requireOwnedActorRefs(value, new IdentityHashMap<>(), 0);
+        requireOwnedSharedHandles(value, new IdentityHashMap<>(), 0);
+        return freezeForTransport(value);
+    }
+
     public <M> ActorRef<M> spawnShared(
             IsolatePolicy policy,
             BehaviorFactory<M> behaviorFactory) {
