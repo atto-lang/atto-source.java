@@ -141,7 +141,9 @@ public final class IncrementalCompiler {
 
     private static void appendAbi(StringBuilder abi, Ast.Decl decl) {
         if (decl instanceof Ast.EntryExportDecl entry) {
-            abi.append("entry ").append(entry.kind()).append(' ').append(entry.name()).append('\n');
+            // Entry is loader metadata, not a second typed export system. Its
+            // target declaration's own ABI lines carry actor/class/fnc shape.
+            abi.append("entry ").append(entry.name()).append('\n');
             return;
         }
         if (decl instanceof Ast.FunctionDecl fn) {
