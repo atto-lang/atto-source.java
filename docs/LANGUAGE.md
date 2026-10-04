@@ -554,7 +554,7 @@ The parser and static checker execute no user code.
 
 ## File-level entrypoints
 
-Named modules remain the normal namespace unit, but a source file may also contain file-level callables such as an entrypoint. The compiler places those declarations in an internal file-root namespace; that namespace is not written by user code.
+Named modules remain the normal runtime container, while type-only namespaces remain compile-time containers. A source file may also contain file-level callables such as an entrypoint; the compiler places those runtime declarations in an internal file-root module that is not written by user code.
 
 ```ores
 define module x
@@ -568,7 +568,7 @@ pub routine main(): void {
 }
 ```
 
-Qualified names such as `x.y` retain their module namespace.
+Qualified runtime names such as `x.y` retain their module ownership.
 
 ## `fnc` versus `routine`
 
@@ -829,7 +829,7 @@ Each source file is a separately versioned **code unit**:
 - explicit import dependencies;
 - package identity;
 - zero or more flat modules;
-- optional flat source namespace.
+- optional flat source/code-unit namespace header;
 
 With no explicit namespace, the file/code-unit identity is its default package identity. An explicit namespace is written once at the top of the file:
 
@@ -843,7 +843,7 @@ pub fnc charge(): void {
 }
 ```
 
-Namespaces are flat. `namespace company.payments;` is illegal. Modules are also flat: a module name is one identifier and a module may not contain another module.
+The source/code-unit namespace header is flat: `namespace company.payments;` is illegal. Type-only namespace blocks are also flat and non-nestable. Modules are flat runtime containers: a module name is one identifier and a module may contain neither a module nor a namespace.
 
 The incremental compiler uses separate **source** and **ABI** digests:
 
