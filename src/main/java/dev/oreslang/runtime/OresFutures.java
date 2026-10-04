@@ -3,6 +3,7 @@ package dev.oreslang.runtime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
@@ -47,9 +48,11 @@ public final class OresFutures {
                         registrations.set(slot, null);
                         if (result.isDone()) return;
                         if (failure != null) {
-                            if (result.failFromRuntime(OresFuture.unwrap(failure))) {
-                                detachRegistrations(registrations);
-                            }
+                            Throwable terminal = OresFuture.unwrap(failure);
+                            boolean won = children.get(slot).isCancelled()
+                                    ? result.cancelFromRuntime(asCancellation(terminal))
+                                    : result.failFromRuntime(terminal);
+                            if (won) detachRegistrations(registrations);
                             return;
                         }
                         values.set(slot, value);
@@ -92,9 +95,15 @@ public final class OresFutures {
             OresFuture.RuntimeWaiterRegistration registration =
                     children.get(index).whenCompleteRuntime((value, failure) -> {
                         registrations.set(slot, null);
-                        boolean won = failure == null
-                                ? result.completeFromRuntime(value)
-                                : result.failFromRuntime(OresFuture.unwrap(failure));
+                        boolean won;
+                        if (failure == null) {
+                            won = result.completeFromRuntime(value);
+                        } else {
+                            Throwable terminal = OresFuture.unwrap(failure);
+                            won = children.get(slot).isCancelled()
+                                    ? result.cancelFromRuntime(asCancellation(terminal))
+                                    : result.failFromRuntime(terminal);
+                        }
                         if (won) detachRegistrations(registrations);
                     });
             registrations.set(slot, registration);
@@ -151,6 +160,16 @@ public final class OresFutures {
             }
         }
         return result;
+    }
+
+    private static CancellationException asCancellation(Throwable failure) {
+        if (failure instanceof CancellationException cancellation) {
+            return cancellation;
+        }
+        CancellationException cancellation =
+                new CancellationException("child Future was cancelled");
+        cancellation.initCause(failure);
+        return cancellation;
     }
 
     private static void detachRegistrations(
