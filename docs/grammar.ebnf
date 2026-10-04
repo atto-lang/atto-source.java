@@ -48,20 +48,36 @@ actor_callable_decl
 actor_decl      = visibility [ "shared" | "untrusted" ] "actor" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  actor_body
+                | "isoactor" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  actor_body
+                | "define" [ "shared" ] "actor" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  actor_body
+                | "define" "isoactor" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  actor_body
+                | "define" "untrusted" "actor" IDENT [ generic_params ]
+                  [ "extends" type_ref { "," type_ref } ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
                   actor_body ;
 actor_body      = "{" { actor_member } "}"
-                | { actor_member } "end" ;
+                | "as" { actor_member } "end" ;
 actor_member    = field_decl
                 | actor_method_decl
                 | static_function_decl ;
 actor_method_decl
                 = { annotation } visibility { actor_method_modifier } [ "fnc" ] method_name [ generic_params ]
-                  method_head return_spec block ;
+                  method_head method_return_spec block ;
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
                   [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
-                  { class_member } "end" ;
+                  "as" { class_member } "end" ;
 
 class_member    = field_decl
                 | method_decl
@@ -70,7 +86,7 @@ class_member    = field_decl
 field_decl      = visibility binding_kind type_ref IDENT [ "=" expression ] stmt_terminator ;
 
 method_decl     = { annotation } visibility { method_modifier } method_name [ generic_params ]
-                  method_head return_spec ( block | stmt_terminator ) ;
+                  method_head method_return_spec ( block | stmt_terminator ) ;
 method_name     = IDENT | "[" "Symbol" "." IDENT "]" ;
 method_head     = "(" [ explicit_receiver | param_list ] ")" [ "(" [ param_list ] ")" ] ;
 explicit_receiver = "self" type_ref ;
@@ -89,7 +105,7 @@ interface_decl  = visibility "interface" IDENT [ generic_params ]
 interface_body  = "{" { interface_member } "}"
                 | { interface_member } "end" ;
 
-interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" return_spec member_terminator
+interface_member= "fnc" IDENT [ generic_params ] "(" [ param_list ] ")" method_return_spec member_terminator
                 | IDENT ":" type_ref member_terminator
                 | [ binding_kind ] type_ref IDENT member_terminator ;
 
@@ -97,6 +113,7 @@ type_decl       = "type" IDENT [ generic_params ] "=" type_ref stmt_terminator ;
 
 annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
+method_return_spec = [ ( ":" | "->" | "=>" ) type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
@@ -250,14 +267,24 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - instance methods may overload only when arity differs.
    - class-level functions use "static fnc"; they have no self receiver and are
      dispatched through the class namespace, never through an instance.
-   - "=>" belongs to named callable return declarations.
-   - "->" belongs to function types and lambdas.
-   - Unqualified "actor" declarations are private actors; "shared actor" opts
-     into the SHARED_MEMORY execution domain; "untrusted actor" opts into the
-     adversarial, memory-isolated, hard-budgeted sandbox domain. "shared" and
-     "untrusted" are mutually exclusive.
-   - Actor fields are private mailbox-owned state; public actor API is exposed
-     through actor methods/messages rather than public mutable fields.
+   - "=>" remains the canonical fnc/routine return declaration marker.
+   - Class/interface/actor methods accept ": T", "-> T", and legacy "=> T" as
+     equivalent return-type spellings. "->" also remains the lambda/function-type
+     arrow where the surrounding grammar is a lambda or function type.
+   - Unqualified "actor" declarations are SHARED-domain actors; "isoactor" is
+     the confined/private actor-memory domain; "untrusted actor" is the
+     adversarial, memory-isolated, hard-budgeted sandbox domain.
+   - "define actor X as ... end" and "define class X extends Actor as ... end"
+     normalize to the same ClassDecl actor semantics. Actor/IsoActor/
+     UntrustedActor are compiler-intrinsic bases, not ordinary library classes.
+   - Actor fields are private mailbox-owned state. Public instance methods form
+     the typed actor protocol; the compiler lowers them to one hidden mailbox
+     ingress/dispatcher, so source code does not need to expose receive_message.
+   - Actor constructors are runtime-only, non-public, non-static, non-generic,
+     non-suspending, and return void.
+   - Actor isolation is an ownership/effect rule rather than @Pure or nlex:
+     actor code may mutate self-owned/fresh state and explicit capabilities, but
+     may not mutate arbitrary caller/global/external mutable state.
    - Actor inheritance must preserve actor isolation kind.
    - In a destructure pattern, an explicit binding kind propagates to subsequent
      unqualified names until another binding kind appears. A leading binding
