@@ -360,10 +360,16 @@ public final class TypeChecker {
         Set<String> implemented = new HashSet<>();
         for (Ast.TypeRef interfaceRef : klass.interfaces()) {
             if (!implemented.add(interfaceRef.name())) throw new IllegalArgumentException("duplicate implemented interface '" + interfaceRef.name() + "' on " + klass.name());
-            Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
-            if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
+
+            if (interfaceType.name().equals("Awaitable")) {
+                validateAwaitableImplementation(klass, interfaceType);
+                continue;
+            }
+
+            Ast.InterfaceDecl iface = findInterface(interfaceRef.name());
+            if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
             Record expected = (Record) substituteGenerics(expectedTemplate,
                     genericBindings(iface.genericParameters(), interfaceType.arguments(), "interface " + iface.name()));
@@ -797,6 +803,8 @@ public final class TypeChecker {
             }
             Type futureMember = builtinFutureMember(sumReceiver, member.member());
             if (futureMember != null) return futureMember;
+            Type awaitableMember = builtinAwaitableMember(sumReceiver, member.member());
+            if (awaitableMember != null) return awaitableMember;
             Type actorHandleMember = builtinActorHandleMember(sumReceiver, member.member());
             if (actorHandleMember != null) return actorHandleMember;
             Type mutexMember = builtinMutexMember(receiver, member.member());
@@ -955,15 +963,7 @@ public final class TypeChecker {
             return new Named("ActorSpawn", List.of(result));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
-            Type awaitedType = typeOf(awaited.expression(), env, generics, self);
-            if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) {
-                return named.arguments().getFirst();
-            }
-            if (awaitedType instanceof Named named && named.name().equals("ActorSpawn")
-                    && named.arguments().size() == 1) {
-                return new Named("ActorRef", List.of());
-            }
-            return Unknown.INSTANCE;
+            return awaitPayload(typeOf(awaited.expression(), env, generics, self));
         }
         if (expr instanceof Ast.ListExpr list) {
             if (list.elements().isEmpty()) return new ListType(Unknown.INSTANCE);
@@ -1189,7 +1189,8 @@ public final class TypeChecker {
         }
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("ActorSpawn")) {
+                || named.name().equals("Future") || named.name().equals("Awaitable")
+                || named.name().equals("ActorSpawn")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1259,7 +1260,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("ActorSpawn")
+                || named.name().equals("Future") || named.name().equals("Awaitable")
+                || named.name().equals("ActorSpawn")
                 || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
         if (named.name().equals("Option")) {
@@ -1409,6 +1411,150 @@ public final class TypeChecker {
             };
         }
         return null;
+    }
+
+    private void validateAwaitableImplementation(
+            Ast.ClassDecl klass,
+            Named awaitableType) {
+        if (awaitableType.arguments().size() != 1) {
+            throw new IllegalArgumentException("Awaitable<T> requires exactly one payload type");
+        }
+
+        Named concreteClass = nominalClassType(klass);
+        ResolvedMethod target = findMethodTarget(
+                klass,
+                concreteClass,
+                "getAwait",
+                0,
+                new LinkedHashSet<>());
+        if (target == null) {
+            throw new IllegalArgumentException(
+                    "class '" + klass.name()
+                            + "' implements Awaitable<T> but has no public instance getAwait() method");
+        }
+
+        Ast.MethodDecl method = target.method();
+        if (method.isStatic() || method.visibility() != Ast.Visibility.PUBLIC) {
+            throw new IllegalArgumentException(
+                    "Awaitable<T>.getAwait() must be a public instance method");
+        }
+        if (!method.genericParameters().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Awaitable<T>.getAwait() cannot declare method type parameters");
+        }
+
+        Set<String> methodGenerics = new HashSet<>(target.owner().genericParameters());
+        Type declared = resolve(method.returnType(), methodGenerics, target.ownerType());
+        declared = substituteGenerics(
+                declared,
+                classGenericBindings(target.owner(), target.ownerType()));
+
+        Type payload = awaitableType.arguments().getFirst();
+        if (method.async()) {
+            if (!assignable(declared, payload) || !assignable(payload, declared)) {
+                throw new IllegalArgumentException(
+                        "async Awaitable<T>.getAwait() must declare result type "
+                                + payload + ", got " + declared);
+            }
+            return;
+        }
+
+        Type expectedFuture = new Named("Future", List.of(payload));
+        if (!assignable(declared, expectedFuture)
+                || !assignable(expectedFuture, declared)) {
+            throw new IllegalArgumentException(
+                    "synchronous Awaitable<T>.getAwait() must return "
+                            + expectedFuture + ", got " + declared);
+        }
+    }
+
+    private Type awaitPayload(Type type) {
+        type = deref(type);
+        if (type == Unknown.INSTANCE) return Unknown.INSTANCE;
+
+        if (type instanceof Named named) {
+            if (named.name().equals("Future") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            if (named.name().equals("ActorSpawn") && named.arguments().size() == 1) {
+                return new Named("ActorRef", List.of());
+            }
+            if (named.name().equals("Awaitable") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+
+            Type payload = awaitablePayloadOrNull(named, new LinkedHashSet<>());
+            if (payload != null) return payload;
+        }
+
+        if (type instanceof Union union) {
+            Type payload = Unknown.INSTANCE;
+            for (Type option : union.options()) {
+                Type next = awaitPayload(option);
+                payload = payload == Unknown.INSTANCE
+                        ? next
+                        : Types.unionOf(payload, next);
+            }
+            return payload;
+        }
+
+        throw new IllegalArgumentException(
+                "await requires Future<T> or Awaitable<T>, found " + type);
+    }
+
+    private Type awaitablePayloadOrNull(
+            Named type,
+            Set<Named> seen) {
+        if (!seen.add(type)) return null;
+        if (type.name().equals("Awaitable") && type.arguments().size() == 1) {
+            return type.arguments().getFirst();
+        }
+
+        Ast.ClassDecl klass = findClass(type.name());
+        if (klass != null) {
+            for (Ast.TypeRef ifaceRef : klass.interfaces()) {
+                Named ifaceType = concreteClassReference(ifaceRef, klass, type);
+                Type payload = awaitablePayloadOrNull(ifaceType, seen);
+                if (payload != null) return payload;
+            }
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Named parentType = concreteClassReference(parentRef, klass, type);
+                Type payload = awaitablePayloadOrNull(parentType, seen);
+                if (payload != null) return payload;
+            }
+            return null;
+        }
+
+        Ast.InterfaceDecl iface = findInterface(type.name());
+        if (iface != null) {
+            Map<String, Type> bindings = genericBindings(
+                    iface.genericParameters(),
+                    type.arguments(),
+                    "interface " + iface.name());
+            Set<String> generics = Set.copyOf(iface.genericParameters());
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Type pattern = resolve(parentRef, generics, null);
+                Type concrete = substituteGenerics(pattern, bindings);
+                if (!(concrete instanceof Named parentType)) continue;
+                Type payload = awaitablePayloadOrNull(parentType, seen);
+                if (payload != null) return payload;
+            }
+        }
+        return null;
+    }
+
+    private Type builtinAwaitableMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named)
+                || !named.name().equals("Awaitable")
+                || named.arguments().size() != 1) {
+            return null;
+        }
+        if (!member.equals("getAwait")) return null;
+        return new Function(
+                List.of(),
+                new Named("Future", List.of(named.arguments().getFirst())));
     }
 
     private Type builtinFutureMember(Type receiver, String member) {
@@ -2280,8 +2426,11 @@ public final class TypeChecker {
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
-                if (element == Primitive.VOID) throw new IllegalArgumentException("Future<void> is invalid");
                 yield new Named("Future", List.of(element));
+            }
+            case "Awaitable" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Awaitable requires exactly one explicit type argument");
+                yield new Named("Awaitable", List.of(resolve(ref.arguments().getFirst(), generics, self)));
             }
             case "SharedMutex" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("SharedMutex requires exactly one explicit type argument");
@@ -2369,6 +2518,15 @@ public final class TypeChecker {
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
+            if (expectedNamed.name().equals("Awaitable")
+                    && expectedNamed.arguments().size() == 1) {
+                Type payload = awaitablePayloadOrNull(actualNamed, new LinkedHashSet<>());
+                if (payload != null) {
+                    Type expectedPayload = expectedNamed.arguments().getFirst();
+                    return assignable(payload, expectedPayload)
+                            && assignable(expectedPayload, payload);
+                }
+            }
             if (findClass(actualNamed.name()) != null) {
                 if (findClass(expectedNamed.name()) != null
                         && classTypeExtends(actualNamed, expectedNamed, new LinkedHashSet<>())) {
