@@ -292,14 +292,22 @@ public final class OresFuture<T> implements Future<T>, OresAwaitable<T> {
         if (observed != PENDING) return observed;
 
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
-        whenCompleteRuntime((value, failure) -> done.countDown());
+        RuntimeWaiterRegistration registration =
+                whenCompleteRuntime((value, failure) -> done.countDown());
 
-        if (unit == null) {
-            done.await();
-        } else if (!done.await(timeout, unit)) {
-            return state.get() == PENDING ? PENDING : state.get();
+        try {
+            if (unit == null) {
+                done.await();
+            } else if (!done.await(timeout, unit)) {
+                return state.get();
+            }
+            return state.get();
+        } finally {
+            // Timed-out and interrupted host observers must not remain rooted
+            // in a Future that may never settle. If completion already claimed
+            // the waiter, cancel() is a harmless no-op.
+            registration.cancel();
         }
-        return state.get();
     }
 
     @SuppressWarnings("unchecked")
