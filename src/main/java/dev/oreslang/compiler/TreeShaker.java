@@ -557,6 +557,9 @@ public final class TreeShaker {
                 Ast.Stmt statement,
                 String module,
                 LinkedHashMap<String, Object> locals) {
+            if (statement instanceof Ast.LocalTypeDeclStmt localType) {
+                return List.of(localType);
+            }
             if (statement instanceof Ast.BindingStmt binding) {
                 Ast.Expr initializer = rewriteExpression(binding.initializer(), module, locals);
                 Object value = binding.kind() == Ast.BindingKind.LET
@@ -736,6 +739,15 @@ public final class TreeShaker {
                     elements.add(rewriteExpression(element, module, locals));
                 }
                 return new Ast.TupleExpr(elements);
+            }
+            if (expression instanceof Ast.StructExpr struct) {
+                List<Ast.ObjectField> fields = new ArrayList<>();
+                for (Ast.ObjectField field : struct.fields()) {
+                    fields.add(Ast.ObjectField.named(
+                            field.name(),
+                            rewriteExpression(field.value(), module, locals)));
+                }
+                return new Ast.StructExpr(struct.type(), fields);
             }
             if (expression instanceof Ast.ObjectExpr object) {
                 List<Ast.ObjectField> fields = new ArrayList<>();
@@ -996,6 +1008,11 @@ public final class TreeShaker {
                 for (Ast.Expr element : list.elements()) scanExpression(module, element, locals);
             } else if (expression instanceof Ast.TupleExpr tuple) {
                 for (Ast.Expr element : tuple.elements()) scanExpression(module, element, locals);
+            } else if (expression instanceof Ast.StructExpr struct) {
+                scanType(struct.type());
+                for (Ast.ObjectField field : struct.fields()) {
+                    scanExpression(module, field.value(), locals);
+                }
             } else if (expression instanceof Ast.ObjectExpr object) {
                 for (Ast.ObjectField field : object.fields()) {
                     if (field.isDynamic()) scanExpression(module, field.dynamicName(), locals);
