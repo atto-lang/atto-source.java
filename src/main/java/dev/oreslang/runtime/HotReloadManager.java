@@ -167,6 +167,7 @@ public final class HotReloadManager implements AutoCloseable {
      * without publishing it as active.
      */
     public synchronized Generation load(String name, String sourceText) {
+        ensureOpen();
         validateStageInput(name, sourceText);
         OresCompiler.validateForIsolate(sourceText, guestPolicy);
         return stage(name, digest(sourceText), sourceText);
@@ -178,6 +179,7 @@ public final class HotReloadManager implements AutoCloseable {
      * guest policy because authority belongs to the runtime, never the cache.
      */
     public synchronized Generation load(IncrementalCompiler.CompiledUnit unit) {
+        ensureOpen();
         Objects.requireNonNull(unit, "unit");
         validateStageInput(unit.unitId(), unit.sourceText());
         CapabilityChecker.check(unit.program(), guestPolicy);
@@ -229,6 +231,7 @@ public final class HotReloadManager implements AutoCloseable {
      * The previous generation for the same code unit starts draining.
      */
     public synchronized void activate(Generation generation) {
+        ensureOpen();
         requireOwned(generation);
         GenerationState state = generation.state();
         if (state == GenerationState.ACTIVE
@@ -264,6 +267,7 @@ public final class HotReloadManager implements AutoCloseable {
      * this lease for the entire turn/lifetime that must continue on old code.
      */
     public synchronized GenerationLease pinActive(String codeUnitId) {
+        ensureOpen();
         Generation generation = activeByCodeUnit.get(codeUnitId);
         if (generation == null || generation.state() != GenerationState.ACTIVE) {
             throw new IllegalStateException("no active generation for code unit " + codeUnitId);
@@ -277,6 +281,7 @@ public final class HotReloadManager implements AutoCloseable {
      * no actor/request still pins the generation.
      */
     public synchronized void retire(long generationId) {
+        if (managerClosed.get()) return;
         Generation generation = generations.get(generationId);
         if (generation == null) return;
 
@@ -405,6 +410,15 @@ public final class HotReloadManager implements AutoCloseable {
 
     private static Duration min(Duration left, Duration right) {
         return left.compareTo(right) <= 0 ? left : right;
+    }
+
+    private void ensureOpen() {
+        if (managerClosed.get()) {
+            throw new IllegalStateException("hot reload manager is closed");
+        }
+        if (vm.shutdown()) {
+            throw new IllegalStateException("owning Oreslang VM is shut down");
+        }
     }
 
     @Override
