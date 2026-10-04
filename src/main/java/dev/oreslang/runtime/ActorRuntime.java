@@ -475,7 +475,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         public void copyIn(byte[] bytes) {
-            Objects.requireNonNull(bytes);
+            if (bytes == null) {
+                throw new IllegalArgumentException("private actor memory copy cannot be null");
+            }
             ByteBuffer live = openMemory();
             if (bytes.length != capacity) {
                 throw new IllegalArgumentException(
@@ -1358,7 +1360,7 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     public boolean isAlive(ActorRef<?> ref) {
-        Objects.requireNonNull(ref);
+        if (ref == null) throw new IllegalArgumentException("ActorRef cannot be null");
         if (!ref.ownedBy(this)) return false;
         ActorCell<?> cell = actors.get(ref.id());
         return cell != null && !cell.stopped.get();
@@ -1366,7 +1368,7 @@ public final class ActorRuntime implements AutoCloseable {
 
     public void stop(ActorRef<?> ref) {
         requireCallerRuntimeAffinity("stop actors");
-        Objects.requireNonNull(ref);
+        if (ref == null) throw new IllegalArgumentException("ActorRef cannot be null");
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
@@ -1403,7 +1405,7 @@ public final class ActorRuntime implements AutoCloseable {
     public <M> void send(ActorRef<M> ref, M message) {
         requireCallerRuntimeAffinity("send messages");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
-        Objects.requireNonNull(ref);
+        if (ref == null) throw new IllegalArgumentException("ActorRef cannot be null");
         if (!ref.ownedBy(this)) {
             throw new IllegalArgumentException("ActorRef belongs to a different ActorRuntime");
         }
@@ -2011,7 +2013,11 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException(
                     "actor message graph exceeds maximum node count " + MAX_MESSAGE_GRAPH_NODES);
         }
-        if (value == null || isScalar(value)
+        if (value == null) {
+            throw new IllegalArgumentException(
+                    "actor messages cannot contain raw null; represent absence explicitly before transport");
+        }
+        if (isScalar(value)
                 || value instanceof ActorRuntime.ActorRef<?>
                 || value instanceof Shared<?>
                 || value instanceof SyncCell<?>
@@ -2192,6 +2198,10 @@ public final class ActorRuntime implements AutoCloseable {
             IdentityHashMap<Object, Boolean> visiting,
             int depth) {
         requireGraphDepth(depth);
+        if (value == null) {
+            throw new IllegalArgumentException(
+                    "private actor transport cannot materialize raw null");
+        }
         if (isScalar(value)) return value;
         if (value instanceof ActorRuntime.SyncCell<?>) {
             throw new IllegalArgumentException("private actors cannot receive shared SyncCell values");
@@ -2822,9 +2832,10 @@ public final class ActorRuntime implements AutoCloseable {
                 };
 
                 if (behavior == null) {
-                    Behavior<M> created = Objects.requireNonNull(
-                            behaviorFactory.create(context),
-                            "actor behaviorFactory returned null");
+                    Behavior<M> created = behaviorFactory.create(context);
+                    if (created == null) {
+                        throw new IllegalStateException("actor behaviorFactory returned null");
+                    }
                     if (kind == ActorKind.PRIVATE && !trustedFactory) {
                         validatePrivateBehaviorState(ref.id(), created);
                     }
