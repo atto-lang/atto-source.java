@@ -169,6 +169,53 @@ final class LanguageHardeningTest {
     }
 
     @Test
+    void structuralMethodsAreDirectOnlyButDirectCallsRemainTyped() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module model
+                  define interface Api
+                    fnc apply(int value) => int;
+                  end
+
+                  fnc invoke(@Structural Api api): int {
+                    return api.apply(41);
+                  }
+                end
+                """)));
+
+        IllegalArgumentException extracted = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module model
+                          define interface Api
+                            fnc apply(int value) => int;
+                          end
+
+                          fnc bad(@Structural Api api): void {
+                            val Fnc<int, int> callback = api.apply;
+                            return;
+                          }
+                        end
+                        """)));
+        assertTrue(extracted.getMessage().contains("structural method"));
+        assertTrue(extracted.getMessage().contains("direct-call-only"));
+
+        IllegalArgumentException badArgument = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define module model
+                          define interface Api
+                            fnc apply(int value) => int;
+                          end
+
+                          fnc bad(@Structural Api api): int {
+                            return api.apply("wrong");
+                          }
+                        end
+                        """)));
+        assertTrue(badArgument.getMessage().contains("argument 1"));
+    }
+
+    @Test
     void moduleAdherenceRejectsMissingExports() {
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define module contracts
