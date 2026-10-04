@@ -18,6 +18,7 @@ import dev.oreslang.runtime.ProcessGlobalRegistry;
 import dev.oreslang.runtime.MemorySlotSingletonRegistry;
 import dev.oreslang.runtime.SandboxForbiddenCapability;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ExecutionTerminated;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -423,6 +424,7 @@ public final class OresEvalRootNode extends RootNode {
                 try { executeBlock(tried.body(), env); }
                 catch (ReturnSignal signal) { throw signal; }
                 catch (OresPanic panic) { throw panic; }
+                catch (ExecutionTerminated terminated) { throw terminated; }
                 catch (RuntimeException failure) {
                     Env catchEnv = new Env(env);
                     catchEnv.define(tried.errorName(), failure, Ast.BindingKind.VAL);
