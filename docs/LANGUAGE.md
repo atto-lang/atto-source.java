@@ -916,7 +916,7 @@ This makes returned closures safe without retaining raw stack references.
 
 Oreslang deliberately does **not** expose pointer syntax such as `&T`, `&mut T`, `T*`, unary `&value`, or unary dereference. Runtime references are an implementation detail. Source code gets Java-like reference passing plus compiler-enforced ownership, aliasing, and lifetime rules.
 
-An ordinary non-`Copy` parameter receives the **same object/reference identity** as a temporary read borrow. Passing an argument does not copy it and does not move it:
+An ordinary object parameter receives the **same runtime object/reference identity** as its argument. There is no Go-style implicit value copy at a call boundary. The ownership checker grants the callee temporary read access to that same reference; passing the argument neither copies it nor transfers ownership:
 
 ```ores
 fnc inspect(Bar value) => void {
@@ -982,7 +982,7 @@ Local mutation continues to use `let`. `val` and `const` remain immutable. Class
 
 ## Ownership operations
 
-Oreslang combines Java-like reference ergonomics with affine ownership/lifetime checking. Copying and ownership transitions are explicit through the reserved `rt` namespace:
+Oreslang combines Java-like reference ergonomics with affine ownership/lifetime checking. Reference passing is the default; copying and ownership transitions are explicit through the reserved `rt` namespace:
 
 - `rt borrow x` / `rt borrow(x)` creates a stored immutable view tied to `x`'s lifetime;
 - `rt take x` / `rt take(x)` explicitly transfers ownership;
@@ -991,7 +991,7 @@ Oreslang combines Java-like reference ergonomics with affine ownership/lifetime 
 
 The command and call spellings are semantically identical. The command form has unary precedence, so `rt copy x.field + y` means `(rt copy x.field) + y`. Parentheses may be used whenever a wider operand or explicit grouping is desired.
 
-The initial implicit scalar `Copy` family is integers, floating/decimal/complex scalars, booleans, and immutable strings. Identity-bearing classes are references by default; an ordinary call never performs a hidden object copy. Class/aggregate copying requires a concrete copy contract rather than treating a shallow JVM-reference copy as an independent value.
+The initial scalar value family is integers, floating/decimal/complex scalars, booleans, and immutable strings. Identity-bearing classes use reference semantics by default: `f(x)` passes the same object handle, while `f(rt copy x)` requests an independent copy. Class/aggregate copying requires a concrete copy contract rather than treating a shallow JVM-reference copy as an independent value.
 
 The `rt` namespace is compiler-reserved and cannot be shadowed. Legacy bare `borrow(...)`, `take(...)`, `copy(...)`, and `share(...)` spellings remain accepted on this migration stack only; canonical source uses `rt`.
 
