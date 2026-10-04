@@ -1,11 +1,12 @@
 # Futures, await, blocking I/O, and scheduler suspension
 
-Status: runtime Future/suspension ABI and stackless async source lowering are
-implemented on top of the OresVM four-domain scheduler. `await` projects through
-the built-in `Awaitable<T>` contract and always re-enters through a fresh
-scheduler dispatch. The recursive evaluator remains a host/root compatibility
-fallback and fails closed inside actor turns rather than blocking or
-inline-resuming a carrier.
+Status: runtime Future/suspension ABI, stackless async source lowering, proper
+async tail transfer, and logical async traces are implemented on top of the
+OresVM four-domain scheduler. `await` projects through the built-in
+`Awaitable<T>` contract and always re-enters through a fresh scheduler
+dispatch. The recursive evaluator remains a host/root compatibility fallback
+and fails closed inside actor turns rather than blocking or inline-resuming a
+carrier.
 
 ## Rule: ordinary execution does not implicitly yield
 
@@ -314,6 +315,85 @@ A suspended actor remains logically inside the same mailbox turn:
 - resumption may occur on a different carrier;
 - the actor's generation lease remains valid across suspension.
 
+## Proper async tail transfer
+
+Oreslang treats a verified tail-position async call as a state-machine transfer,
+not as a chain of pending Futures.
+
+For example:
+
+```ores
+async fnc walk(int n) => int {
+  if n == 0 do
+    return 0;
+  fi
+  return await walk(n - 1);
+}
+```
+
+The compiler/evaluator may lower the final statement to `TAIL_AWAIT` when all
+of the following are true:
+
+- the source form is a true `return await <Oreslang async call>`;
+- caller and callee logical return types are identical;
+- no caller result conversion/post-processing remains;
+- no active `defer`, `catch`, or `finally` scope must run after the call;
+- the transfer stays in an ordinary task execution domain.
+
+A tail transfer replaces the active `AsyncPlan` frame in the existing
+`OresScheduler` task. It does **not** allocate a child scheduler task/Future
+for the callee.
+
+`TAIL_AWAIT` is still an await. The suspending turn transitions through
+`WAITING`, releases its execution lease, fully unwinds the carrier call stack,
+and the replacement frame becomes runnable only through a fresh scheduler
+dispatch. The scheduler may reuse the same physical carrier, but it must use a
+new dispatch id and may never recurse inline into the replacement frame.
+
+Lexical scope cleanup is part of the transfer. A fused tail call must release
+scope-owned mutex/RW-lock guards exactly as an ordinary return would. If a
+scope still has deferred/error-handling cleanup, fusion is disabled or fails
+closed rather than skipping that work.
+
+Actor boundaries are intentionally not fused. A caller may efficiently await or
+forward an actor result, but an actor cell keeps its own mailbox turn, execution
+lease, scheduler domain, supervision/resource accounting, and isolation
+boundary.
+
+## Logical async stack traces
+
+Physical carrier stacks are not the Oreslang call stack. Every async task keeps
+bounded guest-language causal metadata containing:
+
+- current Oreslang symbol;
+- source id plus line/column;
+- `await` boundaries;
+- tail-await transfers;
+- actor-message/runtime boundaries;
+- a non-authoritative hot-load generation id.
+
+The opaque generation-binding capability is never included in diagnostic
+metadata.
+
+Logical trace history is capped. Repeated self-tail recursion is run-length
+compressed, e.g.:
+
+```text
+at walk (walk.ores:2:11 @gen=19)
+--- tail-await walk -> walk repeated 100000 times (walk.ores:6:10 @gen=19) ---
+```
+
+Non-repeating old events are elided after the configured bound. This is a
+semantic requirement: preserving an unbounded one-frame-per-tail-call debug
+history would reconstruct the eliminated call stack on the heap and defeat
+constant-space tail execution.
+
+Failures retain the original exception/error and attach the logical Oreslang
+trace as structured diagnostic data with synthetic guest frames. Parent tasks
+that await a failed child retain their own await-site trace as separate causal
+metadata. The trace is independent from carrier-thread identity, so it survives
+carrier migration and remains available in JIT, AOT, and hybrid execution.
+
 ## Safepoint is not suspension
 
 A compiler/runtime safepoint checks control state such as cancellation, deadline,
@@ -446,15 +526,19 @@ Await points hold the Future plus a continuation; scheduler tasks resume that
 plan only through their owning scheduler. Actor callables use the corresponding
 stackless actor plan runner and `ActorContext.suspendOn(...)` ABI.
 
+The lowering remains fail-closed around capabilities and cleanup it cannot
+safely carry across a suspension. In particular it must never:
+
+- block a scheduler/actor carrier;
+- use `join()` from actor code;
+- inline-resume an already-completed Future;
+- allow a producer/completion thread to execute guest code;
+- tail-fuse across an actor boundary;
+- tail-elide a frame whose `defer`, `catch`, `finally`, or lexical guard
+  cleanup still has work.
+
 The recursive reference evaluator remains only as a host/root compatibility
-path. It cannot preserve an arbitrary Java call stack across an actor `await`
-and therefore still fails closed inside actor turns instead of:
+path. All actor/async guest execution uses the heap-safe continuation path.
 
-- blocking the carrier;
-- using `join()` from actor code;
-- inline-resuming an already-completed Future;
-- allowing a producer thread to execute guest code.
-
-This split is intentional: all actor/async guest execution uses the heap-safe
-continuation path, while host embedding compatibility remains explicit and
-non-authoritative for scheduling.
+Interpreter, JIT, AOT-interpreted, and hybrid execution must preserve the same
+guest-level scheduling, tail-transfer, and logical-trace semantics.
