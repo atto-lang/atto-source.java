@@ -380,6 +380,83 @@ final class NativeNetworkingLanguageTest {
     }
 
     @Test
+    void rejectsRepeatedTransferEncodingHeaders() throws Exception {
+        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        Thread server = new Thread(() -> {
+            long client = -1;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                readHeadersText(client);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
+                        + "Connection: close\r\n\r\n"
+                        + "5\r\nhello\r\n0\r\n\r\n";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable ignored) {
+            } finally {
+                if (client >= 0) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+            }
+        }, "oreslang-http-repeated-transfer-encoding-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/").GET().build();
+                    net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.ofString());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        Exception error = assertThrows(Exception.class, () -> evaluate(program));
+        assertTrue(error.toString().contains("multiple Transfer-Encoding"));
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+    }
+
+    @Test
+    void rejectsUnexpectedBytesAfterChunkedTerminator() throws Exception {
+        long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
+        int port = NativeSocketBridge.localPort(listener);
+        Thread server = new Thread(() -> {
+            long client = -1;
+            try {
+                client = NativeSocketBridge.accept(listener);
+                readHeadersText(client);
+                String response = "HTTP/1.1 200 OK\r\n"
+                        + "Transfer-Encoding: chunked\r\n"
+                        + "Connection: close\r\n\r\n"
+                        + "5\r\nhello\r\n0\r\n\r\nSMUGGLED";
+                writeAll(client, response.getBytes(StandardCharsets.ISO_8859_1));
+            } catch (Throwable ignored) {
+            } finally {
+                if (client >= 0) try { NativeSocketBridge.close(client); } catch (Exception ignored) { }
+            }
+        }, "oreslang-http-chunk-tail-test");
+        server.start();
+
+        String program = """
+                define module app
+                  pub fnc main() => void {
+                    val request = net.http.HttpRequest.newBuilder("http://127.0.0.1:%d/").GET().build();
+                    net.http.HttpClient.newHttpClient().send(
+                        request, net.http.HttpResponse.BodyHandlers.ofString());
+                    return;
+                  }
+                end
+                """.formatted(port);
+
+        Exception error = assertThrows(Exception.class, () -> evaluate(program));
+        assertTrue(error.toString().contains("unexpected bytes after chunked response"));
+        NativeSocketBridge.close(listener);
+        server.join(5_000);
+    }
+
+    @Test
     void requestTimeoutAppliesToResponseReads() throws Exception {
         long listener = NativeSocketBridge.listen("127.0.0.1", 0, 16, true);
         int port = NativeSocketBridge.localPort(listener);
