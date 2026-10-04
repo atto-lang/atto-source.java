@@ -651,9 +651,10 @@ A launch ticket separates identity/readiness/lifecycle from actor application
 messages.
 
 This model preserves the existing ActorGroup/ActorMailman architecture:
-`ActorRef.send` enqueues bounded typed messages into the actor's mailbox;
-actors emit bounded group output; one logical serialized mailman consumes the
-group's outbox; supervisors remain responsible for lifecycle/restart policy.
+a typed `ActorRef<Protocol>.method(...)` call lowers to one bounded mailbox
+message (plus a reply Future when needed); actors may also emit bounded group
+output; one logical serialized mailman consumes the group's outbox; supervisors
+remain responsible for lifecycle/restart policy.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
