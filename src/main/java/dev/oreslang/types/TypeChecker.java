@@ -514,7 +514,12 @@ public final class TypeChecker {
                             "generic callable '" + fn.name()
                                     + "' must be specialized by a direct call; polymorphic function values are not supported yet");
                 }
-                return functionType(fn.parameters(), fn.returnType(), Set.of(), null);
+                return callableValueType(
+                        fn.parameters(),
+                        fn.returnType(),
+                        fn.async(),
+                        Set.of(),
+                        null);
             }
             throw new IllegalArgumentException("unknown name '" + name.name() + "'");
         }
