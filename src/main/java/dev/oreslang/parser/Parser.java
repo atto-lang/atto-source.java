@@ -187,7 +187,7 @@ public final class Parser {
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
-        if (isBindingKind(peek().type())) return parseModuleBinding(modifiers.visibility);
+        if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
         return null;
     }
 
@@ -229,7 +229,7 @@ public final class Parser {
             if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
-                fields.add(parseField(mods.visibility));
+                fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
             if (mods.isStatic) {
@@ -261,7 +261,7 @@ public final class Parser {
                 throw error(peek(), "typed struct members are fields only; shared/nlex/static/abstract/async modifiers are invalid");
             }
             if (!isBindingKind(peek().type())) throw error(peek(), "typed struct members must be field declarations");
-            fields.add(parseField(mods.visibility));
+            fields.add(parseField(annotations, mods.visibility));
         }
         consume(END, "expected 'end' to close struct " + name);
         return new Ast.ClassDecl(name, false, true, Ast.ActorKind.NONE, generics,
@@ -290,7 +290,7 @@ public final class Parser {
                 if (mods.visibility == Ast.Visibility.PUBLIC) {
                     throw error(peek(), "actor state fields are private; expose state through actor methods");
                 }
-                fields.add(parseField(mods.visibility));
+                fields.add(parseField(annotations, mods.visibility));
                 continue;
             }
 
@@ -359,7 +359,7 @@ public final class Parser {
         return refs;
     }
 
-    private Ast.FieldDecl parseField(Ast.Visibility visibility) {
+    private Ast.FieldDecl parseField(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
@@ -374,10 +374,10 @@ public final class Parser {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
         consumeStatementTerminator("field declaration should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
 
-    private Ast.FieldDecl parseModuleBinding(Ast.Visibility visibility) {
+    private Ast.FieldDecl parseModuleBinding(List<Ast.Annotation> annotations, Ast.Visibility visibility) {
         Ast.BindingKind kind = parseBindingKind();
         Ast.TypeRef type = null;
         String name;
@@ -389,7 +389,7 @@ public final class Parser {
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
         consumeStatementTerminator("module binding should end with ';'");
-        return new Ast.FieldDecl(name, visibility, kind, type, initializer);
+        return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
