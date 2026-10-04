@@ -39,9 +39,27 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
+            if (match(DECLARE)) {
+                if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical
+                        || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    throw error(previous(), "'declare namespace' does not accept executable/class modifiers");
+                }
+                consume(NAMESPACE, "'declare' is reserved for static namespace declarations; expected 'namespace'");
+                modules.add(parseNamespace(annotations));
+                continue;
+            }
+
             if (match(DEFINE)) {
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
+                }
+                if (match(NAMESPACE)) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical
+                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                        throw error(previous(), "namespaces do not accept executable/class modifiers");
+                    }
+                    modules.add(parseNamespace(annotations));
+                    continue;
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
@@ -61,7 +79,7 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                throw error(previous(), "expected namespace, module, class, or interface after 'define'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
@@ -139,6 +157,72 @@ public final class Parser {
         return new Ast.ModuleDecl(name, annotations, declarations);
     }
 
+    private Ast.ModuleDecl parseNamespace(List<Ast.Annotation> annotations) {
+        String name = consume(IDENT, "expected flat namespace name").lexeme();
+        if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
+        consume(AS, "expected 'as' after namespace name");
+
+        boolean braceStyle = match(LBRACE);
+        Token.Type terminator = braceStyle ? RBRACE : END;
+        List<Ast.Decl> declarations = new ArrayList<>();
+        while (!check(terminator) && !check(EOF)) declarations.add(parseNamespaceMember());
+        consume(terminator, braceStyle
+                ? "expected '}' to close namespace " + name
+                : "expected 'end' to close namespace " + name);
+        return new Ast.ModuleDecl(name, Ast.ContainerKind.NAMESPACE, annotations, declarations);
+    }
+
+    private Ast.Decl parseNamespaceMember() {
+        List<Ast.Annotation> annotations = parseAnnotations();
+        Modifiers modifiers = parseModifiers();
+
+        if (match(DECLARE)) {
+            throw error(previous(), "namespaces cannot be nested; 'declare namespace' is top-level only");
+        }
+
+        if (match(DEFINE)) {
+            if (modifiers.shared) {
+                throw error(previous(), "namespaces are type-only; actor/shared declarations are not allowed");
+            }
+            if (match(NAMESPACE, MODULE)) {
+                throw error(previous(), "namespaces and modules cannot be nested");
+            }
+            boolean afterDefineAbstract = match(ABSTRACT);
+            if (match(CLASS)) {
+                if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.shared) {
+                    throw error(previous(), "namespace class declarations do not accept callable modifiers");
+                }
+                return parseClass(modifiers.isAbstract || afterDefineAbstract);
+            }
+            if (match(INTERFACE)) {
+                if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    throw error(previous(), "namespace interface declarations do not accept callable/class modifiers");
+                }
+                return parseInterface(modifiers.visibility);
+            }
+            throw error(previous(), "namespaces may contain only class, interface, and type declarations");
+        }
+
+        if (match(INTERFACE)) {
+            if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                throw error(previous(), "namespace interface declarations do not accept callable/class modifiers");
+            }
+            return parseInterface(modifiers.visibility);
+        }
+
+        if (match(TYPE)) {
+            if (!annotations.isEmpty()) throw error(previous(), "type aliases do not accept annotations");
+            if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical
+                    || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                throw error(previous(), "namespace type aliases do not accept modifiers");
+            }
+            return parseTypeAliasAfterTypeKeyword();
+        }
+
+        throw error(peek(),
+                "namespace bodies are type-only: expected class, abstract class, interface, or type alias");
+    }
+
     private Ast.Decl parseModuleMember() {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
@@ -190,7 +274,7 @@ public final class Parser {
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
-        if (match(TYPE)) return parseTypeAlias();
+        if (check(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
         return null;
     }
@@ -452,6 +536,11 @@ public final class Parser {
     }
 
     private Ast.TypeAliasDecl parseTypeAlias() {
+        consume(TYPE, "expected 'type'");
+        return parseTypeAliasAfterTypeKeyword();
+    }
+
+    private Ast.TypeAliasDecl parseTypeAliasAfterTypeKeyword() {
         String name = consume(IDENT, "expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
