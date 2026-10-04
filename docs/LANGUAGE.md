@@ -575,17 +575,17 @@ forbidden; actor identity/state must be created by the actor runtime.
 
 Code outside an actor never receives the mutable actor object. A concrete actor
 spawn returns an `ActorRef<ActorClass>`. The reference is a capability for
-identity/lifecycle operations and bounded typed protocol calls such as
-`worker.run(...)`; each call lowers to the actor's runtime-private mailbox.
-Raw `send`, `receive`, or mailbox access is not part of the source actor-class
-API.
+identity/lifecycle operations plus bounded `send(message)` authority. It does
+not expose `receive`, private helpers, actor-owned fields, or arbitrary
+method-name RPC.
 
 Generated/runtime actor factories remain useful as launch adapters for actor
 groups, configured factory catalogs, hot loading, and dependency injection.
 They execute under the target actor context and must be capture-safe. This
 runtime factory concept is distinct from source `actor fnc`/`actor routine`,
-which are one-shot spawned callables. The persistent-actor ABI is the typed
-actor reference plus hidden mailbox dispatcher, not a raw class pointer.
+which are one-shot spawned callables. The persistent-actor ABI is the actor
+identity plus its single message/response-channel contract, not a raw class
+pointer or hidden method dispatcher.
 
 This model preserves the existing ActorGroup/ActorMailman architecture:
 `ActorRef.send(message)` performs one bounded mailbox admission; explicit
