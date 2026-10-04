@@ -179,9 +179,16 @@ public final class OresSymbol {
                     "unknown well-known Symbol." + validated);
         };
         OresSymbol known = PROCESS_SYMBOLS.get(key);
-        if (known != null) return known;
+        if (known != null) {
+            if (effectiveAdversarial(policy) && !known.visibleToUntrusted()) {
+                throw new SecurityException(
+                        "well-known Symbol is not exported to untrusted execution: " + key);
+            }
+            return known;
+        }
         if (effectiveAdversarial(policy)) {
-            throw new SecurityException("well-known Symbol has not been admitted by the trusted runtime: " + key);
+            throw new SecurityException(
+                    "well-known Symbol has not been admitted/exported by the trusted runtime: " + key);
         }
         return internProcess(key, true);
     }
