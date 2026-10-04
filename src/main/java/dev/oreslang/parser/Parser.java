@@ -324,7 +324,7 @@ public final class Parser {
         parents = parents.stream().filter(parent -> !isIntrinsicActorBase(parent)).toList();
 
         boolean braceStyle = match(LBRACE);
-        if (!braceStyle) consume(AS, "expected 'as' before actor body");
+        if (!braceStyle) match(AS); // preferred end-style spelling is "as ... end"; legacy omission remains accepted
         Token.Type terminator = braceStyle ? RBRACE : END;
         List<Ast.FieldDecl> fields = new ArrayList<>();
         List<Ast.MethodDecl> methods = new ArrayList<>();
