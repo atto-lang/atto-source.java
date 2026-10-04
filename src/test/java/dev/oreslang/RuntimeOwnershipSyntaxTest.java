@@ -50,6 +50,29 @@ final class RuntimeOwnershipSyntaxTest {
     }
 
     @Test
+    void mutableParameterMutatesTheSameReferencedObject() throws Exception {
+        String output = run("""
+                define class Person as
+                  pub let String name = "Alex";
+                end
+
+                fnc rename(Person mut person) => void {
+                  person.name = "Taylor";
+                  return;
+                }
+
+                pub routine main() => void {
+                  let Person p = new Person();
+                  rename(p);
+                  stdio.stdout.write(p.name);
+                  return;
+                }
+                """);
+
+        assertTrue(output.equals("Taylor"), output);
+    }
+
+    @Test
     void typeMutNameIsCanonicalMutableReferenceSyntax() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class Person as
