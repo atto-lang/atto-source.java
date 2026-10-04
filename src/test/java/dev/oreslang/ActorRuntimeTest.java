@@ -7,8 +7,10 @@ import org.junit.jupiter.api.Test;
 import java.util.AbstractList;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -1372,6 +1374,148 @@ final class ActorRuntimeTest {
                             adversarialShared,
                             factoryContext -> (message, context) -> { }));
             assertTrue(failure.getMessage().contains("adversarial"));
+        }
+    }
+
+    @Test
+    void awaitParksActorTurnReleasesCarrierAndResumesBeforeMailbox() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                8,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.SECONDS.toNanos(2),
+                0,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CompletableFuture<String> io = new CompletableFuture<>();
+            CountDownLatch started = new CountDownLatch(1);
+            CountDownLatch peerRan = new CountDownLatch(1);
+            CountDownLatch resumed = new CountDownLatch(1);
+            CountDownLatch laterRan = new CountDownLatch(1);
+            List<String> order = Collections.synchronizedList(new ArrayList<>());
+
+            var waiting = runtime.<String>spawnSharedTrusted(ignored -> (message, turn) -> {
+                if (message.equals("start")) {
+                    order.add("start");
+                    started.countDown();
+                    turn.suspendOn(io, (value, failure, resumedTurn) -> {
+                        assertNull(failure);
+                        assertTrue(ActorRuntime.isActorCarrierThread());
+                        order.add("resume:" + value);
+                        resumed.countDown();
+                    });
+                    fail("suspendOn must transfer control back to the scheduler");
+                }
+                if (message.equals("later")) {
+                    order.add("later");
+                    laterRan.countDown();
+                }
+            });
+
+            var peer = runtime.<String>spawnSharedTrusted(
+                    ignored -> (message, turn) -> peerRan.countDown());
+
+            waiting.send("start");
+            assertTrue(started.await(2, TimeUnit.SECONDS));
+
+            waiting.send("later");
+            peer.send("run");
+
+            assertTrue(
+                    peerRan.await(2, TimeUnit.SECONDS),
+                    "await must release the only shared carrier for another actor");
+            assertFalse(
+                    laterRan.await(50, TimeUnit.MILLISECONDS),
+                    "a suspended actor must not become re-entrant and process later mailbox messages");
+
+            io.complete("ready");
+
+            assertTrue(resumed.await(2, TimeUnit.SECONDS));
+            assertTrue(laterRan.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of("start", "resume:ready", "later"), List.copyOf(order));
+
+            waiting.stop();
+            peer.stop();
+        }
+    }
+
+    @Test
+    void nextTickAlwaysDefersAndRecursiveNextTickGetsAnotherSchedulerTurn() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                8,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.SECONDS.toNanos(2),
+                0,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            List<String> order = Collections.synchronizedList(new ArrayList<>());
+            AtomicBoolean insideFirstTick = new AtomicBoolean();
+            AtomicBoolean recursiveRanInline = new AtomicBoolean();
+            CountDownLatch done = new CountDownLatch(1);
+
+            var actor = runtime.<String>spawnSharedTrusted(ignored -> (message, turn) -> {
+                order.add("message");
+                turn.nextTick((ignoredValue, ignoredFailure, firstTurn) -> {
+                    insideFirstTick.set(true);
+                    order.add("tick-1");
+                    firstTurn.nextTick((ignoredValue2, ignoredFailure2, secondTurn) -> {
+                        if (insideFirstTick.get()) recursiveRanInline.set(true);
+                        order.add("tick-2");
+                        done.countDown();
+                    });
+                    insideFirstTick.set(false);
+                });
+                order.add("message-end");
+            });
+
+            actor.send("go");
+            assertTrue(done.await(2, TimeUnit.SECONDS));
+            assertFalse(recursiveRanInline.get(), "next_tick must never recurse inline");
+            assertEquals(
+                    List.of("message", "message-end", "tick-1", "tick-2"),
+                    List.copyOf(order));
+            actor.stop();
+        }
+    }
+
+    @Test
+    void actorTimerFutureWakesSuspendedContinuationWithoutRunningGuestCodeOnTimerThread() throws Exception {
+        var config = new ActorRuntime.DispatcherConfig(
+                1,
+                1,
+                1,
+                8,
+                TimeUnit.MILLISECONDS.toNanos(2),
+                TimeUnit.SECONDS.toNanos(2),
+                0,
+                64);
+
+        try (ActorRuntime runtime = new ActorRuntime(IsolatePolicy.developer(), config)) {
+            CountDownLatch resumed = new CountDownLatch(1);
+            AtomicReference<String> resumeThread = new AtomicReference<>();
+
+            var actor = runtime.<String>spawnSharedTrusted(ignored -> (message, turn) -> {
+                var timer = turn.sleep(Duration.ofMillis(20));
+                turn.suspendOn(timer, (value, failure, resumedTurn) -> {
+                    assertNull(failure);
+                    assertTrue(ActorRuntime.isActorCarrierThread());
+                    resumeThread.set(Thread.currentThread().getName());
+                    resumed.countDown();
+                });
+            });
+
+            actor.send("timer");
+            assertTrue(resumed.await(2, TimeUnit.SECONDS));
+            assertNotNull(resumeThread.get());
+            assertTrue(resumeThread.get().contains("shared-actor-dispatcher"));
+            actor.stop();
         }
     }
 
