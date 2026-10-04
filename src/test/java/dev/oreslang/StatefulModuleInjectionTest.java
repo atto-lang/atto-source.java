@@ -23,7 +23,7 @@ final class StatefulModuleInjectionTest {
                 define global module GlobalCounter
                   let int value = 0;
 
-                  pub fnc increment(int by) => int {
+                  pub fnc increment(int by) : int {
                     value = value + by;
                     return value;
                   }
@@ -32,7 +32,7 @@ final class StatefulModuleInjectionTest {
                 define singleton module SlotCounter
                   let int value = 10;
 
-                  pub fnc increment(int by) => int {
+                  pub fnc increment(int by) : int {
                     value = value + by;
                     return value;
                   }
@@ -45,7 +45,7 @@ final class StatefulModuleInjectionTest {
                   @InjectSingleton(SlotCounter)
                   private val SingletonRef<SlotCounter> slot_counter;
 
-                  pub run() => int {
+                  pub run() : int {
                     val int process_value = await self.global_counter.increment(2);
                     return self.slot_counter.increment(process_value);
                   }
@@ -73,7 +73,7 @@ final class StatefulModuleInjectionTest {
                 define global module GlobalCounter
                   let int value = 0;
 
-                  pub fnc increment(int by) => int {
+                  pub fnc increment(int by) : int {
                     value = value + by;
                     return value;
                   }
@@ -82,7 +82,7 @@ final class StatefulModuleInjectionTest {
                 define singleton module SlotCounter
                   let int value = 10;
 
-                  pub fnc increment(int by) => int {
+                  pub fnc increment(int by) : int {
                     value = value + by;
                     return value;
                   }
@@ -95,13 +95,13 @@ final class StatefulModuleInjectionTest {
                   @InjectSingleton(SlotCounter)
                   private val SingletonRef<SlotCounter> slot_counter;
 
-                  pub run() => int {
+                  pub run() : int {
                     val int process_value = await self.global_counter.increment(2);
                     return self.slot_counter.increment(process_value);
                   }
                 end
 
-                pub fnc main() => void {
+                pub fnc main() : void {
                   val Handler handler = new Handler();
                   stdio.println(handler.run());
                   stdio.println(handler.run());
