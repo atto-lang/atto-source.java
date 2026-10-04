@@ -463,7 +463,14 @@ public final class TypeChecker {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
             Type element = iterableElementType(iterable);
             Env loopEnv = new Env(env);
-            loopEnv.define(loop.bindingName(), element, loop.bindingKind());
+            if (loop.destructuresSequence()) {
+                List<Type> elements = sequenceDestructureTypes(element, loop.sequenceBindings().size());
+                for (int i = 0; i < elements.size(); i++) {
+                    defineDestructureBinding(loopEnv, loop.sequenceBindings().get(i), elements.get(i));
+                }
+            } else {
+                loopEnv.define(loop.bindingName(), element, loop.bindingKind());
+            }
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
             return;
         }
@@ -473,6 +480,19 @@ public final class TypeChecker {
             if (loop.condition() != null) requireAssignable(typeOf(loop.condition(), loopEnv, generics, self), Primitive.BOOL, "for condition");
             if (loop.update() != null) typeOf(loop.update(), loopEnv, generics, self);
             checkBlock(loop.body(), loopEnv, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.WhileStmt loop) {
+            if (loop.condition() != null) {
+                requireAssignable(typeOf(loop.condition(), env, generics, self), Primitive.BOOL, "while condition");
+            }
+            checkBlock(loop.body(), env, generics, expectedReturn, self);
+            return;
+        }
+        if (stmt instanceof Ast.DoWhileStmt loop) {
+            checkBlock(loop.body(), env, generics, expectedReturn, self);
+            requireAssignable(typeOf(loop.condition(), env, generics, self), Primitive.BOOL, "do-while condition");
+            return;
         }
     }
 
@@ -1172,6 +1192,9 @@ public final class TypeChecker {
         }
         if (source instanceof ListType list) {
             return java.util.Collections.nCopies(arity, list.element());
+        }
+        if (source == Unknown.INSTANCE) {
+            return java.util.Collections.nCopies(arity, Unknown.INSTANCE);
         }
         if (source instanceof Union union) {
             List<List<Type>> alternatives = new ArrayList<>(union.options().size());
@@ -2173,6 +2196,12 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(loop.condition(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.update(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.WhileStmt loop) {
+                rejectStaticClassGenericReferences(loop.condition(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.DoWhileStmt loop) {
+                rejectStaticClassGenericReferences(loop.body(), classGenerics, klass, method);
+                rejectStaticClassGenericReferences(loop.condition(), classGenerics, klass, method);
             }
         }
     }
@@ -2854,6 +2883,12 @@ public final class TypeChecker {
             if (s.condition() != null) collectCalls(s.condition(), module, out);
             if (s.update() != null) collectCalls(s.update(), module, out);
             for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.WhileStmt s) {
+            if (s.condition() != null) collectCalls(s.condition(), module, out);
+            for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+        } else if (stmt instanceof Ast.DoWhileStmt s) {
+            for (Ast.Stmt nested : s.body()) collectCalls(nested, module, out);
+            collectCalls(s.condition(), module, out);
         }
     }
 
