@@ -307,13 +307,17 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callFunction(Ast.FunctionDecl fn, List<?> args) {
+            return invoke(functionInvocation(fn, args));
+        }
+
+        private Object callFunctionRaw(Ast.FunctionDecl fn, List<Object> args) {
             if (fn.name().equals("init")) {
                 throw new IllegalStateException(
                         "init is a lifecycle hook and cannot be invoked directly; startup runs it exactly once");
             }
-            List<?> normalized = normalizeFunctionArguments(fn, args);
+            List<Object> normalized = normalizeFunctionArguments(fn, args);
             if (fn.actorKind() == Ast.ActorKind.NONE) {
-                return callFunctionBody(fn, normalized);
+                return callFunctionBodyRaw(fn, normalized);
             }
 
             ActorRuntime.ActorKind runtimeKind = switch (fn.actorKind()) {
@@ -325,10 +329,11 @@ public final class OresEvalRootNode extends RootNode {
             return context.actors().invoke(
                     runtimeKind,
                     normalized,
-                    (delivered, actorContext) -> callFunctionBody(fn, delivered));
+                    (delivered, actorContext) ->
+                            invoke(functionBodyInvocation(fn, delivered)));
         }
 
-        private List<?> normalizeFunctionArguments(Ast.FunctionDecl fn, List<?> args) {
+        private List<Object> normalizeFunctionArguments(Ast.FunctionDecl fn, List<?> args) {
             if (args.size() != fn.parameters().size()) {
                 if (fn.parameters().isEmpty()
                         && args.size() == 1
@@ -340,10 +345,10 @@ public final class OresEvalRootNode extends RootNode {
                         "function " + fn.name() + " expects " + fn.parameters().size()
                                 + " arguments, got " + args.size());
             }
-            return args;
+            return objectArguments(args);
         }
 
-        private Object callFunctionBody(Ast.FunctionDecl fn, List<?> args) {
+        private Object callFunctionBodyRaw(Ast.FunctionDecl fn, List<?> args) {
             Env env = new Env(null, fn.nonLexical());
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
@@ -352,6 +357,8 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(fn.body(), env);
                 return null;
+            } catch (TailCallSignal signal) {
+                return new TailCall(signal.invocation);
             } catch (ReturnSignal signal) {
                 return shapeReturnedValue(
                         fn.returnType(),
@@ -361,6 +368,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
+            return invoke(methodInvocation(receiver, method, args));
+        }
+
+        private Object callMethodRaw(OresObject receiver, Ast.MethodDecl method, List<?> args) {
             if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
@@ -371,7 +382,11 @@ public final class OresEvalRootNode extends RootNode {
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
+            } catch (TailCallSignal signal) {
+                return new TailCall(signal.invocation);
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name());
+            }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
