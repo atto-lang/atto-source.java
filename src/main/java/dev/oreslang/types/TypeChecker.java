@@ -893,7 +893,18 @@ public final class TypeChecker {
                         }
                         if (call.typeArgumentsPresent()) {
                             throw new IllegalArgumentException(
-                                    "ActorRef mailbox operations do not accept call-site type arguments");
+                                    "ActorRef operations do not accept call-site type arguments");
+                        }
+                        if (member.member().equals("is_alive")) {
+                            if (!call.arguments().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "ActorRef.is_alive expects no arguments");
+                            }
+                            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                                throw new IllegalArgumentException(
+                                        "untrusted actors cannot inspect ActorRef lifecycle state");
+                            }
+                            return Primitive.BOOL;
                         }
                         if (member.member().equals("receive")) {
                             throw new IllegalArgumentException(
@@ -1695,9 +1706,12 @@ public final class TypeChecker {
             if (receive == null
                     || receive.method().visibility() != Ast.Visibility.PUBLIC
                     || receive.method().isStatic()
-                    || !receive.method().genericParameters().isEmpty()) {
+                    || receive.method().isAbstract()
+                    || receive.method().async()
+                    || !receive.method().genericParameters().isEmpty()
+                    || receive.method().parameters().size() != 1) {
                 throw new IllegalArgumentException(
-                        where + " must resolve to exactly one public receive(Message): void actor ingress");
+                        where + " must resolve to exactly one concrete public receive(Message): void actor ingress");
             }
             Map<String, Type> bindings =
                     classGenericBindings(receive.owner(), receive.ownerType());
