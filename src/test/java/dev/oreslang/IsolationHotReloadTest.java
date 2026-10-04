@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
@@ -114,6 +115,38 @@ final class IsolationHotReloadTest {
             assertFalse(generation.started());
             assertThrows(RuntimeException.class, generation::start);
             assertTrue(generation.closed());
+        }
+    }
+
+    @Test
+    void hotReloadRetainsExplicitEntryMetadataWithoutGuessingDefaults() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            var generation = hot.loadEntry("worker.ores", """
+                    export entry Worker;
+
+                    define actor Worker as
+                      pub run(int message): void { return; }
+                    end
+                    """);
+
+            Ast.EntryExportDecl entry = generation.entryExport().orElseThrow();
+            assertEquals("Worker", entry.name());
+            assertFalse(generation.started(), "entry resolution must not execute guest code");
+        }
+    }
+
+    @Test
+    void requiredEntryLoadRejectsUnitsWithoutEntryMetadata() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadEntry("worker.ores", """
+                            pub fnc run() => void { return; }
+                            """));
+
+            assertTrue(failure.getMessage().contains("declares no 'export entry"));
         }
     }
 
