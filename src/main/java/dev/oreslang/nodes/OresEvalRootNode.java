@@ -956,8 +956,14 @@ public final class OresEvalRootNode extends RootNode {
                         local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
                     }
                     if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    try { executeBlock(lambda.blockBody(), local); return null; }
-                    catch (ReturnSignal signal) { return signal.value; }
+                    try {
+                        executeBlock(lambda.blockBody(), local);
+                        return null;
+                    } catch (TailCallSignal signal) {
+                        return new TailCall(signal.invocation);
+                    } catch (ReturnSignal signal) {
+                        return signal.value;
+                    }
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
