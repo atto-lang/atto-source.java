@@ -104,6 +104,10 @@ public final class OresContext implements AutoCloseable {
      */
     public void schedulerSafepoint() {
         schedulerSafepoints.incrementAndGet();
+        // Process-global owner calls have an independent wall-time/cancellation
+        // budget. A loop inside a global function must observe it just as actor
+        // loops observe actor cancellation.
+        ProcessGlobalRegistry.checkExecutionBudget();
         actors.schedulerSafepoint();
     }
 
