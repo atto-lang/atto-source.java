@@ -906,8 +906,14 @@ public final class OwnershipChecker {
         }
 
         for (Ast.Param param : lambda.parameters()) closure.define(param.name(), stateForParam(param));
-        for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
-        closure.close();
+        int previousLoopDepth = loopDepth;
+        loopDepth = 0;
+        try {
+            for (Ast.Stmt stmt : lambda.blockBody()) checkStatement(stmt, closure, Ast.TypeRef.inferred());
+        } finally {
+            loopDepth = previousLoopDepth;
+            closure.close();
+        }
         return new ValueInfo(Ast.TypeRef.simple("Fnc"), ValueKind.MOVE_ONLY, null);
     }
 
@@ -934,7 +940,11 @@ public final class OwnershipChecker {
                 scanExpr(ret.value(), blockLocals, outer, recursiveBinding, captures, false);
             } else if (stmt instanceof Ast.ExprStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
             else if (stmt instanceof Ast.DeferStmt e) scanExpr(e.expression(), blockLocals, outer, recursiveBinding, captures, false);
-            else if (stmt instanceof Ast.IfStmt s) {
+            else if (stmt instanceof Ast.BlockStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.LoopStmt s) {
+                scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.IfStmt s) {
                 for (Ast.IfBranch b : s.branches()) {
                     scanExpr(b.condition(), blockLocals, outer, recursiveBinding, captures, false);
                     scanStatements(b.body(), blockLocals, outer, recursiveBinding, captures);
