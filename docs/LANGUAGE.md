@@ -384,7 +384,7 @@ val p = struct { x = 3, y = 4 };
 
 An `obj{...}` literal may be contextually promoted to an expected named struct at an explicit typed boundary such as a typed binding or return. Every caller-supplied field must be declared by the struct and type-compatible; required host fields must be present, defaulted host fields may be omitted, and traits never contribute stored state. Arbitrary already-typed records do not silently become a nominal struct merely because they have the same shape.
 
-Struct equality is value equality within the same named struct identity. Copy semantics are derived structurally: a struct is Copy when all of its fields are Copy (including composed trait state); otherwise it is move-only. This keeps small data structs inexpensive while resource-owning structs retain move safety.
+Struct equality is value equality within the same named struct identity. Copy semantics are derived structurally: a struct is Copy when all of its fields are Copy (with no hidden trait storage); otherwise it is move-only. This keeps small data structs inexpensive while resource-owning structs retain move safety.
 
 
 ## Inline values
@@ -412,7 +412,7 @@ val pair = (1, "one");
 [const number, let label] = pair;
 ```
 
-## Interfaces and stateful traits
+## Interfaces and storage-free traits
 
 Interfaces are storage-free method contracts. They contain function signatures only: no instance fields, no backing storage, and no object identity. A class uses `is` to ask the compiler to prove conformance.
 
