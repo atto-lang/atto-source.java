@@ -4818,6 +4818,13 @@ public final class ActorRuntime implements AutoCloseable {
         private int activeTurns;
         private boolean finalized;
         private volatile boolean logicalTurnSuspended;
+        /**
+         * A mailbox envelope remains charged/rooted for the complete logical
+         * mailbox turn, including time suspended at await. Releasing it at the
+         * first carrier handoff would under-account a continuation that still
+         * captures the delivered message graph.
+         */
+        private MessageEnvelope suspendedMailboxEnvelope;
         private Behavior<M> behavior;
 
         private ActorCell(
@@ -5067,6 +5074,7 @@ public final class ActorRuntime implements AutoCloseable {
             activeMessageEpoch = 0L;
             if (messageTimer != null) messageTimer.cancel(false);
             drainMailboxReservations();
+            closeSuspendedMailboxEnvelope();
             drainControlEvents();
             for (ActorTimerWheel.Handle timer : List.copyOf(timers)) timer.cancel();
             timers.clear();
@@ -5428,13 +5436,18 @@ public final class ActorRuntime implements AutoCloseable {
                     if (continuation == null) return;
                     releaseControlEvent();
                     logicalTurnSuspended = false;
+                    long continuationDeadline = armMessageDeadline("await continuation");
+                    boolean suspendedAgain = false;
                     try {
                         continuation.continuation().resume(
                                 continuation.value(),
                                 continuation.failure(),
                                 context);
-                    } catch (ActorTurnSuspendedSignal suspendedAgain) {
-                        return;
+                    } catch (ActorTurnSuspendedSignal suspended) {
+                        suspendedAgain = true;
+                    } finally {
+                        disarmMessageDeadline(continuationDeadline);
+                        if (!suspendedAgain) closeSuspendedMailboxEnvelope();
                     }
                     // await always ends a scheduling turn, even when the future
                     // was already complete. Do not consume another mailbox
@@ -5448,6 +5461,8 @@ public final class ActorRuntime implements AutoCloseable {
                 ContinuationEnvelope readyEvent = readyContinuations.poll();
                 if (readyEvent != null) {
                     releaseControlEvent();
+                    beginMessageBudget();
+                    long eventDeadline = armMessageDeadline("actor continuation event");
                     try {
                         readyEvent.continuation().resume(
                                 readyEvent.value(),
@@ -5455,6 +5470,8 @@ public final class ActorRuntime implements AutoCloseable {
                                 context);
                     } catch (ActorTurnSuspendedSignal suspended) {
                         return;
+                    } finally {
+                        disarmMessageDeadline(eventDeadline);
                     }
                     return;
                 }
@@ -5465,10 +5482,14 @@ public final class ActorRuntime implements AutoCloseable {
                 ContinuationEnvelope nextTick = nextTickContinuations.poll();
                 if (nextTick != null) {
                     releaseControlEvent();
+                    beginMessageBudget();
+                    long tickDeadline = armMessageDeadline("next_tick continuation");
                     try {
                         nextTick.continuation().resume(null, null, context);
                     } catch (ActorTurnSuspendedSignal suspended) {
                         return;
+                    } finally {
+                        disarmMessageDeadline(tickDeadline);
                     }
                     return;
                 }
@@ -5480,7 +5501,8 @@ public final class ActorRuntime implements AutoCloseable {
                     MessageEnvelope envelope = mailbox.poll();
                     if (envelope == null) break;
                     releaseMailboxSlot();
-                    try (envelope) {
+                    boolean messageSuspended = false;
+                    try {
                         beginMessageBudget();
                         long messageDeadline = armMessageDeadline("mailbox message");
                         try {
@@ -5489,9 +5511,10 @@ public final class ActorRuntime implements AutoCloseable {
                             } catch (ActorTurnSuspendedSignal suspended) {
                                 // The live Oreslang frame is already captured in
                                 // the continuation registered by suspendOn().
-                                // The message is consumed, but its logical turn
-                                // remains suspended and no later mailbox message
-                                // may run until that continuation completes.
+                                // Keep the envelope rooted/accounted until that
+                                // logical turn finally completes.
+                                messageSuspended = true;
+                                suspendedMailboxEnvelope = envelope;
                                 return;
                             }
                             if (kind.memoryIsolated() && !trustedFactory) {
@@ -5500,6 +5523,8 @@ public final class ActorRuntime implements AutoCloseable {
                         } finally {
                             disarmMessageDeadline(messageDeadline);
                         }
+                    } finally {
+                        if (!messageSuspended) envelope.close();
                     }
                     processed++;
 
@@ -5542,6 +5567,12 @@ public final class ActorRuntime implements AutoCloseable {
                 releaseMailboxSlot();
                 envelope.close();
             }
+        }
+
+        private void closeSuspendedMailboxEnvelope() {
+            MessageEnvelope envelope = suspendedMailboxEnvelope;
+            suspendedMailboxEnvelope = null;
+            if (envelope != null) envelope.close();
         }
 
         private void drainControlEvents() {
