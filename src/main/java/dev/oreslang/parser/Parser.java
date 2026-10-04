@@ -432,6 +432,10 @@ public final class Parser {
         if (method.explicitReceiverType() != null) {
             throw error(previous(), "public actor protocol methods use the implicit self receiver");
         }
+        if (method.parameters().stream().anyMatch(Ast.Param::mutable)) {
+            throw error(previous(),
+                    "public actor protocol parameters cannot be 'mut'; mutable authority cannot cross the actor mailbox boundary");
+        }
     }
 
     private void validateActorReceiveContract(String actorName, List<Ast.MethodDecl> methods) {
