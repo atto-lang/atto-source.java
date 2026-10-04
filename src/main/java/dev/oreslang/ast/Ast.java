@@ -250,8 +250,17 @@ public final class Ast {
 
     public enum BindingKind { CONST, VAL, LET }
 
-    public sealed interface Stmt permits BindingStmt, DestructureStmt, ReturnStmt, ExprStmt, DeferStmt,
+    public sealed interface Stmt permits BindingStmt, DestructureStmt, LocalTypeDeclStmt, ReturnStmt, ExprStmt, DeferStmt,
             IfStmt, TryStmt, ForOfStmt, ForStmt { }
+
+    /** Compile-time-only lexical type declaration. It never executes at runtime. */
+    public record LocalTypeDeclStmt(Decl declaration) implements Stmt {
+        public LocalTypeDeclStmt {
+            if (!(declaration instanceof TypeAliasDecl) && !(declaration instanceof InterfaceDecl)) {
+                throw new IllegalArgumentException("local type declarations must be type/struct aliases or interfaces");
+            }
+        }
+    }
 
     public record BindingStmt(BindingKind kind, TypeRef declaredType, String name, Expr initializer) implements Stmt { }
     public record DestructureBinding(BindingKind kind, String name) {
@@ -311,7 +320,7 @@ public final class Ast {
     }
 
     public sealed interface Expr permits LiteralExpr, NameExpr, BinaryExpr, UnaryExpr, AssignExpr, ConditionalExpr,
-            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, LambdaExpr { }
+            CallExpr, MemberExpr, IndexExpr, NewExpr, AwaitExpr, ListExpr, TupleExpr, ObjectExpr, StructExpr, LambdaExpr { }
 
     public record LiteralExpr(Object value) implements Expr { }
     public record Imaginary(double coefficient) { }
@@ -375,6 +384,16 @@ public final class Ast {
 
     public record ObjectExpr(List<ObjectField> fields) implements Expr {
         public ObjectExpr { fields = List.copyOf(fields); }
+    }
+
+    /** Statically-shaped struct literal. Fields are fixed by the referenced struct type. */
+    public record StructExpr(TypeRef type, List<ObjectField> fields) implements Expr {
+        public StructExpr {
+            fields = List.copyOf(fields);
+            if (fields.stream().anyMatch(ObjectField::isDynamic)) {
+                throw new IllegalArgumentException("struct literals cannot contain dynamic keys");
+            }
+        }
     }
 
     public record LambdaExpr(List<Param> parameters, Expr expressionBody, List<Stmt> blockBody, boolean nonLexical) implements Expr {
