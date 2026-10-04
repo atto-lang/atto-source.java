@@ -305,7 +305,22 @@ public final class OresEvalRootNode extends RootNode {
                         "function " + fn.name() + " expects " + fn.parameters().size()
                                 + " arguments, got " + args.size());
             }
-            return args;
+            ArrayList<Object> normalized = new ArrayList<>(args.size());
+            for (int i = 0; i < args.size(); i++) {
+                Object value = args.get(i);
+                Ast.Param parameter = fn.parameters().get(i);
+                if (isForeignNull(value)) {
+                    if (parameter.type() != null && parameter.type().name().equals("Option")) {
+                        value = OptionValue.none();
+                    } else {
+                        throw new IllegalArgumentException(
+                                "raw host null cannot enter Oreslang parameter '" + parameter.name()
+                                        + "'; declare Option<T> and pass None instead");
+                    }
+                }
+                normalized.add(requireGuestValue(value, "function argument " + parameter.name()));
+            }
+            return List.copyOf(normalized);
         }
 
         private Object callFunctionBody(Ast.FunctionDecl fn, List<?> args) {
@@ -405,7 +420,9 @@ public final class OresEvalRootNode extends RootNode {
                 return;
             }
             if (stmt instanceof Ast.SwitchStmt switched) {
-                Object subject = eval(switched.subject(), env);
+                Object subject = requireGuestValue(
+                        eval(switched.subject(), env),
+                        "switch subject");
                 for (Ast.SwitchClause clause : switched.clauses()) {
                     Env clauseEnv = new Env(env);
                     if (!matchPattern(clause.pattern(), subject, clauseEnv)) continue;
@@ -801,9 +818,9 @@ public final class OresEvalRootNode extends RootNode {
                 };
                 if (name.name().equals("Some")) return (Invokable) args -> {
                     requireOne(args, "Some");
-                    return new OptionValue(true, args.getFirst());
+                    return OptionValue.some(args.getFirst());
                 };
-                if (name.name().equals("None")) return new OptionValue(false, null);
+                if (name.name().equals("None")) return OptionValue.none();
                 if (name.name().equals("Ok")) return (Invokable) args -> {
                     requireOne(args, "Ok");
                     return new ResultValue(true, args.getFirst());
@@ -1020,10 +1037,16 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (expr instanceof Ast.ListExpr list) {
                 ArrayList<Object> result = new ArrayList<>(list.elements().size());
-                for (Ast.Expr item : list.elements()) result.add(eval(item, env));
+                for (Ast.Expr item : list.elements()) {
+                    result.add(requireGuestValue(eval(item, env), "list element"));
+                }
                 return result;
             }
-            if (expr instanceof Ast.TupleExpr tuple) return tuple.elements().stream().map(item -> eval(item, env)).toList();
+            if (expr instanceof Ast.TupleExpr tuple) {
+                return tuple.elements().stream()
+                        .map(item -> requireGuestValue(eval(item, env), "tuple element"))
+                        .toList();
+            }
             if (expr instanceof Ast.ObjectExpr object) {
                 boolean dynamicKeys = object.fields().stream().anyMatch(Ast.ObjectField::isDynamic);
                 LinkedHashMap<String, Object> result = new LinkedHashMap<>();
@@ -1038,7 +1061,8 @@ public final class OresEvalRootNode extends RootNode {
                     } else {
                         key = field.name();
                     }
-                    if (result.putIfAbsent(key, eval(field.value(), env)) != null) {
+                    Object fieldValue = requireGuestValue(eval(field.value(), env), "obj field " + key);
+                    if (result.putIfAbsent(key, fieldValue) != null) {
                         throw new IllegalArgumentException("duplicate obj field " + key);
                     }
                 }
@@ -1222,16 +1246,38 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object normalizeHostResult(Object value) {
-            if (value == null) return new OptionValue(false, null);
+            if (isForeignNull(value)) return OptionValue.none();
+            if (value instanceof CompletionStage<?> stage) {
+                return stage.thenApply(this::normalizeHostResult);
+            }
             if (value instanceof Number || value instanceof Boolean || value instanceof String
-                    || value instanceof Character || value instanceof CompletionStage<?>) {
+                    || value instanceof Character) {
                 return value;
             }
             return new HostObjectFacade(value);
         }
 
         private Object unwrapHostArgument(Object value) {
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "raw Oreslang null cannot cross into host code; use None for an optional host argument");
+            }
+            if (value instanceof OptionValue option) {
+                return option.present() ? unwrapHostArgument(option.value()) : null;
+            }
             return value instanceof HostObjectFacade host ? host.value() : value;
+        }
+
+        private boolean isForeignNull(Object value) {
+            return value == null || InteropLibrary.getUncached(value).isNull(value);
+        }
+
+        private static Object requireGuestValue(Object value, String where) {
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        where + " produced raw null/void; Oreslang values are non-null and absence must use Option<T>");
+            }
+            return value;
         }
 
         private RuntimeException hostInteropError(String operation, Exception failure) {
@@ -1305,7 +1351,7 @@ public final class OresEvalRootNode extends RootNode {
                 case "try_lock" -> (Invokable) args -> {
                     requireZero(args, "Mutex.try_lock");
                     var guard = lock.tryLock();
-                    return guard.isPresent() ? new OptionValue(true, guard.get()) : new OptionValue(false, null);
+                    return guard.isPresent() ? OptionValue.some(guard.get()) : OptionValue.none();
                 };
                 case "lock_async" -> (Invokable) args -> { requireZero(args, "Mutex.lock_async"); return lock.lockAsync(); };
                 case "with_lock" -> (Invokable) args -> {
@@ -2111,18 +2157,24 @@ public final class OresEvalRootNode extends RootNode {
         }
         private boolean descendantsNonLexical() { return descendantsNonLexical; }
         private void define(String name, Object value, Ast.BindingKind kind) {
+            Objects.requireNonNull(value,
+                    "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
             if (slots.putIfAbsent(name, new Slot(value, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void reserve(String name, Ast.BindingKind kind) {
             if (slots.putIfAbsent(name, new Slot(MISSING, kind)) != null) throw new IllegalArgumentException("duplicate binding " + name);
         }
         private void initialize(String name, Object value) {
+            Objects.requireNonNull(value,
+                    "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
             Slot slot = slots.get(name);
             if (slot == null) throw new IllegalArgumentException("unknown binding " + name);
             slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
         private void assign(String name, Object value) {
+            Objects.requireNonNull(value,
+                    "Oreslang binding '" + name + "' cannot hold raw null; use Option<T>");
             Slot slot = slots.get(name);
             if (slot != null) {
                 if (slot.kind != Ast.BindingKind.LET) throw new IllegalArgumentException("cannot reassign " + slot.kind.name().toLowerCase() + " binding " + name);
@@ -2280,6 +2332,9 @@ public final class OresEvalRootNode extends RootNode {
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
     private record HostObjectFacade(Object value) {
+        private HostObjectFacade {
+            Objects.requireNonNull(value, "host object facade cannot wrap null");
+        }
         @Override public String toString() { return String.valueOf(value); }
     }
     private record MutexFactory(boolean shared, OresContext context) {
@@ -2298,7 +2353,8 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private static boolean runtimeSharedSafe(Object value, Set<Object> seen) {
-            if (value == null || value instanceof String || value instanceof Boolean || value instanceof Character
+            if (value == null) return false;
+            if (value instanceof String || value instanceof Boolean || value instanceof Character
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
@@ -2365,11 +2421,45 @@ public final class OresEvalRootNode extends RootNode {
             return false;
         }
     }
+    private enum NoValue { INSTANCE }
+
     private record OptionValue(boolean present, Object value) implements OresMutex.SharedState {
+        private static final OptionValue NONE = new OptionValue(false, NoValue.INSTANCE);
+
+        private OptionValue {
+            Objects.requireNonNull(value, "Option storage cannot contain raw null");
+            if (present && value == NoValue.INSTANCE) {
+                throw new IllegalArgumentException("Some requires a concrete non-null value");
+            }
+            if (!present && value != NoValue.INSTANCE) {
+                throw new IllegalArgumentException("None cannot carry a payload");
+            }
+        }
+
+        private static OptionValue some(Object value) {
+            Objects.requireNonNull(value,
+                    "Some requires a concrete non-null value; use None for absence");
+            if (value == NoValue.INSTANCE) {
+                throw new IllegalArgumentException("Some cannot wrap the internal absence marker");
+            }
+            return new OptionValue(true, value);
+        }
+
+        private static OptionValue none() {
+            return NONE;
+        }
+
         @Override public Iterable<?> sharedStateChildren(){return present ? List.of(value) : List.of();}
         @Override public String toString(){return present ? "Some(" + value + ")" : "None";}
     }
     private record ResultValue(boolean ok, Object value) implements OresMutex.SharedState {
+        private ResultValue {
+            Objects.requireNonNull(value,
+                    "Result payload cannot be raw null/void; use a concrete value");
+            if (value == NoValue.INSTANCE) {
+                throw new IllegalArgumentException("Result cannot contain the Option absence marker");
+            }
+        }
         @Override public Iterable<?> sharedStateChildren(){return List.of(value);}
         @Override public String toString(){return ok ? "Ok(" + value + ")" : "Err(" + value + ")";}
     }
