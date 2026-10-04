@@ -485,6 +485,8 @@ public final class TreeShaker {
                         function.visibility(),
                         function.async(),
                         function.nonLexical(),
+                        function.pure(),
+                        function.trapped(),
                         function.actorKind(),
                         function.genericParameters(),
                         function.parameters(),
@@ -702,6 +704,13 @@ public final class TreeShaker {
                     return inlineConstantCall(target, arguments);
                 }
                 return rewritten;
+            }
+            if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                List<Ast.Expr> arguments = new ArrayList<>();
+                for (Ast.Expr argument : runtime.arguments()) {
+                    arguments.add(rewriteExpression(argument, module, locals));
+                }
+                return new Ast.RuntimeCallExpr(runtime.operation(), arguments);
             }
             if (expression instanceof Ast.MemberExpr member) {
                 return new Ast.MemberExpr(
@@ -984,6 +993,8 @@ public final class TreeShaker {
                 scanExpression(module, call.callee(), locals);
                 for (Ast.TypeRef type : call.typeArguments()) scanType(type);
                 for (Ast.Expr argument : call.arguments()) scanExpression(module, argument, locals);
+            } else if (expression instanceof Ast.RuntimeCallExpr runtime) {
+                for (Ast.Expr argument : runtime.arguments()) scanExpression(module, argument, locals);
             } else if (expression instanceof Ast.IndexExpr indexed) {
                 scanExpression(module, indexed.receiver(), locals);
                 scanExpression(module, indexed.index(), locals);
