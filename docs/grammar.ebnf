@@ -18,6 +18,7 @@ top_level_item  = namespace_block
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
+                | struct_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -34,6 +35,7 @@ module_member   = actor_decl
                 | actor_callable_decl
                 | callable_decl
                 | class_decl
+                | struct_decl
                 | interface_decl
                 | type_decl
                 | binding_decl ;
@@ -71,6 +73,13 @@ class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
 class_member    = field_decl
                 | method_decl
                 | static_function_decl ;
+
+struct_decl     = "struct" IDENT [ generic_params ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  "{" { class_member } "}"
+                | "define" "struct" IDENT [ generic_params ]
+                  [ ( "implements" | "impl" ) type_ref { "," type_ref } ]
+                  "as" { class_member } "end" ;
 
 field_decl      = { annotation } visibility
                   ( binding_kind type_ref IDENT [ "=" expression ]
@@ -125,7 +134,9 @@ object_destructure_item
                 = [ binding_kind ] IDENT ;
 
 block           = "{" { statement } "}" ;
-statement       = binding_decl
+local_type_decl = struct_decl | interface_decl ;
+statement       = local_type_decl
+                | binding_decl
                 | destructure_stmt
                 | return_stmt
                 | if_stmt
@@ -169,6 +180,7 @@ index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
 primary         = literal
+                | struct_initializer
                 | IDENT
                 | "self"
                 | "new" type_ref "(" [ argument_list ] ")"
@@ -189,8 +201,11 @@ tuple_literal   = "(" expression "," expression { "," expression } ")" ;
 array_literal   = "arr" "[" [ expression { "," expression } ] "]" ;
 legacy_array_literal = "[" [ expression { "," expression } ] "]" ;
 object_literal  = "obj" "{" [ object_field { "," object_field } ] "}" ;
-object_field    = static_object_key ":" expression
-                | "`" expression "`" ":" expression ;
+object_field    = static_object_key ":" expression ;
+struct_initializer
+                = IDENT "{" [ struct_init_field { "," struct_init_field } ] "}" ;
+struct_init_field
+                = static_object_key ( "=" | ":" ) expression ;
 static_object_key
                 = member_name | STRING_LITERAL ;
 
@@ -239,12 +254,14 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
 
 (* Semantic restrictions:
    - Single- and double-quoted object keys are equivalent static string keys.
-     Reserved stop/do/done are legal static object/map/member keys.
-   - A backtick-delimited object key evaluates its enclosed expression at
-     runtime and requires a string value.
-   - An obj{} literal containing any dynamic key has DynamicStruct<T> type,
-     where T is the joined value type. DynamicStruct<T> accepts arbitrary
-     string keys and values assignable to T.
+     Reserved stop/do/done are legal static object/member keys.
+   - obj{} has a fixed compile-time shape. Backtick/dynamic obj keys are
+     rejected; open-ended insertion belongs to Map<K,V> via map[key] = value.
+   - DynamicStruct<T> is not a language type. Map<K,V> keeps K/V statically
+     checked while allowing the runtime entry set to change.
+   - struct and interface declarations may be lexical statements in callable
+     blocks. They are compile-time declarations and do not execute or create
+     runtime classes. class/module/namespace declarations are not callable-local.
    - Each source file is a separately versioned compilation/code unit and is the
      default package identity when no explicit namespace is declared.
    - The optional source namespace header (namespace foo;) remains a flat
