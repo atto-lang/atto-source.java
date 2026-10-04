@@ -812,6 +812,15 @@ public final class OresEvalRootNode extends RootNode {
         private Object mutexMember(OresMutex.Lock<?> rawLock, String name) {
             if (rawLock instanceof OresMutex.Shared<?>) {
                 context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex." + name);
+                if (ActorRuntime.inActorExecution()
+                        && (name.equals("lock")
+                            || name.equals("try_lock")
+                            || name.equals("lock_async")
+                            || name.equals("with_lock")
+                            || name.equals("recover"))) {
+                    throw new SecurityException(
+                            "actor code cannot acquire writable SharedMutex state; external shared state is read-only");
+                }
             }
             OresMutex.Lock<Object> lock = (OresMutex.Lock<Object>) rawLock;
             return switch (name) {
@@ -864,10 +873,19 @@ public final class OresEvalRootNode extends RootNode {
         private Object invokeMethod(OresObject receiver, String name, List<Object> args) {
             Ast.MethodDecl method = findMethod(receiver.klass, name, args.size(), new LinkedHashSet<>());
             if (method == null) throw new IllegalArgumentException("no method " + receiver.klass.name() + "." + name + " with arity " + args.size());
+            if (receiver.klass.actorKind() != Ast.ActorKind.NONE && method.name().equals("constructor")) {
+                throw new IllegalStateException(
+                        "actor constructor '" + receiver.klass.name()
+                                + "' is runtime-only and cannot be invoked as an ordinary method");
+            }
             return callMethod(receiver, method, args);
         }
 
         private Object invokeStaticFunction(Ast.ClassDecl klass, String name, List<Object> args) {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                throw new IllegalStateException(
+                        "actor class '" + klass.name() + "' cannot expose static executable code");
+            }
             Ast.MethodDecl fn = findStaticFunction(klass, name, args.size(), new LinkedHashSet<>());
             if (fn == null) throw new IllegalArgumentException("no static function " + klass.name() + "." + name + " with arity " + args.size());
             return callStaticFunction(klass, fn, args);
@@ -1455,6 +1473,10 @@ public final class OresEvalRootNode extends RootNode {
         private Object create(List<Object> args) {
             requireOne(args, shared ? "SharedMutex.new" : "Mutex.new");
             if (shared) {
+                if (ActorRuntime.inActorExecution()) {
+                    throw new SecurityException(
+                            "actor code cannot create writable SharedMutex state; actor mutation is limited to self-owned state");
+                }
                 context.requireCapability(IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex.new");
                 Object value = args.getFirst();
                 if (!runtimeSharedSafe(value, java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()))) {
