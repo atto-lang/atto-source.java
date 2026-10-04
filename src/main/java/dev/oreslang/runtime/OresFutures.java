@@ -19,9 +19,13 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 public final class OresFutures {
     private OresFutures() { }
 
-    public record Settled<T>(T value, Throwable error) {
+    public record Settled<T>(T value, Throwable error, boolean cancelled) {
+        public Settled(T value, Throwable error) {
+            this(value, error, false);
+        }
+
         public boolean ok() {
-            return error == null;
+            return error == null && !cancelled;
         }
     }
 
@@ -141,7 +145,8 @@ public final class OresFutures {
                                 slot,
                                 new Settled<>(
                                         failure == null ? value : null,
-                                        failure == null ? null : OresFuture.unwrap(failure)));
+                                        failure == null ? null : OresFuture.unwrap(failure),
+                                        children.get(slot).isCancelled()));
                         if (remaining.decrementAndGet() == 0) {
                             ArrayList<Settled<T>> ordered =
                                     new ArrayList<>(children.size());
