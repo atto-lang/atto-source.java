@@ -3,15 +3,26 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ImportHardeningTest {
+    @TempDir
+    Path tempDir;
+
     @Test
     void actorImportsSupportAliasesAndExplicitNamespaces() {
         Ast.Program program = Parser.parse("""
@@ -158,6 +169,38 @@ final class ImportHardeningTest {
                         pub actor fnc worker(int value) => int { return value; }
                         """)));
         assertTrue(actorCallable.getMessage().contains("cannot be a code-unit entry"));
+    }
+
+    @Test
+    void entryImportResolvesAndExecutesTheExplicitTarget() throws Exception {
+        Path plugin = tempDir.resolve("plugin.ores");
+        Path main = tempDir.resolve("main.ores");
+
+        Files.writeString(plugin, """
+                export entry run;
+
+                pub fnc run(int value) => int {
+                  return value + 1;
+                }
+                """);
+        Files.writeString(main, """
+                import entry op from "./plugin.ores";
+
+                pub routine main() => void {
+                  stdio.stdout.write(op(41));
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                main,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                output,
+                new ByteArrayOutputStream());
+
+        assertEquals("42", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
