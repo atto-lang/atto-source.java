@@ -132,8 +132,8 @@ public final class LinkedProgramRunner {
             currentThread.setContextClassLoader(javaCompilation.classLoader());
             try {
                 Context.Builder builder = policy.restrictedContextBuilder(executionProfile, effectiveHostClasses);
-                if (out != null) builder.out(contextOutput(policy, out));
-                if (err != null) builder.err(contextOutput(policy, err));
+                if (out != null) builder.out(forwardingStream(out));
+                if (err != null) builder.err(forwardingStream(err));
 
                 try (Context context = builder.build()) {
                     LinkedHashMap<String, Value> parsedUnits = new LinkedHashMap<>();
@@ -193,32 +193,28 @@ public final class LinkedProgramRunner {
         return build;
     }
 
-    private static OutputStream contextOutput(IsolatePolicy policy, OutputStream target) {
-        if (!policy.adversarial()) return target;
-
-        // Graal's UNTRUSTED sandbox rejects the literal JVM standard output
-        // streams even when Context.Builder.out/err is called explicitly.
-        // A host-owned forwarding sink is a real redirection boundary while
-        // preserving CLI visibility. Do not close the underlying host stream
-        // when the guest context is disposed.
+    /**
+     * Graal's UNTRUSTED sandbox rejects raw System.out/System.err as ambient
+     * standard streams. Always present host-selected output as an explicit,
+     * non-closing redirection while preserving the caller-owned destination.
+     */
+    private static OutputStream forwardingStream(OutputStream target) {
         return new OutputStream() {
-            @Override
-            public void write(int value) throws IOException {
+            @Override public void write(int value) throws IOException {
                 target.write(value);
             }
 
-            @Override
-            public void write(byte[] bytes, int offset, int length) throws IOException {
+            @Override public void write(byte[] bytes, int offset, int length) throws IOException {
                 target.write(bytes, offset, length);
             }
 
-            @Override
-            public void flush() throws IOException {
+            @Override public void flush() throws IOException {
                 target.flush();
             }
 
-            @Override
-            public void close() throws IOException {
+            @Override public void close() throws IOException {
+                // The embedding caller owns the underlying stream (often
+                // System.out/System.err); Context.close must not close it.
                 target.flush();
             }
         };
