@@ -16,9 +16,9 @@ final class ModulesNamespacesCallableSemanticsTest {
     @Test
     void namespaceModulesRoutineFncAndLambdaWorkTogether() throws Exception {
         String output = run("""
-                namespace callable_demo;
-
-                type IntFn = typeof fnc(int value) => int;
+                define namespace callable_demo as
+                  type IntFn = typeof fnc(int value) => int;
+                end
 
                 define module math
                   pub fnc factorial(int n): int {
@@ -31,7 +31,7 @@ final class ModulesNamespacesCallableSemanticsTest {
                 end
 
                 define module closures
-                  pub fnc makeAdder(int base): IntFn {
+                  pub fnc makeAdder(int base): callable_demo.IntFn {
                     return |value| -> {
                       return base + value;
                     };
@@ -39,7 +39,7 @@ final class ModulesNamespacesCallableSemanticsTest {
                 end
 
                 pub routine main(): void {
-                  val IntFn addTen = closures.makeAdder(10);
+                  val callable_demo.IntFn addTen = closures.makeAdder(10);
                   stdio.stdout.write(math.factorial(5));
                   stdio.stdout.write("|");
                   stdio.stdout.write(addTen(7));
