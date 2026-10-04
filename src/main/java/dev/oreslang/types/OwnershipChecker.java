@@ -39,6 +39,7 @@ public final class OwnershipChecker {
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
     private int mutexCriticalSectionDepth;
+    private int loopDepth;
 
     private OwnershipChecker(Ast.Program program) {
         index(program);
@@ -122,6 +123,15 @@ public final class OwnershipChecker {
         scope.close();
     }
 
+    private void checkLoopBlock(List<Ast.Stmt> body, Scope parent, Ast.TypeRef returnType) {
+        loopDepth++;
+        try {
+            checkBlock(body, parent, returnType);
+        } finally {
+            loopDepth--;
+        }
+    }
+
     private void checkStatement(Ast.Stmt stmt, Scope scope, Ast.TypeRef returnType) {
         if (stmt instanceof Ast.BindingStmt binding) {
             checkBinding(binding, scope);
@@ -142,6 +152,18 @@ public final class OwnershipChecker {
                         bindingKind,
                         Origin.LOCAL));
             }
+            return;
+        }
+        if (stmt instanceof Ast.BlockStmt block) {
+            checkBlock(block.body(), scope, returnType);
+            return;
+        }
+        if (stmt instanceof Ast.BreakStmt) {
+            if (loopDepth == 0) throw error("'break' may only appear inside loop or for");
+            return;
+        }
+        if (stmt instanceof Ast.ContinueStmt) {
+            if (loopDepth == 0) throw error("'continue' may only appear inside loop or for");
             return;
         }
         if (stmt instanceof Ast.ReturnStmt ret) {
@@ -215,7 +237,7 @@ public final class OwnershipChecker {
             Map<VarState,Boolean> before = movedSnapshot(scope);
             Scope loopScope = new Scope(scope);
             loopScope.define(loop.bindingName(), new VarState(Ast.TypeRef.inferred(), loop.bindingKind() == Ast.BindingKind.LET, ValueKind.MOVE_ONLY, Origin.LOCAL));
-            checkBlock(loop.body(), loopScope, returnType);
+            checkLoopBlock(loop.body(), loopScope, returnType);
             loopScope.close();
             rejectLoopMoves(before, scope);
             return;
@@ -225,10 +247,16 @@ public final class OwnershipChecker {
             if (loop.initializer() != null) checkStatement(loop.initializer(), loopScope, returnType);
             if (loop.condition() != null) checkExpr(loop.condition(), loopScope, false);
             Map<VarState,Boolean> before = movedSnapshot(scope);
-            checkBlock(loop.body(), loopScope, returnType);
+            checkLoopBlock(loop.body(), loopScope, returnType);
             if (loop.update() != null) checkExpr(loop.update(), loopScope, false);
             rejectLoopMoves(before, scope);
             loopScope.close();
+            return;
+        }
+        if (stmt instanceof Ast.LoopStmt loop) {
+            Map<VarState,Boolean> before = movedSnapshot(scope);
+            checkLoopBlock(loop.body(), scope, returnType);
+            rejectLoopMoves(before, scope);
         }
     }
 
