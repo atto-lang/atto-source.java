@@ -748,8 +748,8 @@ All three may accept a statically declared compatible shape:
 
 ```ores
 define class Branded as
-  pub val string marker;
-  pub val string markerBrand;
+  pub val 'brand' marker;
+  pub val 'marking/branding' markerBrand;
 end
 
 fnc demo(): void {
