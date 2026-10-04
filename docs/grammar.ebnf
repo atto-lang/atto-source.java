@@ -67,13 +67,14 @@ actor_decl      = visibility [ "shared" | "untrusted" ] "actor" IDENT [ generic_
 actor_body      = "{" { actor_member } "}"
                 | "as" { actor_member } "end" ;
 actor_member    = field_decl
-                | actor_method_decl
-                | static_function_decl ;
+                | actor_method_decl ;
 actor_method_decl
                 = { annotation } visibility [ "fnc" ] method_name [ generic_params ]
                   method_head method_return_spec block ;
-(* Semantic rule: exactly one public instance method named receive with one
-   parameter and void return; all other actor instance methods are private. *)
+(* Public actor instance methods define the typed mailbox protocol. The compiler
+   generates one hidden mailbox ingress/dispatcher; source actor classes do not
+   declare static functions. Public protocol methods are non-generic and use
+   implicit self. *)
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
@@ -278,9 +279,10 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - "define actor X as ... end" and "define class X extends Actor as ... end"
      normalize to the same ClassDecl actor semantics. Actor/IsoActor/
      UntrustedActor are compiler-intrinsic bases, not ordinary library classes.
-   - Actor fields are private mailbox-owned state. Every concrete actor must
-     implement exactly one public receive(message): void ingress. All other
-     actor instance methods are private. The runtime owns the mailbox receive loop.
+   - Actor fields are private mailbox-owned state. Public instance methods form
+     the typed protocol and lower to one compiler-generated mailbox dispatcher.
+     Private methods are direct self calls inside the active turn. Actor classes
+     do not declare static functions.
    - Actor constructors are runtime-only, non-public, non-static, non-generic,
      non-suspending, and return void.
    - Actor isolation is an ownership/effect rule rather than @Pure or nlex:
