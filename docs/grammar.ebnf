@@ -93,8 +93,8 @@ annotation      = "@" IDENT [ "<" [ type_args ] ">" | "(" [ type_args ] ")" ] ;
 return_spec     = [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
-param           = type_ref IDENT
-                | "mut" type_ref IDENT
+param           = type_ref [ "mut" ] IDENT
+                | "mut" type_ref IDENT        (* migration spelling *)
                 | CONTEXTUAL_TAKE type_ref IDENT
                 | "@Structural" type_ref IDENT
                 | IDENT "structural" type_ref ;
@@ -148,7 +148,11 @@ equality        = comparison { ( "==" | "!=" ) comparison } ;
 comparison      = additive { ( "<" | "<=" | ">" | ">=" ) additive } ;
 additive        = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative  = unary { ( "*" | "/" | "%" ) unary } ;
-unary           = [ "!" | "-" | "+" | "await" ] postfix ;
+unary           = ( "!" | "-" | "+" | "await" ) unary
+                | rt_ownership
+                | postfix ;
+rt_ownership    = "rt" ( "copy" | "take" | "borrow" | "share" )
+                  ( "(" expression ")" | unary ) ;
 postfix         = primary { call_suffix | member_suffix | index_suffix } ;
 call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." IDENT ;
