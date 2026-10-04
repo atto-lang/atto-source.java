@@ -18,7 +18,11 @@ grouped_import_name
                 = IDENT [ ( "as" | ":" ) IDENT ] ;
 (* Bare/default imports such as "import Foo from ..." are intentionally invalid. *)
 
-top_level_item  = annotated_module_decl
+entry_export_decl
+                = "export" "entry" ( "module" | "class" | "actor" | "fnc" ) IDENT ";" ;
+
+top_level_item  = entry_export_decl
+                | annotated_module_decl
                 | actor_decl
                 | actor_callable_decl
                 | callable_decl
