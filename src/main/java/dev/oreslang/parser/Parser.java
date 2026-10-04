@@ -302,7 +302,6 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         Ast.ActorKind actorKind = intrinsicActorKind(parents);
-        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
         if (actorKind != Ast.ActorKind.NONE) {
             if (isAbstract) throw error(previous(), "actor classes cannot be abstract");
             parents = parents.stream().filter(parent -> !isIntrinsicActorBase(parent)).toList();
@@ -348,7 +347,7 @@ public final class Parser {
             methods.add(method);
         }
         consume(END, "expected 'end' to close class " + name);
-        return new Ast.ClassDecl(name, isAbstract, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
+        return new Ast.ClassDecl(name, isAbstract, actorKind, generics, parents, interfaces, fields, methods);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -359,7 +358,6 @@ public final class Parser {
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         Ast.ActorKind inheritedMarker = intrinsicActorKind(parents);
-        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
         if (inheritedMarker != Ast.ActorKind.NONE && inheritedMarker != actorKind) {
             throw error(previous(), "actor base marker conflicts with the actor declaration's execution domain");
         }
@@ -404,7 +402,7 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
-        return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
+        return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods);
     }
 
     private Ast.ActorKind intrinsicActorKind(List<Ast.TypeRef> parents) {
@@ -424,21 +422,6 @@ public final class Parser {
             result = marker;
         }
         return result;
-    }
-
-    private List<Ast.TypeRef> intrinsicActorProtocolTypes(List<Ast.TypeRef> parents) {
-        List<Ast.TypeRef> protocol = List.of();
-        for (Ast.TypeRef parent : parents) {
-            if (!isIntrinsicActorBase(parent)) continue;
-            validateIntrinsicActorBaseArguments(parent);
-            if (!parent.arguments().isEmpty()) {
-                if (!protocol.isEmpty()) {
-                    throw error(previous(), "an actor class may declare only one Actor<Message, Reply, Error> contract");
-                }
-                protocol = parent.arguments();
-            }
-        }
-        return protocol;
     }
 
     private void validateIntrinsicActorBaseArguments(Ast.TypeRef parent) {
