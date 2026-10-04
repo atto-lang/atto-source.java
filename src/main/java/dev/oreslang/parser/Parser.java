@@ -459,8 +459,10 @@ public final class Parser {
         String name = consume(IDENT, "expected type alias name").lexeme();
         List<String> generics = parseGenericParameters();
         consume(EQUAL, "expected '=' in type alias");
-        Ast.TypeRef target = match(STRUCT) ? parseAnonymousStructType() : parseTypeRef();
-        consumeStatementTerminator("type alias should end with ';'");
+        boolean inlineStruct = match(STRUCT);
+        Ast.TypeRef target = inlineStruct ? parseAnonymousStructType() : parseTypeRef();
+        if (inlineStruct) match(SEMICOLON);
+        else consumeStatementTerminator("type alias should end with ';'");
         return new Ast.TypeAliasDecl(name, generics, target);
     }
 
