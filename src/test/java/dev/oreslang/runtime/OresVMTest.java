@@ -154,9 +154,9 @@ final class OresVMTest {
             assertEquals(0, activeLeases.get());
             assertEquals(1, releasedLeases.get());
 
-            actor.stop();
+            runtime.close();
             assertEquals(1, releasedLeases.get(),
-                    "actor finalization must never release its generation twice");
+                    "runtime teardown must never release a finalized actor generation twice");
         } finally {
             runtime.close();
             vm.shutdownNow();
