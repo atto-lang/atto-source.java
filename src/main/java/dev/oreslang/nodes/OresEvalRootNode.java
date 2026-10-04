@@ -210,37 +210,10 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object spawnFunction(Ast.CallExpr call, Env env) {
-            Ast.FunctionDecl fn;
-            if (call.callee() instanceof Ast.NameExpr name) {
-                fn = findFunction(name.name());
-            } else if (call.callee() instanceof Ast.MemberExpr member
-                    && member.receiver() instanceof Ast.NameExpr namespace) {
-                fn = functions.get(namespace.name() + "." + member.member());
-            } else {
-                throw new IllegalArgumentException(
-                        "spawn requires a direct actor fnc/routine call");
-            }
-            if (fn == null) throw new IllegalArgumentException("unknown spawn target");
-            if (fn.actorKind() == Ast.ActorKind.NONE) {
-                throw new IllegalArgumentException(
-                        "spawn target '" + fn.name() + "' is not an actor callable");
-            }
-
-            ActorRuntime.ActorKind runtimeKind = switch (fn.actorKind()) {
-                case NONE -> throw new AssertionError("non-actor callable reached spawn lowering");
-                case PRIVATE -> ActorRuntime.ActorKind.PRIVATE;
-                case SHARED -> ActorRuntime.ActorKind.SHARED;
-                case UNTRUSTED -> throw new SecurityException(
-                        "untrusted actor callables require GraalWasm sandbox lowering; "
-                                + "the ordinary JVM interpreter must not execute hostile guest code");
-            };
-
-            List<Object> evaluated = call.arguments().stream().map(arg -> eval(arg, env)).toList();
-            List<?> normalized = normalizeFunctionArguments(fn, evaluated);
-            return context.actors().spawnInvocation(
-                    runtimeKind,
-                    normalized,
-                    (delivered, actorContext) -> callFunctionBody(fn, delivered));
+            Ast.FunctionDecl fn = resolveSpawnTarget(call);
+            List<Object> evaluated =
+                    call.arguments().stream().map(arg -> eval(arg, env)).toList();
+            return spawnFunctionWithArguments(fn, evaluated);
         }
 
         private List<?> normalizeFunctionArguments(Ast.FunctionDecl fn, List<?> args) {
@@ -505,9 +478,8 @@ public final class OresEvalRootNode extends RootNode {
                             resume.value(),
                             resume.failure()));
                 } else if (!resume.initial()) {
-                    return OresScheduler.done(asyncFailure(
-                            new IllegalStateException(
-                                    "async source task resumed without a captured await")));
+                    throw new IllegalStateException(
+                            "async source task resumed without a captured await");
                 }
 
                 while (true) {
@@ -1190,17 +1162,32 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callMethod(OresObject receiver, Ast.MethodDecl method, List<?> args) {
-            if (args.size() != method.parameters().size()) throw new IllegalArgumentException("method " + method.name() + " arity mismatch");
+            if (args.size() != method.parameters().size()) {
+                throw new IllegalArgumentException(
+                        "method " + method.name() + " arity mismatch");
+            }
+            if (method.async() && receiver.klass.actorKind() == Ast.ActorKind.NONE) {
+                return startAsyncMethod(receiver, method, args);
+            }
+
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", receiver, Ast.BindingKind.VAL);
             for (int i = 0; i < method.parameters().size(); i++) {
                 Ast.Param param = method.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                env.define(
+                        param.name(),
+                        args.get(i),
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
                 executeBlock(method.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(method.returnType(), signal.value, "method " + method.name()); }
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(
+                        method.returnType(),
+                        signal.value,
+                        "method " + method.name());
+            }
         }
 
         private void executeBlock(List<Ast.Stmt> statements, Env parent) {
@@ -1531,18 +1518,36 @@ public final class OresEvalRootNode extends RootNode {
                 return Map.copyOf(result);
             }
             if (expr instanceof Ast.LambdaExpr lambda) {
-                boolean nonLexical = lambda.nonLexical() || env.descendantsNonLexical();
+                boolean nonLexical =
+                        lambda.nonLexical() || env.descendantsNonLexical();
                 Env captured = nonLexical ? null : env.snapshot();
+                if (lambda.async()) {
+                    return (Invokable) args ->
+                            startAsyncLambda(lambda, captured, args);
+                }
                 return (Invokable) args -> {
-                    if (args.size() != lambda.parameters().size()) throw new IllegalArgumentException("lambda arity mismatch");
+                    if (args.size() != lambda.parameters().size()) {
+                        throw new IllegalArgumentException("lambda arity mismatch");
+                    }
                     Env local = new Env(captured, nonLexical);
                     for (int i = 0; i < lambda.parameters().size(); i++) {
                         Ast.Param param = lambda.parameters().get(i);
-                        local.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                        local.define(
+                                param.name(),
+                                args.get(i),
+                                param.mutable()
+                                        ? Ast.BindingKind.LET
+                                        : Ast.BindingKind.VAL);
                     }
-                    if (lambda.expressionBody() != null) return eval(lambda.expressionBody(), local);
-                    try { executeBlock(lambda.blockBody(), local); return null; }
-                    catch (ReturnSignal signal) { return signal.value; }
+                    if (lambda.expressionBody() != null) {
+                        return eval(lambda.expressionBody(), local);
+                    }
+                    try {
+                        executeBlock(lambda.blockBody(), local);
+                        return null;
+                    } catch (ReturnSignal signal) {
+                        return signal.value;
+                    }
                 };
             }
             throw new IllegalArgumentException("unsupported expression " + expr);
@@ -1882,17 +1887,33 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private Object callStaticFunction(Ast.ClassDecl klass, Ast.MethodDecl fn, List<?> args) {
-            if (!fn.isStatic()) throw new IllegalArgumentException("not a static class function: " + klass.name() + "." + fn.name());
-            if (args.size() != fn.parameters().size()) throw new IllegalArgumentException("static function " + fn.name() + " arity mismatch");
+            if (!fn.isStatic()) {
+                throw new IllegalArgumentException(
+                        "not a static class function: " + klass.name() + "." + fn.name());
+            }
+            if (args.size() != fn.parameters().size()) {
+                throw new IllegalArgumentException(
+                        "static function " + fn.name() + " arity mismatch");
+            }
+            if (fn.async()) return startAsyncStaticFunction(klass, fn, args);
+
             Env env = new Env(null);
             for (int i = 0; i < fn.parameters().size(); i++) {
                 Ast.Param param = fn.parameters().get(i);
-                env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+                env.define(
+                        param.name(),
+                        args.get(i),
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
+            } catch (ReturnSignal signal) {
+                return shapeReturnedValue(
+                        fn.returnType(),
+                        signal.value,
+                        "static function " + fn.name());
+            }
         }
 
         /**
