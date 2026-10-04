@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 /**
@@ -205,25 +206,44 @@ public abstract class OresObservable<T> {
         Objects.requireNonNull(source, "source");
         Objects.requireNonNull(mapper, "mapper");
 
-        OresFuture<O> result = propagateCancellation
-                ? new OresFuture<>(() -> source.cancel(true))
-                : new OresFuture<>();
-
-        source.whenCompleteRuntime((value, failure) -> {
-            if (result.isDone()) {
-                return;
-            }
-            if (failure != null) {
-                result.failFromRuntime(OresFuture.unwrap(failure));
-                return;
-            }
-            try {
-                result.completeFromRuntime(mapper.apply(value));
-            } catch (Throwable mappingFailure) {
-                result.failFromRuntime(mappingFailure);
-            }
+        AtomicReference<OresFuture.RuntimeWaiterRegistration> registrationRef =
+                new AtomicReference<>();
+        OresFuture<O> result = new OresFuture<>(() -> {
+            detachRuntimeWaiter(registrationRef);
+            if (propagateCancellation) source.cancel(true);
         });
 
+        OresFuture.RuntimeWaiterRegistration registration =
+                source.whenCompleteRuntime((value, failure) -> {
+                    detachRuntimeWaiter(registrationRef);
+                    if (result.isDone()) {
+                        return;
+                    }
+                    if (failure != null) {
+                        result.failFromRuntime(OresFuture.unwrap(failure));
+                        return;
+                    }
+                    try {
+                        result.completeFromRuntime(mapper.apply(value));
+                    } catch (Throwable mappingFailure) {
+                        result.failFromRuntime(mappingFailure);
+                    }
+                });
+
+        registrationRef.set(registration);
+        if (result.isDone()) {
+            // Covers immediate completion and cancellation racing registration
+            // installation.
+            detachRuntimeWaiter(registrationRef);
+        }
+
         return result;
+    }
+
+    private static void detachRuntimeWaiter(
+            AtomicReference<OresFuture.RuntimeWaiterRegistration> registrationRef) {
+        OresFuture.RuntimeWaiterRegistration registration =
+                registrationRef.getAndSet(null);
+        if (registration != null) registration.detach();
     }
 }
