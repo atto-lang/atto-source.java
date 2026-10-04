@@ -22,6 +22,7 @@ public final class OresContext implements AutoCloseable {
     private final TruffleLanguage.Env env;
     private final BufferedReader input;
     private final PrintWriter output;
+    private final OresVM vm;
     private final ActorRuntime actors;
     private final RuntimeGarbageCollector garbageCollector;
     private final UUID contextId = UUID.randomUUID();
@@ -38,7 +39,8 @@ public final class OresContext implements AutoCloseable {
         this.output = new PrintWriter(env.out(), true);
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
-        this.actors = ActorRuntime.processShared(
+        this.vm = OresVM.process();
+        this.actors = vm.newActorRuntime(
                 isolatePolicy,
                 this::executeActorTurn);
         this.garbageCollector = new RuntimeGarbageCollector();
@@ -53,6 +55,7 @@ public final class OresContext implements AutoCloseable {
     public TruffleLanguage.Env env() { return env; }
     public BufferedReader input() { return input; }
     public PrintWriter output() { return output; }
+    public OresVM vm() { return vm; }
     public ActorRuntime actors() { return actors; }
     public RuntimeGarbageCollector garbageCollector() { return garbageCollector; }
     public UUID contextId() { return contextId; }
@@ -163,6 +166,10 @@ public final class OresContext implements AutoCloseable {
                 "context_id", contextId.toString(),
                 "runtime", "graalvm-truffle",
                 "language", "oreslang",
+                "vm_id", vm.id().toString(),
+                "scheduler_domains", vm.schedulerTopology().domains().stream()
+                        .map(Enum::name)
+                        .toList(),
                 "execution_mode", executionProfile.mode().name(),
                 "platform", executionProfile.platform().name(),
                 "scheduler_safepoints", schedulerSafepoints.get());
