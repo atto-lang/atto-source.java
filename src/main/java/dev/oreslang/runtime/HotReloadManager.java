@@ -56,10 +56,16 @@ public final class HotReloadManager implements AutoCloseable {
         /** Trusted reloadable code sharing one JVM/Graal engine. */
         TRUSTED_JIT(false, false),
 
-        /** Trusted code requiring a spawned Graal isolate / strict sandbox boundary. */
-        ISOLATED_JIT(true, false),
+        /**
+         * Trusted isoactor code. It has confined/private actor-memory semantics,
+         * but remains co-resident in the primary Graal isolate.
+         */
+        TRUSTED_ISOACTOR_JIT(false, false),
 
-        /** Adversarial code: spawned Graal isolate, deny-by-default guest authority. */
+        /**
+         * Adversarial code. This is the only JIT domain permitted to cross into
+         * a spawned/subsequent Graal isolate.
+         */
         UNTRUSTED_JIT(true, true),
 
         /** Compatibility mode for AOT/interpreted targets that still reload source/IR. */
@@ -152,7 +158,8 @@ public final class HotReloadManager implements AutoCloseable {
         this.guestPolicy = normalizeGuestPolicy(
                 Objects.requireNonNull(guestPolicy, "guestPolicy"),
                 executionDomain);
-        this.sharedTrustedEngine = executionDomain == ExecutionDomain.TRUSTED_JIT
+        this.sharedTrustedEngine = (executionDomain == ExecutionDomain.TRUSTED_JIT
+                || executionDomain == ExecutionDomain.TRUSTED_ISOACTOR_JIT)
                 ? Engine.newBuilder().build()
                 : null;
         vm.registerHotReloadManager(this);
@@ -476,16 +483,29 @@ public final class HotReloadManager implements AutoCloseable {
             return noLoaderAuthority;
         }
 
-        // A physically isolated JIT guest must not regain native/reflection/thread
-        // escape hatches merely because its supervisor is trusted.
-        IsolatePolicy isolated = noLoaderAuthority.withoutCapabilities(
+        // Trusted isoactors are memory-confined actors, not adversarial guests.
+        // Keep them in the primary Graal isolate while still stripping ambient
+        // host escape hatches that would defeat actor-memory confinement.
+        IsolatePolicy confined = noLoaderAuthority.withoutCapabilities(
                 IsolatePolicy.Capability.FFI,
                 IsolatePolicy.Capability.NATIVE,
                 IsolatePolicy.Capability.REFLECTION,
                 IsolatePolicy.Capability.THREAD_CREATE,
-                IsolatePolicy.Capability.POLYGLOT).asAdversarial();
+                IsolatePolicy.Capability.POLYGLOT);
 
-        if (!executionDomain.untrusted()) return isolated;
+        if (executionDomain == ExecutionDomain.TRUSTED_ISOACTOR_JIT) {
+            if (confined.adversarial()) {
+                throw new IllegalArgumentException(
+                        "trusted isoactor JIT must use a non-adversarial policy in the primary Graal isolate");
+            }
+            return confined;
+        }
+
+        if (executionDomain != ExecutionDomain.UNTRUSTED_JIT) {
+            throw new IllegalStateException("unexpected hot-load execution domain " + executionDomain);
+        }
+
+        IsolatePolicy isolated = confined.asAdversarial();
 
         // UntrustedActor ambient authority is deny-by-default. Narrow request/
         // response and Recipient capabilities are object capabilities and are not
