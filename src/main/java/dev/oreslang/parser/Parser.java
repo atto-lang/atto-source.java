@@ -460,6 +460,10 @@ public final class Parser {
             if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
                 throw error(previous(), "actor constructor must return void");
             }
+            if (method.parameters().stream().anyMatch(Ast.Param::mutable)) {
+                throw error(previous(),
+                        "actor constructor parameters cannot be 'mut'; mutable caller authority cannot cross the actor boundary");
+            }
             return;
         }
 
