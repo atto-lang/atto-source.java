@@ -308,6 +308,7 @@ public final class Parser {
             methods.add(method);
         }
         consume(END, "expected 'end' to close class " + name);
+        if (actorKind != Ast.ActorKind.NONE) validateActorReceiveContract(name, methods);
         return new Ast.ClassDecl(name, isAbstract, actorKind, generics, parents, interfaces, fields, methods);
     }
 
@@ -365,6 +366,7 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
+        validateActorReceiveContract(name, methods);
         return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods);
     }
 
@@ -397,21 +399,62 @@ public final class Parser {
 
     private void validateActorMethodDeclaration(Ast.MethodDecl method) {
         if (method.isStatic() && method.visibility() == Ast.Visibility.PUBLIC) {
-            throw error(previous(), "actor static helpers must be private; public actor API is mailbox-dispatched");
+            throw error(previous(), "actor static helpers must be private; the public mailbox ingress is receive(message)");
         }
-        if (!method.name().equals("constructor")) return;
-        if (method.isStatic()) throw error(previous(), "actor constructor cannot be static");
-        if (method.visibility() == Ast.Visibility.PUBLIC) {
-            throw error(previous(), "actor constructor is runtime-only and cannot be part of the public mailbox protocol");
+
+        if (method.name().equals("constructor")) {
+            if (method.isStatic()) throw error(previous(), "actor constructor cannot be static");
+            if (method.visibility() == Ast.Visibility.PUBLIC) {
+                throw error(previous(), "actor constructor is runtime-only and cannot be part of the public mailbox protocol");
+            }
+            if (method.async()) {
+                throw error(previous(), "actor constructor cannot suspend");
+            }
+            if (!method.genericParameters().isEmpty()) {
+                throw error(previous(), "actor constructor cannot declare generic parameters");
+            }
+            if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
+                throw error(previous(), "actor constructor must return void");
+            }
+            return;
         }
-        if (method.async()) {
-            throw error(previous(), "actor constructor cannot suspend");
+
+        if (method.name().equals("receive") && method.visibility() != Ast.Visibility.PUBLIC) {
+            throw error(previous(), "actor receive(message) must be public because it is the single mailbox ingress");
+        }
+
+        if (method.visibility() != Ast.Visibility.PUBLIC) return;
+
+        if (!method.name().equals("receive")) {
+            throw error(previous(),
+                    "actors expose exactly one public mailbox ingress named 'receive'; all other actor methods must be private");
+        }
+        if (method.isStatic()) {
+            throw error(previous(), "actor receive(message) cannot be static");
         }
         if (!method.genericParameters().isEmpty()) {
-            throw error(previous(), "actor constructor cannot declare generic parameters");
+            throw error(previous(), "actor receive(message) cannot declare generic parameters");
+        }
+        if (method.explicitReceiverType() != null) {
+            throw error(previous(), "actor receive(message) uses the implicit self receiver");
+        }
+        if (method.parameters().size() != 1) {
+            throw error(previous(), "actor receive(message) must declare exactly one message parameter");
         }
         if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
-            throw error(previous(), "actor constructor must return void");
+            throw error(previous(), "actor receive(message) must return void");
+        }
+    }
+
+    private void validateActorReceiveContract(String actorName, List<Ast.MethodDecl> methods) {
+        long receives = methods.stream()
+                .filter(method -> !method.isStatic()
+                        && method.visibility() == Ast.Visibility.PUBLIC
+                        && method.name().equals("receive"))
+                .count();
+        if (receives != 1) {
+            throw error(previous(),
+                    "actor '" + actorName + "' must implement exactly one public receive(message): void mailbox ingress");
         }
     }
 
