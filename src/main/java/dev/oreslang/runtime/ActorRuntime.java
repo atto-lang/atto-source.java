@@ -2981,7 +2981,7 @@ public final class ActorRuntime implements AutoCloseable {
      * readiness future completes only after behavior initialization has
      * succeeded; the result future tracks the one-shot actor callable itself.
      */
-    public final class ActorSpawn<M, R> {
+    public final class ActorSpawn<M, R> implements OresAwaitable<ActorRef<M>> {
         private final ActorRef<M> ref;
         private final OresFuture<R> result;
         private final OresFuture<Boolean> done;
@@ -3001,6 +3001,7 @@ public final class ActorRuntime implements AutoCloseable {
 
         public ActorId id() { return ref.id(); }
         public OresFuture<ActorRef<M>> ready() { return ref.readiness(); }
+        @Override public OresFuture<ActorRef<M>> getAwait() { return ready(); }
         public OresFuture<Boolean> done() { return done; }
         public OresFuture<R> result() { return result; }
     }
