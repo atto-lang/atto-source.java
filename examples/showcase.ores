@@ -28,6 +28,11 @@ define module model
       return self;
     }
   end
+
+  define class Info as
+    pub val String name;
+    pub val bool stable;
+  end
 end
 
 define module app
@@ -36,7 +41,7 @@ define module app
     answer = answer + 1;
     val complex z = 3 + 4i;
     val values = arr[answer, 2];
-    val info = obj{name: "oreslang", stable: true};
+    val info = new model.Info("oreslang", true);
     [const first, let second] = (values[0], values[1]);
 
     if first == 43, info.stable | false; do
