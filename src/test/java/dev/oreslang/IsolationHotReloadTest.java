@@ -336,6 +336,77 @@ final class IsolationHotReloadTest {
     }
 
     @Test
+    void untrustedActorEntryRequiresUntrustedJitDomain() {
+        IsolatePolicy supervisor = IsolatePolicy.developer();
+        String source = """
+                define class Worker extends UntrustedActor<int, String, String> as
+                  pub receive(message: int): void { return; }
+                end
+                export entry Worker;
+                """;
+        ActorEntryContract contract = ActorEntryContract.of(
+                "Worker",
+                Ast.ActorKind.UNTRUSTED,
+                List.of(),
+                Ast.TypeRef.simple("int"),
+                Ast.TypeRef.simple("String"),
+                Ast.TypeRef.simple("String"));
+
+        try (HotReloadManager wrongDomain =
+                     new HotReloadManager(supervisor, ExecutionProfile.serverJit())) {
+            SecurityException failure = assertThrows(
+                    SecurityException.class,
+                    () -> wrongDomain.loadActorEntry(
+                            "worker.ores",
+                            source,
+                            contract));
+            assertTrue(failure.getMessage().contains("UNTRUSTED_JIT"));
+            assertEquals(0, wrongDomain.liveGenerations());
+        }
+
+        try (HotReloadManager untrustedDomain = new HotReloadManager(
+                supervisor,
+                IsolatePolicy.untrustedActor(),
+                ExecutionProfile.serverJit(),
+                HotReloadManager.ExecutionDomain.UNTRUSTED_JIT)) {
+            var generation = untrustedDomain.loadActorEntry(
+                    "worker.ores",
+                    source,
+                    contract);
+            assertTrue(generation.executionDomain().spawnedIsolate(),
+                    "only untrusted actor hot-load code crosses the subsequent-isolate boundary");
+            assertTrue(generation.guestPolicy().adversarial());
+        }
+    }
+
+    @Test
+    void genericActorClassCannotPretendToHaveClosedHotLoadAbi() {
+        IsolatePolicy policy = IsolatePolicy.developer();
+        ActorEntryContract contract = ActorEntryContract.of(
+                "Worker",
+                Ast.ActorKind.SHARED,
+                List.of(),
+                Ast.TypeRef.simple("int"),
+                Ast.TypeRef.simple("String"),
+                Ast.TypeRef.simple("String"));
+
+        try (HotReloadManager hot =
+                     new HotReloadManager(policy, ExecutionProfile.serverJit())) {
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> hot.loadActorEntry("worker.ores", """
+                            define class Worker<T> extends Actor<int, String, String> as
+                              pub receive(message: int): void { return; }
+                            end
+                            export entry Worker;
+                            """, contract));
+
+            assertTrue(failure.getMessage().contains("generic"));
+            assertEquals(0, hot.liveGenerations());
+        }
+    }
+
+    @Test
     void explicitNonActorEntryStillUsesGenericEntryLoader() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot =
