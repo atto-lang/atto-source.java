@@ -5250,7 +5250,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ? policy.maxMailboxMessages()
                     : Math.min(
                             policy.maxMailboxMessages(),
-                            resolveActorGroup(groupHandle).policy().mailboxCapacity());
+                            resolveActorGroup(groupHandle).policy().inboxCapacity());
             this.inbox = new LinkedBlockingQueue<>(inboxCapacity);
             this.memorySlice = kind.memoryIsolated()
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
