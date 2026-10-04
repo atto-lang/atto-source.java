@@ -22,13 +22,6 @@ public final class Parser {
     }
 
     public Ast.Program parseProgram() {
-        String namespace = null;
-        if (match(NAMESPACE)) {
-            namespace = consume(IDENT, "expected flat namespace name").lexeme();
-            if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
-            consume(SEMICOLON, "namespace declaration must end with ';'");
-        }
-
         List<Ast.ImportDecl> imports = new ArrayList<>();
         while (match(IMPORT)) imports.add(parseImport());
 
@@ -39,11 +32,30 @@ public final class Parser {
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
-            if (match(DEFINE)) {
+            if (match(DEFINE, DECLARE)) {
+                Token declarationKeyword = previous();
+                boolean declare = declarationKeyword.type() == DECLARE;
                 if (modifiers.shared) {
                     throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
                 }
-                boolean afterDefineAbstract = match(ABSTRACT);
+
+                boolean afterDefineAbstract = false;
+                if (!declare) afterDefineAbstract = match(ABSTRACT);
+
+                if (match(NAMESPACE)) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical
+                            || modifiers.isStatic || modifiers.isAbstract || modifiers.shared || afterDefineAbstract) {
+                        throw error(previous(), "namespaces do not accept function/class modifiers");
+                    }
+                    modules.add(parseNamespace(annotations));
+                    continue;
+                }
+
+                if (declare) {
+                    throw error(declarationKeyword,
+                            "'declare' is reserved; it is currently valid only as 'declare namespace <Name> as ...'");
+                }
+
                 if (match(MODULE)) {
                     if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "modules do not accept function/class modifiers");
@@ -61,19 +73,27 @@ public final class Parser {
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
-                throw error(previous(), "expected module, class, or interface after 'define'");
+                throw error(previous(), "expected namespace, module, class, or interface after 'define'");
+            }
+
+            if (check(NAMESPACE)) {
+                throw error(peek(),
+                        "namespace is a static type container; use 'define namespace <Name> as ... end' "
+                                + "or 'declare namespace <Name> as { ... }'");
             }
 
             Ast.Decl declaration = parseDeclarationAfterModifiers(annotations, modifiers);
-            if (declaration == null) throw error(peek(), "expected module or top-level declaration");
+            if (declaration == null) throw error(peek(), "expected module, namespace, or top-level declaration");
             rootDeclarations.add(declaration);
         }
 
         if (!rootDeclarations.isEmpty()) {
             modules.add(new Ast.ModuleDecl(ROOT_MODULE, List.of(), rootDeclarations));
         }
-        if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module or top-level declaration");
-        return new Ast.Program(namespace, imports, modules);
+        if (modules.isEmpty()) throw error(peek(), "a source file must define at least one module, namespace, or top-level declaration");
+        // Code-unit/package identity is path-derived. namespace is no longer a
+        // file-header alias for package identity.
+        return new Ast.Program(null, imports, modules);
     }
 
     private Ast.ImportDecl parseImport() {
@@ -139,6 +159,62 @@ public final class Parser {
         return new Ast.ModuleDecl(name, annotations, declarations);
     }
 
+    private Ast.ModuleDecl parseNamespace(List<Ast.Annotation> annotations) {
+        String name = consume(IDENT, "expected flat namespace name").lexeme();
+        if (check(DOT)) throw error(peek(), "namespaces cannot be nested or dotted");
+        consume(AS, "expected 'as' after namespace name");
+
+        boolean braceStyle = match(LBRACE);
+        Token.Type terminator = braceStyle ? RBRACE : END;
+        List<Ast.Decl> declarations = new ArrayList<>();
+        while (!check(terminator) && !check(EOF)) declarations.add(parseNamespaceMember());
+        consume(terminator, braceStyle
+                ? "expected '}' to close namespace " + name
+                : "expected 'end' to close namespace " + name);
+        return new Ast.ModuleDecl(name, Ast.ContainerKind.NAMESPACE, annotations, declarations);
+    }
+
+    private Ast.Decl parseNamespaceMember() {
+        List<Ast.Annotation> annotations = parseAnnotations();
+        Modifiers modifiers = parseModifiers();
+
+        if (match(DECLARE)) {
+            throw error(previous(), "namespaces cannot be nested; 'declare' is only valid at source top level");
+        }
+
+        if (match(DEFINE)) {
+            if (modifiers.shared) {
+                throw error(previous(), "'shared' is not valid on a namespace type declaration");
+            }
+            boolean isAbstract = match(ABSTRACT);
+            if (match(CLASS)) {
+                if (modifiers.async || modifiers.nonLexical || modifiers.isStatic) {
+                    throw error(previous(), "namespace classes do not accept callable modifiers");
+                }
+                return parseClass(modifiers.isAbstract || isAbstract);
+            }
+            if (match(INTERFACE)) {
+                if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || isAbstract) {
+                    throw error(previous(), "namespace interfaces do not accept callable/class modifiers");
+                }
+                return parseInterface(modifiers.visibility);
+            }
+            if (check(MODULE) || check(NAMESPACE)) {
+                throw error(peek(), "modules and namespaces are flat and cannot be nested");
+            }
+            throw error(previous(), "a namespace may define only classes or interfaces with 'define'");
+        }
+
+        if (modifiers.shared || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
+            throw error(peek(), "namespace type declarations do not accept callable/runtime modifiers");
+        }
+        if (match(INTERFACE)) return parseInterface(modifiers.visibility);
+        if (match(TYPE)) return parseTypeAlias();
+
+        throw error(peek(),
+                "namespace members must be type declarations: class, abstract class, interface, or type alias");
+    }
+
     private Ast.Decl parseModuleMember() {
         List<Ast.Annotation> annotations = parseAnnotations();
         Modifiers modifiers = parseModifiers();
@@ -148,6 +224,9 @@ public final class Parser {
                 throw error(previous(), "'shared' must modify an actor declaration; use 'shared actor <Name>'");
             }
             boolean afterDefineAbstract = match(ABSTRACT);
+            if (match(MODULE, NAMESPACE)) {
+                throw error(previous(), "modules and namespaces are flat and cannot be nested");
+            }
             if (match(CLASS)) {
                 if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
