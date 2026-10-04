@@ -70,6 +70,29 @@ final class DynamicObjectRemovalTest {
     }
 
     @Test
+    void structuralRecordsUseStaticMembersNotDynamicStringIndexing() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class StaticRecord as
+                  pub val int foo;
+                end
+
+                fnc read(value: {foo: int}): int {
+                  return value.foo;
+                }
+
+                fnc main(): int {
+                  return read(new StaticRecord(7));
+                }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                fnc read(value: {foo: int}): int {
+                  return value["foo"];
+                }
+                """)));
+    }
+
+    @Test
     void reservedCallableNamesRemainCallableOnly() {
         var tokens = new Lexer("stop do done").scan();
         assertEquals(Token.Type.STOP, tokens.get(0).type());
