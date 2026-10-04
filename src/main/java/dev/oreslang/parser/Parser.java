@@ -36,6 +36,14 @@ public final class Parser {
         List<Ast.Decl> rootDeclarations = new ArrayList<>();
 
         while (!check(EOF)) {
+            if (match(EXPORT)) {
+                consume(ENTRY, "only 'export entry <name>' is supported; Oreslang has no ordinary default exports");
+                String entryName = consume(IDENT, "expected entry export declaration name").lexeme();
+                consume(SEMICOLON, "export entry declaration must end with ';'");
+                rootDeclarations.add(new Ast.EntryExportDecl(entryName));
+                continue;
+            }
+
             List<Ast.Annotation> annotations = parseAnnotations();
             Modifiers modifiers = parseModifiers();
 
@@ -109,6 +117,7 @@ public final class Parser {
     private Ast.ImportDecl parseImport() {
         Ast.ImportKind kind;
         List<String> names = new ArrayList<>();
+        java.util.LinkedHashMap<String, String> aliases = new java.util.LinkedHashMap<>();
         boolean wildcard = false;
         String namespace = null;
 
@@ -117,11 +126,21 @@ public final class Parser {
             wildcard = true;
             consume(AS, "'import *' requires 'as <namespace>'");
             namespace = consume(IDENT, "expected import namespace").lexeme();
+        } else if (match(ENTRY)) {
+            kind = Ast.ImportKind.ENTRY;
+            names.add("$entry$");
+            if (match(AS)) {
+                namespace = consume(IDENT, "expected local name after 'import entry as'").lexeme();
+            } else {
+                namespace = consume(IDENT, "expected local name after 'import entry'").lexeme();
+            }
+            aliases.put("$entry$", namespace);
         } else {
             if (match(MODULE)) kind = Ast.ImportKind.MODULE;
             else if (match(CLASS)) kind = Ast.ImportKind.CLASS;
+            else if (match(ACTOR)) kind = Ast.ImportKind.ACTOR;
             else if (match(FNC)) kind = Ast.ImportKind.FUNCTION;
-            else throw error(peek(), "expected module, class, fnc, or * after import");
+            else throw error(peek(), "expected module, class, actor, fnc, entry, or * after import");
 
             if (match(STAR)) {
                 wildcard = true;
@@ -129,10 +148,14 @@ public final class Parser {
                 namespace = consume(IDENT, "expected import namespace").lexeme();
             } else if (match(LBRACE)) {
                 if (check(RBRACE)) throw error(peek(), "import selection cannot be empty");
-                do names.add(consume(IDENT, "expected imported name").lexeme()); while (match(COMMA));
+                do parseImportName(names, aliases); while (match(COMMA));
                 consume(RBRACE, "expected '}' after imported names");
+            } else if (match(LPAREN)) {
+                if (check(RPAREN)) throw error(peek(), "import selection cannot be empty");
+                do parseImportName(names, aliases); while (match(COMMA));
+                consume(RPAREN, "expected ')' after imported names");
             } else {
-                names.add(consume(IDENT, "expected imported name").lexeme());
+                parseImportName(names, aliases);
             }
         }
 
@@ -140,7 +163,22 @@ public final class Parser {
         String path = consume(STRING, "expected quoted import path").lexeme();
         if (path.isBlank()) throw error(previous(), "import path cannot be empty");
         consume(SEMICOLON, "expected ';' after import");
-        return new Ast.ImportDecl(kind, names, wildcard, namespace, path);
+        return new Ast.ImportDecl(kind, names, wildcard, namespace, path, aliases);
+    }
+
+    private void parseImportName(
+            List<String> names,
+            java.util.Map<String, String> aliases) {
+        String importedName = consume(IDENT, "expected imported name").lexeme();
+        String localName = importedName;
+        if (match(AS) || match(COLON)) {
+            localName = consume(IDENT, "expected local alias name").lexeme();
+        }
+        if (names.contains(importedName)) {
+            throw error(previous(), "duplicate imported declaration '" + importedName + "'");
+        }
+        names.add(importedName);
+        if (!localName.equals(importedName)) aliases.put(importedName, localName);
     }
 
     private Ast.ModuleDecl parseModule(List<Ast.Annotation> annotations) {
@@ -264,6 +302,7 @@ public final class Parser {
         List<Ast.TypeRef> parents = match(EXTENDS) ? parseTypeRefList() : List.of();
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
         Ast.ActorKind actorKind = intrinsicActorKind(parents);
+        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
         if (actorKind != Ast.ActorKind.NONE) {
             if (isAbstract) throw error(previous(), "actor classes cannot be abstract");
             parents = parents.stream().filter(parent -> !isIntrinsicActorBase(parent)).toList();
@@ -309,8 +348,8 @@ public final class Parser {
             methods.add(method);
         }
         consume(END, "expected 'end' to close class " + name);
-        if (actorKind != Ast.ActorKind.NONE) validateActorReceiveContract(name, methods);
-        return new Ast.ClassDecl(name, isAbstract, actorKind, generics, parents, interfaces, fields, methods);
+        if (actorKind != Ast.ActorKind.NONE) validateActorReceiveContract(name, methods, actorProtocolTypes);
+        return new Ast.ClassDecl(name, isAbstract, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
     }
 
     private Ast.ClassDecl parseActorClass(Ast.ActorKind actorKind) {
@@ -321,6 +360,7 @@ public final class Parser {
         List<Ast.TypeRef> interfaces = match(IMPLEMENTS, IMPL) ? parseTypeRefList() : List.of();
 
         Ast.ActorKind inheritedMarker = intrinsicActorKind(parents);
+        List<Ast.TypeRef> actorProtocolTypes = intrinsicActorProtocolTypes(parents);
         if (inheritedMarker != Ast.ActorKind.NONE && inheritedMarker != actorKind) {
             throw error(previous(), "actor base marker conflicts with the actor declaration's execution domain");
         }
@@ -365,8 +405,8 @@ public final class Parser {
         consume(terminator, braceStyle
                 ? "expected '}' to close actor " + name
                 : "expected 'end' to close actor " + name);
-        validateActorReceiveContract(name, methods);
-        return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods);
+        validateActorReceiveContract(name, methods, actorProtocolTypes);
+        return new Ast.ClassDecl(name, false, actorKind, generics, parents, interfaces, fields, methods, actorProtocolTypes);
     }
 
     private Ast.ActorKind intrinsicActorKind(List<Ast.TypeRef> parents) {
@@ -379,15 +419,38 @@ public final class Parser {
                 default -> Ast.ActorKind.NONE;
             };
             if (marker == Ast.ActorKind.NONE) continue;
-            if (parent.inferArguments() || !parent.arguments().isEmpty()) {
-                throw error(previous(), parent.name() + " is a compiler intrinsic actor base and does not take type arguments");
-            }
+            validateIntrinsicActorBaseArguments(parent);
             if (result != Ast.ActorKind.NONE && result != marker) {
                 throw error(previous(), "a class cannot extend more than one actor execution-domain base");
             }
             result = marker;
         }
         return result;
+    }
+
+    private List<Ast.TypeRef> intrinsicActorProtocolTypes(List<Ast.TypeRef> parents) {
+        List<Ast.TypeRef> protocol = List.of();
+        for (Ast.TypeRef parent : parents) {
+            if (!isIntrinsicActorBase(parent)) continue;
+            validateIntrinsicActorBaseArguments(parent);
+            if (!parent.arguments().isEmpty()) {
+                if (!protocol.isEmpty()) {
+                    throw error(previous(), "an actor class may declare only one Actor<Message, Reply, Error> contract");
+                }
+                protocol = parent.arguments();
+            }
+        }
+        return protocol;
+    }
+
+    private void validateIntrinsicActorBaseArguments(Ast.TypeRef parent) {
+        if (parent.inferArguments()) {
+            throw error(previous(), parent.name() + " does not support inferred <> protocol arguments");
+        }
+        if (!parent.arguments().isEmpty() && parent.arguments().size() != 3) {
+            throw error(previous(),
+                    parent.name() + " accepts either no type arguments or exactly <Message, Reply, Error>");
+        }
     }
 
     private boolean isIntrinsicActorBase(Ast.TypeRef parent) {
@@ -403,7 +466,7 @@ public final class Parser {
 
         if (method.name().equals("constructor")) {
             if (method.visibility() == Ast.Visibility.PUBLIC) {
-                throw error(previous(), "actor constructor is runtime-only and cannot be part of the public mailbox protocol");
+                throw error(previous(), "actor constructor is runtime-only and cannot be public");
             }
             if (method.async()) {
                 throw error(previous(), "actor constructor cannot suspend");
@@ -421,28 +484,59 @@ public final class Parser {
         }
 
         if (method.visibility() != Ast.Visibility.PUBLIC) return;
-
-        // Public actor methods are the typed source-level protocol. The runtime
-        // lowers all of them onto one hidden mailbox ingress/dispatcher.
-        // Keeping protocol methods monomorphic makes their wire/message shape
-        // closed and AOT-safe; class generics are still permitted.
+        if (!method.name().equals("receive")) {
+            throw error(previous(),
+                    "actor public surface is mailbox-only; the single public method must be 'receive(message)'");
+        }
         if (!method.genericParameters().isEmpty()) {
-            throw error(previous(), "public actor protocol methods cannot declare method generic parameters");
+            throw error(previous(), "actor receive method cannot declare method generic parameters");
         }
         if (method.explicitReceiverType() != null) {
-            throw error(previous(), "public actor protocol methods use the implicit self receiver");
+            throw error(previous(), "actor receive method uses the implicit self receiver");
         }
-        if (method.parameters().stream().anyMatch(Ast.Param::mutable)) {
+        if (method.parameters().size() != 1) {
+            throw error(previous(), "actor receive method must accept exactly one message parameter");
+        }
+        if (method.parameters().getFirst().mutable()) {
             throw error(previous(),
-                    "public actor protocol parameters cannot be 'mut'; mutable authority cannot cross the actor mailbox boundary");
+                    "actor receive message cannot be 'mut'; mutable caller authority cannot cross the mailbox boundary");
+        }
+        if (!sameType(method.returnType(), Ast.TypeRef.simple("void"))) {
+            throw error(previous(),
+                    "actor receive method returns void; replies/errors travel through actor/runtime response capabilities");
         }
     }
 
-    private void validateActorReceiveContract(String actorName, List<Ast.MethodDecl> methods) {
-        // Local public methods are validated declaration-by-declaration above.
-        // Do not require a local endpoint here: actor subclasses may inherit
-        // their complete public protocol from an actor parent. The type checker
-        // validates the effective inherited protocol once parents are resolved.
+    private void validateActorReceiveContract(
+            String actorName,
+            List<Ast.MethodDecl> methods,
+            List<Ast.TypeRef> actorProtocolTypes) {
+        List<Ast.MethodDecl> receives = methods.stream()
+                .filter(method -> !method.isStatic()
+                        && method.visibility() == Ast.Visibility.PUBLIC
+                        && method.name().equals("receive"))
+                .toList();
+        if (receives.size() != 1) {
+            throw error(previous(),
+                    "actor '" + actorName + "' must implement exactly one public receive(message) method");
+        }
+        long otherPublic = methods.stream()
+                .filter(method -> !method.isStatic()
+                        && method.visibility() == Ast.Visibility.PUBLIC
+                        && !method.name().equals("receive")
+                        && !method.name().equals("constructor"))
+                .count();
+        if (otherPublic != 0) {
+            throw error(previous(),
+                    "actor '" + actorName + "' may expose only the public receive(message) mailbox ingress");
+        }
+
+        Ast.MethodDecl receive = receives.getFirst();
+        if (actorProtocolTypes.size() == 3
+                && !sameType(receive.parameters().getFirst().type(), actorProtocolTypes.getFirst())) {
+            throw error(previous(),
+                    "actor '" + actorName + "' receive message type must match Actor<Message, Reply, Error>'s Message type");
+        }
     }
 
     private void rejectReservedActorTypeName(String name) {
@@ -659,11 +753,11 @@ public final class Parser {
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
         Ast.TypeRef annotated = annotatedReturnType(annotations);
-        Ast.TypeRef arrow = match(FAT_ARROW) ? parseTypeRef() : null;
-        if (annotated != null && arrow != null && !sameType(annotated, arrow)) {
-            throw error(previous(), "@Ret type and => return type disagree");
+        Ast.TypeRef surface = match(COLON, ARROW, FAT_ARROW) ? parseTypeRef() : null;
+        if (annotated != null && surface != null && !sameType(annotated, surface)) {
+            throw error(previous(), "@Ret type and callable return type disagree");
         }
-        return arrow != null ? arrow : annotated != null ? annotated : Ast.TypeRef.simple("void");
+        return surface != null ? surface : annotated != null ? annotated : Ast.TypeRef.simple("void");
     }
 
     private Ast.TypeRef parseMethodReturnType(List<Ast.Annotation> annotations) {
@@ -827,7 +921,7 @@ public final class Parser {
         }
 
         if (match(TYPEOF)) {
-            consume(FNC, "typeof function types use 'typeof fnc(...) -> ReturnType'");
+            consume(FNC, "typeof function types use 'typeof fnc(...) => ReturnType'");
             return parseFunctionTypeSignature();
         }
 
@@ -867,7 +961,9 @@ public final class Parser {
             } while (match(COMMA));
         }
         consume(RPAREN, "expected ')' after function type parameters");
-        consume(ARROW, "function types use the slim arrow '->'");
+        if (!match(FAT_ARROW) && !match(ARROW)) {
+            throw error(peek(), "function types use the type arrow '=>'");
+        }
         Ast.TypeRef result = parseTypeRef();
         return Ast.TypeRef.functionType(params, result);
     }
@@ -879,7 +975,11 @@ public final class Parser {
             if (type == LPAREN) depth++;
             else if (type == RPAREN) {
                 depth--;
-                if (depth == 0) return i + 1 < tokens.size() && tokens.get(i + 1).type() == ARROW;
+                if (depth == 0) {
+                    return i + 1 < tokens.size()
+                            && (tokens.get(i + 1).type() == FAT_ARROW
+                                || tokens.get(i + 1).type() == ARROW);
+                }
             }
         }
         return false;
@@ -1320,7 +1420,7 @@ public final class Parser {
     private static boolean isMemberNameToken(Token.Type type) {
         return switch (type) {
             case IDENT,
-                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
+                    DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, EXPORT, ENTRY, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
                     NEW, DONE, AWAIT, SPAWN, ASYNC, NLEX, ACTOR, ISOACTOR, SHARED, UNTRUSTED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
