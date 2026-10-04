@@ -751,6 +751,8 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "receive" -> throw new IllegalArgumentException(
                             "actor receive(message) is runtime-owned; use ActorRef.send(message)");
+                    case "mailbox" -> throw new IllegalArgumentException(
+                            "ActorRef is not an application mailbox object; use send(message) for persistent actors");
                     default -> throw new IllegalArgumentException("unknown ActorRef member " + name);
                 };
             }
