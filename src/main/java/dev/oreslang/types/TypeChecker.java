@@ -1184,11 +1184,12 @@ public final class TypeChecker {
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             return result;
         }
-        if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
-            if (dynamic.arguments().size() != 1) {
-                throw new IllegalArgumentException("DynamicStruct requires exactly one value type");
+        if (receiver instanceof Named map && map.name().equals("Map")) {
+            if (map.arguments().size() != 2) {
+                throw new IllegalArgumentException("Map requires exactly two type arguments");
             }
-            return dynamic.arguments().getFirst();
+            requireAssignable(Primitive.STRING, map.arguments().get(0), "Map member key");
+            return map.arguments().get(1);
         }
         if (receiver instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
@@ -1961,6 +1962,11 @@ public final class TypeChecker {
             for (Ast.Expr item : tuple.elements()) {
                 rejectStaticClassGenericReferences(item, classGenerics, klass, method);
             }
+        } else if (expression instanceof Ast.StructExpr struct) {
+            rejectStaticClassGenericReference(struct.type(), classGenerics, klass, method);
+            for (Ast.ObjectField field : struct.fields()) {
+                rejectStaticClassGenericReferences(field.value(), classGenerics, klass, method);
+            }
         } else if (expression instanceof Ast.ObjectExpr object) {
             for (Ast.ObjectField field : object.fields()) {
                 if (field.isDynamic()) {
@@ -2604,6 +2610,7 @@ public final class TypeChecker {
         else if (expr instanceof Ast.AwaitExpr e) collectCalls(e.expression(), module, out);
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr item : e.elements()) collectCalls(item, module, out);
+        else if (expr instanceof Ast.StructExpr e) for (Ast.ObjectField f : e.fields()) collectCalls(f.value(), module, out);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField f : e.fields()) collectCalls(f.value(), module, out);
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) collectCalls(e.expressionBody(), module, out);
