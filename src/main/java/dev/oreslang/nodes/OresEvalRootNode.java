@@ -628,22 +628,24 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), eval(binary.left(), env), eval(binary.right(), env));
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (call.callee() instanceof Ast.NameExpr intrinsic
-                        && (intrinsic.name().equals("borrow")
-                        || intrinsic.name().equals("take")
-                        || intrinsic.name().equals("copy")
-                        || intrinsic.name().equals("share"))) {
-                    if (call.arguments().size() != 1) {
-                        throw new IllegalArgumentException(intrinsic.name() + "(...) expects exactly one argument");
+                if (call.callee() instanceof Ast.NameExpr intrinsic) {
+                    String operation = intrinsic.name().startsWith("$rt$")
+                            ? intrinsic.name().substring("$rt$".length())
+                            : intrinsic.name();
+                    if (operation.equals("borrow") || operation.equals("take")
+                            || operation.equals("copy") || operation.equals("share")) {
+                        if (call.arguments().size() != 1) {
+                            throw new IllegalArgumentException("rt " + operation + " expects exactly one argument");
+                        }
+                        if (operation.equals("share")) {
+                            throw new IllegalArgumentException(
+                                    "rt share requires an explicit shared-capability runtime and cannot alias ordinary owned state");
+                        }
+                        // References are the default runtime representation.
+                        // borrow/take are compile-time ownership state changes;
+                        // copy is accepted here only for statically Copy values.
+                        return eval(call.arguments().getFirst(), env);
                     }
-                    if (intrinsic.name().equals("share")) {
-                        throw new IllegalArgumentException(
-                                "share(...) requires an explicit shared-capability runtime and cannot alias ordinary owned state");
-                    }
-                    // borrow/take are compile-time ownership operations and
-                    // erase to the same JVM reference. copy is currently
-                    // accepted only for statically Copy immutable values.
-                    return eval(call.arguments().getFirst(), env);
                 }
                 if (call.callee() instanceof Ast.MemberExpr methodCall) {
                     Object receiver = eval(methodCall.receiver(), env);
