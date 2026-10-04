@@ -150,4 +150,62 @@ final class ImportHardeningTest {
 
         assertEquals("42", output.toString(StandardCharsets.UTF_8));
     }
+
+    @Test
+    void hotLoadEntryExportIsExplicitTypedAndUnique() {
+        Ast.Program program = TypeChecker.check(Parser.parse("""
+                export entry actor Worker;
+
+                define actor Worker {
+                  pub receive(int message): void { return; }
+                }
+                """));
+
+        Ast.EntryExportDecl entry = (Ast.EntryExportDecl) program.modules().stream()
+                .flatMap(module -> module.declarations().stream())
+                .filter(Ast.EntryExportDecl.class::isInstance)
+                .findFirst()
+                .orElseThrow();
+
+        assertEquals(Ast.ExportKind.ACTOR, entry.kind());
+        assertEquals("Worker", entry.name());
+
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        export entry actor Worker;
+                        export entry fnc main;
+
+                        define actor Worker {
+                          pub receive(int message): void { return; }
+                        }
+
+                        pub fnc main() => void { return; }
+                        """)));
+        assertTrue(duplicate.getMessage().contains("exactly one export entry"));
+
+        IllegalArgumentException wrongKind = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        export entry class Worker;
+
+                        define actor Worker {
+                          pub receive(int message): void { return; }
+                        }
+                        """)));
+        assertTrue(wrongKind.getMessage().contains("entry export class"));
+    }
+
+    @Test
+    void entryExportCannotBeHiddenInsideAModule() {
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        define module plugin
+                          export entry fnc run;
+                          pub fnc run() => void { return; }
+                        end
+                        """));
+    }
+
 }
