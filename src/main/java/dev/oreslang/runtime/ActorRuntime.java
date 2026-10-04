@@ -363,9 +363,9 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         /**
-         * Production defaults use four independent Erlang-style scheduler
-         * bulkheads: control-plane, shared actor, isoactor/private, and untrusted
-         * actor. Each domain starts with a small worker floor and may grow
+         * Production defaults use five independent scheduler bulkheads:
+         * control-plane, root/async task, shared actor, isoactor/private, and
+         * untrusted actor. Each domain starts with a small worker floor and may grow
          * toward a bounded ceiling when runnable actor demand accumulates.
          *
          * The pools are intentionally not partitioned as permanent CPU owners:
