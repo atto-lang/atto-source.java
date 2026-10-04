@@ -53,7 +53,7 @@ import java.util.function.UnaryOperator;
 public final class ActorRuntime implements AutoCloseable {
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
-    private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
+    private static final long CLOSE_WAIT_NANOS = TimeUnit.SECONDS.toNanos(2);
     private static final ThreadLocal<Boolean> ACTOR_CARRIER = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<ActorExecutionContext> CURRENT_ACTOR_EXECUTION = new ThreadLocal<>();
 
@@ -2462,6 +2462,25 @@ public final class ActorRuntime implements AutoCloseable {
             if (!cell.finalized()) stillRunning.add(cell.ref.id());
         }
 
+        boolean dispatchersTerminated = true;
+        for (ExecutorService dispatcher : List.of(privateDispatcher, sharedDispatcher)) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                dispatchersTerminated = false;
+                break;
+            }
+            try {
+                if (!dispatcher.awaitTermination(remaining, TimeUnit.NANOSECONDS)) {
+                    dispatchersTerminated = false;
+                    break;
+                }
+            } catch (InterruptedException waitInterrupted) {
+                interrupted = true;
+                dispatchersTerminated = false;
+                break;
+            }
+        }
+
         for (SyncCell<?> cell : List.copyOf(syncCells)) cell.invalidateFromRuntime();
         syncCells.clear();
         for (Shared<?> shared : List.copyOf(sharedValues)) shared.closeFromRuntime();
@@ -2469,7 +2488,7 @@ public final class ActorRuntime implements AutoCloseable {
         sharedMemoryBytes.set(0L);
 
         if (interrupted) Thread.currentThread().interrupt();
-        if (!stillRunning.isEmpty() || interrupted) {
+        if (!stillRunning.isEmpty() || !dispatchersTerminated || interrupted) {
             if (interrupted) {
                 for (ActorCell<?> cell : snapshot) {
                     if (!cell.finalized() && !stillRunning.contains(cell.ref.id())) {
@@ -2478,8 +2497,9 @@ public final class ActorRuntime implements AutoCloseable {
                 }
             }
             throw new IllegalStateException(
-                    "ActorRuntime close did not observe full actor termination: "
-                            + stillRunning.size() + " actor(s) still running");
+                    "ActorRuntime close did not observe full runtime termination: "
+                            + stillRunning.size() + " actor(s) still running, dispatchersTerminated="
+                            + dispatchersTerminated);
         }
         actors.clear();
         actorCount.set(0);
