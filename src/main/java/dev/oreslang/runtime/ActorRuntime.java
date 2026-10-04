@@ -2091,6 +2091,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final AtomicInteger phase = new AtomicInteger(QUEUED);
         private final AtomicReference<RootResumeEnvelope> resumeEnvelope =
                 new AtomicReference<>();
+        private final AtomicReference<OresFuture.RuntimeWaiterRegistration> awaitRegistration =
+                new AtomicReference<>();
         private volatile Thread carrier;
         private volatile ScheduledFuture<?> deadlineFuture;
         private final AtomicBoolean compensationClaimed = new AtomicBoolean();
@@ -2129,22 +2131,34 @@ public final class ActorRuntime implements AutoCloseable {
                         "root task already has a pending await continuation");
             }
 
-            awaited.whenCompleteRuntime((value, failure) -> {
-                RootResumeEnvelope envelope = new RootResumeEnvelope(
-                        continuation,
-                        value,
-                        OresFuture.unwrap(failure));
-                if (!resumeEnvelope.compareAndSet(null, envelope)) {
-                    completeFailure(new IllegalStateException(
-                            "root task received overlapping await completions"));
-                    return;
-                }
-                requestResume();
-            });
+            OresFuture.RuntimeWaiterRegistration registration =
+                    awaited.whenCompleteRuntime((value, failure) -> {
+                        RootResumeEnvelope envelope = new RootResumeEnvelope(
+                                continuation,
+                                value,
+                                OresFuture.unwrap(failure));
+                        if (!resumeEnvelope.compareAndSet(null, envelope)) {
+                            completeFailure(new IllegalStateException(
+                                    "root task received overlapping await completions"));
+                            return;
+                        }
+                        requestResume();
+                    });
+            if (!awaitRegistration.compareAndSet(null, registration)) {
+                registration.cancel();
+                throw new IllegalStateException(
+                        "root task already has a registered await waiter");
+            }
 
             // The compiler has already moved all live state into continuation.
             // Unwind this carrier stack; do not park or join it.
             throw RootTaskSuspendedSignal.INSTANCE;
+        }
+
+        private void detachAwaitRegistration() {
+            OresFuture.RuntimeWaiterRegistration registration =
+                    awaitRegistration.getAndSet(null);
+            if (registration != null) registration.cancel();
         }
 
         private void requestResume() {
@@ -2171,6 +2185,7 @@ public final class ActorRuntime implements AutoCloseable {
             } catch (RejectedExecutionException rejected) {
                 if (phase.compareAndSet(QUEUED, FINISHED)) {
                     completeFailure(rejected);
+                    detachAwaitRegistration();
                     releaseRootTask(this);
                 }
             }
@@ -2195,6 +2210,7 @@ public final class ActorRuntime implements AutoCloseable {
                     try {
                         schedulerSafepoint();
                         RootResumeEnvelope resume = resumeEnvelope.getAndSet(null);
+                        if (resume != null) detachAwaitRegistration();
                         Object result = resume == null
                                 ? task.get()
                                 : resume.continuation().resume(
@@ -2237,6 +2253,7 @@ public final class ActorRuntime implements AutoCloseable {
                     }
                 } else {
                     phase.set(FINISHED);
+                    detachAwaitRegistration();
                     releaseRootTask(this);
                 }
             }
@@ -2312,6 +2329,7 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!phase.compareAndSet(observed, FINISHED)) continue;
                 if (observed == QUEUED) vm.rootTaskScheduler().remove(this);
                 completion.completeExceptionally(cancellation);
+                detachAwaitRegistration();
                 releaseRootTask(this);
                 return;
             }
@@ -2334,6 +2352,7 @@ public final class ActorRuntime implements AutoCloseable {
                 completeFailure(
                         new CancellationException(
                                 "root/main execution cancelled by runtime close"));
+                detachAwaitRegistration();
                 releaseRootTask(this);
                 return;
             }
@@ -5801,6 +5820,8 @@ public final class ActorRuntime implements AutoCloseable {
                 new ConcurrentLinkedQueue<>();
         private final ConcurrentLinkedQueue<ContinuationEnvelope> nextTickContinuations =
                 new ConcurrentLinkedQueue<>();
+        private final AtomicReference<OresFuture.RuntimeWaiterRegistration> suspendedAwaitRegistration =
+                new AtomicReference<>();
         private final Set<ActorTimerWheel.Handle> timers = ConcurrentHashMap.newKeySet();
         private final AtomicLong sharedInboxBytes = new AtomicLong();
         private final Object lifecycleLock = new Object();
@@ -6250,18 +6271,33 @@ public final class ActorRuntime implements AutoCloseable {
 
             logicalTurnSuspended = true;
             try {
-                awaited.whenCompleteRuntime((value, failure) -> enqueueContinuation(
-                        readyContinuations,
-                        new ContinuationEnvelope(
-                                continuation,
-                                value,
-                                unwrapCompletionFailure(failure)),
-                        "resume"));
+                OresFuture.RuntimeWaiterRegistration registration =
+                        awaited.whenCompleteRuntime((value, failure) -> enqueueContinuation(
+                                readyContinuations,
+                                new ContinuationEnvelope(
+                                        continuation,
+                                        value,
+                                        unwrapCompletionFailure(failure)),
+                                "resume"));
+                if (!suspendedAwaitRegistration.compareAndSet(null, registration)) {
+                    registration.cancel();
+                    throw new IllegalStateException(
+                            "actor turn already has a registered await waiter");
+                }
+                if (stopped.get() || closed.get()) {
+                    detachSuspendedAwaitRegistration();
+                }
             } catch (RuntimeException | Error registrationFailure) {
                 logicalTurnSuspended = false;
                 throw registrationFailure;
             }
             throw ActorTurnSuspendedSignal.INSTANCE;
+        }
+
+        private void detachSuspendedAwaitRegistration() {
+            OresFuture.RuntimeWaiterRegistration registration =
+                    suspendedAwaitRegistration.getAndSet(null);
+            if (registration != null) registration.cancel();
         }
 
         private void nextTick(ActorContinuation continuation) {
@@ -6489,6 +6525,7 @@ public final class ActorRuntime implements AutoCloseable {
                     ContinuationEnvelope continuation = readyContinuations.poll();
                     if (continuation == null) return;
                     releaseControlEvent();
+                    detachSuspendedAwaitRegistration();
                     logicalTurnSuspended = false;
                     long continuationDeadline = armMessageDeadline("await continuation");
                     boolean suspendedAgain = false;
@@ -6630,6 +6667,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void drainControlEvents() {
+            detachSuspendedAwaitRegistration();
             while (readyContinuations.poll() != null) releaseControlEvent();
             while (nextTickContinuations.poll() != null) releaseControlEvent();
             logicalTurnSuspended = false;
