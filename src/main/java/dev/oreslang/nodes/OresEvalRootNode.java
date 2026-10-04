@@ -125,6 +125,25 @@ public final class OresEvalRootNode extends RootNode {
         private final Set<String> ambiguousClasses = new LinkedHashSet<>();
         private final Set<String> ambiguousTypeAliases = new LinkedHashSet<>();
         private StartupPhase startupPhase = StartupPhase.CREATED;
+        private static final int TAIL_SAFEPOINT_INTERVAL = 64;
+
+        private enum InvocationKind {
+            FUNCTION,
+            FUNCTION_BODY,
+            METHOD,
+            STATIC_FUNCTION,
+            INVOKABLE
+        }
+
+        private record Invocation(
+                Evaluator owner,
+                InvocationKind kind,
+                Object receiver,
+                Object target,
+                List<Object> arguments) { }
+
+        private record TailCall(Invocation invocation) { }
+
 
         private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
             this.program = program;
