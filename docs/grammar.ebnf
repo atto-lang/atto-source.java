@@ -71,10 +71,10 @@ actor_member    = field_decl
 actor_method_decl
                 = { annotation } visibility [ "fnc" ] method_name [ generic_params ]
                   method_head method_return_spec block ;
-(* Public actor instance methods define the typed mailbox protocol. The compiler
-   generates one hidden mailbox ingress/dispatcher; source actor classes do not
-   declare static functions. Public protocol methods are non-generic and use
-   implicit self. *)
+(* Semantic rule: every concrete actor has exactly one public
+   receive(message): void mailbox ingress. All other actor instance methods are
+   private helpers. The runtime owns the receive loop. Actor classes do not
+   declare static functions. *)
 
 class_decl      = "define" [ "abstract" ] "class" IDENT [ generic_params ]
                   [ "extends" type_ref { "," type_ref } ]
