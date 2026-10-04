@@ -12,6 +12,11 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresSymbol;
+import dev.oreslang.runtime.PatternMatchError;
+import dev.oreslang.runtime.ProcessGlobalRegistry;
+import dev.oreslang.runtime.MemorySlotSingletonRegistry;
+import dev.oreslang.runtime.SandboxForbiddenCapability;
 import dev.oreslang.runtime.ActorRuntime;
 
 import java.nio.file.Path;
@@ -398,6 +403,22 @@ public final class OresEvalRootNode extends RootNode {
                 executeBlock(ifStmt.elseBody(), env);
                 return;
             }
+            if (stmt instanceof Ast.SwitchStmt switched) {
+                Object subject = eval(switched.subject(), env);
+                for (Ast.SwitchClause clause : switched.clauses()) {
+                    Env clauseEnv = new Env(env);
+                    if (!matchPattern(clause.pattern(), subject, clauseEnv)) continue;
+                    if (clause.guard() != null) {
+                        requirePurePatternGuard(clause.guard());
+                        if (!truth(eval(clause.guard(), clauseEnv))) continue;
+                    }
+                    executeBlock(clause.body(), clauseEnv);
+                    return;
+                }
+                throw new PatternMatchError(
+                        "no switch pattern matched value of type "
+                                + (subject == null ? "null" : subject.getClass().getSimpleName()));
+            }
             if (stmt instanceof Ast.TryStmt tried) {
                 try { executeBlock(tried.body(), env); }
                 catch (ReturnSignal signal) { throw signal; }
@@ -430,10 +451,186 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private boolean matchPattern(Ast.Pattern pattern, Object value, Env env) {
+            if (pattern instanceof Ast.WildcardPattern) return true;
+
+            if (pattern instanceof Ast.BindingPattern binding) {
+                env.define(binding.name(), value, Ast.BindingKind.VAL);
+                return true;
+            }
+
+            if (pattern instanceof Ast.LiteralPattern literal) {
+                Object expected = literal.value() instanceof Ast.Symbol symbol
+                        ? OresSymbol.processLiteral(symbol.name(), context.isolatePolicy())
+                        : literal.value();
+                return Objects.equals(expected, value);
+            }
+
+            if (pattern instanceof Ast.TypePattern typed) {
+                if (!matchesNominalType(value, typed.type().name())) return false;
+                if (typed.bindingName() != null) {
+                    env.define(typed.bindingName(), value, Ast.BindingKind.VAL);
+                }
+                return true;
+            }
+
+            if (pattern instanceof Ast.SequencePattern sequence) {
+                if (!(value instanceof List<?> list)
+                        || list.size() != sequence.elements().size()) {
+                    return false;
+                }
+                for (int i = 0; i < list.size(); i++) {
+                    if (!matchPattern(sequence.elements().get(i), list.get(i), env)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            if (pattern instanceof Ast.ObjectPattern objectPattern) {
+                for (Ast.ObjectPatternField field : objectPattern.fields()) {
+                    Object child;
+                    if (value instanceof OresObject object) {
+                        if (!object.fields.containsKey(field.name())) return false;
+                        child = object.fields.get(field.name());
+                    } else if (value instanceof DynamicStructValue dynamic) {
+                        if (!dynamic.fields.containsKey(field.name())) return false;
+                        child = dynamic.fields.get(field.name());
+                    } else if (value instanceof Map<?, ?> map) {
+                        if (!map.containsKey(field.name())) return false;
+                        child = map.get(field.name());
+                    } else {
+                        return false;
+                    }
+                    if (!matchPattern(field.pattern(), child, env)) return false;
+                }
+                return true;
+            }
+
+            if (pattern instanceof Ast.VariantPattern variant) {
+                String name = variant.name();
+
+                if (name.equals("Ok") || name.equals("Err")) {
+                    if (!(value instanceof ResultValue result)
+                            || result.ok() != name.equals("Ok")
+                            || variant.arguments().size() != 1) {
+                        return false;
+                    }
+                    return matchPattern(variant.arguments().getFirst(), result.value(), env);
+                }
+
+                if (name.equals("Some")) {
+                    if (!(value instanceof OptionValue option)
+                            || !option.present()
+                            || variant.arguments().size() != 1) {
+                        return false;
+                    }
+                    return matchPattern(variant.arguments().getFirst(), option.value(), env);
+                }
+
+                if (name.equals("None")) {
+                    return value instanceof OptionValue option
+                            && !option.present()
+                            && variant.arguments().isEmpty();
+                }
+
+                if (value instanceof OresObject object && matchesNominalType(object, name)) {
+                    List<Ast.FieldDecl> fields =
+                            effectiveFields(object.klass, new LinkedHashSet<>());
+                    if (fields.size() != variant.arguments().size()) return false;
+                    for (int i = 0; i < fields.size(); i++) {
+                        Object child = object.fields.get(fields.get(i).name());
+                        if (!matchPattern(variant.arguments().get(i), child, env)) return false;
+                    }
+                    return true;
+                }
+
+                return variant.arguments().isEmpty() && matchesNominalType(value, name);
+            }
+
+            throw new IllegalStateException(
+                    "unsupported switch pattern " + pattern.getClass().getSimpleName());
+        }
+
+        private boolean matchesNominalType(Object value, String typeName) {
+            if (value == null) return false;
+            if (value instanceof OresObject object) {
+                return classIsOrExtends(object.klass, typeName, new LinkedHashSet<>());
+            }
+            for (Class<?> type = value.getClass(); type != null; type = type.getSuperclass()) {
+                if (type.getSimpleName().equals(typeName) || type.getName().equals(typeName)) {
+                    return true;
+                }
+            }
+            for (Class<?> iface : value.getClass().getInterfaces()) {
+                if (iface.getSimpleName().equals(typeName) || iface.getName().equals(typeName)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean classIsOrExtends(
+                Ast.ClassDecl klass,
+                String typeName,
+                Set<Ast.ClassDecl> seen) {
+            if (!seen.add(klass)) return false;
+            if (klass.name().equals(typeName)) return true;
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                if (parentRef.name().equals(typeName)) return true;
+                Ast.ClassDecl parent = findClass(parentRef.name());
+                if (parent != null && classIsOrExtends(parent, typeName, seen)) return true;
+            }
+            return false;
+        }
+
+        /**
+         * Runtime defense in depth for Erlang-style guards. Compiler checking
+         * applies the same rule, but malformed AST must not smuggle effects into
+         * clause selection.
+         */
+        private static void requirePurePatternGuard(Ast.Expr expr) {
+            if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return;
+            if (expr instanceof Ast.MemberExpr member) {
+                requirePurePatternGuard(member.receiver());
+                return;
+            }
+            if (expr instanceof Ast.IndexExpr indexed) {
+                requirePurePatternGuard(indexed.receiver());
+                requirePurePatternGuard(indexed.index());
+                return;
+            }
+            if (expr instanceof Ast.UnaryExpr unary) {
+                if (unary.operator().equals("&") || unary.operator().equals("&mut")) {
+                    throw new IllegalArgumentException(
+                            "pattern guard cannot borrow or mutate state");
+                }
+                requirePurePatternGuard(unary.operand());
+                return;
+            }
+            if (expr instanceof Ast.BinaryExpr binary) {
+                requirePurePatternGuard(binary.left());
+                requirePurePatternGuard(binary.right());
+                return;
+            }
+            if (expr instanceof Ast.ConditionalExpr conditional) {
+                requirePurePatternGuard(conditional.condition());
+                requirePurePatternGuard(conditional.whenTrue());
+                requirePurePatternGuard(conditional.whenFalse());
+                return;
+            }
+            throw new IllegalArgumentException(
+                    "pattern guard must be side-effect free; calls, assignment, allocation, await, "
+                            + "lambdas, and container construction are not allowed");
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
                 if (literal.value() instanceof Ast.Imaginary imaginary) return new Complex(0.0, imaginary.coefficient());
+                if (literal.value() instanceof Ast.Symbol symbol) {
+                    return OresSymbol.processLiteral(symbol.name(), context.isolatePolicy());
+                }
                 return literal.value();
             }
             if (expr instanceof Ast.NameExpr name) {
@@ -757,6 +954,12 @@ public final class OresEvalRootNode extends RootNode {
             }
             if (receiver instanceof ImportedNamespace namespace) return namespace.owner().exportValue(namespace.kind(), name);
             if (receiver instanceof ModuleFacade namespace) return namespace.owner().moduleMember(namespace.module(), name);
+            if (receiver instanceof GlobalRefFacade global) {
+                return global.owner().globalRefMember(global, name);
+            }
+            if (receiver instanceof SingletonRefFacade singleton) {
+                return singleton.owner().singletonRefMember(singleton, name);
+            }
             if (receiver instanceof ClassFacade klass) {
                 List<Ast.MethodDecl> functions = klass.owner().findStaticFunctionsByName(klass.klass(), name, new LinkedHashSet<>());
                 if (functions.size() == 1) {
@@ -1090,22 +1293,157 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export '" + name + "'");
         }
 
+        private String statefulModuleKey(Ast.ModuleDecl module) {
+            return codeUnitId + "::" + module.name();
+        }
+
+        private ModuleState initializeStatefulModule(Ast.ModuleDecl module) {
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            Env env = new Env(null);
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field)) continue;
+                if (field.initializer() == null) {
+                    throw new IllegalArgumentException(
+                            "stateful module field has no initializer: "
+                                    + module.name() + "." + field.name());
+                }
+                Object value = eval(field.initializer(), env);
+                fields.put(field.name(), value);
+                env.define(field.name(), value, field.bindingKind());
+            }
+            return new ModuleState(module, fields);
+        }
+
+        private Object callStatefulModuleFunction(
+                ModuleState state,
+                Ast.FunctionDecl fn,
+                List<?> args) {
+            List<?> normalized = normalizeFunctionArguments(fn, args);
+            Env env = new Env(null, fn.nonLexical());
+
+            for (Ast.Decl decl : state.module.declarations()) {
+                if (!(decl instanceof Ast.FieldDecl field)) continue;
+                Object value = state.fields.get(field.name());
+                env.define(field.name(), value, field.bindingKind());
+            }
+            for (int i = 0; i < fn.parameters().size(); i++) {
+                Ast.Param param = fn.parameters().get(i);
+                env.define(
+                        param.name(),
+                        normalized.get(i),
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+
+            Object result = null;
+            try {
+                executeBlock(fn.body(), env);
+            } catch (ReturnSignal signal) {
+                result = shapeReturnedValue(
+                        fn.returnType(),
+                        signal.value,
+                        "module function " + state.module.name() + "." + fn.name());
+            } finally {
+                // Only LET module fields can change. The entire operation runs
+                // under the global owner or slot-singleton cell lock.
+                for (Ast.Decl decl : state.module.declarations()) {
+                    if (!(decl instanceof Ast.FieldDecl field)
+                            || field.bindingKind() != Ast.BindingKind.LET) continue;
+                    Object updated = env.lookup(field.name());
+                    if (updated == Env.MISSING) {
+                        throw new IllegalStateException(
+                                "module field disappeared during execution: " + field.name());
+                    }
+                    state.fields.put(field.name(), updated);
+                }
+            }
+            return result;
+        }
+
+        @SuppressWarnings("unchecked")
+        private ProcessGlobalRegistry.Handle<ModuleState> globalHandle(Ast.ModuleDecl module) {
+            context.requireCapability(
+                    IsolatePolicy.Capability.PROCESS_GLOBAL,
+                    "global module " + module.name());
+            return ProcessGlobalRegistry.getOrCreate(
+                    statefulModuleKey(module),
+                    context.isolatePolicy(),
+                    () -> initializeStatefulModule(module));
+        }
+
+        private MemorySlotSingletonRegistry.Handle<ModuleState> singletonHandle(
+                Ast.ModuleDecl module) {
+            return context.actors().singletons().getOrCreate(
+                    statefulModuleKey(module),
+                    () -> initializeStatefulModule(module));
+        }
+
+        private Ast.Annotation annotation(Ast.FieldDecl field, String name) {
+            for (Ast.Annotation annotation : field.annotations()) {
+                if (annotation.name().equals(name)) return annotation;
+            }
+            return null;
+        }
+
+        private Ast.ModuleDecl injectedTarget(Ast.FieldDecl field, String annotationName) {
+            Ast.Annotation annotation = annotation(field, annotationName);
+            if (annotation == null) return null;
+            Ast.TypeRef targetRef = annotation.arguments().isEmpty()
+                    ? field.type().arguments().getFirst()
+                    : annotation.arguments().getFirst();
+            Ast.ModuleDecl target = modules.get(targetRef.name());
+            if (target == null) {
+                throw new IllegalArgumentException(
+                        "unknown injected module " + targetRef.name());
+            }
+            return target;
+        }
+
+        private Object injectedValue(Ast.FieldDecl field) {
+            Ast.ModuleDecl global = injectedTarget(field, "InjectGlobal");
+            if (global != null) {
+                return new GlobalRefFacade(this, global, globalHandle(global));
+            }
+            Ast.ModuleDecl singleton = injectedTarget(field, "InjectSingleton");
+            if (singleton != null) {
+                return new SingletonRefFacade(this, singleton, singletonHandle(singleton));
+            }
+            return Env.MISSING;
+        }
+
         private OresObject instantiate(Ast.ClassDecl klass, List<Object> args) {
             if (klass.actorKind() != Ast.ActorKind.NONE) {
                 throw new IllegalStateException("actor '" + klass.name()
                         + "' cannot be constructed with new; actor state must be initialized inside ActorRuntime");
             }
             List<Ast.FieldDecl> classFields = effectiveFields(klass, new LinkedHashSet<>());
-            if (args.size() > classFields.size()) throw new IllegalArgumentException("too many constructor arguments for " + klass.name());
+            long ordinaryFieldCount = classFields.stream()
+                    .filter(field -> annotation(field, "InjectGlobal") == null
+                            && annotation(field, "InjectSingleton") == null)
+                    .count();
+            if (args.size() > ordinaryFieldCount) {
+                throw new IllegalArgumentException(
+                        "too many constructor arguments for " + klass.name()
+                                + "; injected fields are not constructor arguments");
+            }
+
             LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
             Env env = new Env(null);
-            for (int i = 0; i < classFields.size(); i++) {
-                Ast.FieldDecl field = classFields.get(i);
+            int argumentIndex = 0;
+            for (Ast.FieldDecl field : classFields) {
+                Object injected = injectedValue(field);
                 Object value;
-                if (i < args.size()) value = args.get(i);
-                else if (field.initializer() != null) value = eval(field.initializer(), env);
-                else throw new IllegalArgumentException("missing constructor field " + klass.name() + "." + field.name());
+                if (injected != Env.MISSING) {
+                    value = injected;
+                } else if (argumentIndex < args.size()) {
+                    value = args.get(argumentIndex++);
+                } else if (field.initializer() != null) {
+                    value = eval(field.initializer(), env);
+                } else {
+                    throw new IllegalArgumentException(
+                            "missing constructor field " + klass.name() + "." + field.name());
+                }
                 fields.put(field.name(), value);
+                env.define(field.name(), value, field.bindingKind());
             }
             return new OresObject(this, klass, fields);
         }
@@ -1120,15 +1458,85 @@ public final class OresEvalRootNode extends RootNode {
                 if (decl instanceof Ast.ClassDecl klass && klass.name().equals(name)) {
                     return new ClassFacade(this, klass);
                 }
-                if (decl instanceof Ast.FunctionDecl fn && fn.name().equals(name) && fn.visibility() == Ast.Visibility.PUBLIC) {
-                    return (Invokable) args -> callFunction(fn, args);
+                if (decl instanceof Ast.FunctionDecl fn
+                        && fn.name().equals(name)
+                        && fn.visibility() == Ast.Visibility.PUBLIC) {
+                    return switch (module.storage()) {
+                        case ORDINARY -> (Invokable) args -> callFunction(fn, args);
+                        case GLOBAL -> {
+                            ProcessGlobalRegistry.Handle<ModuleState> handle = globalHandle(module);
+                            yield (Invokable) args -> handle.call(
+                                    args,
+                                    (state, delivered) ->
+                                            callStatefulModuleFunction(state, fn, delivered));
+                        }
+                        case SINGLETON -> {
+                            MemorySlotSingletonRegistry.Handle<ModuleState> handle =
+                                    singletonHandle(module);
+                            yield (Invokable) args -> handle.call(
+                                    args,
+                                    (state, delivered) ->
+                                            callStatefulModuleFunction(state, fn, delivered));
+                        }
+                    };
                 }
-                if (decl instanceof Ast.FieldDecl field && field.name().equals(name) && field.visibility() == Ast.Visibility.PUBLIC) {
-                    if (field.initializer() == null) throw new IllegalArgumentException("module field has no initializer: " + module.name() + "." + name);
-                    return eval(field.initializer(), new Env(null));
+                if (decl instanceof Ast.FieldDecl field
+                        && field.name().equals(name)
+                        && field.visibility() == Ast.Visibility.PUBLIC) {
+                    // Mutable public state is rejected statically. Public
+                    // const/val reads still execute through the owning authority.
+                    return switch (module.storage()) {
+                        case ORDINARY -> {
+                            if (field.initializer() == null) {
+                                throw new IllegalArgumentException(
+                                        "module field has no initializer: "
+                                                + module.name() + "." + name);
+                            }
+                            yield eval(field.initializer(), new Env(null));
+                        }
+                        case GLOBAL -> globalHandle(module).call(
+                                List.of(),
+                                (state, ignored) -> state.fields.get(field.name()));
+                        case SINGLETON -> singletonHandle(module).call(
+                                List.of(),
+                                (state, ignored) -> state.fields.get(field.name()));
+                    };
                 }
             }
-            throw new IllegalArgumentException("module '" + module.name() + "' does not export '" + name + "'");
+            throw new IllegalArgumentException(
+                    "module '" + module.name() + "' does not export '" + name + "'");
+        }
+
+        private Object globalRefMember(GlobalRefFacade ref, String name) {
+            for (Ast.Decl decl : ref.module().declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.name().equals(name)) {
+                    return (Invokable) args -> ref.handle().call(
+                            args,
+                            (state, delivered) ->
+                                callStatefulModuleFunction(state, fn, delivered));
+                }
+            }
+            throw new IllegalArgumentException(
+                    "global ref '" + ref.module().name()
+                            + "' has no public function '" + name + "'");
+        }
+
+        private Object singletonRefMember(SingletonRefFacade ref, String name) {
+            for (Ast.Decl decl : ref.module().declarations()) {
+                if (decl instanceof Ast.FunctionDecl fn
+                        && fn.visibility() == Ast.Visibility.PUBLIC
+                        && fn.name().equals(name)) {
+                    return (Invokable) args -> ref.handle().call(
+                            args,
+                            (state, delivered) ->
+                                callStatefulModuleFunction(state, fn, delivered));
+                }
+            }
+            throw new IllegalArgumentException(
+                    "singleton ref '" + ref.module().name()
+                            + "' has no public function '" + name + "'");
         }
 
         private List<Ast.FieldDecl> effectiveFields(Ast.ClassDecl klass, Set<Ast.ClassDecl> seen) {
@@ -1584,7 +1992,30 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
+    private static final class ModuleState {
+        private final Ast.ModuleDecl module;
+        private final LinkedHashMap<String, Object> fields;
+
+        private ModuleState(Ast.ModuleDecl module, LinkedHashMap<String, Object> fields) {
+            this.module = Objects.requireNonNull(module);
+            this.fields = Objects.requireNonNull(fields);
+        }
+    }
+
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
+
+    private record GlobalRefFacade(
+            Evaluator owner,
+            Ast.ModuleDecl module,
+            ProcessGlobalRegistry.Handle<ModuleState> handle)
+            implements SandboxForbiddenCapability { }
+
+    private record SingletonRefFacade(
+            Evaluator owner,
+            Ast.ModuleDecl module,
+            MemorySlotSingletonRegistry.Handle<ModuleState> handle)
+            implements SandboxForbiddenCapability { }
+
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
     private record HostObjectFacade(Object value) {
@@ -1610,7 +2041,8 @@ public final class OresEvalRootNode extends RootNode {
                     || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                     || value instanceof Float || value instanceof Double || value instanceof java.math.BigInteger
                     || value instanceof java.math.BigDecimal || value instanceof Enum<?> || value instanceof java.util.UUID
-                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>) {
+                    || value instanceof Complex || value instanceof ActorRuntime.ActorId || value instanceof ActorRuntime.ActorRef<?>
+                    || value instanceof OresSymbol) {
                 return true;
             }
 
