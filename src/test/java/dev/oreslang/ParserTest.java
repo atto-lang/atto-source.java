@@ -24,7 +24,7 @@ final class ParserTest {
 
         assertDoesNotThrow(() -> Parser.parse("""
                 shared actor Worker {
-                  pub receive_message(int message) => void {
+                  pub receive(int message) => void {
                     val shared = message;
                     stdio.println(shared);
                     return;
@@ -113,7 +113,7 @@ final class ParserTest {
                 shared actor Account {
                   let balance = 100;
 
-                  pub fnc receive_message(int amount) => void {
+                  pub fnc receive(int amount) => void {
                     self.balance = self.balance - amount;
                     return;
                   }
@@ -125,14 +125,14 @@ final class ParserTest {
 
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
         assertEquals("Account", actor.name());
-        assertEquals("receive_message", actor.methods().getFirst().name());
+        assertEquals("receive", actor.methods().getFirst().name());
 
         Ast.Program typed = TypeChecker.check(program);
         assertDoesNotThrow(() -> OwnershipChecker.check(typed));
     }
 
     @Test
-    void actorPublicMethodsFormTypedProtocolWhileMailboxIngressStaysCompilerOwned() {
+    void actorRequiresExactlyOnePublicReceiveIngress() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   let int count = 0;
@@ -145,25 +145,33 @@ final class ParserTest {
                     return self.count;
                   }
 
-                  pub run1(int value): void {
+                  pub receive(int value): void {
                     self.count = self.count + value;
                     return;
-                  }
-
-                  pub run2(int value) -> int {
-                    return self.count + value;
                   }
                 end
                 """));
 
         Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
-        assertEquals(List.of("constructor", "helper", "run1", "run2"),
+        assertEquals(List.of("constructor", "helper", "receive"),
                 actor.methods().stream().map(Ast.MethodDecl::name).toList());
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Bad as
-                  pub static fnc helper() => void { return; }
+                  pub run(int value): void { return; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor BadArity as
+                  pub receive(int one, int two): void { return; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor BadReturn as
+                  pub receive(int value): int { return value; }
                 end
                 """));
     }
@@ -174,13 +182,13 @@ final class ParserTest {
                 define class Worker extends Actor as
                   let int count = 0;
 
-                  pub run1(): void {
-                    self.count = self.count + 1;
-                    return;
+                  private current(): int {
+                    return self.count;
                   }
 
-                  pub run2() -> int {
-                    return self.count;
+                  pub receive(int value): void {
+                    self.count = self.count + value;
+                    return;
                   }
                 end
                 """));
@@ -188,19 +196,20 @@ final class ParserTest {
         Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
         assertTrue(actor.parents().isEmpty(), "compiler-intrinsic Actor base normalizes into actorKind");
+        assertEquals("receive", actor.methods().getLast().name());
     }
 
     @Test
-    void actorPublicMethodBoundaryTypesAreChecked() {
+    void actorReceiveBoundaryTypesAreChecked() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Bad as
-                  pub run(Mutex<int> value): void { return; }
+                  pub receive(Mutex<int> value): void { return; }
                 end
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Good as
-                  pub run(int value): int { return value + 1; }
+                  pub receive(int value): void { return; }
                 end
                 """)));
     }
@@ -290,7 +299,7 @@ final class ParserTest {
                 shared actor Account {
                   let int balance = 100;
 
-                  pub fnc receive_message() => int {
+                  pub fnc receive() => int {
                     return self.balance;
                   }
                 }
@@ -333,7 +342,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc receive_message() => Account {
+                      pub fnc receive() => Account {
                         return self;
                       }
                     }
@@ -346,7 +355,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc receive_message() => &mut Account {
+                      pub fnc receive() => &mut Account {
                         return &mut self;
                       }
                     }
@@ -359,7 +368,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc receive_message() => &mut Account {
+                      pub fnc receive() => &mut Account {
                         val alias = &mut self;
                         return alias;
                       }
@@ -373,7 +382,7 @@ final class ParserTest {
                     shared actor Account {
                       let Array<int> items = [1, 2, 3];
 
-                      pub fnc receive_message() => Array<int> {
+                      pub fnc receive() => Array<int> {
                         return self.items;
                       }
                     }
@@ -389,7 +398,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc receive_message() => int {
+                      pub fnc receive() => int {
                         return self.balance;
                       }
                     }
@@ -406,7 +415,7 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub fnc receive_message() => int {
+                      pub fnc receive() => int {
                         return inspect(&self);
                       }
                     }
@@ -424,7 +433,7 @@ final class ParserTest {
                 }
 
                 shared actor Child extends Parent {
-                  pub fnc receive_message() => int {
+                  pub fnc receive() => int {
                     return self.value;
                   }
                 }
