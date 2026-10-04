@@ -189,6 +189,20 @@ public final class TypeChecker {
 
     private void checkInterface(Ast.InterfaceDecl iface) {
         Set<String> generics = uniqueGenerics(iface.genericParameters(), "interface " + iface.name());
+
+        Set<String> interfaceFieldNames = new LinkedHashSet<>();
+        collectInterfaceFieldNames(iface, interfaceFieldNames, new LinkedHashSet<>());
+        Set<String> interfaceMethodNames = new LinkedHashSet<>();
+        collectInterfaceMethodNames(iface, interfaceMethodNames, new LinkedHashSet<>());
+        for (String name : interfaceFieldNames) {
+            if (interfaceMethodNames.contains(name)) {
+                throw new IllegalArgumentException(
+                        "interface member '" + iface.name() + "." + name
+                                + "' cannot be both a field and a method across inheritance; "
+                                + "member-value and direct-call syntax must remain unambiguous");
+            }
+        }
+
         Set<String> memberKeys = new HashSet<>();
         for (Ast.TypeRef parentRef : iface.parents()) {
             if (findInterface(parentRef.name()) == null) throw new IllegalArgumentException("unknown parent interface '" + parentRef.name() + "' for " + iface.name());
@@ -298,6 +312,22 @@ public final class TypeChecker {
                 throw new IllegalArgumentException("actor isolation kind must be preserved across inheritance: "
                         + klass.name() + " is " + klass.actorKind() + " but parent "
                         + resolvedParent.name() + " is " + resolvedParent.actorKind());
+            }
+        }
+
+        Set<String> effectiveFieldNames = new LinkedHashSet<>();
+        for (ResolvedField field : effectiveFieldTargets(
+                klass, nominalClassType(klass), new LinkedHashSet<>())) {
+            effectiveFieldNames.add(field.field().name());
+        }
+        Set<String> effectiveInstanceMethodNames = new LinkedHashSet<>();
+        collectInstanceMethodNames(klass, effectiveInstanceMethodNames, new LinkedHashSet<>());
+        for (String name : effectiveFieldNames) {
+            if (effectiveInstanceMethodNames.contains(name)) {
+                throw new IllegalArgumentException(
+                        "class member '" + klass.name() + "." + name
+                                + "' cannot be both a field and an instance method across inheritance; "
+                                + "member-value and direct-call syntax must remain unambiguous");
             }
         }
 
@@ -1988,6 +2018,51 @@ public final class TypeChecker {
         }
         seen.remove(iface);
         return false;
+    }
+
+    private void collectInstanceMethodNames(
+            Ast.ClassDecl klass,
+            Set<String> names,
+            Set<Ast.ClassDecl> seen) {
+        if (!seen.add(klass)) return;
+        for (Ast.MethodDecl method : klass.methods()) {
+            if (!method.isStatic()) names.add(method.name());
+        }
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent != null) collectInstanceMethodNames(parent, names, seen);
+        }
+        seen.remove(klass);
+    }
+
+    private void collectInterfaceFieldNames(
+            Ast.InterfaceDecl iface,
+            Set<String> names,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceFieldDecl field) names.add(field.name());
+        }
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null) collectInterfaceFieldNames(parent, names, seen);
+        }
+        seen.remove(iface);
+    }
+
+    private void collectInterfaceMethodNames(
+            Ast.InterfaceDecl iface,
+            Set<String> names,
+            Set<Ast.InterfaceDecl> seen) {
+        if (!seen.add(iface)) return;
+        for (Ast.InterfaceMember member : iface.members()) {
+            if (member instanceof Ast.InterfaceFunctionDecl fn) names.add(fn.name());
+        }
+        for (Ast.TypeRef parentRef : iface.parents()) {
+            Ast.InterfaceDecl parent = findInterface(parentRef.name());
+            if (parent != null) collectInterfaceMethodNames(parent, names, seen);
+        }
+        seen.remove(iface);
     }
 
     private Ast.MethodDecl findStaticFunction(Ast.ClassDecl klass, String name, int arity, Set<Ast.ClassDecl> seen) {
