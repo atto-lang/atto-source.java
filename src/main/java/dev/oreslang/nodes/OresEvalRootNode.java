@@ -735,6 +735,63 @@ public final class OresEvalRootNode extends RootNode {
             throw new IllegalArgumentException("unsupported expression " + expr);
         }
 
+        private void predeclareLocalTypes(List<Ast.Stmt> statements, Env env) {
+            for (Ast.Stmt stmt : statements) {
+                if (!(stmt instanceof Ast.TypeDeclStmt local)) continue;
+                if (local.declaration() instanceof Ast.ClassDecl struct && struct.isStruct()) {
+                    env.defineType(struct.name(), struct);
+                }
+            }
+        }
+
+        private Ast.ClassDecl runtimeClass(Ast.TypeRef type, Env env) {
+            if (type == null || type.isBorrow()) return null;
+            Ast.ClassDecl local = env.lookupType(type.name());
+            if (local != null) return local;
+
+            Ast.TypeAliasDecl alias = findTypeAlias(type.name());
+            if (alias != null && alias.genericParameters().size() == type.arguments().size()) {
+                Map<String, Ast.TypeRef> substitutions = new HashMap<>();
+                for (int i = 0; i < alias.genericParameters().size(); i++) {
+                    substitutions.put(alias.genericParameters().get(i), type.arguments().get(i));
+                }
+                return runtimeClass(substituteReturnType(alias.target(), substitutions), env);
+            }
+            return findClass(type.name());
+        }
+
+        private OresObject materializeStruct(Ast.ClassDecl struct, Map<String, Object> supplied, Env env) {
+            LinkedHashSet<String> known = new LinkedHashSet<>();
+            for (Ast.FieldDecl field : struct.fields()) known.add(field.name());
+            for (String name : supplied.keySet()) {
+                if (!known.contains(name)) throw new IllegalArgumentException("unknown struct field " + struct.name() + "." + name);
+            }
+
+            LinkedHashMap<String, Object> fields = new LinkedHashMap<>();
+            for (Ast.FieldDecl field : struct.fields()) {
+                Object value;
+                if (supplied.containsKey(field.name())) value = supplied.get(field.name());
+                else if (field.initializer() != null) value = eval(field.initializer(), env);
+                else throw new IllegalArgumentException("missing struct field " + struct.name() + "." + field.name());
+                fields.put(field.name(), value);
+            }
+            return new OresObject(this, struct, fields);
+        }
+
+        private Object coerceDeclaredStruct(Ast.TypeRef declaredType, Object value, Env env) {
+            if (declaredType == null || value instanceof OresObject || !(value instanceof Map<?, ?> raw)) return value;
+            Ast.ClassDecl struct = runtimeClass(declaredType, env);
+            if (struct == null || !struct.isStruct()) return value;
+            LinkedHashMap<String, Object> supplied = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : raw.entrySet()) {
+                if (!(entry.getKey() instanceof String name)) {
+                    throw new IllegalArgumentException("struct field names must be strings");
+                }
+                supplied.put(name, entry.getValue());
+            }
+            return materializeStruct(struct, supplied, env);
+        }
+
         private Object member(Object receiver, String name) {
             if (receiver instanceof HostClassFacade host) {
                 context.requireCapability(IsolatePolicy.Capability.JAVA_INTEROP,
@@ -804,12 +861,6 @@ public final class OresEvalRootNode extends RootNode {
             if (receiver instanceof OresObject object) {
                 if (object.fields.containsKey(name)) return object.fields.get(name);
                 return new BoundMethod(object.owner, object, name);
-            }
-            if (receiver instanceof DynamicStructValue dynamic) {
-                if (!dynamic.fields.containsKey(name)) {
-                    throw new IllegalArgumentException("unknown DynamicStruct member " + name);
-                }
-                return dynamic.fields.get(name);
             }
             if (receiver instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("unknown obj member " + name);
@@ -1016,10 +1067,14 @@ public final class OresEvalRootNode extends RootNode {
                 Ast.Param param = fn.parameters().get(i);
                 env.define(param.name(), args.get(i), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
             }
+            predeclareLocalTypes(fn.body(), env);
             try {
                 executeBlock(fn.body(), env);
                 return null;
-            } catch (ReturnSignal signal) { return shapeReturnedValue(fn.returnType(), signal.value, "static function " + fn.name()); }
+            } catch (ReturnSignal signal) {
+                Object shaped = coerceDeclaredStruct(fn.returnType(), signal.value, env);
+                return shapeReturnedValue(fn.returnType(), shaped, "static function " + fn.name());
+            }
         }
 
         /**
@@ -1395,15 +1450,15 @@ public final class OresEvalRootNode extends RootNode {
             }
 
             if (declared.name().equals("DynamicStruct")) {
-                if (declared.arguments().size() != 1 || !(value instanceof DynamicStructValue dynamic)) {
+                throw new IllegalArgumentException("DynamicStruct has been removed; use Map<K,V>");
+            }
+            if (declared.name().equals("Map")) {
+                if (declared.arguments().size() != 2 || !(value instanceof Map<?, ?> map)) {
                     throw returnTypeMismatch(callable, declared, value);
                 }
-                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
-                    shapeReturnedValue(
-                            declared.arguments().getFirst(),
-                            entry.getValue(),
-                            callable + "[" + entry.getKey() + "]",
-                            resolving);
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    shapeReturnedValue(declared.arguments().get(0), entry.getKey(), callable + " key", resolving);
+                    shapeReturnedValue(declared.arguments().get(1), entry.getValue(), callable + "[" + entry.getKey() + "]", resolving);
                 }
                 return value;
             }
@@ -1452,12 +1507,6 @@ public final class OresEvalRootNode extends RootNode {
 
         private List<?> asSequence(Object value) { if (value instanceof List<?> l) return l; if (value instanceof Object[] a) return List.of(a); throw new IllegalArgumentException("value is not sequence-destructurable"); }
         private Object destructureMember(Object value, String name) {
-            if (value instanceof DynamicStructValue dynamic) {
-                if (!dynamic.fields.containsKey(name)) {
-                    throw new IllegalArgumentException("object destructure missing member " + name);
-                }
-                return dynamic.fields.get(name);
-            }
             if (value instanceof Map<?, ?> map) {
                 if (!map.containsKey(name)) throw new IllegalArgumentException("object destructure missing member " + name);
                 return map.get(name);
@@ -1478,6 +1527,7 @@ public final class OresEvalRootNode extends RootNode {
         private final Env parent;
         private final boolean descendantsNonLexical;
         private final Map<String, Slot> slots = new HashMap<>();
+        private final Map<String, Ast.ClassDecl> localTypes = new HashMap<>();
         private Env(Env parent) { this(parent, parent != null && parent.descendantsNonLexical); }
         private Env(Env parent, boolean descendantsNonLexical) {
             this.parent = parent;
@@ -1496,6 +1546,14 @@ public final class OresEvalRootNode extends RootNode {
             slot.value = value;
         }
         private Object lookup(String name) { Slot s=slots.get(name); return s!=null?s.value:parent==null?MISSING:parent.lookup(name); }
+        private void defineType(String name, Ast.ClassDecl type) {
+            Ast.ClassDecl previous = localTypes.putIfAbsent(name, type);
+            if (previous != null && previous != type) throw new IllegalArgumentException("duplicate local type " + name);
+        }
+        private Ast.ClassDecl lookupType(String name) {
+            Ast.ClassDecl type = localTypes.get(name);
+            return type != null ? type : parent == null ? null : parent.lookupType(name);
+        }
         private void assign(String name, Object value) {
             Slot slot = slots.get(name);
             if (slot != null) {
@@ -1509,6 +1567,7 @@ public final class OresEvalRootNode extends RootNode {
         private Env snapshot() {
             Env cp = new Env(parent == null ? null : parent.snapshot(), descendantsNonLexical);
             cp.slots.putAll(slots);
+            cp.localTypes.putAll(localTypes);
             return cp;
         }
         private void releaseMutexGuards(boolean failed) {
