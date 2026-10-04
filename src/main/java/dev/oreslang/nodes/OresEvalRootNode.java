@@ -144,6 +144,14 @@ public final class OresEvalRootNode extends RootNode {
 
         private record TailCall(Invocation invocation) { }
 
+        private static final class TailCallSignal extends RuntimeException {
+            private final Invocation invocation;
+            private TailCallSignal(Invocation invocation) {
+                super(null, null, false, false);
+                this.invocation = invocation;
+            }
+        }
+
 
         private Evaluator(Ast.Program program, OresContext context, String codeUnitId) {
             this.program = program;
@@ -1809,6 +1817,65 @@ public final class OresEvalRootNode extends RootNode {
             cp.slots.putAll(slots);
             return cp;
         }
+        private boolean hasLiveMutexGuards() {
+            Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            for (Slot slot : slots.values()) {
+                if (containsLiveMutexGuard(slot.value, seen)) return true;
+            }
+            return parent != null && parent.hasLiveMutexGuards();
+        }
+
+        private static boolean containsLiveMutexGuard(Object value, Set<Object> seen) {
+            if (value == null) return false;
+            if (value instanceof OresMutex.Guard<?> guard) return !guard.released();
+            if (!seen.add(value)) return false;
+
+            if (value instanceof OptionValue option) {
+                return option.present() && containsLiveMutexGuard(option.value(), seen);
+            }
+            if (value instanceof ResultValue result) {
+                return containsLiveMutexGuard(result.value(), seen);
+            }
+            if (value instanceof OresMutex.GuardFuture<?> future) {
+                return future.isDone()
+                        && !future.isCancelled()
+                        && !future.isCompletedExceptionally()
+                        && containsLiveMutexGuard(future.getNow(null), seen);
+            }
+            if (value instanceof OresObject object) {
+                for (Object field : object.fields.values()) {
+                    if (containsLiveMutexGuard(field, seen)) return true;
+                }
+                return false;
+            }
+            if (value instanceof List<?> list) {
+                for (Object item : list) if (containsLiveMutexGuard(item, seen)) return true;
+                return false;
+            }
+            if (value instanceof Set<?> set) {
+                for (Object item : set) if (containsLiveMutexGuard(item, seen)) return true;
+                return false;
+            }
+            if (value instanceof DynamicStructValue dynamic) {
+                for (Map.Entry<String, Object> entry : dynamic.fields.entrySet()) {
+                    if (containsLiveMutexGuard(entry.getKey(), seen)
+                            || containsLiveMutexGuard(entry.getValue(), seen)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> entry : map.entrySet()) {
+                    if (containsLiveMutexGuard(entry.getKey(), seen)
+                            || containsLiveMutexGuard(entry.getValue(), seen)) return true;
+                }
+                return false;
+            }
+            if (value instanceof Object[] array) {
+                for (Object item : array) if (containsLiveMutexGuard(item, seen)) return true;
+            }
+            return false;
+        }
+
         private void releaseMutexGuards(boolean failed) {
             Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
             for (Slot slot : slots.values()) releaseMutexGuardsInValue(slot.value, failed, seen);
