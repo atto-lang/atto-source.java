@@ -278,21 +278,25 @@ public final class OresEvalRootNode extends RootNode {
                     .map(context.actors()::prepareSourceSharedActorInput)
                     .toList();
 
-            Ast.MethodDecl receive = findMethod(
-                    klass,
-                    "receive",
-                    1,
-                    new LinkedHashSet<>());
-            if (receive == null || receive.visibility() != Ast.Visibility.PUBLIC) {
-                throw new IllegalStateException(
-                        "actor class '" + klass.name()
-                                + "' has no public receive(message) method");
-            }
-
-            return context.actors().spawnSourceSharedActor(actorContext -> {
+            return context.actors().spawnSourceSharedProtocolActor(actorContext -> {
                 OresObject actor = instantiateActorState(klass, prepared);
-                return (message, turnContext) ->
-                        callMethod(actor, receive, List.of(message));
+                return (methodName, arguments, turnContext) -> {
+                    Ast.MethodDecl endpoint = findMethod(
+                            klass,
+                            methodName,
+                            arguments.size(),
+                            new LinkedHashSet<>());
+                    if (endpoint == null
+                            || endpoint.isStatic()
+                            || endpoint.visibility() != Ast.Visibility.PUBLIC
+                            || endpoint.name().equals("constructor")) {
+                        throw new IllegalArgumentException(
+                                "actor class '" + klass.name()
+                                        + "' has no public protocol method '"
+                                        + methodName + "' with arity " + arguments.size());
+                    }
+                    return callMethod(actor, endpoint, arguments);
+                };
             });
         }
 
@@ -577,6 +581,23 @@ public final class OresEvalRootNode extends RootNode {
                     if (receiver instanceof ClassFacade klass) {
                         return klass.owner().invokeStaticFunction(klass.klass(), methodCall.member(), args);
                     }
+                    if (receiver instanceof ActorRuntime.ActorRef<?> ref) {
+                        return switch (methodCall.member()) {
+                            case "id" -> throw new IllegalArgumentException(
+                                    "ActorRef.id is a value, not a callable");
+                            case "is_alive" -> {
+                                requireZero(args, "ActorRef.is_alive");
+                                yield ref.isAlive();
+                            }
+                            case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
+                                    "raw ActorRef mailbox operations are runtime-private; "
+                                            + "invoke a declared typed actor protocol method instead");
+                            default -> context.actors().invokeSourceProtocol(
+                                    ref,
+                                    methodCall.member(),
+                                    args);
+                        };
+                    }
                     Object callee = member(receiver, methodCall.member());
                     if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
                     return invokable.call(args);
@@ -741,19 +762,12 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "ActorRef.is_alive");
                         return ref.isAlive();
                     };
-                    case "send" -> (Invokable) args -> {
-                        requireOne(args, "ActorRef.send");
-                        @SuppressWarnings("unchecked")
-                        ActorRuntime.ActorRef<Object> typed =
-                                (ActorRuntime.ActorRef<Object>) ref;
-                        typed.send(args.getFirst());
-                        return null;
-                    };
-                    case "receive" -> throw new IllegalArgumentException(
-                            "actor receive(message) is runtime-owned; use ActorRef.send(message)");
-                    case "mailbox" -> throw new IllegalArgumentException(
-                            "ActorRef is not an application mailbox object; use send(message) for persistent actors");
-                    default -> throw new IllegalArgumentException("unknown ActorRef member " + name);
+                    case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
+                            "raw ActorRef mailbox operations are runtime-private; "
+                                    + "invoke a declared typed actor protocol method instead");
+                    default -> throw new IllegalArgumentException(
+                            "actor protocol methods are not first-class values; invoke '"
+                                    + name + "(...)' directly through the ActorRef");
                 };
             }
             if (receiver instanceof OresFuture<?> future) {
