@@ -86,7 +86,7 @@ A hot-reloaded generation with the same singleton field schema reuses the existi
 Oreslang has one explicit lifecycle declaration:
 
 ```ores
-init routine() => void {
+init routine() -> void {
   // initialization work
   return;
 }
