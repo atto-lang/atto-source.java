@@ -26,7 +26,7 @@ The language is intentionally opinionated:
 - hot reload creates a fresh versioned guest context/generation without requiring FFI or dynamic native libraries;
 - direct method calls reuse shared class method definitions; extracted method values bind their receiver safely without rebinding `self`;
 - class/module declarations use the mandatory `as` body marker; `as` and `is` are reserved keywords;
-- `init routine() => void` is actor-local at file/ordinary-module scope and process-local inside a singleton module;
+- `init routine() -> void` is actor-local at file/ordinary-module scope and process-local inside a singleton module;
 - multiple named modules may appear in one source file;
 - explicit `return` statements;
 - generics, tuples, arrays, complex numbers, futures/`await`, lambdas, `defer`, and `try/catch/finally` are language-level features.
