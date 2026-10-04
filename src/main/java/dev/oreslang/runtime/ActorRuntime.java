@@ -1263,6 +1263,7 @@ public final class ActorRuntime implements AutoCloseable {
         private final ScheduledThreadPoolExecutor messageWatchdog;
         private final ActorTimerWheel actorTimerWheel;
         private final Semaphore rootSlots;
+        private final ArrayBlockingQueue<Runnable> rootSchedulerQueue;
         private final AtomicInteger controlCompensatingThreads = new AtomicInteger();
         private final AtomicInteger privateCompensatingThreads = new AtomicInteger();
         private final AtomicInteger sharedCompensatingThreads = new AtomicInteger();
@@ -1319,6 +1320,7 @@ public final class ActorRuntime implements AutoCloseable {
                     namedFactory(prefix + "actor-turn-watchdog-"));
             this.actorTimerWheel = new ActorTimerWheel(prefix + "actor-timer-wheel-");
             this.rootSlots = new Semaphore(rootPermits, true);
+            this.rootSchedulerQueue = new ArrayBlockingQueue<>(readyQueueCapacity, true);
         }
 
         private synchronized void reserveActor(ActorKind kind) {
@@ -1421,12 +1423,63 @@ public final class ActorRuntime implements AutoCloseable {
 
         /**
          * Admit one ordinary/root OresScheduler turn onto the CONTROL pool.
-         * Unlike maintenance work, saturation is surfaced to the scheduler so
-         * task failure/backpressure is explicit rather than silently retried.
+         *
+         * <p>Async root work shares the same rootSlots permits as legacy
+         * executeRootTask(), so scheduler continuations can never consume every
+         * CONTROL carrier and starve supervisors/mailmen. Admission is bounded;
+         * producer/completion threads enqueue and return rather than blocking on
+         * a permit.</p>
          */
         void executeControlTask(Runnable task) {
             Objects.requireNonNull(task, "task");
-            controlDispatcher.execute(task);
+            if (controlDispatcher.isShutdown()) {
+                throw new RejectedExecutionException("CONTROL dispatcher is shut down");
+            }
+            if (!rootSchedulerQueue.offer(task)) {
+                throw new RejectedExecutionException(
+                        "root OresScheduler ready queue is full");
+            }
+            pumpRootScheduler();
+        }
+
+        private void pumpRootScheduler() {
+            while (!controlDispatcher.isShutdown()) {
+                if (!rootSlots.tryAcquire()) return;
+
+                Runnable next = rootSchedulerQueue.poll();
+                if (next == null) {
+                    rootSlots.release();
+                    return;
+                }
+
+                submitRootSchedulerTurn(next);
+            }
+        }
+
+        private void submitRootSchedulerTurn(Runnable task) {
+            try {
+                controlDispatcher.execute(() -> {
+                    try {
+                        task.run();
+                    } finally {
+                        rootSlots.release();
+                        pumpRootScheduler();
+                    }
+                });
+            } catch (RejectedExecutionException rejected) {
+                if (controlDispatcher.isShutdown() || messageWatchdog.isShutdown()) {
+                    rootSlots.release();
+                    return;
+                }
+
+                // CONTROL's own bounded queue can be temporarily saturated by
+                // supervisor/mailman work. Keep this logical root slot reserved
+                // and retry without running guest code on the caller thread.
+                messageWatchdog.schedule(
+                        () -> submitRootSchedulerTurn(task),
+                        1L,
+                        TimeUnit.MILLISECONDS);
+            }
         }
 
         void shutdownNow() {
@@ -1436,6 +1489,7 @@ public final class ActorRuntime implements AutoCloseable {
             untrustedDispatcher.shutdownNow();
             untrustedWatchdog.shutdownNow();
             messageWatchdog.shutdownNow();
+            rootSchedulerQueue.clear();
             actorTimerWheel.close();
         }
     }
