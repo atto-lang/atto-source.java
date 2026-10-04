@@ -12,12 +12,6 @@ final class OresRwLockTest {
     void ordinarySchedulerCodeMayReadAndWriteExternalState() {
         OresRwLock<Integer> lock = new OresRwLock<>(1);
 
-        try (OresRwLock<Integer>.WriteGuard<Integer> ignored = null) {
-            // compile-time type smoke is covered by the concrete guard tests below.
-        } catch (Exception ignored) {
-            // no-op
-        }
-
         try (OresRwLock.WriteGuard<Integer> write = lock.writeLock()) {
             assertEquals(1, write.value());
             write.replace(2);
