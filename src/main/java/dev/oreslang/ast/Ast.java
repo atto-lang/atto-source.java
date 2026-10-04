@@ -25,12 +25,20 @@ public final class Ast {
         public ImportDecl { names = List.copyOf(names); }
     }
 
-    public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+    public enum ContainerKind { MODULE, NAMESPACE }
+
+    public record ModuleDecl(String name, ContainerKind kind, List<Annotation> annotations, List<Decl> declarations) {
         public ModuleDecl {
             annotations = List.copyOf(annotations);
             declarations = List.copyOf(declarations);
         }
-        public ModuleDecl(String name, List<Decl> declarations) { this(name, List.of(), declarations); }
+        public ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
+            this(name, ContainerKind.MODULE, annotations, declarations);
+        }
+        public ModuleDecl(String name, List<Decl> declarations) {
+            this(name, ContainerKind.MODULE, List.of(), declarations);
+        }
+        public boolean isNamespace() { return kind == ContainerKind.NAMESPACE; }
     }
 
     public sealed interface Decl permits FunctionDecl, ClassDecl, InterfaceDecl, FieldDecl, TypeAliasDecl { }
