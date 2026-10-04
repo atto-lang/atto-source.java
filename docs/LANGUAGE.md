@@ -548,7 +548,11 @@ Qualified names such as `x.y` retain their module namespace.
 
 ## `fnc` versus `routine`
 
-`fnc` and `routine` may both recurse. Recursion and tail-call optimization are not what distinguishes them: tail-position calls in `fnc`, `routine`, and lambda bodies are subject to the same lowering/optimization rules. v0.3 does **not** yet promise that every eligible tail call executes in constant stack space; that guarantee must be implemented identically for AOT and JIT rather than depending on host-JIT luck.
+`fnc` and `routine` may both recurse. Recursion and tail-call optimization are not what distinguishes them. Eligible calls in tail position in `fnc`, `routine`, instance methods, `static fnc`, and lambda bodies are lowered as **proper tail calls**: they do not grow the Oreslang/host call stack. This is a runtime guarantee shared by JIT, Native Image AOT, and hybrid execution; it does not depend on the host JIT discovering recursive-call optimization.
+
+A tail call is eligible only when the current activation has no semantic work that must remain live after the call. Active `defer`/catch/finally cleanup and live mutex guards are tail-call barriers; in those cases the call executes normally so cleanup and return validation remain correct. Conditional return arms inherit tail position, so `return cond ? f() : g();` may tail-transfer through the selected arm.
+
+The runtime resolves the target and arguments before releasing the caller, then transfers through an iterative trampoline. Every 64 tail transfers it executes a scheduler safepoint so a long recursive chain cannot bypass OresVM scheduling/fairness. Reified Oreslang `fnc`/lambda values are marked as tail-transferable; arbitrary host/interop callables complete before the caller is released so the caller's runtime return-shape checks are preserved.
 
 The distinction is **reifiability**:
 
