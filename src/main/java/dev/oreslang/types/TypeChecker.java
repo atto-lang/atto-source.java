@@ -739,10 +739,10 @@ public final class TypeChecker {
                 }
                 if (receiver instanceof Named named) {
                     if (named.name().equals("SharedMutex")
-                            && currentActorKind != Ast.ActorKind.NONE
-                            && member.member().equals("with_lock")) {
+                            && currentActorKind != Ast.ActorKind.NONE) {
                         throw new IllegalArgumentException(
-                                "actor code cannot use blocking SharedMutex.with_lock(); use try_lock() or await lock_async()");
+                                "actor code cannot acquire or mutate external SharedMutex<T>; "
+                                        + "use actor-owned state for writes and an explicit RwLock read capability for external reads");
                     }
                     if ((named.name().equals("Mutex") || named.name().equals("SharedMutex"))
                             && named.arguments().size() == 1
