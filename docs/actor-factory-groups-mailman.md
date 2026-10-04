@@ -286,3 +286,229 @@ Runtime:
 - bound mailbox, continuation, timer, and group-outbox admission;
 - route emitted mail through the actor's group outbox;
 - reclaim group/actor/generation/resources exactly once on failure/termination.
+
+
+## 12. Startup configuration: `.ores-actors.toml`
+
+Actor-group policy is loaded and validated before `main` is admitted. The runtime must never discover group ceilings lazily after user actors are already running.
+
+Recommended deployment file:
+
+```toml
+version = 1
+
+[process]
+max_groups = 4096
+max_dynamic_groups = 2048
+max_actors = 16384
+
+[dynamic_defaults]
+max_actors = 64
+mailbox_capacity = 1024
+outbox_capacity = 4096
+restart_strategy = "one_for_one"
+max_restarts = 3
+restart_window = "5s"
+
+[[group]]
+name = "default"
+kind = "shared"
+min_actors = 0
+max_actors = 4096
+mailbox_capacity = 2048
+outbox_capacity = 8192
+restart_strategy = "one_for_one"
+max_restarts = 10
+restart_window = "5s"
+
+[[group]]
+name = "workers"
+kind = "shared"
+min_actors = 8
+max_actors = 128
+factory = "workers/worker.ores::worker"
+mailbox_capacity = 1024
+outbox_capacity = 4096
+restart_strategy = "one_for_one"
+max_restarts = 5
+restart_window = "10s"
+
+[[group_template]]
+name = "tenant-workers"
+kind = "shared"
+min_actors = 0
+max_actors = 32
+max_instances = 1024
+factory = "workers/tenant_worker.ores::worker"
+mailbox_capacity = 512
+outbox_capacity = 2048
+restart_strategy = "one_for_one"
+max_restarts = 3
+restart_window = "5s"
+```
+
+The file is host/deployment authority, not actor-owned mutable state. It should be validated before guest execution using the same generated-contract discipline as other Ores configuration files.
+
+All configured limits are ceilings. Source code may request a stricter/lower value but may not widen a deployment ceiling.
+
+### Why a factory is required for a positive minimum
+
+A numeric `min_actors` does not identify what the supervisor should create. Therefore:
+
+- `min_actors == 0` requires no factory;
+- `min_actors > 0` requires a concrete actor factory/template;
+- the supervisor creates enough instances of that factory to reach the floor before the group is declared READY;
+- after a crash or normal exit, the supervisor reconciles back to the floor unless the whole group is draining/stopping.
+
+This is the Oreslang equivalent of OTP supervision child specs, with an explicit pool floor layered on top.
+
+## 13. Static groups vs dynamic groups
+
+There are two lifecycle classes.
+
+### Static startup group
+
+A `[[group]]` entry is part of application desired state.
+
+- created before `main`;
+- recreated from configuration when the application/supervisor generation restarts;
+- may have `min_actors > 0`;
+- may use `one_for_one`, `one_for_all`, or `rest_for_one` where ordering is meaningful;
+- receives a stable logical group name, but every concrete runtime incarnation still has a generation-safe `ActorGroupId`.
+
+### Dynamic group
+
+A dynamic group is created at runtime from a configured `group_template`.
+
+Conceptually:
+
+```ores
+val group = actor_groups.create(
+  "tenant:acme",
+  template: "tenant-workers",
+  max_actors: 16
+);
+```
+
+Creation is a supervisor/root capability operation. Ordinary actor code does not gain ambient permission to create arbitrary groups; it must either receive an explicit group-management capability or ask its supervisor by message. Untrusted actors can never create groups.
+
+Dynamic overrides are **narrowing only**:
+
+```text
+requested.max_actors <= template.max_actors
+requested.mailbox_capacity <= template.mailbox_capacity
+requested.outbox_capacity <= template.outbox_capacity
+requested.min_actors <= requested.max_actors
+```
+
+A runtime request may not change the template's actor execution domain, increase capabilities, increase restart intensity, or escape the process-wide ceilings.
+
+Dynamic groups are ephemeral by default. If their supervisor/application generation disappears, they disappear too. Oreslang should not silently pretend to persist runtime-created desired state. A future durable-group service can explicitly persist and replay group specifications.
+
+This deliberately follows OTP's distinction between static child specifications and dynamically added children: dynamic children can be added to a supervisor, but dynamic additions are not magically reconstructed from the supervisor's static initialization spec after recreation.
+
+## 14. Group capacity and admission
+
+`max_actors` is a hard admission limit, not a target and not a scheduler thread count.
+
+A spawn into a full group fails synchronously during bounded spawn admission:
+
+```text
+GroupCapacityExceeded {
+  group,
+  current_actors,
+  max_actors
+}
+```
+
+The runtime does not queue an unbounded list of pending spawns behind a full group. The caller can retry, back off, choose another group, or let a higher-level router decide.
+
+Capacity checks are hierarchical and transactional:
+
+```text
+process ceiling
+  -> runtime ceiling
+    -> execution-domain ceiling
+      -> group ceiling
+        -> actor reservation
+```
+
+If any reservation fails, every earlier provisional reservation is rolled back.
+
+`min_actors` is maintained by the group supervisor; `max_actors` is enforced by admission. Neither value changes the carrier pool directly. Thousands of actors may still be multiplexed over the existing bounded carrier pools.
+
+## 15. OTP-style supervision policy
+
+Oreslang should borrow the stable OTP vocabulary rather than inventing different names:
+
+```text
+one_for_one
+one_for_all
+rest_for_one
+```
+
+Default: `one_for_one`.
+
+- `one_for_one`: restart only the failed actor.
+- `one_for_all`: terminate/restart the group's supervised cohort.
+- `rest_for_one`: restart the failed actor plus actors after it in deterministic startup order.
+
+For dynamic groups, v1 permits only `one_for_one`. Dynamically created actors generally have no semantically meaningful total startup order, and allowing `rest_for_one` would create surprising coupling.
+
+Each group also has a restart-intensity window:
+
+```text
+max_restarts = N
+restart_window = duration
+```
+
+If more than `N` supervised restarts occur inside the window, the group supervisor stops trying locally and escalates to its parent supervisor. This prevents crash loops from consuming the scheduler indefinitely.
+
+Actor restart policy is separate from actor count policy:
+
+```text
+restart = permanent | transient | temporary
+```
+
+- `permanent`: restart after any termination while the group is running.
+- `transient`: restart only after abnormal termination.
+- `temporary`: never restart.
+
+A factory used to maintain `min_actors` is effectively reconciled independently of an individual actor's restart marker: if the live count falls below the configured floor, the supervisor may create a replacement instance to restore desired capacity.
+
+## 16. Registry and identity
+
+Names are lookup conveniences; IDs are authority.
+
+```ores
+ActorGroupId {
+  process_generation;
+  group_generation;
+  nonce;
+}
+```
+
+The runtime maintains a process-local group registry:
+
+```text
+logical name -> current ActorGroupId
+ActorGroupId -> live group state
+```
+
+A stale group ID must never become valid merely because a later group reuses the same logical name.
+
+Static names must be unique at startup. Dynamic names must be unique among live groups. Destroying a dynamic group invalidates its ID before resources/outbox state are reclaimed.
+
+The registry exposes bounded observational metadata to trusted supervisor/root code:
+
+```text
+actor_count
+min_actors
+max_actors
+mailbox pressure
+outbox pressure
+restart-window count
+state: STARTING | READY | DRAINING | STOPPED | FAILED
+```
+
+Actors should normally carry `ActorGroupRef` / send capabilities rather than perform ambient global string lookups on every message.
