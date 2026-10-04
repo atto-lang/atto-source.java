@@ -1784,7 +1784,7 @@ public final class OresEvalRootNode extends RootNode {
                     return (Invokable) args -> ref.handle().call(
                             args,
                             (state, delivered) ->
-                                callStatefulModuleFunction(state, fn, delivered));
+                                callStatefulModuleFunction(state, ref.module(), fn, delivered));
                 }
             }
             throw new IllegalArgumentException(
