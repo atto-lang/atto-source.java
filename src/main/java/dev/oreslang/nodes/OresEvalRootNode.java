@@ -602,6 +602,103 @@ public final class OresEvalRootNode extends RootNode {
             }
         }
 
+        private void returnFrom(Ast.Expr value, Env env, boolean tailBarrier) {
+            if (value == null) throw new ReturnSignal(null);
+
+            if (!tailBarrier) {
+                if (value instanceof Ast.CallExpr call) {
+                    throw new TailCallSignal(prepareInvocation(call, env));
+                }
+                if (value instanceof Ast.ConditionalExpr conditional) {
+                    Ast.Expr selected = truth(eval(conditional.condition(), env))
+                            ? conditional.whenTrue()
+                            : conditional.whenFalse();
+                    returnFrom(selected, env, false);
+                    return;
+                }
+            }
+
+            throw new ReturnSignal(eval(value, env));
+        }
+
+        private Invocation prepareInvocation(Ast.CallExpr call, Env env) {
+            if (call.callee() instanceof Ast.NameExpr directName
+                    && env.lookup(directName.name()) == Env.MISSING) {
+                Ast.FunctionDecl direct = findFunction(directName.name());
+                if (direct != null) {
+                    List<Object> args = evaluateArguments(call.arguments(), env);
+                    return functionInvocation(direct, args);
+                }
+            }
+
+            if (call.callee() instanceof Ast.MemberExpr methodCall) {
+                Object receiver = eval(methodCall.receiver(), env);
+                List<Object> args = evaluateArguments(call.arguments(), env);
+
+                if (receiver instanceof OresObject object) {
+                    Ast.MethodDecl method = object.owner.findMethod(
+                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                    if (method == null) {
+                        throw new IllegalArgumentException(
+                                "no method " + object.klass.name() + "." + methodCall.member()
+                                        + " with arity " + args.size());
+                    }
+                    return object.owner.methodInvocation(object, method, args);
+                }
+
+                if (receiver instanceof ClassFacade klass) {
+                    Ast.MethodDecl fn = klass.owner().findStaticFunction(
+                            klass.klass(), methodCall.member(), args.size(), new LinkedHashSet<>());
+                    if (fn == null) {
+                        throw new IllegalArgumentException(
+                                "no static function " + klass.klass().name() + "." + methodCall.member()
+                                        + " with arity " + args.size());
+                    }
+                    return klass.owner().staticFunctionInvocation(fn, args);
+                }
+
+                if (receiver instanceof ModuleFacade module) {
+                    return module.owner().prepareModuleInvocation(
+                            module.module(), methodCall.member(), args);
+                }
+
+                if (receiver instanceof OresMutex.Guard<?> guard
+                        && !methodCall.member().equals("release")
+                        && !methodCall.member().equals("is_released")
+                        && guard.value() instanceof OresObject object) {
+                    Ast.MethodDecl method = object.owner.findMethod(
+                            object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
+                    if (method != null) {
+                        return object.owner.methodInvocation(object, method, args);
+                    }
+                }
+
+                if (receiver instanceof ImportedNamespace namespace) {
+                    return namespace.owner().prepareImportedInvocation(
+                            namespace.kind(), methodCall.member(), args);
+                }
+
+                Object callee = member(receiver, methodCall.member());
+                if (!(callee instanceof Invokable invokable)) {
+                    throw new IllegalArgumentException("value is not callable: " + callee);
+                }
+                return invokableInvocation(invokable, args);
+            }
+
+            Object callee = eval(call.callee(), env);
+            List<Object> args = evaluateArguments(call.arguments(), env);
+            if (!(callee instanceof Invokable invokable)) {
+                throw new IllegalArgumentException("value is not callable: " + callee);
+            }
+            return invokableInvocation(invokable, args);
+        }
+
+        private List<Object> evaluateArguments(List<Ast.Expr> arguments, Env env) {
+            ArrayList<Object> values = new ArrayList<>(arguments.size());
+            for (Ast.Expr argument : arguments) values.add(eval(argument, env));
+            return List.copyOf(values);
+        }
+
         private Object eval(Ast.Expr expr, Env env) {
             if (expr instanceof Ast.LiteralExpr literal) {
                 if (literal.value() == null) throw new IllegalArgumentException("standalone null values are forbidden");
@@ -748,47 +845,7 @@ public final class OresEvalRootNode extends RootNode {
                 return binary(binary.operator(), left, right);
             }
             if (expr instanceof Ast.CallExpr call) {
-                if (call.callee() instanceof Ast.NameExpr directName
-                        && env.lookup(directName.name()) == Env.MISSING) {
-                    Ast.FunctionDecl direct = findFunction(directName.name());
-                    if (direct != null) {
-                        List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
-                        return callFunction(direct, args);
-                    }
-                }
-                if (call.callee() instanceof Ast.MemberExpr methodCall) {
-                    Object receiver = eval(methodCall.receiver(), env);
-                    List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
-                    if (receiver instanceof OresObject object) {
-                        return object.owner.invokeMethod(object, methodCall.member(), args);
-                    }
-                    if (receiver instanceof ClassFacade klass) {
-                        return klass.owner().invokeStaticFunction(klass.klass(), methodCall.member(), args);
-                    }
-                    if (receiver instanceof ModuleFacade module) {
-                        return module.owner().invokeModuleFunction(module.module(), methodCall.member(), args);
-                    }
-                    if (receiver instanceof OresMutex.Guard<?> guard
-                            && !methodCall.member().equals("release")
-                            && !methodCall.member().equals("is_released")
-                            && guard.value() instanceof OresObject object) {
-                        Ast.MethodDecl method = object.owner.findMethod(
-                                object.klass, methodCall.member(), args.size(), new LinkedHashSet<>());
-                        if (method != null) {
-                            return object.owner.callMethod(object, method, args);
-                        }
-                    }
-                    if (receiver instanceof ImportedNamespace namespace) {
-                        return namespace.owner().invokeImportedCallable(namespace.kind(), methodCall.member(), args);
-                    }
-                    Object callee = member(receiver, methodCall.member());
-                    if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
-                    return invokable.call(args);
-                }
-                Object callee = eval(call.callee(), env);
-                List<Object> args = call.arguments().stream().map(arg -> eval(arg, env)).toList();
-                if (!(callee instanceof Invokable invokable)) throw new IllegalArgumentException("value is not callable: " + callee);
-                return invokable.call(args);
+                return invoke(prepareInvocation(call, env));
             }
             if (expr instanceof Ast.MemberExpr member) return member(eval(member.receiver(), env), member.member());
             if (expr instanceof Ast.IndexExpr indexed) {
