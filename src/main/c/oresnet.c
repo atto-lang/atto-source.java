@@ -21,6 +21,13 @@
 #define MSG_NOSIGNAL 0
 #endif
 
+static int set_cloexec(int fd) {
+    int flags = fcntl(fd, F_GETFD, 0);
+    if (flags < 0) return -1;
+    if ((flags & FD_CLOEXEC) != 0) return 0;
+    return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+}
+
 static int as_fd(jlong value) {
     if (value < 0 || value > INT32_MAX) {
         errno = EBADF;
@@ -99,8 +106,7 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
     }
     if (result < 0) {
         int saved = errno;
-        (void)fcntl(fd, F_SETFL, original_flags);
-        errno = saved;
+        if (restore_fd_flags(fd, original_flags, saved) < 0) return -1;
         return -1;
     }
 
@@ -108,8 +114,7 @@ static int connect_one(int fd, const struct sockaddr *address, socklen_t length,
     socklen_t error_length = sizeof(socket_error);
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length) < 0) {
         int saved = errno;
-        (void)fcntl(fd, F_SETFL, original_flags);
-        errno = saved;
+        if (restore_fd_flags(fd, original_flags, saved) < 0) return -1;
         return -1;
     }
 
@@ -157,6 +162,12 @@ Java_dev_oreslang_net_NativeSocketBridge_connect(
         fd = socket(it->ai_family, it->ai_socktype, it->ai_protocol);
         if (fd < 0) {
             last_error = errno;
+            continue;
+        }
+        if (set_cloexec(fd) < 0) {
+            last_error = errno;
+            close(fd);
+            fd = -1;
             continue;
         }
         if (connect_one(fd, it->ai_addr, (socklen_t)it->ai_addrlen, timeout_ms) == 0) {
@@ -221,6 +232,12 @@ Java_dev_oreslang_net_NativeSocketBridge_listen(
             last_error = errno;
             continue;
         }
+        if (set_cloexec(fd) < 0) {
+            last_error = errno;
+            close(fd);
+            fd = -1;
+            continue;
+        }
 
         int one = reuse_address ? 1 : 0;
         if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
@@ -263,6 +280,13 @@ Java_dev_oreslang_net_NativeSocketBridge_accept(JNIEnv *env, jclass cls, jlong r
 
     if (accepted < 0) {
         throw_errno(env, "accept");
+        return -1;
+    }
+    if (set_cloexec(accepted) < 0) {
+        int saved = errno;
+        close(accepted);
+        errno = saved;
+        throw_errno(env, "accept(FD_CLOEXEC)");
         return -1;
     }
     return (jlong)accepted;
@@ -623,6 +647,10 @@ Java_dev_oreslang_net_NativeSocketBridge_setSoTimeout(JNIEnv *env, jclass cls, j
     value.tv_sec = timeout_ms / 1000;
     value.tv_usec = (timeout_ms % 1000) * 1000;
     int fd = as_fd(raw_fd);
+    if (fd < 0) {
+        throw_errno(env, "setsockopt(SO_RCVTIMEO)");
+        return;
+    }
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value)) < 0) {
         throw_errno(env, "setsockopt(SO_RCVTIMEO)");
     }
@@ -634,6 +662,10 @@ Java_dev_oreslang_net_NativeSocketBridge_getSoTimeout(JNIEnv *env, jclass cls, j
     struct timeval value;
     socklen_t length = sizeof(value);
     int fd = as_fd(raw_fd);
+    if (fd < 0) {
+        throw_errno(env, "getsockopt(SO_RCVTIMEO)");
+        return -1;
+    }
     if (getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &value, &length) < 0) {
         throw_errno(env, "getsockopt(SO_RCVTIMEO)");
         return -1;
