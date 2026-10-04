@@ -257,7 +257,8 @@ final class OresVM {
     }
 
     void executeControlMaintenance(Runnable task) {
-        ensureRunning();
+        // Teardown may race VM shutdown after shutdown=true but before the
+        // physical CONTROL pool is stopped. Let already-owned cleanup drain.
         dispatchers.executeControlMaintenance(
                 Objects.requireNonNull(task, "task"));
     }
