@@ -22,12 +22,10 @@ final class NamespaceAotHardeningTest {
                   end
 
                   define abstract class Base as
-                    pub name(): String;
                   end
 
                   define class User extends Base implements Named as
                     pub val String name;
-                    pub name(): String { return self.name; }
                   end
                 end
 
