@@ -35,7 +35,6 @@ module_member   = actor_decl
 visibility      = [ "pub" | "private" ] ;
 callable_modifier = "abstract" | "async" | "nlex" ;
 method_modifier   = "abstract" | "async" ;
-actor_method_modifier = "" ; (* actor methods are concrete; actor suspension is implicit *)
 
 callable_decl   = { annotation } visibility { callable_modifier } callable_kind IDENT [ generic_params ]
                   "(" [ param_list ] ")" return_spec block ;
