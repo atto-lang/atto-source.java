@@ -48,6 +48,7 @@ public final class TypeChecker {
     private final Set<String> importedValues = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
+    private boolean currentActorConstructor;
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -399,11 +400,15 @@ public final class TypeChecker {
                                 + module + "." + klass.name() + "." + method.name() + "'");
             }
             Ast.ActorKind previousActorKind = currentActorKind;
+            boolean previousActorConstructor = currentActorConstructor;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
+            currentActorConstructor = klass.actorKind() != Ast.ActorKind.NONE
+                    && method.name().equals("constructor");
             try {
                 checkBlock(method.body(), env, generics, returns, callableSelf);
             } finally {
                 currentActorKind = previousActorKind;
+                currentActorConstructor = previousActorConstructor;
             }
             if (!method.isAbstract() && returns != Primitive.VOID && !definitelyReturns(method.body())) {
                 String label = method.isStatic() ? "static function" : "method";
@@ -795,6 +800,11 @@ public final class TypeChecker {
                         Ast.MethodDecl method = target.method();
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
+                        if (owner.actorKind() != Ast.ActorKind.NONE && method.name().equals("constructor")) {
+                            throw new IllegalArgumentException(
+                                    "actor constructor '" + owner.name()
+                                            + "' is runtime-only and cannot be invoked as an ordinary method");
+                        }
                         validateCallTypeArgumentMarker(call, method.genericParameters(), "method " + owner.name() + "." + method.name());
                         List<String> callableGenerics = new ArrayList<>(owner.genericParameters());
                         callableGenerics.addAll(method.genericParameters());
@@ -1007,6 +1017,9 @@ public final class TypeChecker {
             return new Named("ActorSpawn", List.of(result));
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
+            if (currentActorConstructor) {
+                throw new IllegalArgumentException("actor constructors cannot await or suspend");
+            }
             Type awaitedType = typeOf(awaited.expression(), env, generics, self);
             if (awaitedType instanceof Named named && named.name().equals("Future") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
