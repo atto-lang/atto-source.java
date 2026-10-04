@@ -1464,15 +1464,35 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.NameExpr intrinsic
                     && isOwnershipIntrinsicName(intrinsic.name())) {
                 String operation = ownershipIntrinsicOperation(intrinsic.name());
-                if (operation.equals("share")) {
-                    throw new IllegalArgumentException(
-                            "rt share is reserved for explicit shared capabilities; ordinary ownership cannot be converted implicitly");
-                }
                 if (call.arguments().size() != 1) {
                     throw new IllegalArgumentException("rt " + operation + " expects exactly one argument");
                 }
-                Type value = typeOf(call.arguments().getFirst(), env, generics, self);
-                return operation.equals("borrow") ? new Borrow(value, false) : value;
+                Type operand = typeOf(call.arguments().getFirst(), env, generics, self);
+                return switch (operation) {
+                    case "copy" -> {
+                        Type source = operand instanceof Borrow borrowed ? borrowed.target() : operand;
+                        requireCopyable(source, new LinkedHashSet<>());
+                        yield source;
+                    }
+                    case "take" -> {
+                        if (operand instanceof Borrow) {
+                            throw new IllegalArgumentException("rt take requires an owned value, not a borrow");
+                        }
+                        yield operand;
+                    }
+                    case "borrow" -> operand instanceof Borrow borrowed
+                            ? new Borrow(borrowed.target(), false)
+                            : new Borrow(operand, false);
+                    case "share" -> {
+                        Type source = operand instanceof Borrow borrowed ? borrowed.target() : operand;
+                        requireCopyable(source, new LinkedHashSet<>());
+                        // Share creates a detached immutable snapshot. Keep the
+                        // source nominal type for ordinary read-reference calls;
+                        // OwnershipChecker carries the read-only SHARED state.
+                        yield source;
+                    }
+                    default -> throw new IllegalStateException("unknown rt ownership operation " + operation);
+                };
             }
             if (call.callee() instanceof Ast.NameExpr name && name.name().equals("Some")) {
                 if (call.arguments().size() != 1) throw new IllegalArgumentException("Some expects exactly one value");
@@ -2285,6 +2305,85 @@ public final class TypeChecker {
 
     private String ownershipIntrinsicOperation(String name) {
         return name.startsWith("$rt$") ? name.substring("$rt$".length()) : name;
+    }
+
+    private void requireCopyable(Type type, Set<String> visiting) {
+        if (type instanceof StringLiteral) return;
+        if (type instanceof Primitive primitive) {
+            if (primitive == Primitive.VOID || primitive == Primitive.NULL) {
+                throw new IllegalArgumentException("rt copy/share require a concrete value, got " + primitive);
+            }
+            return;
+        }
+        if (type instanceof Borrow borrowed) {
+            requireCopyable(borrowed.target(), visiting);
+            return;
+        }
+        if (type instanceof Tuple tuple) {
+            for (Type element : tuple.elements()) requireCopyable(element, visiting);
+            return;
+        }
+        if (type instanceof ListType list) {
+            requireCopyable(list.element(), visiting);
+            return;
+        }
+        if (type instanceof Record record) {
+            for (Type member : record.members().values()) requireCopyable(member, visiting);
+            return;
+        }
+        if (type instanceof Named named) {
+            if (named.name().equals("Option") && named.arguments().size() == 1) {
+                requireCopyable(named.arguments().getFirst(), visiting);
+                return;
+            }
+
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass == null) {
+                throw new IllegalArgumentException("type '" + named.name()
+                        + "' has no provable copy semantics");
+            }
+            if (!klass.genericParameters().isEmpty()) {
+                throw new IllegalArgumentException("generic class '" + klass.name()
+                        + "' copy contracts are not enabled yet; specialize or wrap the value explicitly");
+            }
+
+            String identity = qualifiedClassName(klass);
+            if (!visiting.add(identity)) {
+                throw new IllegalArgumentException("class copy contract cycle involving '" + identity + "'");
+            }
+            try {
+                Ast.MethodDecl copyMethod = findMethod(klass, "copy", 0, new LinkedHashSet<>());
+                boolean immutableReceiver = copyMethod != null
+                        && (copyMethod.explicitReceiverType() == null
+                        || (copyMethod.explicitReceiverType().isBorrow()
+                        && !copyMethod.explicitReceiverType().mutableBorrow()));
+                if (copyMethod == null
+                        || copyMethod.isStatic()
+                        || copyMethod.visibility() != Ast.Visibility.PUBLIC
+                        || copyMethod.isAbstract()
+                        || copyMethod.async()
+                        || copyMethod.composed()
+                        || !klass.methods().contains(copyMethod)
+                        || !copyMethod.genericParameters().isEmpty()
+                        || !immutableReceiver) {
+                    throw new IllegalArgumentException("class '" + klass.name()
+                            + "' is not copyable: define a concrete synchronous non-generic public "
+                            + "copy() => self method directly on the class with an immutable receiver");
+                }
+
+                Type selfType = nominalClassType(klass);
+                Type result = resolve(copyMethod.returnType(), Set.of(), selfType);
+                if (!assignable(result, selfType) || !assignable(selfType, result)) {
+                    throw new IllegalArgumentException("class '" + klass.name()
+                            + "' copy() must return self/the same concrete class type");
+                }
+            } finally {
+                visiting.remove(identity);
+            }
+            return;
+        }
+
+        throw new IllegalArgumentException("type " + type + " has no provable copy semantics");
     }
 
     private void requireNotOwnershipIntrinsicBinding(String name, String where) {
