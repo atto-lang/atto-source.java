@@ -56,8 +56,9 @@ final class OresVM {
             new ConcurrentHashMap<>();
 
     /**
-     * Lazy process singleton. Loading OresVM must not allocate scheduler or
-     * blocking-I/O threads during Native Image analysis or host inspection.
+     * Lazy process singleton. Loading OresVM must not allocate scheduler
+     * threads: Native Image analysis and host tooling may load runtime classes
+     * without actually starting an Oreslang VM.
      */
     private static final class ProcessHolder {
         private static final OresVM INSTANCE = new OresVM(
