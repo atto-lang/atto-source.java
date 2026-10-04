@@ -50,6 +50,17 @@ public final class TypeChecker {
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private boolean currentActorConstructor;
 
+    private record ActorEffectContext(Ast.ActorKind kind, boolean constructor) { }
+
+    private final IdentityHashMap<Ast.FunctionDecl, Set<ActorEffectContext>> actorEffectCheckedFunctions =
+            new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.FunctionDecl, Set<ActorEffectContext>> actorEffectCheckingFunctions =
+            new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.MethodDecl, Set<ActorEffectContext>> actorEffectCheckedMethods =
+            new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.MethodDecl, Set<ActorEffectContext>> actorEffectCheckingMethods =
+            new IdentityHashMap<>();
+
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
@@ -553,6 +564,92 @@ public final class TypeChecker {
         }
     }
 
+    private void validateOrdinaryFunctionForActorContext(Ast.FunctionDecl fn) {
+        if (currentActorKind == Ast.ActorKind.NONE) return;
+        ActorEffectContext effect = new ActorEffectContext(currentActorKind, currentActorConstructor);
+        Set<ActorEffectContext> checked =
+                actorEffectCheckedFunctions.computeIfAbsent(fn, ignored -> new HashSet<>());
+        if (checked.contains(effect)) return;
+        Set<ActorEffectContext> checking =
+                actorEffectCheckingFunctions.computeIfAbsent(fn, ignored -> new HashSet<>());
+        if (!checking.add(effect)) return; // recursive cycle is validated through its first active frame
+
+        Ast.ActorKind previousKind = currentActorKind;
+        boolean previousConstructor = currentActorConstructor;
+        try {
+            Set<String> generics = uniqueGenerics(
+                    fn.genericParameters(),
+                    "actor-context helper " + fn.name());
+            Env env = new Env(null);
+            for (Ast.Param param : fn.parameters()) {
+                Type parameterType = resolveParam(param, generics, null);
+                env.define(
+                        param.name(),
+                        parameterType,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            Type returns = resolve(fn.returnType(), generics, null);
+            // Preserve actor/constructor context while recursively checking the
+            // helper body. Nested helper calls inherit it too.
+            currentActorKind = effect.kind();
+            currentActorConstructor = effect.constructor();
+            checkBlock(fn.body(), env, generics, returns, null);
+            checked.add(effect);
+        } finally {
+            currentActorKind = previousKind;
+            currentActorConstructor = previousConstructor;
+            checking.remove(effect);
+        }
+    }
+
+    private void validateOrdinaryMethodForActorContext(
+            Ast.ClassDecl owner,
+            Named ownerType,
+            Ast.MethodDecl method) {
+        if (currentActorKind == Ast.ActorKind.NONE || owner.actorKind() != Ast.ActorKind.NONE) return;
+        ActorEffectContext effect = new ActorEffectContext(currentActorKind, currentActorConstructor);
+        Set<ActorEffectContext> checked =
+                actorEffectCheckedMethods.computeIfAbsent(method, ignored -> new HashSet<>());
+        if (checked.contains(effect)) return;
+        Set<ActorEffectContext> checking =
+                actorEffectCheckingMethods.computeIfAbsent(method, ignored -> new HashSet<>());
+        if (!checking.add(effect)) return;
+
+        Ast.ActorKind previousKind = currentActorKind;
+        boolean previousConstructor = currentActorConstructor;
+        try {
+            Set<String> generics = new HashSet<>(owner.genericParameters());
+            for (String generic : method.genericParameters()) {
+                if (!generics.add(generic)) {
+                    throw new IllegalArgumentException(
+                            "duplicate/shadowed generic '" + generic
+                                    + "' in actor-context helper " + owner.name() + "." + method.name());
+                }
+            }
+            Type callableSelf = method.isStatic() ? null : ownerType;
+            Env env = new Env(null);
+            if (!method.isStatic()) {
+                env.define("self", ownerType, Ast.BindingKind.VAL);
+            }
+            for (Ast.Param param : method.parameters()) {
+                Type parameterType = resolveParam(param, generics, callableSelf);
+                env.define(
+                        param.name(),
+                        parameterType,
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            Type returns = resolve(method.returnType(), generics, callableSelf);
+            currentActorKind = effect.kind();
+            currentActorConstructor = effect.constructor();
+            checkBlock(method.body(), env, generics, returns, callableSelf);
+            checked.add(effect);
+        } finally {
+            currentActorKind = previousKind;
+            currentActorConstructor = previousConstructor;
+            checking.remove(effect);
+        }
+    }
+
     private void checkModuleBinding(Ast.FieldDecl field) {
         if (field.initializer() == null) throw new IllegalArgumentException("module binding '" + field.name() + "' requires an initializer");
         Type actual = typeOf(field.initializer(), new Env(null), Set.of(), null);
@@ -781,6 +878,7 @@ public final class TypeChecker {
                     }
                     String label = "function " + functionName.name();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+                    validateOrdinaryFunctionForActorContext(target);
                     return checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
@@ -805,6 +903,7 @@ public final class TypeChecker {
                     }
                     String label = "function " + namespace.name() + "." + qualifiedCall.member();
                     validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+                    validateOrdinaryFunctionForActorContext(target);
                     return checkGenericCallable(
                             target.genericParameters(),
                             target.parameters(),
@@ -816,6 +915,24 @@ public final class TypeChecker {
                             label);
                 }
             }
+            if (currentActorKind != Ast.ActorKind.NONE) {
+                if (call.callee() instanceof Ast.NameExpr imported
+                        && importedValues.contains(imported.name())) {
+                    throw new IllegalArgumentException(
+                            "actor code cannot invoke imported/effect-unknown callable '"
+                                    + imported.name()
+                                    + "' without a statically checked actor-safe effect contract");
+                }
+                if (call.callee() instanceof Ast.MemberExpr importedMember
+                        && importedMember.receiver() instanceof Ast.NameExpr importedNamespace
+                        && importedValues.contains(importedNamespace.name())) {
+                    throw new IllegalArgumentException(
+                            "actor code cannot invoke effect-unknown imported member '"
+                                    + importedNamespace.name() + "." + importedMember.member()
+                                    + "' without a statically checked actor-safe effect contract");
+                }
+            }
+
             if (call.callee() instanceof Ast.MemberExpr futuresCall
                     && futuresCall.receiver() instanceof Ast.NameExpr futures
                     && futures.name().equals("Futures")) {
@@ -892,6 +1009,7 @@ public final class TypeChecker {
                     Ast.MethodDecl fn = findStaticFunction(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
                     if (fn == null) throw new IllegalArgumentException("no static function '" + member.member() + "' with arity " + call.arguments().size() + " on " + klass.name());
                     validateCallTypeArgumentMarker(call, fn.genericParameters(), "static function " + klass.name() + "." + fn.name());
+                    validateOrdinaryMethodForActorContext(klass, nominalClassType(klass), fn);
                     List<String> callableGenerics = new ArrayList<>(fn.genericParameters());
                     String label = "static function " + klass.name() + "." + fn.name();
                     return checkGenericCallable(
@@ -1024,6 +1142,9 @@ public final class TypeChecker {
                         Ast.MethodDecl method = target.method();
                         Ast.ClassDecl owner = target.owner();
                         Named ownerType = target.ownerType();
+                        if (owner.actorKind() == Ast.ActorKind.NONE) {
+                            validateOrdinaryMethodForActorContext(owner, ownerType, method);
+                        }
                         if (owner.actorKind() != Ast.ActorKind.NONE && method.name().equals("constructor")) {
                             throw new IllegalArgumentException(
                                     "actor constructor '" + owner.name()
