@@ -162,7 +162,18 @@ public final class HotReloadManager implements AutoCloseable {
                 || executionDomain == ExecutionDomain.TRUSTED_ISOACTOR_JIT)
                 ? Engine.newBuilder().build()
                 : null;
-        vm.registerHotReloadManager(this);
+        try {
+            vm.registerHotReloadManager(this);
+        } catch (RuntimeException | Error failure) {
+            if (sharedTrustedEngine != null) {
+                try {
+                    sharedTrustedEngine.close();
+                } catch (RuntimeException closeFailure) {
+                    failure.addSuppressed(closeFailure);
+                }
+            }
+            throw failure;
+        }
     }
 
     public IsolatePolicy supervisorPolicy() { return supervisorPolicy; }
