@@ -63,6 +63,7 @@ final class OresVM {
     private final UUID vmId = UUID.randomUUID();
     private final String contextBindingToken = UUID.randomUUID().toString();
     private final ActorRuntime.DispatcherGroup dispatchers;
+    private final BlockingIoExecutor blockingIo;
     private final boolean processVm;
     private final Set<HotReloadManager> hotReloadManagers = ConcurrentHashMap.newKeySet();
     private final java.util.concurrent.ConcurrentMap<
@@ -74,9 +75,11 @@ final class OresVM {
             ActorRuntime.DispatcherConfig config,
             String threadPrefix,
             boolean processVm) {
+        String prefix = Objects.requireNonNull(threadPrefix, "threadPrefix");
         this.dispatchers = new ActorRuntime.DispatcherGroup(
                 Objects.requireNonNull(config, "config"),
-                Objects.requireNonNull(threadPrefix, "threadPrefix"));
+                prefix);
+        this.blockingIo = new BlockingIoExecutor(prefix);
         this.processVm = processVm;
         VM_BINDINGS.put(contextBindingToken, this);
     }
@@ -281,6 +284,34 @@ final class OresVM {
                 Objects.requireNonNull(task, "task"));
     }
 
+    /**
+     * Run a trusted blocking Java host call without occupying an Ores carrier.
+     * The returned OresFuture is the only completion capability handed back to
+     * scheduler/runtime code.
+     */
+    <T> OresFuture<T> submitJavaBlocking(
+            java.util.concurrent.Callable<? extends T> operation) {
+        ensureRunning();
+        return blockingIo.submitJava(
+                Objects.requireNonNull(operation, "operation"));
+    }
+
+    /**
+     * Run JNI/FFM/unknown native blocking work on the bounded native executor.
+     * Saturation fails the Future rather than running on the caller/carrier.
+     */
+    <T> OresFuture<T> submitNativeBlocking(
+            java.util.concurrent.Callable<? extends T> operation) {
+        ensureRunning();
+        return blockingIo.submitNative(
+                Objects.requireNonNull(operation, "operation"));
+    }
+
+    BlockingIoExecutor blockingIoExecutorForTesting() {
+        ensureRunning();
+        return blockingIo;
+    }
+
     private void ensureRunning() {
         if (shutdown.get()) {
             throw new IllegalStateException("Oreslang VM is shut down");
@@ -308,6 +339,7 @@ final class OresVM {
             }
         }
         generationBindings.clear();
+        blockingIo.close();
         dispatchers.shutdownNow();
         VM_BINDINGS.remove(contextBindingToken, this);
 
