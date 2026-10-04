@@ -158,15 +158,18 @@ final class OresVM {
         if (token != null) generationBindings.remove(token);
     }
 
-    ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory(
-            String[] applicationArguments) {
-        String token = null;
+    static String generationBindingId(String[] applicationArguments) {
         for (String argument : applicationArguments) {
             if (argument.startsWith(GENERATION_BINDING_ARG)) {
-                token = argument.substring(GENERATION_BINDING_ARG.length());
-                break;
+                return argument.substring(GENERATION_BINDING_ARG.length());
             }
         }
+        return null;
+    }
+
+    ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory(
+            String[] applicationArguments) {
+        String token = generationBindingId(applicationArguments);
         if (token == null) return null;
 
         ActorRuntime.ActorGenerationLeaseFactory factory =
