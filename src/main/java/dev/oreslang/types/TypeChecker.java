@@ -634,6 +634,10 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.SwitchStmt switched) {
             Type subject = deref(typeOf(switched.subject(), env, generics, self));
+            if (subject == Primitive.VOID) {
+                throw new IllegalArgumentException(
+                        "cannot pattern-match void; absence must be represented with Option<T>");
+            }
             boolean catchAllSeen = false;
             for (Ast.SwitchClause clause : switched.clauses()) {
                 if (catchAllSeen) {
