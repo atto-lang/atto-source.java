@@ -1703,6 +1703,14 @@ public final class ActorRuntime implements AutoCloseable {
     public int actorCount() { return actorCount.get(); }
     public int processCarrierActorCount() { return dispatcherGroup.actorCount(); }
 
+    public int actorGroupActorCount(ActorGroupRef<?> groupRef) {
+        return resolveActorGroup(groupRef).actorCount();
+    }
+
+    public int actorGroupOutboxSize(ActorGroupRef<?> groupRef) {
+        return resolveActorGroup(groupRef).outboxSize();
+    }
+
     /**
      * Snapshot one carrier pool without exposing the executor itself. Queue
      * depth + active threads are the minimum signals needed to detect sustained
@@ -4930,10 +4938,13 @@ public final class ActorRuntime implements AutoCloseable {
     void closeFromSupervisor() {
         final boolean firstClose;
         final List<ActorCell<?>> snapshot;
+        final List<ActorGroupRuntime<?>> groupSnapshot;
         synchronized (runtimeLifecycleLock) {
             firstClose = closed.compareAndSet(false, true);
             snapshot = List.copyOf(actors.values());
+            groupSnapshot = List.copyOf(actorGroups.values());
         }
+        for (ActorGroupRuntime<?> group : groupSnapshot) group.stop();
         for (ActorCell<?> cell : snapshot) cell.stopFromRuntimeClose();
         for (RootTask<?> rootTask : List.copyOf(rootTasks)) {
             rootTask.cancelFromRuntimeClose();
@@ -5010,6 +5021,7 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         actors.clear();
+        actorGroups.clear();
         actorCount.set(0);
         privateActorCount.set(0);
         sharedActorCount.set(0);
@@ -5175,7 +5187,8 @@ public final class ActorRuntime implements AutoCloseable {
         private final IsolatePolicy policy;
         private final BehaviorFactory<M> behaviorFactory;
         private final boolean trustedFactory;
-        private final BlockingQueue<MessageEnvelope> mailbox;
+        private final BlockingQueue<MessageEnvelope> inbox;
+        private final int inboxCapacity;
         private final ActorMemorySlice memorySlice;
         private final UntrustedActorLimits untrustedLimits;
         private final HttpRequestCapability httpRequest;
@@ -5233,7 +5246,12 @@ public final class ActorRuntime implements AutoCloseable {
             this.policy = policy;
             this.behaviorFactory = behaviorFactory;
             this.trustedFactory = trustedFactory;
-            this.mailbox = new LinkedBlockingQueue<>(policy.maxMailboxMessages());
+            this.inboxCapacity = groupHandle == null
+                    ? policy.maxMailboxMessages()
+                    : Math.min(
+                            policy.maxMailboxMessages(),
+                            resolveActorGroup(groupHandle).policy().mailboxCapacity());
+            this.inbox = new LinkedBlockingQueue<>(inboxCapacity);
             this.memorySlice = kind.memoryIsolated()
                     ? new ActorMemorySlice(ref.id(), policy.maxHeapBytes())
                     : null;
@@ -5408,7 +5426,7 @@ public final class ActorRuntime implements AutoCloseable {
         private boolean reserveMailboxSlot() {
             while (true) {
                 int current = queuedMessages.get();
-                if (current >= policy.maxMailboxMessages()) return false;
+                if (current >= inboxCapacity) return false;
                 if (queuedMessages.compareAndSet(current, current + 1)) return true;
             }
         }
@@ -5418,7 +5436,7 @@ public final class ActorRuntime implements AutoCloseable {
             if (remaining < 0) {
                 queuedMessages.incrementAndGet();
                 throw new IllegalStateException(
-                        "actor mailbox accounting underflow for " + ref.id());
+                        "actor inbox accounting underflow for " + ref.id());
             }
         }
 
