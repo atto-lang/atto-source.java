@@ -284,8 +284,11 @@ record/structural contract when its public shape matches. Record contracts use
 statically named member access/destructuring; arbitrary string-key indexing is not
 part of the record surface.
 
-Open-ended key/value data belongs to `Map<K,V>`. Dynamic key insertion is a
-container operation, not dynamic creation or mutation of an object's type/layout.
+Open-ended key/value data belongs in an explicit keyed-container abstraction such
+as `Map<K,V>`, not in an anonymous object shape. This removal does not itself add
+or expand Map syntax; it establishes the language boundary that dynamic key
+insertion is a container operation, never dynamic creation or mutation of an
+object's type/layout.
 
 This is an AOT invariant: Oreslang source must not define a new object shape merely
 by evaluating an expression. JIT runtimes may optimize known layouts more
