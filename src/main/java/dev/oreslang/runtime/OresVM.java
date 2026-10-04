@@ -1,5 +1,7 @@
 package dev.oreslang.runtime;
 
+import org.graalvm.polyglot.Context;
+
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -50,6 +52,8 @@ final class OresVM {
         }
     }
 
+    private static final ThreadLocal<OresVM> CONTEXT_CREATION_OWNER = new ThreadLocal<>();
+
     private static final OresVM PROCESS = new OresVM(
             ActorRuntime.DispatcherConfig.defaults(),
             "ores-process-",
@@ -79,6 +83,39 @@ final class OresVM {
     /** Dedicated VM used by host tests/tools that explicitly construct ActorRuntime. */
     static OresVM dedicated(ActorRuntime.DispatcherConfig config) {
         return new OresVM(config, "ores-", false);
+    }
+
+    /**
+     * Resolve the VM selected by the host while constructing a Polyglot Context.
+     * Ordinary host-created contexts default to the process VM.
+     */
+    static OresVM contextOwner() {
+        OresVM selected = CONTEXT_CREATION_OWNER.get();
+        return selected == null ? PROCESS : selected;
+    }
+
+    /**
+     * Build a Polyglot Context while binding its OresContext to this VM.
+     * The binding exists only during synchronous context construction and is
+     * never exposed to guest code.
+     */
+    Context buildContext(Context.Builder builder) {
+        Objects.requireNonNull(builder, "builder");
+        ensureRunning();
+
+        OresVM previous = CONTEXT_CREATION_OWNER.get();
+        if (previous != null && previous != this) {
+            throw new IllegalStateException(
+                    "cannot construct one Oreslang context under two VM owners");
+        }
+
+        CONTEXT_CREATION_OWNER.set(this);
+        try {
+            return builder.build();
+        } finally {
+            if (previous == null) CONTEXT_CREATION_OWNER.remove();
+            else CONTEXT_CREATION_OWNER.set(previous);
+        }
     }
 
     UUID id() {
