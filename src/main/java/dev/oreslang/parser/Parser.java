@@ -739,14 +739,6 @@ public final class Parser {
             consumeStatementTerminator("return statement should end with ';'");
             return new Ast.ReturnStmt(value);
         }
-        if (match(YIELD)) {
-            if (check(SEMICOLON) || isSafeStatementBoundary()) {
-                throw error(previous(), "yield requires a value");
-            }
-            Ast.Expr value = parseExpression();
-            consumeStatementTerminator("yield statement should end with ';'");
-            return new Ast.YieldStmt(value);
-        }
         if (match(DEFER)) {
             Ast.Expr expression = parseExpression();
             consumeStatementTerminator("defer statement should end with ';'");
@@ -965,6 +957,17 @@ public final class Parser {
     public Ast.Expr parseExpression() { return parseAssignment(); }
 
     private Ast.Expr parseAssignment() {
+        // Generator yield is deliberately lower-precedence than the ordinary
+        // expression operators so "yield a + b" yields the complete RHS, and
+        // "val reply = yield value" can receive the next(value) payload.
+        if (match(YIELD)) {
+            Token keyword = previous();
+            if (check(SEMICOLON) || isSafeStatementBoundary()) {
+                throw error(keyword, "yield requires a value");
+            }
+            return new Ast.YieldExpr(parseAssignment());
+        }
+
         Ast.Expr expr = parseConditional();
         if (match(EQUAL)) {
             if (!(expr instanceof Ast.NameExpr) && !(expr instanceof Ast.MemberExpr) && !(expr instanceof Ast.IndexExpr)) {
