@@ -1,6 +1,7 @@
 package dev.oreslang.runtime;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
@@ -67,7 +68,8 @@ public final class OresFutures {
                                 T item = (T) values.get(i);
                                 ordered.add(item);
                             }
-                            if (result.completeFromRuntime(List.copyOf(ordered))) {
+                            if (result.completeFromRuntime(
+                                    Collections.unmodifiableList(ordered))) {
                                 detachRegistrations(registrations);
                             }
                         }
