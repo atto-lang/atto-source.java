@@ -2329,9 +2329,13 @@ public final class OresEvalRootNode extends RootNode {
                 String moduleName,
                 String schema,
                 LinkedHashMap<String, Object> fields) {
-            this.moduleName = Objects.requireNonNull(moduleName);
-            this.schema = Objects.requireNonNull(schema);
-            this.fields = Objects.requireNonNull(fields);
+            if (moduleName == null || schema == null || fields == null) {
+                throw new IllegalArgumentException(
+                        "module runtime state cannot contain null metadata or storage");
+            }
+            this.moduleName = moduleName;
+            this.schema = schema;
+            this.fields = fields;
         }
     }
 
