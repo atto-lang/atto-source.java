@@ -5,13 +5,25 @@ import java.util.List;
 public final class Ast {
     private Ast() { }
 
-    public record Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+    public record Program(
+            String namespace,
+            List<ImportDecl> imports,
+            List<NamespaceDecl> namespaces,
+            List<ModuleDecl> modules) {
         public Program {
             imports = List.copyOf(imports);
+            namespaces = List.copyOf(namespaces);
             modules = List.copyOf(modules);
         }
-        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) { this(null, imports, modules); }
-        public Program(List<ModuleDecl> modules) { this(null, List.of(), modules); }
+        public Program(String namespace, List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(namespace, imports, List.of(), modules);
+        }
+        public Program(List<ImportDecl> imports, List<ModuleDecl> modules) {
+            this(null, imports, List.of(), modules);
+        }
+        public Program(List<ModuleDecl> modules) {
+            this(null, List.of(), List.of(), modules);
+        }
     }
 
     public enum ImportKind { MODULE, CLASS, FUNCTION, ALL }
@@ -23,6 +35,20 @@ public final class Ast {
             String namespace,
             String path) {
         public ImportDecl { names = List.copyOf(names); }
+    }
+
+    public enum NamespaceMode { DEFINE, DECLARE }
+
+    public record NamespaceDecl(String name, NamespaceMode mode, List<Decl> declarations) {
+        public NamespaceDecl {
+            declarations = List.copyOf(declarations);
+            for (Decl declaration : declarations) {
+                if (!(declaration instanceof InterfaceDecl) && !(declaration instanceof TypeAliasDecl)) {
+                    throw new IllegalArgumentException(
+                            "namespace '" + name + "' is type-only; only interface and type declarations are permitted");
+                }
+            }
+        }
     }
 
     public record ModuleDecl(String name, List<Annotation> annotations, List<Decl> declarations) {
