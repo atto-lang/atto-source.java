@@ -46,6 +46,32 @@ end
 
 Neither construct is dynamically declared. Modules do not implicitly execute merely because they are imported or linked; runtime execution remains explicit.
 
+Classes are likewise declaration-scope types rather than callable-local runtime
+definitions. By contrast, `struct` and `interface` declarations may appear
+inside a function or method block. These local type declarations are lexical,
+compile-time-only declarations: they are hoisted for static name/type
+resolution within that block and do not cause runtime class loading or runtime
+type creation.
+
+```ores
+fnc measure(): int {
+  interface HasValue {
+    value: int;
+  }
+
+  struct Sample implements HasValue {
+    value: int;
+  }
+
+  val Sample sample = Sample { value = 42 };
+  return sample.value;
+}
+```
+
+A callable-local `class`, `module`, or `namespace` declaration is rejected.
+This keeps executable code and the reachable type/code graph statically
+discoverable for GraalVM Native Image/AOT compilation.
+
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
@@ -279,25 +305,30 @@ val user = obj{name: "Ada", age: 37};
 stdio.println(user.name);
 ```
 
-Static object/map keys may be identifiers, reserved member keys such as
+Static object keys may be identifiers, reserved member keys such as
 `stop`/`do`/`done`, or strings written with either single or double
-quotes. Backticks make the key dynamic: the expression between the backticks
-must evaluate to a string.
+quotes. An `obj{...}` value has a fixed compile-time shape. Backtick/dynamic
+keys are intentionally not supported on `obj`: use `Map<K,V>` when keys are
+chosen or inserted at runtime.
 
 ```ores
-val key = "score";
 val stats = obj{
   stop: 1,
   'do': 2,
-  "done": 3,
-  `key`: 4
+  "done": 3
 };
+
+let Map<String,int> dynamic_stats = new Map<String,int>();
+val key = "score";
+dynamic_stats[key] = 4;
+dynamic_stats["visits"] = 5;
 ```
 
-An `obj{...}` containing a dynamic key has type `DynamicStruct<T>`, where
-`T` is the joined value type. A `DynamicStruct<T>` can also be created
-directly with `new DynamicStruct<T>()`; it accepts arbitrary string keys but
-only values assignable to `T`.
+`DynamicStruct<T>` is not part of the language. Open-ended key/value storage
+belongs to `Map<K,V>`, whose key and value types are checked statically while
+the set of entries remains dynamic at runtime. Dynamic insertion uses indexed
+access (`map[key] = value`); dot/member syntax remains for statically known
+members and declared fields.
 
 Inline array:
 
