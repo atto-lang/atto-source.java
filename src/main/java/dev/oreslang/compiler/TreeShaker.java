@@ -531,6 +531,7 @@ public final class TreeShaker {
                 }
                 return new Ast.ClassDecl(
                         klass.name(),
+                        klass.kind(),
                         klass.isAbstract(),
                         klass.actorKind(),
                         klass.genericParameters(),
@@ -557,6 +558,9 @@ public final class TreeShaker {
                 Ast.Stmt statement,
                 String module,
                 LinkedHashMap<String, Object> locals) {
+            if (statement instanceof Ast.TypeDeclStmt localType) {
+                return List.of(new Ast.TypeDeclStmt(rewriteDeclaration(module, localType.declaration())));
+            }
             if (statement instanceof Ast.BindingStmt binding) {
                 Ast.Expr initializer = rewriteExpression(binding.initializer(), module, locals);
                 Object value = binding.kind() == Ast.BindingKind.LET
@@ -900,7 +904,9 @@ public final class TreeShaker {
 
         private void scanStatements(String module, List<Ast.Stmt> statements, LinkedHashSet<String> locals) {
             for (Ast.Stmt statement : statements) {
-                if (statement instanceof Ast.BindingStmt binding) {
+                if (statement instanceof Ast.TypeDeclStmt localType) {
+                    scanDeclaration(module, localType.declaration());
+                } else if (statement instanceof Ast.BindingStmt binding) {
                     scanType(binding.declaredType());
                     scanExpression(module, binding.initializer(), locals);
                     locals.add(binding.name());
