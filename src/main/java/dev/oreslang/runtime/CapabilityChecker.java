@@ -50,6 +50,9 @@ public final class CapabilityChecker {
                 if (s.condition() != null) checkExpr(s.condition(), policy);
                 if (s.update() != null) checkExpr(s.update(), policy);
                 checkStatements(s.body(), policy);
+            } else {
+                throw new IllegalStateException(
+                        "capability checker is missing statement traversal for " + stmt.getClass().getName());
             }
         }
     }
@@ -93,9 +96,19 @@ public final class CapabilityChecker {
         else if (expr instanceof Ast.ListExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.TupleExpr e) for (Ast.Expr a : e.elements()) checkExpr(a, policy);
         else if (expr instanceof Ast.ObjectExpr e) for (Ast.ObjectField f : e.fields()) checkExpr(f.value(), policy);
+        else if (expr instanceof Ast.MatchExpr e) {
+            checkExpr(e.scrutinee(), policy);
+            for (Ast.MatchArm arm : e.arms()) {
+                if (arm.guard() != null) checkExpr(arm.guard(), policy);
+                checkExpr(arm.result(), policy);
+            }
+        }
         else if (expr instanceof Ast.LambdaExpr e) {
             if (e.expressionBody() != null) checkExpr(e.expressionBody(), policy);
             if (e.blockBody() != null) checkStatements(e.blockBody(), policy);
+        } else if (!(expr instanceof Ast.LiteralExpr) && !(expr instanceof Ast.NameExpr)) {
+            throw new IllegalStateException(
+                    "capability checker is missing expression traversal for " + expr.getClass().getName());
         }
     }
 
