@@ -83,6 +83,15 @@ public final class ActorRuntime implements AutoCloseable {
     private static final ActorGenerationLeaseFactory NO_GENERATION_LEASE_FACTORY =
             () -> NO_GENERATION_LEASE;
 
+    enum RuntimePlacement {
+        /** Direct host/embedder runtime; not an Oreslang guest security boundary. */
+        HOST_EMBEDDER,
+        /** Trusted application/control code co-resident with OresVM. */
+        MAIN_GRAAL_ISOLATE,
+        /** Context created with Graal spawnIsolate(true). */
+        SPAWNED_GRAAL_ISOLATE
+    }
+
     private static final int MAX_MESSAGE_GRAPH_DEPTH = 256;
     private static final int MAX_MESSAGE_GRAPH_NODES = 100_000;
     private static final long CLOSE_WAIT_NANOS = TimeUnit.MILLISECONDS.toNanos(250);
@@ -1469,6 +1478,7 @@ public final class ActorRuntime implements AutoCloseable {
     private final TurnExecutor turnExecutor;
     private final OresVM vm;
     private final ActorGenerationLeaseFactory generationLeaseFactory;
+    private final RuntimePlacement runtimePlacement;
     private final DispatcherGroup dispatcherGroup;
     private final boolean ownsVm;
     private volatile Consumer<Object> actorExitHook = ignored -> { };
@@ -1526,6 +1536,7 @@ public final class ActorRuntime implements AutoCloseable {
                 turnExecutor,
                 OresVM.dedicated(dispatcherConfig),
                 NO_GENERATION_LEASE_FACTORY,
+                RuntimePlacement.HOST_EMBEDDER,
                 true);
     }
 
@@ -1556,6 +1567,20 @@ public final class ActorRuntime implements AutoCloseable {
             IsolatePolicy policyCeiling,
             TurnExecutor turnExecutor,
             ActorGenerationLeaseFactory generationLeaseFactory) {
+        return attachToVm(
+                vm,
+                policyCeiling,
+                turnExecutor,
+                generationLeaseFactory,
+                RuntimePlacement.MAIN_GRAAL_ISOLATE);
+    }
+
+    static ActorRuntime attachToVm(
+            OresVM vm,
+            IsolatePolicy policyCeiling,
+            TurnExecutor turnExecutor,
+            ActorGenerationLeaseFactory generationLeaseFactory,
+            RuntimePlacement runtimePlacement) {
         Objects.requireNonNull(vm, "vm");
         return new ActorRuntime(
                 policyCeiling,
@@ -1563,6 +1588,7 @@ public final class ActorRuntime implements AutoCloseable {
                 turnExecutor,
                 vm,
                 Objects.requireNonNull(generationLeaseFactory, "generationLeaseFactory"),
+                Objects.requireNonNull(runtimePlacement, "runtimePlacement"),
                 false);
     }
 
@@ -1591,6 +1617,7 @@ public final class ActorRuntime implements AutoCloseable {
             TurnExecutor turnExecutor,
             OresVM vm,
             ActorGenerationLeaseFactory generationLeaseFactory,
+            RuntimePlacement runtimePlacement,
             boolean ownsVm) {
         this.policyCeiling = Objects.requireNonNull(policyCeiling);
         this.dispatcherConfig = Objects.requireNonNull(dispatcherConfig);
@@ -1598,6 +1625,8 @@ public final class ActorRuntime implements AutoCloseable {
         this.vm = Objects.requireNonNull(vm);
         this.generationLeaseFactory =
                 Objects.requireNonNull(generationLeaseFactory, "generationLeaseFactory");
+        this.runtimePlacement =
+                Objects.requireNonNull(runtimePlacement, "runtimePlacement");
         this.dispatcherGroup = vm.dispatcherGroup();
         this.ownsVm = ownsVm;
         if (dispatcherGroup.config() != dispatcherConfig
@@ -1630,6 +1659,7 @@ public final class ActorRuntime implements AutoCloseable {
     public IsolatePolicy policyCeiling() { return policyCeiling; }
     public DispatcherConfig dispatcherConfig() { return dispatcherConfig; }
     OresVM vm() { return vm; }
+    RuntimePlacement runtimePlacement() { return runtimePlacement; }
     public boolean usesProcessSharedDispatchers() { return vm.processVm(); }
     public int maxActors() { return dispatcherConfig.maxActors(); }
 
@@ -3254,6 +3284,12 @@ public final class ActorRuntime implements AutoCloseable {
         }
         if (kind != ActorKind.UNTRUSTED) {
             requireWithinCeiling(policy);
+        }
+        if (kind == ActorKind.UNTRUSTED
+                && runtimePlacement == RuntimePlacement.MAIN_GRAAL_ISOLATE) {
+            throw new SecurityException(
+                    "UNTRUSTED actors cannot execute in the main Graal isolate; "
+                            + "load the untrusted code through OresVM into a spawned isolate");
         }
         if (kind == ActorKind.UNTRUSTED && untrustedLimits == null) {
             throw new SecurityException("untrusted actor hard limits are required");
