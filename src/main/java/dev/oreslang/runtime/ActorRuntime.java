@@ -2067,14 +2067,21 @@ public final class ActorRuntime implements AutoCloseable {
             if (running == null) return;
             if (!deadlineExpired.compareAndSet(false, true)) return;
 
+            CancellationException timeout = new CancellationException(
+                    "root/main process exceeded max wall time "
+                            + policyCeiling.maxWallTime());
+            if (!completion.completeExceptionally(timeout)) {
+                // Normal completion or another terminal failure already won.
+                // Do not report a phantom overrun or interrupt a carrier that
+                // is merely unwinding after a completed root task.
+                return;
+            }
+
             controlOverrunTurns.incrementAndGet();
             if (compensationClaimed.compareAndSet(false, true)
                     && !claimControlCompensatingThread()) {
                 compensationClaimed.set(false);
             }
-            completion.completeExceptionally(new CancellationException(
-                    "root/main process exceeded max wall time "
-                            + policyCeiling.maxWallTime()));
             running.interrupt();
         }
 
@@ -3455,13 +3462,7 @@ public final class ActorRuntime implements AutoCloseable {
         AtomicBoolean invocationReturned = new AtomicBoolean();
         OresFuture<R> completion = new OresFuture<>(() -> {
             ActorRef<M> ref = spawnedRef.get();
-            if (ref != null && ref.isAlive()) {
-                try {
-                    ref.stop();
-                } catch (IllegalStateException ignored) {
-                    // A concurrent actor exit won the race.
-                }
-            }
+            if (ref != null) requestStop(ref.id());
         });
 
         ActorRef<M> ref = spawnInternal(
@@ -3501,8 +3502,11 @@ public final class ActorRuntime implements AutoCloseable {
         // root awaiting result() can race Context.close() with the actor turn.
         ref.finalization().whenComplete((ignored, finalizationFailure) -> {
             if (completion.isDone()) return;
-            Throwable failure = invocationFailure.get();
-            if (failure == null) failure = ref.terminationCause.get();
+            // Runtime/control-plane failure is authoritative. In particular,
+            // a watchdog timeout must dominate guest code that ignores the
+            // interrupt and later returns or throws while unwinding.
+            Throwable failure = ref.terminationCause.get();
+            if (failure == null) failure = invocationFailure.get();
             if (failure == null && finalizationFailure != null) {
                 failure = OresFuture.unwrap(finalizationFailure);
             }
@@ -3903,6 +3907,17 @@ public final class ActorRuntime implements AutoCloseable {
         // deterministic teardown. Keep it alive until finalization has closed
         // private memory, drained reservations, and unregistered the cell.
         return cell != null && !cell.finalized();
+    }
+
+    /**
+     * Nonblocking cancellation primitive for runtime-owned futures.
+     *
+     * This requests termination without waiting for deterministic finalization,
+     * so cancelling a child spawn can never pin an actor carrier.
+     */
+    private void requestStop(ActorId id) {
+        ActorCell<?> cell = actors.get(Objects.requireNonNull(id));
+        if (cell != null) cell.stop();
     }
 
     public void stop(ActorRef<?> ref) {
