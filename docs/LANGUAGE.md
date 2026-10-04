@@ -25,14 +25,49 @@ end
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
-import module foo from "../xyz";
-import module {foo, bar} from "../xyz";
-import class {x} from '../xyz';
-import fnc * as funcs from '../xyz';
-import * as x from './xyz';
+import module Bar from "../xyz";
+import actor Foo from "../actors";
+import actor (Foo as F) from "../actors";
+import actor {Worker: W, Supervisor as S} from "../actors";
+import class {Config as ExternalConfig} from "../types";
+import fnc {solve as linear_solve} from "../solver";
+import fnc * as funcs from "../xyz";
+import * as x from "./xyz";
 ```
 
-Wildcard imports always require a namespace alias. This avoids silently injecting an unbounded set of names into the local scope. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+There are no JavaScript-style ordinary default exports. Named imports stay
+reviewable, and wildcard imports always require a namespace alias so an
+unbounded set of declarations is never silently injected into local scope.
+Both `as` and `:` are accepted inside selected-import lists as alias
+spellings.
+
+Hot-loaded/plugin code has a deliberately separate single-entry ABI:
+
+```ores
+define actor Worker as
+  pub receive(m: Job): void {
+    // one mailbox turn
+    return;
+  }
+end
+
+export entry Worker;
+```
+
+A loader, or another compilation unit acting as a loader adapter, may resolve it
+without knowing the declaration's source name:
+
+```ores
+import entry as Plugin from "./worker";
+```
+
+A code unit has zero or one `export entry`. This is an explicit hot-load
+entrypoint, **not** a default export: it does not change normal named-import
+resolution and cannot be used to create multiple competing defaults.
+
+Import paths are part of the AST/compiler contract; filesystem/package
+resolution is a host build/bundling concern so strict isolates do not gain
+ambient filesystem access merely by using `import`.
 
 ### Circular imports and file initialization
 
@@ -481,32 +516,63 @@ The three domains use separate dispatcher pools. Every actor owns exactly one
 logical mailbox and at most one actor turn may execute at a time; carrier
 threads may change between turns.
 
-### Typed actor protocol and runtime-owned loop
+### Runtime-owned receiver loop
 
-Every concrete actor has exactly one **runtime-owned mailbox ingress**, but that
-ingress is not a user-visible source method. Public actor instance methods form a
-typed protocol:
+Every concrete actor implements exactly one public mailbox method:
 
 ```ores
-pub run1(value: int): void {
-  self.count = self.count + value;
-}
-
-pub run2(value: int): int {
-  return self.count + value;
+pub receive(m: ActorMessage): void {
+  // handle exactly one dequeued message
 }
 ```
 
-The compiler lowers those endpoints into one hidden mailbox message union and
-dispatcher. Private methods remain direct self calls inside the active actor
-turn. Returning from one public protocol method completes one actor turn; it
-does not terminate the actor. User code therefore cannot pin a carrier thread
-by writing its own permanent mailbox loop.
+`receive` is **one actor turn**, not a user-written infinite loop. OresVM owns
+the persistent receiver loop conceptually:
 
-`define actor X ...` and `define class X extends Actor ...` have the same
-actor-class semantics and typed protocol rules. External actor references send
-typed messages to the hidden mailbox dispatcher rather than gaining direct
-access to actor-owned fields or private helper methods.
+```text
+mailbox head
+    -> acquire actor execution lease
+    -> receive(message)
+    -> return / suspend at await
+    -> release or park the logical turn
+    -> schedule the next runnable turn
+```
+
+Consequently, actor source must not write `while true { mailbox.receive() }`.
+The runtime can preserve fairness, one-active-thread-per-actor, fuel/deadline
+checks, supervision, hot-reload generation leases, and nonblocking `await`
+because it owns that loop.
+
+Outside code never calls `receive` directly. It holds an actor reference and
+enqueues a message:
+
+```ores
+val counter = spawn Counter(0);
+counter.send(Increment);
+```
+
+A direct `counter.receive(...)` is a compile error. `send` is an enqueue
+operation; it does not turn the actor into an RPC object. Reply semantics use
+explicit reply/response capabilities carried by the message when required.
+
+The class form may make the protocol types explicit:
+
+```ores
+define class Counter extends Actor<CounterMessage, CounterReply, CounterError> as
+  let int count = 0;
+
+  pub receive(m: CounterMessage): void {
+    // dispatch this one message
+    return;
+  }
+end
+```
+
+The intrinsic `Actor`, `IsoActor`, and `UntrustedActor` bases accept either
+no protocol arguments or exactly `<Message, Reply, Error>`. When supplied,
+the public `receive` parameter must exactly match `Message`. All other actor
+methods are private helpers and remain in the same actor ownership/effect
+domain.
 
 Actor classes do not support static functions. Until a separate effect-safe,
 non-instance actor utility construct exists, allowing static actor methods would
@@ -519,10 +585,11 @@ actors cannot create, receive, or acquire writable `SharedMutex<T>` state.
 Runtime-owned read capabilities such as `OresRwLock<T>` may expose synchronized
 reads to SHARED actors, while write acquisition remains forbidden.
 
-Actor/class method return declarations canonically use `: T` or `-> T`.
-Historical `=> T` callable-return syntax remains parse-compatible during the
-migration, but new source should reserve `=>` for type-level callable
-signatures.
+Callable declarations canonically use `: T` or `-> T` for return types.
+`=>` is reserved canonically for type-level callable signatures; historical
+callable-return `=> T` and slim-arrow function types remain parser-compatible
+only during migration. Lambdas and executable branches continue to use
+`->`.
 
 Instance methods are not first-class bound callbacks. `self.helper(...)` is a
 direct call within the current actor turn, while extracting `self.helper` as a
@@ -564,10 +631,10 @@ forbidden; actor identity/state must be created by the actor runtime.
 
 ### References, factories, and launch
 
-Code outside an actor never receives the mutable actor object. It receives an
-`ActorRef<Protocol>`/typed actor reference. The reference is a capability:
-it carries actor identity and only the operations permitted by its protocol and
-sandbox policy.
+Code outside an actor never receives the mutable actor object. A concrete actor
+spawn returns an `ActorRef<ActorClass>`. The reference is a capability for
+identity/lifecycle operations and bounded mailbox enqueue through
+`send(message)`; it does not expose `receive` or actor-owned state.
 
 Persistent actor factories remain useful as explicit launch adapters for actor
 groups, configured factory catalogs, hot loading, and dependency injection.
@@ -576,9 +643,10 @@ persistent-actor ABI is the actor reference/mailbox, not a raw class pointer.
 A launch ticket separates identity/readiness/lifecycle from actor application
 messages.
 
-This model preserves the existing ActorGroup/ActorMailman architecture: public protocol method calls enqueue bounded typed messages into the actor's mailbox; actors
-emit bounded group output; one logical serialized mailman consumes the group's
-outbox; supervisors remain responsible for lifecycle/restart policy.
+This model preserves the existing ActorGroup/ActorMailman architecture:
+`ActorRef.send` enqueues bounded typed messages into the actor's mailbox;
+actors emit bounded group output; one logical serialized mailman consumes the
+group's outbox; supervisors remain responsible for lifecycle/restart policy.
 
 Private and untrusted actors do not accept explicitly shared mutable memory. Each private actor owns a **confined memory slice** identified by its actor id, independent of whichever dispatcher thread happens to execute a mailbox turn. Incoming messages are isolation-copied into that actor domain and charged against the destination slice before mailbox admission. Compiler-managed actor state allocations use the same slice.
 
