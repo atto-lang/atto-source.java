@@ -241,7 +241,6 @@ final class OresVMTest {
             assertNotNull(rootThread.get());
             assertTrue(rootThread.get().contains("control-plane-dispatcher-"));
 
-            CountDownLatch actorRan = new CountDownLatch(1);
             CountDownLatch mailDelivered = new CountDownLatch(1);
             AtomicReference<String> actorThread = new AtomicReference<>();
             AtomicReference<String> mailmanThread = new AtomicReference<>();
@@ -266,6 +265,7 @@ final class OresVMTest {
                         public void receiveMail(
                                 ActorMail<String> mail,
                                 ActorGroupContext<String> ignored) {
+                            actorThread.set(mail.message());
                             mailmanThread.set(Thread.currentThread().getName());
                             mailDelivered.countDown();
                         }
@@ -275,15 +275,11 @@ final class OresVMTest {
                     group,
                     ActorRuntime.ActorKind.SHARED,
                     IsolatePolicy.developer(),
-                    ignored -> (message, turn) -> {
-                        actorThread.set(Thread.currentThread().getName());
-                        turn.emit(message);
-                        actorRan.countDown();
-                    });
+                    ignored -> (message, turn) ->
+                            turn.emit(Thread.currentThread().getName()));
 
             actor.send("hello");
 
-            assertTrue(actorRan.await(5, TimeUnit.SECONDS));
             assertTrue(mailDelivered.await(5, TimeUnit.SECONDS));
             assertTrue(actorThread.get().contains("shared-actor-dispatcher-"));
             assertTrue(mailmanThread.get().contains("control-plane-dispatcher-"));
