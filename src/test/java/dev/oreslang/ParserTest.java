@@ -409,7 +409,7 @@ final class ParserTest {
                         }
 
                         define actor Worker as
-                          pub run(): void {
+                          pub receive(message: int): void {
                             unsafe_helper();
                             return;
                           }
@@ -435,7 +435,7 @@ final class ParserTest {
                             return;
                           }
 
-                          pub run(): void { return; }
+                          pub receive(message: int): void { return; }
                         end
                         """)));
 
@@ -457,7 +457,7 @@ final class ParserTest {
                         }
 
                         define actor Worker as
-                          pub run(box: Box): void {
+                          pub receive(box: Box): void {
                             mutate(box);
                             return;
                           }
@@ -472,7 +472,7 @@ final class ParserTest {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Worker as
                   constructor(box: Box mut) { }
-                  pub run(): void { return; }
+                  pub receive(message: int): void { return; }
                 end
                 """));
     }
@@ -667,13 +667,18 @@ final class ParserTest {
 
 
     @Test
-    void actorProtocolCannotLeakActorOwnedState() {
+    void actorPrivateHelpersCannotLeakActorOwnedState() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 shared actor Account {
                   let int balance = 100;
 
-                  pub leak(): Account {
+                  private leak(): Account {
                     return self;
+                  }
+
+                  pub receive(message: int): void {
+                    val escaped = self.leak();
+                    return;
                   }
                 }
                 """)));
@@ -683,8 +688,13 @@ final class ParserTest {
                     shared actor Account {
                       let Array<int> items = [1, 2, 3];
 
-                      pub snapshot(): Array<int> {
+                      private snapshot(): Array<int> {
                         return self.items;
+                      }
+
+                      pub receive(message: int): void {
+                        val escaped = self.snapshot();
+                        return;
                       }
                     }
                     """));
@@ -693,20 +703,20 @@ final class ParserTest {
     }
 
     @Test
-    void actorMayReadAndMutateOwnedStateButCannotLeakSelfBorrow() {
+    void actorReceiveMayMutateOwnedStateButCannotLeakSelfBorrow() {
         assertDoesNotThrow(() -> {
             Ast.Program typed = TypeChecker.check(Parser.parse("""
                     shared actor Account {
                       let balance = 100;
 
-                      pub apply(delta: int): void {
-                        val current = self.balance;
-                        self.balance = current + delta;
-                        return;
+                      private current(): int {
+                        return self.balance;
                       }
 
-                      pub current(): int {
-                        return self.balance;
+                      pub receive(delta: int): void {
+                        val current = self.current();
+                        self.balance = current + delta;
+                        return;
                       }
                     }
                     """));
@@ -722,8 +732,13 @@ final class ParserTest {
                     shared actor Account {
                       let balance = 100;
 
-                      pub inspect_self(): void {
+                      private inspect_self(): void {
                         val observed = inspect(&self);
+                        return;
+                      }
+
+                      pub receive(message: int): void {
+                        self.inspect_self();
                         return;
                       }
                     }
@@ -737,32 +752,32 @@ final class ParserTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 shared actor Parent {
                   let value = 1;
-                  pub update(message: int): void { return; }
-                }
-
-                shared actor Child extends Parent {
-                  pub add(message: int): void {
+                  pub receive(message: int): void {
                     self.value = self.value + message;
                     return;
                   }
+                }
+
+                shared actor Child extends Parent {
+                  private current(): int { return self.value; }
                 }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 isoactor Parent {
                   let value = 1;
-                  pub update(message: int): void { return; }
+                  pub receive(message: int): void { return; }
                 }
 
                 shared actor Child extends Parent {
-                  pub ping(): void { return; }
+                  private current(): int { return self.value; }
                 }
                 """)));
 
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 shared actor Child extends Object {
                   let value = 1;
-                  pub update(message: int): void { return; }
+                  pub receive(message: int): void { return; }
                 }
                 """)));
     }
