@@ -182,13 +182,14 @@ final class PointerlessOwnershipTest {
 
                         fnc bad() => void {
                           let Box box = new Box();
-                          consume(borrow(box));
+                          consume(rt borrow box);
                           return;
                         }
                         """)));
 
         assertTrue(error.getMessage().contains("requires ownership")
-                || error.getMessage().contains("cannot take ownership"));
+                || error.getMessage().contains("cannot take ownership")
+                || error.getMessage().contains("exclusively owned"));
     }
 
     @Test
@@ -1031,7 +1032,7 @@ final class PointerlessOwnershipTest {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 fnc ok() => void {
                   val int x = 7;
-                  val int y = copy(x);
+                  val int y = rt copy x;
                   stdio.println(x);
                   stdio.println(y);
                   return;
@@ -1047,27 +1048,25 @@ final class PointerlessOwnershipTest {
 
                         fnc bad() => void {
                           let Box box = new Box();
-                          val copyOfBox = copy(box);
+                          val copyOfBox = rt copy box;
                           return;
                         }
                         """)));
 
-        assertTrue(error.getMessage().contains("not implicitly copyable")
+        assertTrue(error.getMessage().contains("copy contract")
+                || error.getMessage().contains("not copyable")
                 || error.getMessage().contains("proven Copy"));
     }
 
     @Test
-    void shareDoesNotCreateAmbientSharedMutableState() {
-        IllegalArgumentException error = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        fnc bad() => void {
-                          let int value = 1;
-                          val shared = share(value);
-                          return;
-                        }
-                        """)));
-
-        assertTrue(error.getMessage().contains("reserved for explicit shared capabilities"));
+    void shareCreatesDetachedReadOnlyValueInsteadOfAmbientSharedMutableState() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                fnc ok() => void {
+                  let int value = 1;
+                  val shared = rt share value;
+                  stdio.println(shared);
+                  return;
+                }
+                """)));
     }
 }
