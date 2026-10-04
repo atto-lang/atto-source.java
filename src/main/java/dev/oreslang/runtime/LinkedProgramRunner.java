@@ -4,6 +4,7 @@ import dev.oreslang.OresLanguage;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.config.OresProjectConfig;
+import dev.oreslang.imports.CoreLibraryRegistry;
 import dev.oreslang.imports.ImportRules;
 import dev.oreslang.interop.MixedInteropBridge;
 import dev.oreslang.interop.MixedJavaCompiler;
@@ -259,6 +260,13 @@ public final class LinkedProgramRunner {
         for (Ast.ImportDecl imported : program.imports()) {
             if (ImportRules.isJavaPath(imported.path())) continue;
 
+            if (CoreLibraryRegistry.isCorePath(imported.path())) {
+                CoreLibraryRegistry.CoreUnit core = CoreLibraryRegistry.resolve(imported.path()).orElseThrow();
+                recordImportResolution(importResolutions, id, imported.path(), core.unitId());
+                collectCoreImportClosure(core, units, importResolutions);
+                continue;
+            }
+
             String raw = imported.path().replace('\\', '/');
             java.util.Optional<Path> target = projectConfig.resolveImport(normalized, imported.path());
             if (target.isEmpty()) {
@@ -274,6 +282,39 @@ public final class LinkedProgramRunner {
             String targetId = unitId(target.get());
             recordImportResolution(importResolutions, id, imported.path(), targetId);
             collectImportClosure(target.get(), units, projectConfig, importResolutions);
+        }
+    }
+
+    private static void collectCoreImportClosure(
+            CoreLibraryRegistry.CoreUnit core,
+            Map<String, MixedSourceUnit> units,
+            Map<String, Map<String, String>> importResolutions) {
+        String id = core.unitId();
+        if (units.containsKey(id)) return;
+
+        MixedSourceUnit mixed = MixedSourceUnit.parse(id, core.fileName(), core.source());
+        if (mixed.hasJavaSource()) {
+            throw new IllegalStateException("Oreslang core libraries must be pure .ores source: " + id);
+        }
+        units.put(id, mixed);
+
+        Ast.Program program = Parser.parse(mixed.oresSource());
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (ImportRules.isJavaPath(imported.path())) {
+                throw new IllegalArgumentException(
+                        "Oreslang core library '" + id + "' cannot import Java host code");
+            }
+            if (!CoreLibraryRegistry.isCorePath(imported.path())) {
+                throw new IllegalArgumentException(
+                        "Oreslang core library '" + id
+                                + "' may import only compiler-owned std/... units, not '"
+                                + imported.path() + "'");
+            }
+
+            CoreLibraryRegistry.CoreUnit dependency =
+                    CoreLibraryRegistry.resolve(imported.path()).orElseThrow();
+            recordImportResolution(importResolutions, id, imported.path(), dependency.unitId());
+            collectCoreImportClosure(dependency, units, importResolutions);
         }
     }
 
