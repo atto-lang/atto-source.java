@@ -254,6 +254,30 @@ final class CallableSemanticsTest {
     }
 
     @Test
+    void functionValuedFieldsRemainFirstClassWithoutBecomingMethods() throws Exception {
+        String output = run("""
+                fnc increment(int value): int {
+                  return value + 1;
+                }
+
+                define class Box as
+                  pub val Fnc<int, int> callback;
+                end
+
+                pub routine main(): void {
+                  val box = new Box(increment);
+                  stdio.stdout.write(box.callback(4));
+                  stdio.stdout.write(":");
+                  val Fnc<int, int> callback = box.callback;
+                  stdio.stdout.write(callback(9));
+                  return;
+                }
+                """);
+
+        assertEquals("5:10", output);
+    }
+
+    @Test
     void localCallableBindingShadowsTopLevelDeclarationForDirectCalls() throws Exception {
         String output = run("""
                 fnc value(): int {
