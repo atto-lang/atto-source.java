@@ -31,10 +31,12 @@ final class ActorCallableKeywordTest {
 
                 actor SharedBox {
                   let int value = 1;
+                  pub receive(int message): void { return; }
                 }
 
                 isoactor PrivateBox {
                   let int value = 1;
+                  pub receive(int message): void { return; }
                 }
                 """);
 
