@@ -44,6 +44,25 @@ Alias collisions fail closed, including collisions between a named alias and a w
 
 Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
 
+### Hot-load entry export
+
+Foreign/hot-loaded code may expose one explicit code-unit entrypoint without introducing ordinary default imports:
+
+```ores
+export entry actor Worker;
+
+define actor Worker {
+  pub receive(ActorMessage message): void {
+    // runtime-owned mailbox turn
+    return;
+  }
+}
+```
+
+The general marker is `export entry <kind> <Name>;`, where `<kind>` is `actor`, `class`, `module`, or `fnc`. A code unit may declare at most one entry marker. The target must be a local top-level declaration of the declared kind; actor/class mismatches fail closed, and a `fnc` entry must be public.
+
+This entry marker is loader metadata, not a JavaScript-style default export. Normal Oreslang source still imports by explicit kind/name, and `import Foo from "./plugin"` remains invalid. A hot loader may resolve the entry marker when the embedding protocol intentionally asks for the artifact's canonical entrypoint.
+
 ### Circular imports and file initialization
 
 Import cycles are legal. Oreslang does not reject a program merely because its
