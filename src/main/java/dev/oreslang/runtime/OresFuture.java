@@ -259,12 +259,37 @@ public final class OresFuture<T> implements Future<T> {
      * receive the returned stage.
      */
     CompletionStage<T> asCompletionStage() {
-        CompletableFuture<T> bridge = new CompletableFuture<>();
-        whenCompleteRuntime((value, failure) -> {
-            if (failure == null) bridge.complete(value);
-            else bridge.completeExceptionally(failure);
-        });
+        AtomicReference<RuntimeWaiterRegistration> registrationRef =
+                new AtomicReference<>();
+        CompletableFuture<T> bridge = new CompletableFuture<>() {
+            @Override
+            public boolean cancel(boolean mayInterruptIfRunning) {
+                boolean cancelled = super.cancel(mayInterruptIfRunning);
+                if (cancelled) detachRegistration(registrationRef);
+                return cancelled;
+            }
+        };
+
+        RuntimeWaiterRegistration registration =
+                whenCompleteRuntime((value, failure) -> {
+                    detachRegistration(registrationRef);
+                    if (failure == null) bridge.complete(value);
+                    else bridge.completeExceptionally(failure);
+                });
+        registrationRef.set(registration);
+
+        if (bridge.isDone()) {
+            // Covers a source that settled while the registration handle was
+            // still being installed.
+            detachRegistration(registrationRef);
+        }
         return bridge;
+    }
+
+    private static void detachRegistration(
+            AtomicReference<RuntimeWaiterRegistration> registrationRef) {
+        RuntimeWaiterRegistration registration = registrationRef.getAndSet(null);
+        if (registration != null) registration.detach();
     }
 
     private boolean settle(Object terminal) {
