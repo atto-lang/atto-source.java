@@ -20,6 +20,8 @@
 16. Private slices and synchronized shared cells compete for one parent actor-memory ceiling.
 17. Actor message graphs are cycle-checked and bounded by depth, node count, and logical byte quotas before transport.
 18. SharedMutex runtime ownership is reserved before mailbox visibility and committed only after successful admission; failed first publication rolls back.
+19. PROCESS/STABLE Symbols are bounded, strongly interned trusted identities; LOCAL Symbols are actor-owned, non-Sendable, and reclaimed with the actor.
+20. Adversarial/untrusted policies cannot create, decode, or receive trusted Symbol identities, including Symbols nested in otherwise Sendable graphs.
 
 ## Deployment matrix
 
@@ -123,6 +125,26 @@ The current reference runtime uses a one-permit JVM semaphore for `SharedMutex<T
 Actor transport is independently hardened from mutex synchronization. Ordinary messages are recursively frozen with cycle detection and hard depth/node/byte budgets (256 levels, 100,000 nodes, 16 MiB estimated frozen size). Read-only shared wrappers are runtime-constructed and revalidated on every boundary. `ActorRef` capabilities may cross only inside their owning `ActorRuntime`; a wrapper cannot be used to smuggle a foreign actor reference into another runtime. Arbitrary host-controlled `Sendable` callbacks are not part of the transport boundary. Runtime-owned capabilities have explicit cases, while ordinary message graphs are recursively frozen/copied and validated.
 
 Compiler-generated/context-aware `BehaviorFactory` values are capture-free for both private and shared actors. This prevents a shared actor from bypassing mailbox/capability semantics by closing over an arbitrary mutable JVM object. `spawnPrivateTrusted(...)`, `spawnSharedTrusted(...)`, and trusted `Supplier` construction are host/supervisor escape hatches only; adversarial policies reject them.
+
+## Symbol identity registry
+
+Symbols are not ordinary heap strings. The runtime has three explicit domains:
+
+- **PROCESS** — key-interned, strongly rooted for process lifetime. Source literals such as `:ready` use this domain and canonicalize with `Symbol.process("ready")`.
+- **STABLE** — UUID-keyed, strongly rooted for process lifetime, intended for identities that must survive serialization/restart boundaries by key.
+- **LOCAL** — actor-cell-local registry, strongly rooted only until actor finalization. LOCAL symbols cannot cross mailboxes or enter shared memory.
+
+PROCESS and STABLE registries have hard cardinality limits. Dynamic PROCESS allocation has a lower cap than the total table so source/compiler literals retain reserved capacity. Numeric symbol handles come from separate monotonic domains and are never serialized. Canonical PROCESS/STABLE hits use concurrent maps without a global monitor; only cache misses/capacity reservation serialize insertion.
+
+Wire data carries scope plus key. The ordinary decode path is lookup-only and cannot allocate a new immortal Symbol. Unknown keys are rejected. A separate explicitly trusted decode path may intern a new key after the caller has authenticated/validated its protocol dictionary. This mirrors the atom-table safety rule that arbitrary external strings must never become permanent identities by default.
+
+Capability admission stages every `:literal` it encounters and commits the whole unique literal set only after the code unit has passed all capability checks. The registry preflights capacity and installs the batch under one insertion lock, so failed code admission or capacity exhaustion cannot partially consume permanent literal slots.
+
+The symbol registry is a trusted-process facility. Both compile-time capability admission and runtime APIs reject adversarial policies. Actor transport recursively rejects Symbols before delivering to adversarial actors, even when a symbol is nested in a list/map/array/shared wrapper. Runtime construction also checks the *currently executing actor policy* in addition to any explicit policy argument so guest code cannot launder authority by passing a more permissive parent policy object.
+
+LOCAL symbol storage is attached to the semantic actor cell, not a carrier thread. This is required because actor turns may migrate between dispatcher workers. Actor teardown clears that registry together with other actor-owned state.
+
+Adversarial actors cannot receive, create, or operate live shared-mutable capabilities such as `SharedMutex` or `SyncCell`, even if a custom adversarial policy attempts to add `SHARED_MEMORY`. This prevents a mutable shared container from becoming a time-of-check/time-of-use tunnel through which trusted Symbols or other trusted-process identity state could later be exposed.
 
 ## Actor dispatchers
 
