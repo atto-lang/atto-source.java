@@ -35,7 +35,9 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class OresScheduler implements AutoCloseable {
     private static final AtomicLong NEXT_ID = new AtomicLong();
+    private static final AtomicLong NEXT_DISPATCH_ID = new AtomicLong();
     private static final ThreadLocal<OresScheduler> CURRENT = new ThreadLocal<>();
+    private static final ThreadLocal<Long> CURRENT_DISPATCH_ID = new ThreadLocal<>();
     private static final ThreadLocal<Object> CURRENT_TASK_DOMAIN = new ThreadLocal<>();
     private static final int DEFAULT_QUEUE_CAPACITY = 65_536;
 
@@ -180,6 +182,17 @@ public final class OresScheduler implements AutoCloseable {
         return CURRENT_TASK_DOMAIN.get();
     }
 
+    /**
+     * Identifier for the current scheduler dispatch turn, or {@code 0} outside
+     * an OresScheduler dispatch. A continuation resumed after {@code await}
+     * always observes a different dispatch id, even when the scheduler chooses
+     * the same physical carrier thread immediately.
+     */
+    public static long currentDispatchId() {
+        Long id = CURRENT_DISPATCH_ID.get();
+        return id == null ? 0L : id;
+    }
+
     public static <T> Step<T> done(T value) {
         return new Done<>(value);
     }
@@ -233,10 +246,17 @@ public final class OresScheduler implements AutoCloseable {
         Objects.requireNonNull(turn, "turn");
         ensureOpen();
         OresScheduler prior = CURRENT.get();
+        Long priorDispatch = CURRENT_DISPATCH_ID.get();
         CURRENT.set(this);
+        CURRENT_DISPATCH_ID.set(NEXT_DISPATCH_ID.incrementAndGet());
         try {
             turn.run();
         } finally {
+            if (priorDispatch == null) {
+                CURRENT_DISPATCH_ID.remove();
+            } else {
+                CURRENT_DISPATCH_ID.set(priorDispatch);
+            }
             if (prior == null) {
                 CURRENT.remove();
             } else {
