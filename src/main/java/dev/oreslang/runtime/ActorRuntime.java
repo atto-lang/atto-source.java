@@ -1995,8 +1995,8 @@ public final class ActorRuntime implements AutoCloseable {
             activeRootTasks.incrementAndGet();
             rootTask = new RootTask<>(task);
             rootTasks.add(rootTask);
+            rootTask.armRootDeadline();
         }
-        rootTask.armRootDeadline();
 
         try {
             vm.rootTaskScheduler().execute(rootTask);
@@ -2057,8 +2057,8 @@ public final class ActorRuntime implements AutoCloseable {
             activeRootTasks.incrementAndGet();
             rootTask = new RootTask<>(task);
             rootTasks.add(rootTask);
+            rootTask.armRootDeadline();
         }
-        rootTask.armRootDeadline();
 
         try {
             vm.rootTaskScheduler().execute(rootTask);
@@ -2285,17 +2285,23 @@ public final class ActorRuntime implements AutoCloseable {
         }
 
         private void armRootDeadline() {
-            if (deadlineNanos == Long.MAX_VALUE) return;
+            if (deadlineNanos == Long.MAX_VALUE || phase.get() == FINISHED) return;
             long delay = Math.max(1L, deadlineNanos - System.nanoTime());
-            deadlineFuture = messageWatchdog.schedule(
+            ScheduledFuture<?> scheduled = messageWatchdog.schedule(
                     this::expireRootTask,
                     delay,
                     TimeUnit.NANOSECONDS);
+            deadlineFuture = scheduled;
+            if (phase.get() == FINISHED) {
+                scheduled.cancel(false);
+                deadlineFuture = null;
+            }
         }
 
         private void expireRootTask() {
             if (!deadlineExpired.compareAndSet(false, true)) return;
 
+            vm.rootTaskScheduler().recordOverrun();
             CancellationException timeout = new CancellationException(
                     "root/main process exceeded max wall time "
                             + policyCeiling.maxWallTime());
@@ -2305,7 +2311,6 @@ public final class ActorRuntime implements AutoCloseable {
                 if (observed == FINISHED) return;
 
                 if (observed == RUNNING) {
-                    vm.rootTaskScheduler().recordOverrun();
                     if (compensationClaimed.compareAndSet(false, true)
                             && !vm.rootTaskScheduler().claimCompensatingThread()) {
                         compensationClaimed.set(false);
