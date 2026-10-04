@@ -36,6 +36,7 @@ public final class TypeChecker {
     private final Map<String, Ast.ClassDecl> classes = new HashMap<>();
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
+    private final Map<String, Ast.NamespaceDecl> namespaces = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
 
     private final IdentityHashMap<Ast.FunctionDecl, String> functionOwners = new IdentityHashMap<>();
@@ -70,6 +71,14 @@ public final class TypeChecker {
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
+        for (Ast.NamespaceDecl namespace : program.namespaces()) {
+            localNames.add(namespace.name());
+            for (Ast.Decl declaration : namespace.declarations()) {
+                if (declaration instanceof Ast.InterfaceDecl iface) localNames.add(iface.name());
+                else if (declaration instanceof Ast.TypeAliasDecl alias) localNames.add(alias.name());
+            }
+        }
+
         for (Ast.ModuleDecl module : program.modules()) {
             if (!module.name().equals(Parser.ROOT_MODULE)) localNames.add(module.name());
             for (Ast.Decl declaration : module.declarations()) {
@@ -98,6 +107,32 @@ public final class TypeChecker {
     private void collect(Ast.Program program) {
         for (Ast.ModuleDecl module : program.modules()) {
             if (modules.putIfAbsent(module.name(), module) != null) throw new IllegalArgumentException("duplicate module '" + module.name() + "'");
+        }
+
+        for (Ast.NamespaceDecl namespace : program.namespaces()) {
+            if (namespace.name().equals(Parser.ROOT_MODULE)) {
+                throw new IllegalArgumentException("namespace name '" + Parser.ROOT_MODULE + "' is reserved");
+            }
+            if (modules.containsKey(namespace.name())) {
+                throw new IllegalArgumentException("name '" + namespace.name() + "' cannot be both a namespace and a module");
+            }
+            if (namespaces.putIfAbsent(namespace.name(), namespace) != null) {
+                throw new IllegalArgumentException("duplicate namespace '" + namespace.name() + "'");
+            }
+            for (Ast.Decl decl : namespace.declarations()) {
+                if (decl instanceof Ast.InterfaceDecl iface) {
+                    putQualified(interfaces, ambiguousInterfaces, namespace.name(), iface.name(), iface, "interface");
+                    interfaceOwners.put(iface, namespace.name());
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    putQualified(typeAliases, ambiguousTypeAliases, namespace.name(), alias.name(), alias, "type alias");
+                } else {
+                    throw new IllegalArgumentException(
+                            "namespace '" + namespace.name() + "' is type-only; runtime declaration '" + decl.getClass().getSimpleName() + "' is forbidden");
+                }
+            }
+        }
+
+        for (Ast.ModuleDecl module : program.modules()) {
             for (Ast.Decl decl : module.declarations()) {
                 if (decl instanceof Ast.FunctionDecl fn) {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
@@ -130,6 +165,19 @@ public final class TypeChecker {
     private void validate(Ast.Program program) {
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
+
+        for (Ast.NamespaceDecl namespace : program.namespaces()) {
+            for (Ast.Decl decl : namespace.declarations()) {
+                if (decl instanceof Ast.InterfaceDecl iface) {
+                    checkInterface(iface);
+                } else if (decl instanceof Ast.TypeAliasDecl alias) {
+                    Set<String> aliasGenerics = uniqueGenerics(
+                            alias.genericParameters(),
+                            "type alias " + namespace.name() + "." + alias.name());
+                    resolve(alias.target(), aliasGenerics, null);
+                }
+            }
+        }
 
         for (Ast.ModuleDecl module : program.modules()) {
             checkModuleAdherence(module);
