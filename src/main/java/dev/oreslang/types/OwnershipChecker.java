@@ -708,7 +708,7 @@ public final class OwnershipChecker {
                 ValueInfo taken = checkExpr(call.arguments().getFirst(), scope, true);
                 if (taken.kind == ValueKind.IMM_BORROW || taken.kind == ValueKind.MUT_BORROW
                         || taken.kind == ValueKind.SHARED) {
-                    throw error("rt take requires an exclusively owned value, not a borrow/shared snapshot");
+                    throw error("rt take requires an exclusively owned value, not a borrow/shared owner");
                 }
                 return taken;
             }
