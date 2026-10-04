@@ -17,9 +17,9 @@ import java.util.Set;
 /**
  * Cross-file import graph/link validation.
  *
- * Import cycles are legal. Strongly connected components are initialization
- * barriers: every unit in the component must be loaded/linked before any init
- * hook in that component may execute.
+ * Import cycles are legal. Strongly connected components are inert link
+ * barriers: every unit in the component is loaded/linked before an explicitly
+ * selected application entry may execute. Linking never invokes user code.
  */
 final class ImportGraph {
     private ImportGraph() { }
@@ -129,9 +129,9 @@ final class ImportGraph {
     }
 
     /**
-     * Dependency-first SCC order. Members inside one SCC are lexicographically
-     * ordered so init order is deterministic even though the cycle itself does
-     * not define an order.
+     * Dependency-first SCC/link order. Members inside one SCC are
+     * lexicographically ordered only to keep build/link planning deterministic;
+     * Oreslang does not execute implicit init hooks.
      */
     static List<List<String>> initializationGroups(Map<String, Set<String>> dependencies) {
         if (dependencies.isEmpty()) return List.of();
