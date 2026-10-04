@@ -552,7 +552,9 @@ Qualified names such as `x.y` retain their module namespace.
 
 A tail call is eligible only when the current activation has no semantic work that must remain live after the call. Active `defer`/catch/finally cleanup and live mutex guards are tail-call barriers; in those cases the call executes normally so cleanup and return validation remain correct. Conditional return arms inherit tail position, so `return cond ? f() : g();` may tail-transfer through the selected arm.
 
-The runtime resolves the target and arguments before releasing the caller, then transfers through an iterative trampoline. Every 64 tail transfers it executes a scheduler safepoint so a long recursive chain cannot bypass OresVM scheduling/fairness. Reified Oreslang `fnc`/lambda values are marked as tail-transferable; arbitrary host/interop callables complete before the caller is released so the caller's runtime return-shape checks are preserved.
+The runtime resolves the target and arguments before releasing the caller, then transfers through an iterative trampoline. Every 64 tail transfers it executes a scheduler safepoint so a long recursive chain cannot bypass OresVM scheduling/fairness. Reified Oreslang `fnc`/lambda values are tail-transferable while they remain in the evaluator/code unit that established their static contract; arbitrary host/interop callables complete before the caller is released.
+
+A linked call that crosses into another source code unit through an import whose signature is currently represented as `Unknown` is also a tail-call barrier. The caller remains live until that imported call returns so its declared runtime return-shape check cannot be skipped. Once execution is inside the imported unit, its own same-unit tail-call chain still uses the trampoline. Cross-unit proper-tail transfer can be re-enabled when the linker carries typed imported ABI contracts rather than `Unknown`.
 
 The distinction is **reifiability**:
 
