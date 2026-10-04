@@ -323,14 +323,20 @@ public final class OresScheduler implements AutoCloseable {
                     return;
                 }
 
-                if (step instanceof Done<T> done) {
-                    finish(done.value());
+                if (step instanceof Done<?> done) {
+                    @SuppressWarnings("unchecked")
+                    T value = (T) done.value();
+                    finish(value);
                     return;
                 }
 
-                @SuppressWarnings("unchecked")
-                Await<T> await = (Await<T>) step;
-                armAwait(await.future());
+                if (step instanceof Await<?> await) {
+                    armAwait(await.future());
+                    return;
+                }
+
+                failTerminal(new IllegalStateException(
+                        "unknown OresScheduler task step " + step.getClass().getName()));
             } finally {
                 executing.set(false);
                 scheduleReadyResume();
