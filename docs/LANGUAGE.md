@@ -431,7 +431,7 @@ define class User is Named as
 end
 ```
 
-Stateful reuse is a distinct construct: `trait`. A trait may contain initialized fields, concrete methods, abstract method requirements, and interface obligations. It cannot be instantiated and contributes no separate runtime object identity. Traits are not nominal runtime types: they cannot be used as parameter, field, return, alias, or generic argument types. Use an interface for a contract and a class for a value type.
+Reusable behavior is a distinct construct: `trait`. A trait is storage-free: it may contain concrete methods, abstract method requirements, and interface obligations, but it cannot declare instance fields. State belongs to the composing class or struct. A trait cannot be instantiated and contributes no separate runtime object identity. Traits are not nominal runtime types: they cannot be used as parameter, field, return, alias, or generic argument types. Use an interface for a contract and a class or struct for stored state.
 
 ```ores
 define interface CounterApi as
@@ -439,19 +439,25 @@ define interface CounterApi as
 end
 
 define trait Counter is CounterApi as
-  private let int count = 0;
+  pub abstract current() => int;
+  pub abstract set_current(int value) => void;
 
-  pub bump(self &mut self)() => int {
-    self.count = self.count + 1;
-    return self.count;
+  pub bump() => int {
+    let int next = self.current() + 1;
+    self.set_current(next);
+    return next;
   }
 end
 
 define class Worker with Counter as
+  private let int count = 0;
+
+  pub current() => int { return self.count; }
+  pub set_current(int value) => void { self.count = value; }
 end
 ```
 
-The compiler flattens trait storage and behavior into the host class before ownership/capability/runtime lowering. Trait fields require initializers and are not positional constructor parameters. Private trait state remains lexical to the defining trait; host classes cannot reach it directly. A trait method may depend on another host method only when that dependency is declared as an abstract trait method requirement.
+The compiler flattens trait behavior into the host class before ownership/capability/runtime lowering. Traits never contribute storage. Private trait methods remain lexical to the defining trait; host classes cannot reach them directly. A trait method may depend on host state only through declared abstract behavior requirements.
 
 Traits must declare their dependencies. If a trait method needs host behavior, it declares an abstract method requirement instead of silently reaching into the host class:
 
@@ -473,7 +479,6 @@ end
 
 Trait composition is intentionally strict:
 
-- two traits contributing the same field are rejected;
 - two concrete trait methods with the same name and arity are rejected unless the class declares a compatible resolving method;
 - there is no declaration-order or “last wins” rule;
 - concrete classes must implement abstract trait requirements;
