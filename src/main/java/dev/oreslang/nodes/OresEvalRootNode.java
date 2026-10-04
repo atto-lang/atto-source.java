@@ -984,11 +984,34 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
-                    if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId + "' does not export module '" + name + "'");
+                    }
                     yield new ModuleFacade(this, module);
                 }
+                case ENTRY -> exportEntry();
                 case ALL -> exportAny(name);
             };
+        }
+
+        private Object exportEntry() {
+            Ast.EntryExportDecl entry = null;
+            for (Ast.ModuleDecl module : program.modules()) {
+                for (Ast.Decl declaration : module.declarations()) {
+                    if (!(declaration instanceof Ast.EntryExportDecl candidate)) continue;
+                    if (entry != null) {
+                        throw new IllegalStateException(
+                                "validated code unit '" + codeUnitId + "' contains multiple export entry markers");
+                    }
+                    entry = candidate;
+                }
+            }
+            if (entry == null) {
+                throw new IllegalArgumentException(
+                        "code unit '" + codeUnitId + "' declares no export entry");
+            }
+            return exportAny(entry.name());
         }
 
         private Object exportAny(String name) {
