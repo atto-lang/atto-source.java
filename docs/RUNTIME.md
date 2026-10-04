@@ -124,6 +124,65 @@ Actor transport is independently hardened from mutex synchronization. Ordinary m
 
 Compiler-generated/context-aware `BehaviorFactory` values are capture-free for both private and shared actors. This prevents a shared actor from bypassing mailbox/capability semantics by closing over an arbitrary mutable JVM object. `spawnPrivateTrusted(...)`, `spawnSharedTrusted(...)`, and trusted `Supplier` construction are host/supervisor escape hatches only; adversarial policies reject them.
 
+## Process-global authority, slot singletons, and sandbox identity
+
+The runtime maintains three distinct concepts and they must never be conflated.
+
+### Process globals
+
+A process global is a supervisor-owned logical state authority. The local JVM
+backend uses `ProcessGlobalRegistry`: one key maps to one serial owner/mailbox cell,
+and callers receive only an opaque `Handle`. Arguments and results are frozen
+value graphs; the mutable state object never leaves its owner.
+
+`PROCESS_GLOBAL` is trusted-only. Adversarial policies cannot grant it, and global
+handles implement `SandboxForbiddenCapability`, so recursive mailbox admission
+rejects them even when nested inside otherwise valid containers.
+
+For deployments using true Graal/native isolates, Java statics are not sufficient
+to implement an OS-process global. The trusted supervisor must own the canonical
+registry and isolated trusted actors must use a request/reply bridge to it. Oreslang
+fails closed rather than silently creating one "global" per native isolate.
+
+### Memory-slot singletons
+
+`MemorySlotSingletonRegistry` keys singleton state by semantic memory slot, not
+carrier thread. Main/root and all shared actors use the shared/main slot. A
+private/isolated actor uses its stable actor execution domain as a separate slot.
+
+Each cell serializes operations and exposes only a slot-bound opaque handle.
+Arguments/results are frozen. A handle used from another slot is rejected. Private
+slot state is retired with actor finalization; the shared/main slot lives until
+runtime close.
+
+### Symbols
+
+PROCESS/STABLE Symbol wrappers are immutable values whose equality/hash identity is
+canonical scope + key, not pointer identity. Registry-local numeric IDs are
+diagnostic/fast-path details and are never wire identity.
+
+Permanent interning is bounded. Source literals are transactionally registered only
+after successful capability admission. Ordinary wire decode is lookup-only.
+
+The untrusted boundary has a separate Symbol visibility allowlist. `SYMBOL_EXPORT`
+is trusted-only. An adversarial actor may receive, resolve, compare, hash and
+pattern-match an exported Symbol, but cannot intern an unknown key or export/revoke
+identities.
+
+### Absolute untrusted mailbox boundary
+
+Before an adversarial mailbox accepts a graph, the runtime recursively verifies it.
+It rejects:
+
+- any `SandboxForbiddenCapability`, including global/singleton refs;
+- `SyncCell`, `SharedMutex`, local mutex state and guards;
+- non-exported Symbols;
+- cyclic graphs that cannot be safely copied.
+
+Deeply immutable `Shared<T>` data is inspected and transported as value data; the
+capability object itself does not enter the sandbox. Untrusted actors are always
+private/isolated and cannot opt into the shared actor memory domain.
+
 ## Actor dispatchers
 
 The host actor runtime follows the same scheduling shape as Akka's event-based dispatcher: many actors share an executor, each actor has its own mailbox, and a scheduled actor drains only a bounded number of messages before yielding back to the executor. The configured throughput bound prevents one hot mailbox from monopolizing a worker.
@@ -137,6 +196,23 @@ A per-actor atomic scheduling gate ensures only one drain task for that actor is
 
 The runtime does not interrupt a carrier thread to stop one actor because that thread belongs to the dispatcher and may subsequently execute unrelated actors. Actor cancellation is observed at compiler-injected scheduler safepoints. Whole-runtime shutdown may interrupt the dispatcher executors.
 
+
+## Shared-actor race-safety model
+
+A shared actor may reside in the same memory slot as main/root and other shared
+actors, but that does **not** make arbitrary mutable references safe.
+
+Each actor still has exactly one active mailbox turn at a time. Therefore ordinary
+mutable state rooted exclusively at one actor's `self` is serialized by the actor
+turn and does not require an additional mutex. Different shared actors can execute
+concurrently on different carriers, however, so mutable data shared between actors
+must use an explicitly synchronized/runtime-owned mechanism. A raw mutable object
+must never become a cross-actor alias merely because both actors inhabit the shared
+slot.
+
+Slot-singleton state is safe for multiple shared actors because callers never
+receive the state pointer and the singleton cell serializes every operation. The
+same principle applies to process-global state through its serial owner.
 
 ## Shared actor memory
 
