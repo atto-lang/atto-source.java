@@ -46,17 +46,17 @@ public final class NativeValues {
             return list;
         }
 
-        private long handle() {
+        private synchronized long handle() {
             if (handle == 0L) throw new IllegalStateException("List is closed");
             return handle;
         }
 
-        public int size() { return NativeCoreBridge.listSize(handle()); }
-        public Object get(int index) { return NativeCoreBridge.listGet(handle(), checkedIndex(index, size(), false, "List.get")); }
-        public Object set(int index, Object value) { return NativeCoreBridge.listSet(handle(), checkedIndex(index, size(), false, "List.set"), value); }
-        public void add(Object value) { NativeCoreBridge.listAdd(handle(), value); }
-        public Object remove(int index) { return NativeCoreBridge.listRemove(handle(), checkedIndex(index, size(), false, "List.remove")); }
-        public Object[] snapshot() { return NativeCoreBridge.listSnapshot(handle()); }
+        public synchronized int size() { return NativeCoreBridge.listSize(handle()); }
+        public synchronized Object get(int index) { return NativeCoreBridge.listGet(handle(), checkedIndex(index, size(), false, "List.get")); }
+        public synchronized Object set(int index, Object value) { return NativeCoreBridge.listSet(handle(), checkedIndex(index, size(), false, "List.set"), value); }
+        public synchronized void add(Object value) { NativeCoreBridge.listAdd(handle(), value); }
+        public synchronized Object remove(int index) { return NativeCoreBridge.listRemove(handle(), checkedIndex(index, size(), false, "List.remove")); }
+        public synchronized Object[] snapshot() { return NativeCoreBridge.listSnapshot(handle()); }
 
         @Override
         public Object member(String name) {
@@ -105,7 +105,7 @@ public final class NativeValues {
         @Override public Iterable<?> sharedStateChildren() { return Arrays.asList(snapshot()); }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             long current = handle;
             if (current == 0L) return;
             handle = 0L;
@@ -128,31 +128,31 @@ public final class NativeValues {
             context.registerNativeResource(this);
         }
 
-        final long handle() {
+        final synchronized long handle() {
             if (handle == 0L) throw new IllegalStateException("native map/struct is closed");
             return handle;
         }
 
-        public final int size() { return NativeCoreBridge.mapSize(handle()); }
-        public final boolean containsString(String key) { return NativeCoreBridge.mapContains(handle(), key); }
-        public final Object getString(String key) {
+        public final synchronized int size() { return NativeCoreBridge.mapSize(handle()); }
+        public final synchronized boolean containsString(String key) { return NativeCoreBridge.mapContains(handle(), key); }
+        public final synchronized Object getString(String key) {
             if (!containsString(key)) throw new IllegalArgumentException("unknown key/member " + key);
             return NativeCoreBridge.mapGet(handle(), key);
         }
-        public final Object putString(String key, Object value) {
+        public final synchronized Object putString(String key, Object value) {
             if (!mutable) throw new IllegalArgumentException("value is immutable");
             return putStringUnchecked(key, value);
         }
-        public final Object putStringUnchecked(String key, Object value) {
+        public final synchronized Object putStringUnchecked(String key, Object value) {
             return NativeCoreBridge.mapPut(handle(), Objects.requireNonNull(key), value);
         }
-        public final Object[] valuesSnapshot() { return NativeCoreBridge.mapValues(handle()); }
-        public final String[] keysSnapshot() { return NativeCoreBridge.mapKeys(handle()); }
+        public final synchronized Object[] valuesSnapshot() { return NativeCoreBridge.mapValues(handle()); }
+        public final synchronized String[] keysSnapshot() { return NativeCoreBridge.mapKeys(handle()); }
 
         @Override public Iterable<?> sharedStateChildren() { return Arrays.asList(valuesSnapshot()); }
 
         @Override
-        public void close() {
+        public synchronized void close() {
             long current = handle;
             if (current == 0L) return;
             handle = 0L;
@@ -206,15 +206,15 @@ public final class NativeValues {
             throw new IllegalArgumentException("Map keys must currently be String, Bool, or integral values");
         }
 
-        public int size() { return storage.size(); }
-        public boolean contains(Object key) { return storage.containsString(key(key)); }
-        public Object get(Object key) {
+        public synchronized int size() { return storage.size(); }
+        public synchronized boolean contains(Object key) { return storage.containsString(key(key)); }
+        public synchronized Object get(Object key) {
             String encoded = key(key);
             if (!storage.containsString(encoded)) throw new IllegalArgumentException("unknown Map key");
             return storage.getString(encoded);
         }
-        public Object put(Object key, Object value) { return storage.putString(key(key), value); }
-        public Object remove(Object key) { return NativeCoreBridge.mapRemove(storage.handle(), key(key)); }
+        public synchronized Object put(Object key, Object value) { return storage.putString(key(key), value); }
+        public synchronized Object remove(Object key) { return NativeCoreBridge.mapRemove(storage.handle(), key(key)); }
 
         @Override
         public Object member(String name) {
@@ -230,7 +230,7 @@ public final class NativeValues {
         }
 
         @Override public Iterable<?> sharedStateChildren() { return storage.sharedStateChildren(); }
-        @Override public void close() { storage.close(); }
+        @Override public synchronized void close() { storage.close(); }
         @Override public String toString() { return "Map(size=" + size() + ")"; }
     }
 
