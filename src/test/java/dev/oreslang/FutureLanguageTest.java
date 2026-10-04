@@ -345,4 +345,57 @@ final class FutureLanguageTest {
     }
 
 
+    @Test
+    void asyncCallableBoundaryRejectsBorrowedParameters() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        async fnc bad(&int value) => int {
+                          return 1;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("async"));
+        assertTrue(failure.getMessage().contains("borrowed"));
+    }
+
+    @Test
+    void asyncInstanceMethodMovesOwnedReceiverIntoTask() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Worker
+                          pub async run() => int {
+                            return 1;
+                          }
+                        end
+
+                        fnc bad() => void {
+                          val worker = new Worker();
+                          val first = worker.run();
+                          val second = worker.run();
+                          return;
+                        }
+                        """)));
+        assertTrue(failure.getMessage().contains("moved value"));
+    }
+
+    @Test
+    void asyncInstanceMethodRejectsBorrowedSelfReceiver() {
+        IllegalArgumentException failure = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define class Worker
+                          pub async run() => int {
+                            return 1;
+                          }
+
+                          pub start() => Future<int> {
+                            return self.run();
+                          }
+                        end
+                        """)));
+        assertTrue(failure.getMessage().contains("borrowed receiver"));
+    }
+
+
 }
