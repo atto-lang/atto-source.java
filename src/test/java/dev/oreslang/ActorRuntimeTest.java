@@ -137,6 +137,39 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void protocolInvocationRejectsForeignRuntimeActorRefs() {
+        try (ActorRuntime owner = new ActorRuntime();
+             ActorRuntime foreign = new ActorRuntime()) {
+            var ref = owner.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> 1);
+
+            IllegalArgumentException failure = assertThrows(
+                    IllegalArgumentException.class,
+                    () -> foreign.invokeSourceProtocol(ref, "read", List.of()));
+
+            assertTrue(failure.getMessage().contains("different ActorRuntime"));
+            assertTrue(ref.isAlive());
+        }
+    }
+
+    @Test
+    void rawMessagesFailClosedAgainstTypedSourceProtocolDispatcher() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var ref = runtime.spawnSourceSharedProtocolActor(factoryContext ->
+                    (method, arguments, turnContext) -> 1);
+
+            ref.send("raw-message");
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (ref.isAlive() && System.nanoTime() < deadline) Thread.sleep(2);
+
+            assertFalse(ref.isAlive());
+            assertTrue(ref.failure().orElseThrow().getMessage()
+                    .contains("cannot receive raw mailbox messages"));
+        }
+    }
+
+    @Test
     void freezesMessagesBeforeDelivery() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch received = new CountDownLatch(1);
