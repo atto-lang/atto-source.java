@@ -123,13 +123,17 @@ final class IsolationHotReloadTest {
     void hotReloadRetainsExplicitEntryMetadataWithoutGuessingDefaults() {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
-            var generation = hot.loadEntry("worker.ores", """
+            ActorEntryContract contract = ActorEntryContract.of(
+                    "Worker",
+                    Ast.ActorKind.SHARED,
+                    Ast.TypeRef.simple("int"));
+            var generation = hot.loadActorEntry("worker.ores", """
                     export entry actor Worker;
 
                     define actor Worker {
                       pub receive(int message): void { return; }
                     }
-                    """);
+                    """, contract);
 
             var entry = generation.entryExport().orElseThrow();
             assertEquals(Ast.ExportKind.ACTOR, entry.kind());
