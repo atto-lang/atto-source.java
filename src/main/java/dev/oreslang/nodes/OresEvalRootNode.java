@@ -119,11 +119,23 @@ public final class OresEvalRootNode extends RootNode {
         }
 
         private void indexImports() {
+            Set<String> localNames = new LinkedHashSet<>();
             for (Ast.ImportDecl imported : program.imports()) {
                 if (imported.wildcard()) {
+                    if (!localNames.add(imported.namespace())) {
+                        throw new IllegalArgumentException(
+                                "duplicate local import name '" + imported.namespace() + "'");
+                    }
                     namespaceImports.put(imported.namespace(), imported);
                 } else {
-                    for (String name : imported.names()) namedImports.put(name, imported);
+                    for (String exportedName : imported.names()) {
+                        String localName = imported.localName(exportedName);
+                        if (!localNames.add(localName)) {
+                            throw new IllegalArgumentException(
+                                    "duplicate local import name '" + localName + "'");
+                        }
+                        namedImports.put(localName, imported);
+                    }
                 }
             }
         }
@@ -907,7 +919,13 @@ public final class OresEvalRootNode extends RootNode {
 
         private Object importedValue(String name) {
             Ast.ImportDecl direct = namedImports.get(name);
-            if (direct != null) return importedTarget(direct).exportValue(direct.kind(), name);
+            if (direct != null) {
+                String exportedName = direct.importedName(name);
+                if (exportedName == null) {
+                    throw new IllegalStateException("import alias table lost local binding '" + name + "'");
+                }
+                return importedTarget(direct).exportValue(direct.kind(), exportedName);
+            }
             Ast.ImportDecl namespace = namespaceImports.get(name);
             if (namespace != null) return new ImportedNamespace(importedTarget(namespace), namespace.kind());
             return Env.MISSING;
@@ -950,7 +968,18 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
-                    if (klass == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export class '" + name + "'");
+                    if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId + "' does not export ordinary class '" + name + "'");
+                    }
+                    yield new ClassFacade(this, klass);
+                }
+                case ACTOR -> {
+                    Ast.ClassDecl klass = findClass(name);
+                    if (klass == null || klass.actorKind() == Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId + "' does not export actor '" + name + "'");
+                    }
                     yield new ClassFacade(this, klass);
                 }
                 case MODULE -> {
