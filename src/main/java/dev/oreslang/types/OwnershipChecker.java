@@ -1,6 +1,5 @@
 package dev.oreslang.types;
 
-import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 
 import java.util.ArrayList;
@@ -128,7 +127,6 @@ public final class OwnershipChecker {
                 // fields and perform the one permitted initialization write to
                 // an uninitialized val field before the instance is observable.
                 ValueKind receiverKind = constructor
-                        || AnnotationExpander.isGeneratedFromJsonSetter(method)
                         ? ValueKind.MUT_BORROW
                         : ValueKind.IMM_BORROW;
                 scope.define("self", new VarState(
@@ -387,9 +385,6 @@ public final class OwnershipChecker {
             Ast.ClassDecl klass = classOfReceiver(member.receiver(), scope);
             Ast.MethodDecl method = klass == null ? null : findMethod(klass, member.member(), call.arguments().size(), new LinkedHashSet<>());
             if (method != null) {
-                if (AnnotationExpander.isGeneratedFromJsonSetter(method)) {
-                    ensureMutableReceiver(member.receiver(), scope, "generated @FromJson setter '" + method.name() + "'");
-                }
                 checkArguments(call.arguments(), method.parameters(), scope, "method " + method.name());
                 return new ValueInfo(method.returnType(), kindOfType(method.returnType()), null);
             }
