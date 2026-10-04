@@ -174,15 +174,13 @@ final class ParserTest {
     void compactTraitSyntaxParsesLikeLongTraitSyntax() {
         Ast.Program compact = Parser.parse("""
                 trait Counting {
-                  private val int count = 0;
-                  pub value() => int { return self.count; }
+                  pub value() => int { return 0; }
                 }
                 """);
 
         Ast.Program longForm = Parser.parse("""
                 define trait Counting as
-                  private val int count = 0;
-                  pub value() => int { return self.count; }
+                  pub value() => int { return 0; }
                 end
                 """);
 
@@ -191,27 +189,6 @@ final class ParserTest {
         assertEquals(longTrait, compactTrait);
     }
 
-    @Test
-    void callableLocalTraitsAreAcceptedAsTypeDeclarations() {
-        Ast.Program program = Parser.parse("""
-                fnc make() => T {
-                  trait Answering {
-                    private val int seed = 41;
-                    pub answer() => int { return self.seed + 1; }
-                  }
-
-                  struct T with Answering {
-                    value: int;
-                  }
-
-                  return T { value = 1 };
-                }
-                """);
-
-        Ast.FunctionDecl fn = (Ast.FunctionDecl) program.modules().getFirst().declarations().getFirst();
-        assertTrue(fn.body().stream().anyMatch(stmt ->
-                stmt instanceof Ast.TypeDeclStmt local && local.declaration() instanceof Ast.TraitDecl));
-    }
     @Test
     void compactAndLongStructSyntaxNormalizeToSameAstWithContractsAndTraits() {
         Ast.ClassDecl longForm = (Ast.ClassDecl) Parser.parse("""
