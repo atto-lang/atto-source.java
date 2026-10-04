@@ -89,4 +89,20 @@ final class OresFutureTest {
         assertEquals(0, callbacks.get(),
                 "detached runtime callback must not run after later settlement");
     }
+    @Test
+    void cancellingCompletionStageBridgeDetachesWithoutCancellingSource() {
+        OresFuture<Integer> source = new OresFuture<>();
+
+        java.util.concurrent.CompletableFuture<Integer> bridge =
+                source.asCompletionStage().toCompletableFuture();
+
+        assertEquals(1, source.queuedRuntimeWaiters());
+        assertTrue(bridge.cancel(false));
+        assertEquals(0, source.queuedRuntimeWaiters(),
+                "cancelled host bridge must stop retaining the OresFuture callback");
+        assertFalse(source.isCancelled(),
+                "bridge cancellation is observational and must not cancel the Ores source");
+        assertTrue(source.completeFromRuntime(12));
+    }
+
 }
