@@ -347,8 +347,9 @@ public final class OresEvalRootNode extends RootNode {
             if (!fn.trapped()) return callFunctionBodyUntrapped(fn, args);
             try {
                 Object value = callFunctionBodyUntrapped(fn, args);
+                Object success = value == null ? List.of() : value;
                 return List.of(
-                        new OptionValue(true, value),
+                        new OptionValue(true, success),
                         new OptionValue(false, null));
             } catch (OresPanic panic) {
                 // trap is intentionally narrower than panic/recovery semantics.
