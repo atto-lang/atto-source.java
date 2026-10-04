@@ -860,18 +860,8 @@ public final class Parser {
 
         Ast.Stmt initializer = null;
         if (!check(SEMICOLON)) {
-            if (looksLikeTypedForInitializer()) {
-                Ast.TypeRef type = parseTypeRef();
-                String name = consume(IDENT, "expected loop initializer binding name").lexeme();
-                consume(EQUAL, "typed for initializer requires '='");
-                initializer = new Ast.BindingStmt(
-                        Ast.BindingKind.LET,
-                        type,
-                        name,
-                        parseExpression());
-            } else {
-                initializer = new Ast.ExprStmt(parseExpression());
-            }
+            initializer = tryParseTypedForInitializer();
+            if (initializer == null) initializer = new Ast.ExprStmt(parseExpression());
         }
         return finishCStyleFor(parenthesized, initializer);
     }
@@ -974,30 +964,30 @@ public final class Parser {
         return parenthesized ? check(RPAREN) : check(LBRACE) || check(DO);
     }
 
-    private boolean looksLikeTypedForInitializer() {
-        if (!check(IDENT)) return false;
-        int angleDepth = 0;
-        int bracketDepth = 0;
-        for (int i = current + 1; i + 1 < tokens.size(); i++) {
-            Token.Type type = tokens.get(i).type();
-            if (type == LT) angleDepth++;
-            else if (type == GT && angleDepth > 0) angleDepth--;
-            else if (type == LBRACKET) bracketDepth++;
-            else if (type == RBRACKET && bracketDepth > 0) bracketDepth--;
+    private Ast.BindingStmt tryParseTypedForInitializer() {
+        if (!check(IDENT)) return null;
 
-            if (angleDepth == 0 && bracketDepth == 0) {
-                if (type == DOT || type == LPAREN || type == RPAREN
-                        || type == PLUS || type == MINUS || type == STAR
-                        || type == SLASH || type == PERCENT) {
-                    return false;
-                }
-                if (type == IDENT && tokens.get(i + 1).type() == EQUAL) {
-                    return true;
-                }
-                if (type == SEMICOLON || type == DO || type == LBRACE) return false;
-            }
+        int start = current;
+        Ast.TypeRef type;
+        try {
+            type = parseTypeRef();
+        } catch (IllegalArgumentException notAType) {
+            current = start;
+            return null;
         }
-        return false;
+
+        if (!check(IDENT) || !checkNext(EQUAL)) {
+            current = start;
+            return null;
+        }
+
+        String name = advance().lexeme();
+        consume(EQUAL, "typed for initializer requires '='");
+        return new Ast.BindingStmt(
+                Ast.BindingKind.LET,
+                type,
+                name,
+                parseExpression());
     }
 
     private Ast.BindingStmt parseBindingStatement() {
