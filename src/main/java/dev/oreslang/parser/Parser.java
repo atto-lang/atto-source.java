@@ -794,8 +794,18 @@ public final class Parser {
             consumeStatementTerminator("defer statement should end with ';'");
             return new Ast.DeferStmt(expression);
         }
+        if (match(BLOCK)) return new Ast.BlockStmt(parseBlock());
+        if (match(BREAK)) {
+            consumeStatementTerminator("break statement should end with ';'");
+            return new Ast.BreakStmt();
+        }
+        if (match(CONTINUE)) {
+            consumeStatementTerminator("continue statement should end with ';'");
+            return new Ast.ContinueStmt();
+        }
         if (match(IF)) return parseIf();
         if (match(TRY)) return parseTry();
+        if (match(LOOP)) return new Ast.LoopStmt(parseBlock());
         if (match(FOR)) return parseFor();
 
         Ast.Expr expression = parseExpression();
@@ -942,15 +952,31 @@ public final class Parser {
     private Ast.IfStmt parseIf() {
         List<Ast.IfBranch> branches = new ArrayList<>();
         Ast.Expr condition = parseCondition();
+
+        // Brace form: if condition { ... } elseif condition { ... } else { ... }
+        if (check(LBRACE)) {
+            branches.add(new Ast.IfBranch(condition, parseBlock()));
+            while (match(ELSEIF)) {
+                condition = parseCondition();
+                branches.add(new Ast.IfBranch(condition, parseBlock()));
+            }
+
+            List<Ast.Stmt> elseBody = List.of();
+            if (match(ELSE)) elseBody = parseBlock();
+            return new Ast.IfStmt(branches, elseBody);
+        }
+
+        // Keyword-delimited form: if condition then ... elseif condition then ... else ... fi.
+        // 'do' remains accepted as a compatibility spelling for existing source.
         match(SEMICOLON);
-        consume(DO, "expected 'do'");
+        if (!match(THEN, DO)) throw error(peek(), "expected 'then' after if condition");
         List<Ast.Stmt> body = parseUntil(ELSEIF, ELSE, FI);
         branches.add(new Ast.IfBranch(condition, body));
 
         while (match(ELSEIF)) {
             condition = parseCondition();
             match(SEMICOLON);
-            consume(DO, "expected 'do'");
+            if (!match(THEN, DO)) throw error(peek(), "expected 'then' after elseif condition");
             body = parseUntil(ELSEIF, ELSE, FI);
             branches.add(new Ast.IfBranch(condition, body));
         }
@@ -1233,7 +1259,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
