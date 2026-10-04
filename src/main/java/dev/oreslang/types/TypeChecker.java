@@ -43,6 +43,13 @@ public final class TypeChecker {
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.ClassDecl, Record> classShapeCache = new IdentityHashMap<>();
+    private final java.util.ArrayDeque<Map<String, Ast.ClassDecl>> localClassScopes = new java.util.ArrayDeque<>();
+    private final java.util.ArrayDeque<Map<String, Ast.InterfaceDecl>> localInterfaceScopes = new java.util.ArrayDeque<>();
+    private final IdentityHashMap<Ast.ClassDecl, String> localClassIdentities = new IdentityHashMap<>();
+    private final IdentityHashMap<Ast.InterfaceDecl, String> localInterfaceIdentities = new IdentityHashMap<>();
+    private final Map<String, Ast.ClassDecl> escapedLocalClasses = new HashMap<>();
+    private final Map<String, Ast.InterfaceDecl> escapedLocalInterfaces = new HashMap<>();
+    private int nextLocalTypeIdentity = 1;
 
     private final Set<String> ambiguousFunctions = new HashSet<>();
     private final Set<String> ambiguousClasses = new HashSet<>();
@@ -67,7 +74,7 @@ public final class TypeChecker {
         Set<String> exposed = new HashSet<>();
         Set<String> localNames = new HashSet<>(Set.of(
                 "stdio", "process", "actor", "print", "Some", "None", "Ok", "Err",
-                "Mutex", "SharedMutex", "Object", "List", "Option", "Result", "Future",
+                "Mutex", "SharedMutex", "Object", "List", "Map", "Option", "Result", "Future",
                 "int", "uint", "float", "decimal", "complex", "bool", "String", "void",
                 "self", "null"));
 
@@ -146,7 +153,7 @@ public final class TypeChecker {
                     putQualified(functions, ambiguousFunctions, module.name(), fn.name(), fn, fn.kind() == Ast.CallableKind.ROUTINE ? "routine" : "function");
                     functionOwners.put(fn, module.name());
                 } else if (decl instanceof Ast.ClassDecl klass) {
-                    putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, "class");
+                    putQualified(classes, ambiguousClasses, module.name(), klass.name(), klass, klass.isStruct() ? "struct" : "class");
                     classOwners.put(klass, module.name());
                 } else if (decl instanceof Ast.InterfaceDecl iface) {
                     putQualified(interfaces, ambiguousInterfaces, module.name(), iface.name(), iface, "interface");
@@ -292,7 +299,7 @@ public final class TypeChecker {
         Set<String> generics = uniqueGenerics(fn.genericParameters(), (fn.kind() == Ast.CallableKind.ROUTINE ? "routine " : "function ") + fn.name());
         Env env = new Env(moduleBindingEnv(module), fn.nonLexical());
         for (Ast.Param param : fn.parameters()) {
-            Type parameterType = resolveParam(param, generics, null);
+            Type parameterType = resolveParamInLocalScope(param, generics, null, fn.body());
             if (fn.actorKind() != Ast.ActorKind.NONE) {
                 validateActorCallableBoundaryType(
                         parameterType,
@@ -305,7 +312,7 @@ public final class TypeChecker {
                     parameterType,
                     param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
         }
-        Type returns = resolve(fn.returnType(), generics, null);
+        Type returns = resolveInLocalScope(fn.returnType(), generics, null, fn.body());
         if (fn.actorKind() != Ast.ActorKind.NONE) {
             validateActorCallableBoundaryType(
                     returns,
@@ -416,8 +423,11 @@ public final class TypeChecker {
             Type callableSelf = method.isStatic() ? null : self;
             Env env = new Env(null);
             if (!method.isStatic()) env.define("self", self, Ast.BindingKind.VAL);
-            for (Ast.Param param : method.parameters()) env.define(param.name(), resolveParam(param, generics, callableSelf), param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
-            Type returns = resolve(method.returnType(), generics, callableSelf);
+            for (Ast.Param param : method.parameters()) {
+                env.define(param.name(), resolveParamInLocalScope(param, generics, callableSelf, method.body()),
+                        param.mutable() ? Ast.BindingKind.LET : Ast.BindingKind.VAL);
+            }
+            Type returns = resolveInLocalScope(method.returnType(), generics, callableSelf, method.body());
             Ast.ActorKind previousActorKind = currentActorKind;
             currentActorKind = method.isStatic() ? Ast.ActorKind.NONE : klass.actorKind();
             try {
@@ -472,11 +482,22 @@ public final class TypeChecker {
     }
 
     private void checkBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
-        Env env = new Env(parent);
-        for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        rejectLocalTypeGenericCollisions(body, generics);
+        pushLocalTypeScope(body);
+        try {
+            Env env = new Env(parent);
+            for (Ast.Stmt stmt : body) checkStatement(stmt, env, generics, expectedReturn, self);
+        } finally {
+            popLocalTypeScope();
+        }
     }
 
     private void checkStatement(Ast.Stmt stmt, Env env, Set<String> generics, Type expectedReturn, Type self) {
+        if (stmt instanceof Ast.TypeDeclStmt localType) {
+            if (localType.declaration() instanceof Ast.ClassDecl struct) checkClass("<local>", struct);
+            else if (localType.declaration() instanceof Ast.InterfaceDecl iface) checkInterface(iface);
+            return;
+        }
         if (stmt instanceof Ast.BindingStmt binding) {
             Type declaredAhead = binding.declaredType() == null ? null : resolve(binding.declaredType(), generics, self);
             boolean recursiveLambda = binding.initializer() instanceof Ast.LambdaExpr;
