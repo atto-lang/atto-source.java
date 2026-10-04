@@ -749,6 +749,48 @@ public final class TypeChecker {
                     receiver = unwrapMutexGuard(receiver);
                 }
 
+                if (receiver instanceof Record record) {
+                    String prefix = methodKey(member.member(), call.arguments().size()) + "$generics";
+                    List<Map.Entry<String, Type>> candidates = record.members().entrySet().stream()
+                            .filter(entry -> entry.getKey().startsWith(prefix))
+                            .toList();
+                    if (candidates.size() > 1) {
+                        throw new IllegalArgumentException(
+                                "ambiguous structural method '" + member.member()
+                                        + "' with arity " + call.arguments().size());
+                    }
+                    if (candidates.size() == 1) {
+                        Map.Entry<String, Type> candidate = candidates.getFirst();
+                        int genericArity = Integer.parseInt(candidate.getKey().substring(prefix.length()));
+                        if (call.typeArgumentsPresent() && call.typeArguments().size() != genericArity) {
+                            throw new IllegalArgumentException(
+                                    "structural method " + member.member() + " expects "
+                                            + genericArity + " explicit type argument(s), got "
+                                            + call.typeArguments().size());
+                        }
+                        if (!(candidate.getValue() instanceof Function fn)) {
+                            throw new IllegalArgumentException(
+                                    "structural method contract for '" + member.member() + "' is not callable");
+                        }
+                        if (genericArity == 0) {
+                            for (int i = 0; i < fn.parameters().size(); i++) {
+                                validateLambdaArgument(
+                                        call.arguments().get(i), fn.parameters().get(i), env, generics, self);
+                                requireAssignable(
+                                        typeOf(call.arguments().get(i), env, generics, self),
+                                        fn.parameters().get(i),
+                                        "argument " + (i + 1));
+                            }
+                            return fn.result();
+                        }
+                        // Generic structural method contracts carry canonical
+                        // placeholders rather than declaration-local generic names.
+                        // Arity is checked above; full generic inference remains a
+                        // declaration-backed operation.
+                        return Unknown.INSTANCE;
+                    }
+                }
+
                 if (receiver instanceof ClassNamespace classNamespace) {
                     Ast.ClassDecl klass = findClass(classNamespace.className());
                     if (klass == null) throw new IllegalArgumentException("unknown class namespace '" + classNamespace.className() + "'");
@@ -924,8 +966,18 @@ public final class TypeChecker {
 
             if (receiver instanceof Record record) {
                 Type result = record.members().get(member.member());
-                if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
-                return result;
+                if (result != null) return result;
+
+                String methodPrefix = member.member() + "$arity";
+                boolean structuralMethod = record.members().keySet().stream()
+                        .anyMatch(key -> key.startsWith(methodPrefix) && key.contains("$generics"));
+                if (structuralMethod) {
+                    throw new IllegalArgumentException(
+                            "structural method '" + member.member()
+                                    + "' is direct-call-only and cannot be used as a first-class callable value; "
+                                    + "invoke it directly or wrap that call in an explicit lambda");
+                }
+                throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
             }
             if (receiver instanceof Named dynamic && dynamic.name().equals("DynamicStruct")) {
                 if (dynamic.arguments().size() != 1) {
