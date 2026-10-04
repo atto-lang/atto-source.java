@@ -40,9 +40,12 @@ public final class OresContext implements AutoCloseable {
         this.isolatePolicy = IsolatePolicy.fromApplicationArguments(env.getApplicationArguments());
         this.executionProfile = IsolatePolicy.executionProfileFromApplicationArguments(env.getApplicationArguments());
         this.vm = OresVM.contextOwner(env.getApplicationArguments());
+        ActorRuntime.ActorGenerationLeaseFactory generationLeaseFactory =
+                vm.generationLeaseFactory(env.getApplicationArguments());
         this.actors = vm.newActorRuntime(
                 isolatePolicy,
-                this::executeActorTurn);
+                this::executeActorTurn,
+                generationLeaseFactory);
         this.garbageCollector = new RuntimeGarbageCollector();
         this.actors.setActorExitHook(garbageCollector::retireActorDomain);
     }
