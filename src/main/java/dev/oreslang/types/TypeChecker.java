@@ -458,6 +458,11 @@ public final class TypeChecker {
                         "public actor protocol method '" + klass.name() + "." + endpoint.name()
                                 + "' must use implicit self");
             }
+            if (endpoint.parameters().stream().anyMatch(Ast.Param::mutable)) {
+                throw new IllegalArgumentException(
+                        "public actor protocol method '" + klass.name() + "." + endpoint.name()
+                                + "' cannot accept 'mut' parameters; mutable authority cannot cross the mailbox boundary");
+            }
         }
     }
 
