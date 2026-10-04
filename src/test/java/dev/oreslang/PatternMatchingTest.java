@@ -22,7 +22,7 @@ final class PatternMatchingTest {
     @Test
     void resultAndSymbolPatternsNarrowPayloadsAndSupportPureGuards() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
-                fnc classify(Result<int, Symbol> value) => Symbol {
+                fnc classify(Result<int, Symbol> value) : Symbol {
                   switch value {
                     Ok(val n) when n > 0 -> {
                       return :positive;
@@ -46,11 +46,11 @@ final class PatternMatchingTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc decide() => bool {
+                        fnc decide() : bool {
                           return true;
                         }
 
-                        fnc classify(Result<int, Symbol> value) => Symbol {
+                        fnc classify(Result<int, Symbol> value) : Symbol {
                           switch value {
                             Ok(val n) when decide() -> {
                               return :positive;
@@ -71,7 +71,7 @@ final class PatternMatchingTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc classify(Symbol value) => int {
+                        fnc classify(Symbol value) : int {
                           switch value {
                             _ -> {
                               return 0;
@@ -90,7 +90,7 @@ final class PatternMatchingTest {
     void runtimeMatchesResultErrorSymbol() throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Source source = Source.newBuilder(OresLanguage.ID, """
-                pub fnc main() => void {
+                pub fnc main() : void {
                   val Result<int, Symbol> result = Err(:timeout);
 
                   switch result {
@@ -136,7 +136,7 @@ final class PatternMatchingTest {
 
         try {
             Ast.Program visibleProgram = TypeChecker.check(Parser.parse("""
-                    fnc classify(Symbol value) => bool {
+                    fnc classify(Symbol value) : bool {
                       switch value {
                         :%s -> { return true; }
                         _ -> { return false; }
@@ -147,7 +147,7 @@ final class PatternMatchingTest {
                     () -> CapabilityChecker.check(visibleProgram, untrusted));
 
             Ast.Program hiddenProgram = TypeChecker.check(Parser.parse("""
-                    fnc classify(Symbol value) => bool {
+                    fnc classify(Symbol value) : bool {
                       switch value {
                         :%s -> { return true; }
                         _ -> { return false; }
