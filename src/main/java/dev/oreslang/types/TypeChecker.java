@@ -446,6 +446,12 @@ public final class TypeChecker {
             }
 
             for (Ast.Param param : method.parameters()) {
+                if (actorIngress && param.mutable()) {
+                    throw new IllegalArgumentException(
+                            "actor boundary parameter '" + param.name()
+                                    + "' on " + klass.name() + "." + method.name()
+                                    + " cannot be 'mut'; mutable caller authority cannot cross the actor boundary");
+                }
                 Type parameterType = resolveParam(param, generics, callableSelf);
                 if (actorIngress) {
                     validateActorCallableBoundaryType(
