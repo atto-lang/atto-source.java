@@ -591,7 +591,7 @@ final class OresVMTest {
             // the cancellation-vs-suspension publication race.
             runtime.close();
         } finally {
-            if (!runtime.closed()) runtime.close();
+            runtime.close();
         }
     }
 
