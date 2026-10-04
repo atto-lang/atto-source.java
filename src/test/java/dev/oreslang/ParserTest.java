@@ -132,7 +132,7 @@ final class ParserTest {
     }
 
     @Test
-    void actorPublicMethodsFormTypedProtocolOverOneHiddenIngress() {
+    void actorClassUsesOnePublicReceiveAndActorRefSend() {
         Ast.Program program = TypeChecker.check(Parser.parse("""
                 define actor Worker as
                   let int count = 0;
@@ -145,45 +145,47 @@ final class ParserTest {
                     return self.count;
                   }
 
-                  pub run1(int value): void {
+                  pub receive(int value): void {
                     self.count = self.count + value;
                     return;
                   }
-
-                  pub run2(int value) -> int {
-                    return self.count + value;
-                  }
                 end
 
-                async fnc exercise() => void {
+                fnc exercise() => void {
                   val worker = spawn Worker();
-                  await worker.run1(2);
-                  val result = await worker.run2(3);
-                  stdio.println(result);
+                  worker.send(2);
                   return;
                 }
                 """));
 
-        Ast.ClassDecl actor = (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
+        Ast.ClassDecl actor =
+                (Ast.ClassDecl) program.modules().getFirst().declarations().getFirst();
         assertEquals(Ast.ActorKind.SHARED, actor.actorKind());
-        assertEquals(List.of("constructor", "helper", "run1", "run2"),
+        assertEquals(List.of("constructor", "helper", "receive"),
                 actor.methods().stream().map(Ast.MethodDecl::name).toList());
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define actor NoProtocol as
-                  private helper(): int { return 1; }
-                end
-                """)));
-
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor GenericEndpoint as
-                  pub run<T>(T value): void { return; }
+                define actor NoReceive as
+                  private helper(): int { return 1; }
                 end
                 """));
 
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
-                define actor MutableEndpoint as
-                  pub run(int mut value): void { return; }
+                define actor ExtraPublic as
+                  pub receive(int value): void { return; }
+                  pub read(): int { return 1; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor GenericReceive as
+                  pub receive<T>(T value): void { return; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor MutableReceive as
+                  pub receive(int mut value): void { return; }
                 end
                 """));
     }
@@ -212,16 +214,28 @@ final class ParserTest {
     }
 
     @Test
-    void actorProtocolBoundaryTypesAreChecked() {
+    void actorReceiveBoundaryTypesAreChecked() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
                 define actor Bad as
-                  pub run(Mutex<int> value): void { return; }
+                  pub receive(Mutex<int> value): void { return; }
                 end
                 """)));
 
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Good as
-                  pub run(int value): void { return; }
+                  pub receive(int value): void { return; }
+                end
+                """)));
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class Typed extends Actor<int, String, String> as
+                  pub receive(int value): void { return; }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class WrongMessage extends Actor<String, String, String> as
+                  pub receive(int value): void { return; }
                 end
                 """)));
     }
@@ -248,128 +262,111 @@ final class ParserTest {
     }
 
     @Test
-    void actorClassSpawnDispatchesEveryPublicProtocolMethodThroughActorRef() {
+    void actorRefSendUsesReceiveMessageTypeAndReceiveRemainsRuntimeOwned() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Worker as
-                  let int count = 0;
-
-                  constructor(int initial) {
-                    self.count = initial;
-                  }
-
-                  private helper(): int {
-                    return self.count;
-                  }
-
-                  pub add(int value): void {
-                    self.count = self.count + value;
-                    return;
-                  }
-
-                  pub read(): int {
-                    return self.helper();
-                  }
+                  pub receive(int value): void { return; }
                 end
 
-                async fnc exercise() => void {
-                  val worker = spawn Worker(1);
-                  await worker.add(2);
-                  val value = await worker.read();
-                  stdio.println(value);
+                fnc exercise() => void {
+                  val worker = spawn Worker();
+                  worker.send(2);
                   return;
                 }
                 """)));
 
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define actor Worker as
-                  private helper(): int { return 1; }
-                  pub read(): int { return self.helper(); }
-                  pub reset(): void { return; }
-                end
-                """)));
+        IllegalArgumentException wrongMessage = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub receive(int value): void { return; }
+                        end
 
-        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                define actor Worker as
-                  constructor() {
-                    val f = Futures.completed(1);
-                    await f;
-                  }
+                        fnc exercise() => void {
+                          val worker = spawn Worker();
+                          worker.send("wrong");
+                          return;
+                        }
+                        """)));
+        assertTrue(wrongMessage.getMessage().contains("ActorRef.send"));
 
-                  pub run(int value): void { return; }
-                end
-                """)));
+        IllegalArgumentException directReceive = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Worker as
+                          pub receive(int value): void { return; }
+                        end
+
+                        fnc exercise() => void {
+                          val worker = spawn Worker();
+                          worker.receive(2);
+                          return;
+                        }
+                        """)));
+        assertTrue(directReceive.getMessage().contains("runtime-owned"));
     }
 
     @Test
-    void actorProtocolInheritanceIsMonotoneAndMayBeFullyInherited() {
+    void actorInheritancePreservesSingleReceiveIngress() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define actor Parent as
-                  pub run(int value): int {
-                    return value;
-                  }
+                  pub receive(int value): void { return; }
                 end
 
                 define actor Child extends Parent as
-                  private helper(): int {
-                    return 1;
-                  }
-                end
+                  private helper(): int { return 1; }
 
-                async fnc exercise() => void {
-                  val child = spawn Child();
-                  val value = await child.run(7);
-                  stdio.println(value);
-                  return;
-                }
-                """)));
-
-        IllegalArgumentException narrowed = assertThrows(
-                IllegalArgumentException.class,
-                () -> TypeChecker.check(Parser.parse("""
-                        define actor Parent as
-                          pub run(int value): int {
-                            return value;
-                          }
-                        end
-
-                        define actor Child extends Parent as
-                          private run(int value): int {
-                            return value + 1;
-                          }
-
-                          pub ping(): void { return; }
-                        end
-                        """)));
-        assertTrue(narrowed.getMessage().contains("cannot narrow inherited public protocol method"));
-    }
-
-    @Test
-    void actorRefMayUseImplementedProtocolInterface() {
-        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
-                define interface WorkerAPI
-                  fnc run(int value): int;
-                  fnc stop(): void;
-                end
-
-                define actor Worker implements WorkerAPI as
-                  pub run(int value): int {
-                    return value + 1;
-                  }
-
-                  pub stop(): void {
+                  pub receive(int value): void {
+                    val observed = self.helper();
                     return;
                   }
                 end
+                """)));
 
-                async fnc exercise() => void {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define actor Parent as
+                  pub receive(int value): void { return; }
+                end
+
+                define actor Child extends Parent as
+                  private helper(): int { return 1; }
+                end
+                """));
+    }
+
+    @Test
+    void actorRefProtocolInterfaceMustAlsoBeReceiveOnly() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define interface WorkerAPI
+                  fnc receive(int message): void;
+                end
+
+                define actor Worker implements WorkerAPI as
+                  pub receive(int message): void { return; }
+                end
+
+                fnc exercise() => void {
                   val concrete = spawn Worker();
                   val ActorRef<WorkerAPI> worker = concrete;
-                  val value = await worker.run(5);
-                  await worker.stop();
-                  stdio.println(value);
+                  worker.send(5);
                   return;
                 }
                 """)));
+
+        IllegalArgumentException methodBag = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          fnc receive(int message): void;
+                          fnc stop(): void;
+                        end
+
+                        fnc bad(ActorRef<BadAPI> worker) => void {
+                          worker.send(1);
+                          return;
+                        }
+                        """)));
+        assertTrue(methodBag.getMessage().contains("exactly receive(Message): void"));
     }
 
     @Test
