@@ -3065,17 +3065,10 @@ public final class TypeChecker {
                 if (allBranches) return true;
             }
             if (stmt instanceof Ast.SwitchStmt switched) {
-                boolean allReturn = !switched.clauses().isEmpty();
-                boolean catchAll = false;
-                for (Ast.SwitchClause clause : switched.clauses()) {
-                    allReturn &= definitelyReturns(clause.body());
-                    if (clause.guard() == null
-                            && (clause.pattern() instanceof Ast.WildcardPattern
-                                || clause.pattern() instanceof Ast.BindingPattern)) {
-                        catchAll = true;
-                    }
-                }
-                if (allReturn && catchAll) return true;
+                boolean allReturn = !switched.clauses().isEmpty()
+                        && switched.clauses().stream()
+                                .allMatch(clause -> definitelyReturns(clause.body()));
+                if (allReturn && syntacticallyExhaustiveSwitch(switched.clauses())) return true;
             }
             if (stmt instanceof Ast.TryStmt attempted) {
                 if (definitelyReturns(attempted.finallyBody())) return true;
@@ -3083,6 +3076,43 @@ public final class TypeChecker {
             }
         }
         return false;
+    }
+
+    private boolean syntacticallyExhaustiveSwitch(List<Ast.SwitchClause> clauses) {
+        boolean some = false;
+        boolean none = false;
+        boolean ok = false;
+        boolean err = false;
+        boolean trueCase = false;
+        boolean falseCase = false;
+
+        for (Ast.SwitchClause clause : clauses) {
+            if (clause.guard() != null) continue;
+            Ast.Pattern pattern = clause.pattern();
+            if (pattern instanceof Ast.WildcardPattern
+                    || pattern instanceof Ast.BindingPattern) {
+                return true;
+            }
+            if (pattern instanceof Ast.VariantPattern variant) {
+                boolean totalVariant = variant.arguments().isEmpty()
+                        || (variant.arguments().size() == 1
+                            && isIrrefutablePayloadPattern(variant.arguments().getFirst()));
+                if (!totalVariant) continue;
+                switch (variant.name()) {
+                    case "Some" -> some = true;
+                    case "None" -> none = true;
+                    case "Ok" -> ok = true;
+                    case "Err" -> err = true;
+                    default -> { }
+                }
+            } else if (pattern instanceof Ast.LiteralPattern literal
+                    && literal.value() instanceof Boolean value) {
+                if (value) trueCase = true;
+                else falseCase = true;
+            }
+        }
+
+        return (some && none) || (ok && err) || (trueCase && falseCase);
     }
 
     private boolean hasInferredArgs(Ast.TypeRef ref) {
