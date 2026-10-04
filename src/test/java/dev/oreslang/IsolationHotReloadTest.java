@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.ExecutionProfile;
