@@ -200,6 +200,28 @@ public final class OwnershipChecker {
             mergeBranchState(base, exits);
             return;
         }
+        if (stmt instanceof Ast.SwitchStmt switched) {
+            // Matching owns/consumes the subject once. Every clause then receives
+            // its own branch-local bindings derived from that owned value.
+            ValueInfo subject = checkExpr(switched.subject(), scope, true);
+            Map<VarState, StateSnapshot> base = stateSnapshot(scope);
+            List<Map<VarState, StateSnapshot>> exits = new ArrayList<>();
+
+            for (Ast.SwitchClause clause : switched.clauses()) {
+                restoreState(base);
+                Scope clauseScope = new Scope(scope);
+                definePatternBindings(clause.pattern(), subject.type, subject.kind, clauseScope);
+                if (clause.guard() != null) {
+                    checkExpr(clause.guard(), clauseScope, false);
+                }
+                checkBlock(clause.body(), clauseScope, returnType);
+                clauseScope.close();
+                exits.add(stateSnapshot(scope));
+            }
+
+            if (!exits.isEmpty()) mergeBranchState(base, exits);
+            return;
+        }
         if (stmt instanceof Ast.TryStmt attempted) {
             checkBlock(attempted.body(), scope, returnType);
             Scope caught = new Scope(scope);
@@ -229,6 +251,93 @@ public final class OwnershipChecker {
             rejectLoopMoves(before, scope);
             loopScope.close();
         }
+    }
+
+    private void definePatternBindings(
+            Ast.Pattern pattern,
+            Ast.TypeRef subjectType,
+            ValueKind subjectKind,
+            Scope scope) {
+        if (pattern instanceof Ast.WildcardPattern
+                || pattern instanceof Ast.LiteralPattern) {
+            return;
+        }
+        if (pattern instanceof Ast.BindingPattern binding) {
+            scope.define(
+                    binding.name(),
+                    new VarState(
+                            subjectType,
+                            false,
+                            subjectKind,
+                            Origin.LOCAL));
+            return;
+        }
+        if (pattern instanceof Ast.TypePattern typed) {
+            if (typed.bindingName() != null) {
+                scope.define(
+                        typed.bindingName(),
+                        new VarState(
+                                typed.type(),
+                                false,
+                                kindOfType(typed.type()),
+                                Origin.LOCAL));
+            }
+            return;
+        }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            for (int i = 0; i < sequence.elements().size(); i++) {
+                Ast.TypeRef childType = Ast.TypeRef.inferred();
+                if (subjectType != null) {
+                    if (subjectType.isTupleType()
+                            && i < subjectType.arguments().size()) {
+                        childType = subjectType.arguments().get(i);
+                    } else if ((subjectType.name().equals("Array")
+                                    || subjectType.name().equals("List"))
+                            && subjectType.arguments().size() == 1) {
+                        childType = subjectType.arguments().getFirst();
+                    }
+                }
+                definePatternBindings(
+                        sequence.elements().get(i),
+                        childType,
+                        kindOfType(childType),
+                        scope);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.ObjectPattern object) {
+            for (Ast.ObjectPatternField field : object.fields()) {
+                definePatternBindings(
+                        field.pattern(),
+                        Ast.TypeRef.inferred(),
+                        ValueKind.MOVE_ONLY,
+                        scope);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.VariantPattern variant) {
+            Ast.TypeRef payload = Ast.TypeRef.inferred();
+            if (subjectType != null && subjectType.name().equals("Result")
+                    && subjectType.arguments().size() == 2) {
+                if (variant.name().equals("Ok")) payload = subjectType.arguments().get(0);
+                if (variant.name().equals("Err")) payload = subjectType.arguments().get(1);
+            } else if (subjectType != null
+                    && subjectType.name().equals("Option")
+                    && subjectType.arguments().size() == 1
+                    && variant.name().equals("Some")) {
+                payload = subjectType.arguments().getFirst();
+            }
+
+            for (Ast.Pattern child : variant.arguments()) {
+                definePatternBindings(
+                        child,
+                        payload,
+                        kindOfType(payload),
+                        scope);
+            }
+            return;
+        }
+        throw error("unsupported switch pattern " + pattern.getClass().getSimpleName());
     }
 
     private void checkBinding(Ast.BindingStmt binding, Scope scope) {
@@ -908,6 +1017,16 @@ public final class OwnershipChecker {
                     scanStatements(b.body(), blockLocals, outer, recursiveBinding, captures);
                 }
                 scanStatements(s.elseBody(), blockLocals, outer, recursiveBinding, captures);
+            } else if (stmt instanceof Ast.SwitchStmt s) {
+                scanExpr(s.subject(), blockLocals, outer, recursiveBinding, captures, false);
+                for (Ast.SwitchClause clause : s.clauses()) {
+                    Set<String> clauseLocals = new HashSet<>(blockLocals);
+                    addPatternBindingNames(clause.pattern(), clauseLocals);
+                    if (clause.guard() != null) {
+                        scanExpr(clause.guard(), clauseLocals, outer, recursiveBinding, captures, false);
+                    }
+                    scanStatements(clause.body(), clauseLocals, outer, recursiveBinding, captures);
+                }
             } else if (stmt instanceof Ast.TryStmt s) {
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
                 Set<String> caught = new HashSet<>(blockLocals);
@@ -925,6 +1044,30 @@ public final class OwnershipChecker {
                 if (s.update() != null) scanExpr(s.update(), blockLocals, outer, recursiveBinding, captures, false);
                 scanStatements(s.body(), blockLocals, outer, recursiveBinding, captures);
             }
+        }
+    }
+
+    private static void addPatternBindingNames(Ast.Pattern pattern, Set<String> locals) {
+        if (pattern instanceof Ast.BindingPattern binding) {
+            locals.add(binding.name());
+            return;
+        }
+        if (pattern instanceof Ast.TypePattern typed && typed.bindingName() != null) {
+            locals.add(typed.bindingName());
+            return;
+        }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            for (Ast.Pattern child : sequence.elements()) addPatternBindingNames(child, locals);
+            return;
+        }
+        if (pattern instanceof Ast.ObjectPattern object) {
+            for (Ast.ObjectPatternField field : object.fields()) {
+                addPatternBindingNames(field.pattern(), locals);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.VariantPattern variant) {
+            for (Ast.Pattern child : variant.arguments()) addPatternBindingNames(child, locals);
         }
     }
 
@@ -1427,7 +1570,7 @@ public final class OwnershipChecker {
         return switch (type.name()) {
             case "i8","i16","i32","i64","u8","u16","u32","u64","int","uint","bigint",
                     "f32","f64","float","decimal","complex64","complex128","complex",
-                    "bool","Bool","string","String","void","SharedMutex","OptionUnwrapError" -> true;
+                    "bool","Bool","string","String","Symbol","void","SharedMutex","OptionUnwrapError" -> true;
             case "Option" -> type.arguments().size() == 1 && isCopyType(type.arguments().getFirst());
             case "Result" -> type.arguments().size() == 2
                     && isCopyType(type.arguments().get(0))
@@ -1478,6 +1621,7 @@ public final class OwnershipChecker {
         if (value instanceof Long) return Ast.TypeRef.simple("int");
         if (value instanceof Double) return Ast.TypeRef.simple("float");
         if (value instanceof String) return Ast.TypeRef.simple("String");
+        if (value instanceof Ast.Symbol) return Ast.TypeRef.simple("Symbol");
         if (value instanceof Ast.Imaginary) return Ast.TypeRef.simple("complex");
         return Ast.TypeRef.inferred();
     }
