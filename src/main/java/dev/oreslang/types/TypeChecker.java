@@ -442,11 +442,6 @@ public final class TypeChecker {
                         && !method.name().equals("constructor"))
                 .toList();
 
-        if (publicInstance.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "actor '" + klass.name() + "' must expose at least one public protocol method");
-        }
-
         for (Ast.MethodDecl endpoint : publicInstance) {
             if (!endpoint.genericParameters().isEmpty()) {
                 throw new IllegalArgumentException(
@@ -462,6 +457,36 @@ public final class TypeChecker {
                 throw new IllegalArgumentException(
                         "public actor protocol method '" + klass.name() + "." + endpoint.name()
                                 + "' cannot accept 'mut' parameters; mutable authority cannot cross the mailbox boundary");
+            }
+        }
+
+        Record effectiveProtocol = publicClassShape(klass, new LinkedHashSet<>());
+        if (effectiveProtocol.members().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "actor '" + klass.name()
+                            + "' must expose at least one public protocol method, locally or through actor inheritance");
+        }
+
+        // Actor protocol visibility is monotone: a child cannot shadow a
+        // public inherited mailbox endpoint with a private method of the same
+        // name/arity, because doing so would make ActorRef dispatch depend on
+        // the static reference type.
+        Named selfType = nominalClassType(klass);
+        for (Ast.MethodDecl local : klass.methods()) {
+            if (local.isStatic() || local.visibility() == Ast.Visibility.PUBLIC
+                    || local.name().equals("constructor")) continue;
+            for (Ast.TypeRef parentRef : klass.parents()) {
+                Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+                if (parent == null) continue;
+                Named parentType = concreteParentType(parentRef, klass, selfType);
+                ResolvedMethod inherited = findMethodTarget(
+                        parent, parentType, local.name(), local.arity(), new LinkedHashSet<>());
+                if (inherited != null
+                        && inherited.method().visibility() == Ast.Visibility.PUBLIC) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name() + "' cannot narrow inherited public protocol method '"
+                                    + local.name() + "'/" + local.arity() + " to private");
+                }
             }
         }
     }
@@ -804,43 +829,84 @@ public final class TypeChecker {
                         if (!(protocolType instanceof Named actorType)) {
                             throw new IllegalArgumentException("ActorRef protocol must be a named actor/interface type");
                         }
-                        Ast.ClassDecl actorClass = findClass(actorType.name());
-                        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
-                            throw new IllegalArgumentException(
-                                    "ActorRef<" + actorType.name() + "> does not name a concrete actor class protocol");
-                        }
-                        ResolvedMethod target = findMethodTarget(
-                                actorClass,
-                                actorType,
-                                member.member(),
-                                call.arguments().size(),
-                                new LinkedHashSet<>());
-                        if (target == null
-                                || target.method().visibility() != Ast.Visibility.PUBLIC
-                                || target.method().name().equals("constructor")) {
-                            throw new IllegalArgumentException(
-                                    "no public actor protocol method '" + member.member()
-                                            + "' with arity " + call.arguments().size()
-                                            + " on " + actorClass.name());
-                        }
-                        Ast.MethodDecl method = target.method();
-                        if (!method.genericParameters().isEmpty() || call.typeArgumentsPresent()) {
+                        if (call.typeArgumentsPresent()) {
                             throw new IllegalArgumentException(
                                     "actor protocol calls are statically specialized and do not accept method type arguments");
                         }
-                        Map<String, Type> bindings = classGenericBindings(target.owner(), target.ownerType());
-                        Type result = checkGenericCallable(
-                                target.owner().genericParameters(),
-                                method.parameters(),
-                                method.returnType(),
-                                call.arguments(),
-                                env,
-                                generics,
-                                self,
-                                target.ownerType(),
-                                bindings,
-                                "actor protocol method " + target.owner().name() + "." + method.name());
-                        return new Named("Future", List.of(result));
+
+                        Ast.ClassDecl actorClass = findClass(actorType.name());
+                        if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+                            ResolvedMethod target = findMethodTarget(
+                                    actorClass,
+                                    actorType,
+                                    member.member(),
+                                    call.arguments().size(),
+                                    new LinkedHashSet<>());
+                            if (target == null
+                                    || target.method().visibility() != Ast.Visibility.PUBLIC
+                                    || target.method().name().equals("constructor")) {
+                                throw new IllegalArgumentException(
+                                        "no public actor protocol method '" + member.member()
+                                                + "' with arity " + call.arguments().size()
+                                                + " on " + actorClass.name());
+                            }
+                            Ast.MethodDecl method = target.method();
+                            if (!method.genericParameters().isEmpty()) {
+                                throw new IllegalArgumentException(
+                                        "actor protocol methods cannot have method-level generics");
+                            }
+                            Map<String, Type> bindings = classGenericBindings(target.owner(), target.ownerType());
+                            Type result = checkGenericCallable(
+                                    target.owner().genericParameters(),
+                                    method.parameters(),
+                                    method.returnType(),
+                                    call.arguments(),
+                                    env,
+                                    generics,
+                                    self,
+                                    target.ownerType(),
+                                    bindings,
+                                    "actor protocol method " + target.owner().name() + "." + method.name());
+                            return new Named("Future", List.of(result));
+                        }
+
+                        Ast.InterfaceDecl protocol = findInterface(actorType.name());
+                        if (protocol == null) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef<" + actorType.name()
+                                            + "> must name an actor class or actor protocol interface");
+                        }
+                        Map<String, Type> bindings = genericBindings(
+                                protocol.genericParameters(),
+                                actorType.arguments(),
+                                "actor protocol interface " + protocol.name());
+                        Record shape = (Record) substituteGenerics(
+                                interfaceShape(
+                                        protocol,
+                                        Set.copyOf(protocol.genericParameters()),
+                                        new LinkedHashSet<>()),
+                                bindings);
+                        Type endpoint = shape.members().get(
+                                methodContractKey(member.member(), call.arguments().size(), 0));
+                        if (!(endpoint instanceof Function fn)) {
+                            throw new IllegalArgumentException(
+                                    "no monomorphic actor protocol method '" + member.member()
+                                            + "' with arity " + call.arguments().size()
+                                            + " on interface " + protocol.name());
+                        }
+                        if (fn.parameters().size() != call.arguments().size()) {
+                            throw new IllegalArgumentException("actor protocol call arity mismatch");
+                        }
+                        for (int i = 0; i < fn.parameters().size(); i++) {
+                            validateLambdaArgument(
+                                    call.arguments().get(i), fn.parameters().get(i), env, generics, self);
+                            requireAssignable(
+                                    typeOf(call.arguments().get(i), env, generics, self),
+                                    fn.parameters().get(i),
+                                    "argument " + (i + 1) + " to actor protocol "
+                                            + protocol.name() + "." + member.member());
+                        }
+                        return new Named("Future", List.of(fn.result()));
                     }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
@@ -2640,6 +2706,32 @@ public final class TypeChecker {
         }
 
         if (actual instanceof Named actualNamed && expected instanceof Named expectedNamed) {
+            if (actualNamed.name().equals("ActorRef")
+                    && expectedNamed.name().equals("ActorRef")
+                    && actualNamed.arguments().size() == 1
+                    && expectedNamed.arguments().size() == 1
+                    && actualNamed.arguments().getFirst() instanceof Named actualProtocol
+                    && expectedNamed.arguments().getFirst() instanceof Named expectedProtocol) {
+                if (Types.isAssignable(actualProtocol, expectedProtocol)) return true;
+                Ast.ClassDecl concreteActor = findClass(actualProtocol.name());
+                if (concreteActor != null
+                        && concreteActor.actorKind() != Ast.ActorKind.NONE
+                        && findInterface(expectedProtocol.name()) != null
+                        && classTypeImplements(
+                                actualProtocol,
+                                expectedProtocol,
+                                new LinkedHashSet<>())) {
+                    return true;
+                }
+                if (findInterface(actualProtocol.name()) != null
+                        && findInterface(expectedProtocol.name()) != null
+                        && interfaceTypeExtends(
+                                actualProtocol,
+                                expectedProtocol,
+                                new LinkedHashSet<>())) {
+                    return true;
+                }
+            }
             if (findClass(actualNamed.name()) != null) {
                 if (findClass(expectedNamed.name()) != null
                         && classTypeExtends(actualNamed, expectedNamed, new LinkedHashSet<>())) {
