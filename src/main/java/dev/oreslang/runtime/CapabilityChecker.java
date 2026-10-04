@@ -31,6 +31,8 @@ public final class CapabilityChecker {
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final Set<Object> typeExpansionStack =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private final Set<String> sourceSymbolLiterals = new java.util.LinkedHashSet<>();
+    private final Set<String> untrustedSymbolExports = new java.util.LinkedHashSet<>();
 
     private CapabilityChecker(Ast.Program program) {
         for (Ast.ImportDecl imported : program.imports()) {
@@ -43,6 +45,12 @@ public final class CapabilityChecker {
         }
 
         for (Ast.ModuleDecl module : program.modules()) {
+            if (module.storage() == Ast.ModuleStorage.GLOBAL) {
+                require(
+                        policy,
+                        IsolatePolicy.Capability.PROCESS_GLOBAL,
+                        "global module " + module.name());
+            }
             for (Ast.Decl declaration : module.declarations()) {
                 if (declaration instanceof Ast.TypeAliasDecl alias) {
                     index(aliases, ambiguousAliases, module.name(), alias.name(), alias);
@@ -56,7 +64,25 @@ public final class CapabilityChecker {
     }
 
     public static void check(Ast.Program program, IsolatePolicy policy) {
-        new CapabilityChecker(program).checkProgram(program, policy);
+        CapabilityChecker checker = new CapabilityChecker(program);
+        checker.checkProgram(program, policy);
+
+        if (policy.adversarial()) {
+            // Lookup-only validation. No untrusted code path may create a
+            // process-global identity merely by mentioning a pattern literal.
+            for (String literal : checker.sourceSymbolLiterals) {
+                OresSymbol.processLiteral(literal, policy);
+            }
+        } else {
+            // Permanent identities are committed only after the whole code unit
+            // passes capability admission.
+            OresSymbol.registerProcessLiterals(checker.sourceSymbolLiterals, policy);
+            for (String exported : checker.untrustedSymbolExports) {
+                OresSymbol.exportToUntrusted(
+                        OresSymbol.processLiteral(exported, policy),
+                        policy);
+            }
+        }
     }
 
     private static <T> void index(
@@ -190,11 +216,30 @@ public final class CapabilityChecker {
                 } else if (declaration instanceof Ast.FieldDecl field) {
                     checkType(field.type(), policy);
                     if (field.initializer() != null) checkExpr(field.initializer(), policy);
+                    if (hasAnnotation(field, "ExportToUntrusted")) {
+                        require(
+                                policy,
+                                IsolatePolicy.Capability.SYMBOL_EXPORT,
+                                "@ExportToUntrusted " + module.name() + "." + field.name());
+                        if (!(field.initializer() instanceof Ast.LiteralExpr literal
+                                && literal.value() instanceof Ast.Symbol symbol)) {
+                            throw new SecurityException(
+                                    "@ExportToUntrusted requires a static Symbol literal");
+                        }
+                        untrustedSymbolExports.add(symbol.name());
+                    }
                 } else if (declaration instanceof Ast.TypeAliasDecl alias) {
                     checkType(alias.target(), policy);
                 }
             }
         }
+    }
+
+    private static boolean hasAnnotation(Ast.FieldDecl field, String name) {
+        for (Ast.Annotation annotation : field.annotations()) {
+            if (annotation.name().equals(name)) return true;
+        }
+        return false;
     }
 
     private static IsolatePolicy actorPolicy(Ast.ActorKind kind, IsolatePolicy parent) {
@@ -219,6 +264,9 @@ public final class CapabilityChecker {
 
         if (type.name().equals("SharedMutex")) {
             require(policy, IsolatePolicy.Capability.SHARED_MEMORY, "SharedMutex<T>");
+        }
+        if (type.name().equals("GlobalRef")) {
+            require(policy, IsolatePolicy.Capability.PROCESS_GLOBAL, "GlobalRef<T>");
         }
         String javaClass = javaImports.get(type.name());
         if (javaClass != null) {
@@ -277,6 +325,13 @@ public final class CapabilityChecker {
                     checkStatements(b.body(), policy);
                 }
                 checkStatements(s.elseBody(), policy);
+            } else if (stmt instanceof Ast.SwitchStmt s) {
+                checkExpr(s.subject(), policy);
+                for (Ast.SwitchClause clause : s.clauses()) {
+                    checkPattern(clause.pattern(), policy);
+                    if (clause.guard() != null) checkExpr(clause.guard(), policy);
+                    checkStatements(clause.body(), policy);
+                }
             } else if (stmt instanceof Ast.TryStmt s) {
                 checkStatements(s.body(), policy);
                 checkStatements(s.catchBody(), policy);
@@ -293,7 +348,37 @@ public final class CapabilityChecker {
         }
     }
 
+    private void checkPattern(Ast.Pattern pattern, IsolatePolicy policy) {
+        if (pattern instanceof Ast.LiteralPattern literal
+                && literal.value() instanceof Ast.Symbol symbol) {
+            sourceSymbolLiterals.add(symbol.name());
+            return;
+        }
+        if (pattern instanceof Ast.SequencePattern sequence) {
+            for (Ast.Pattern child : sequence.elements()) checkPattern(child, policy);
+            return;
+        }
+        if (pattern instanceof Ast.ObjectPattern object) {
+            for (Ast.ObjectPatternField field : object.fields()) {
+                checkPattern(field.pattern(), policy);
+            }
+            return;
+        }
+        if (pattern instanceof Ast.VariantPattern variant) {
+            for (Ast.Pattern child : variant.arguments()) checkPattern(child, policy);
+            return;
+        }
+        if (pattern instanceof Ast.TypePattern typed) {
+            checkType(typed.type(), policy);
+        }
+    }
+
     private void checkExpr(Ast.Expr expr, IsolatePolicy policy) {
+        if (expr instanceof Ast.LiteralExpr literal
+                && literal.value() instanceof Ast.Symbol symbol) {
+            sourceSymbolLiterals.add(symbol.name());
+        }
+
         if (expr instanceof Ast.NameExpr javaName) {
             String javaClass = javaImports.get(javaName.name());
             if (javaClass != null) {
