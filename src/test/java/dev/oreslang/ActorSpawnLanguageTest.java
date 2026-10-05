@@ -209,6 +209,62 @@ final class ActorSpawnLanguageTest {
                   return;
                 }
                 """)));
+
+        IllegalArgumentException arbitraryRpc = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Counter as
+                          pub receive(delta: int): void { return; }
+                          private helper(): void { return; }
+                        end
+
+                        fnc bad() -> void {
+                          val counter = spawn Counter();
+                          counter.helper();
+                          return;
+                        }
+                        """)));
+        assertTrue(arbitraryRpc.getMessage().contains("unknown ActorRef"));
+    }
+
+    @Test
+    void sharedActorClassSendActuallyDispatchesReceiveAtRuntime() throws Exception {
+        String program = """
+                define actor Echo as
+                  pub receive(value: int): void {
+                    stdio.println(value);
+                    return;
+                  }
+                end
+
+                pub routine main() => void {
+                  val echo = spawn Echo();
+                  echo.send(42);
+                  return;
+                }
+                """;
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "actor-class-send.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+
+            long deadline = System.nanoTime()
+                    + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+            while (!output.toString(StandardCharsets.UTF_8).contains("42")
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+            assertTrue(
+                    output.toString(StandardCharsets.UTF_8).contains("42"),
+                    "ActorRef.send must enqueue exactly one receive(message) turn");
+        }
     }
 
     @Test
