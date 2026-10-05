@@ -1838,6 +1838,13 @@ public final class ActorRuntime implements AutoCloseable {
             int depth) {
         requireGraphDepth(depth);
         if (value == null || isScalar(value) || value instanceof ActorRuntime.ActorRef<?>) return;
+        if (value instanceof ChannelRuntime.Channel<?>
+                || value instanceof ChannelRuntime.SelectCase
+                || value instanceof ChannelRuntime.SelectSet) {
+            throw new IllegalArgumentException(
+                    "Channel/SelectSet capabilities are execution-domain local and cannot cross actor mailboxes; "
+                            + "send data through ActorRef/mailbox transport instead");
+        }
         if (value instanceof OresMutex.Local<?>) {
             throw new IllegalArgumentException("Mutex<T> is actor-local state and cannot cross actor mailboxes");
         }
