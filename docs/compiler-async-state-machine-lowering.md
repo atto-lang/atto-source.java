@@ -82,11 +82,12 @@ The lowering pipeline is:
 `AsyncStateMachinePlan` is the compiler-owned seam that exposes the planned
 frame and resume states to later code generation.
 
-The source-AST pass intentionally coalesces shadowed bindings with the same
-name because the current AST does not yet contain stable lexical binding IDs.
-That is conservative: it may over-spill but must not under-spill. The
-control-flow IR should replace source names with binding IDs before executable
-production lowering is enabled.
+The source-AST pass resolves lexical bindings to compiler-owned stable IDs
+before liveness. Shadowed names are therefore distinct even when an inner and
+outer binding are simultaneously live at the same suspension point. This is a
+correctness property, not just an optimization: two live bindings named `x`
+must never be collapsed into one frame field. A later normalized CFG may carry
+the same IDs forward directly.
 
 ## Suspension-aware liveness
 
