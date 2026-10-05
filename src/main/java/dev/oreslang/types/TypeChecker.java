@@ -513,22 +513,7 @@ public final class TypeChecker {
     }
 
     private void validateActorProtocolContract(Ast.ClassDecl klass) {
-        for (Ast.TypeRef parentRef : klass.parents()) {
-            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent == null || parent.actorKind() == Ast.ActorKind.NONE) continue;
-            for (Ast.FieldDecl local : klass.fields()) {
-                if (findFieldTarget(
-                        parent,
-                        nominalClassType(parent),
-                        local.name(),
-                        new LinkedHashSet<>()) != null) {
-                    throw new IllegalArgumentException(
-                            "actor '" + klass.name()
-                                    + "' cannot shadow inherited actor state field '"
-                                    + local.name() + "'; actor state layout must remain unambiguous");
-                }
-            }
-        }
+        validateActorStateLayout(klass, new LinkedHashSet<>());
 
         List<Ast.MethodDecl> publicInstance = klass.methods().stream()
                 .filter(method -> !method.isStatic()
@@ -583,6 +568,45 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    private Map<String, Ast.FieldDecl> validateActorStateLayout(
+            Ast.ClassDecl klass,
+            Set<Ast.ClassDecl> stack) {
+        if (!stack.add(klass)) {
+            throw new IllegalArgumentException(
+                    "inheritance cycle involving actor '" + klass.name() + "'");
+        }
+        LinkedHashMap<String, Ast.FieldDecl> fields = new LinkedHashMap<>();
+        for (Ast.TypeRef parentRef : klass.parents()) {
+            Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
+            if (parent == null || parent.actorKind() == Ast.ActorKind.NONE) continue;
+            for (Map.Entry<String, Ast.FieldDecl> inherited :
+                    validateActorStateLayout(parent, stack).entrySet()) {
+                Ast.FieldDecl previous = fields.putIfAbsent(
+                        inherited.getKey(),
+                        inherited.getValue());
+                if (previous != null && previous != inherited.getValue()) {
+                    throw new IllegalArgumentException(
+                            "actor '" + klass.name()
+                                    + "' inherits conflicting state field '"
+                                    + inherited.getKey()
+                                    + "' from multiple actor bases");
+                }
+            }
+        }
+        for (Ast.FieldDecl local : klass.fields()) {
+            Ast.FieldDecl previous = fields.putIfAbsent(local.name(), local);
+            if (previous != null && previous != local) {
+                throw new IllegalArgumentException(
+                        "actor '" + klass.name()
+                                + "' cannot shadow inherited actor state field '"
+                                + local.name()
+                                + "'; actor state layout must remain unambiguous");
+            }
+        }
+        stack.remove(klass);
+        return fields;
     }
 
     private List<Ast.MethodDecl> effectivePublicActorMethods(
