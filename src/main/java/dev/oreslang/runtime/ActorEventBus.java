@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -34,6 +35,24 @@ public final class ActorEventBus implements AutoCloseable {
     public enum DoubleReductionKind {
         MIN,
         MAX
+    }
+
+    public static final class EventBackpressureException extends IllegalStateException {
+        private final String topic;
+        private final ActorRuntime.ActorId subscriber;
+
+        private EventBackpressureException(
+                String topic,
+                ActorRuntime.ActorId subscriber,
+                int limit) {
+            super("reliable ActorGroup event backlog is full for topic "
+                    + topic + ", subscriber=" + subscriber + ", limit=" + limit);
+            this.topic = topic;
+            this.subscriber = subscriber;
+        }
+
+        public String topic() { return topic; }
+        public ActorRuntime.ActorId subscriber() { return subscriber; }
     }
 
     public record Event<T>(
@@ -96,6 +115,7 @@ public final class ActorEventBus implements AutoCloseable {
     private final ActorRuntime.ActorGroup group;
     private final Map<String, TopicState> topics = new ConcurrentHashMap<>();
     private final Map<String, DoubleReductionState> doubleReductions = new ConcurrentHashMap<>();
+    private final Object definitionLock = new Object();
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ActorEventBus(ActorRuntime runtime, ActorRuntime.ActorGroup group) {
@@ -120,19 +140,21 @@ public final class ActorEventBus implements AutoCloseable {
 
     public void defineTopic(String name, DeliveryPolicy policy, int capacity) {
         group.requireManager("define ActorGroup event topics");
-        requireOpen();
         String topicName = normalizeTopicName(name);
         Objects.requireNonNull(policy, "policy");
         validateCapacity(policy, capacity);
 
-        if (topics.size() >= MAX_TOPICS && !topics.containsKey(topicName)) {
-            throw new IllegalStateException("ActorGroup event topic limit exceeded: " + MAX_TOPICS);
-        }
+        synchronized (definitionLock) {
+            requireOpen();
+            if (topics.size() >= MAX_TOPICS && !topics.containsKey(topicName)) {
+                throw new IllegalStateException(
+                        "ActorGroup event topic limit exceeded: " + MAX_TOPICS);
+            }
 
-        TopicState created = new TopicState(topicName, policy, capacity);
-        TopicState existing = topics.putIfAbsent(topicName, created);
-        if (existing != null) {
-            if (existing.policy != policy || existing.capacity != capacity) {
+            TopicState created = new TopicState(topicName, policy, capacity);
+            TopicState existing = topics.putIfAbsent(topicName, created);
+            if (existing != null
+                    && (existing.policy != policy || existing.capacity != capacity)) {
                 throw new IllegalStateException(
                         "event topic already defined with different policy/capacity: " + topicName);
             }
@@ -154,15 +176,17 @@ public final class ActorEventBus implements AutoCloseable {
         }
 
         String topicName = normalizeTopicName(name);
-        defineTopic(topicName, DeliveryPolicy.LATEST, 1);
-        DoubleReductionState created = new DoubleReductionState(topicName, kind, initialValue);
-        DoubleReductionState existing = doubleReductions.putIfAbsent(topicName, created);
-        if (existing != null
-                && (existing.kind != kind
-                || Double.doubleToRawLongBits(existing.current())
-                != Double.doubleToRawLongBits(initialValue))) {
-            throw new IllegalStateException(
-                    "double reduction already defined with different semantics: " + topicName);
+        synchronized (definitionLock) {
+            requireOpen();
+            defineTopic(topicName, DeliveryPolicy.LATEST, 1);
+            DoubleReductionState created =
+                    new DoubleReductionState(topicName, kind, initialValue);
+            DoubleReductionState existing =
+                    doubleReductions.putIfAbsent(topicName, created);
+            if (existing != null && !existing.sameDefinition(kind, initialValue)) {
+                throw new IllegalStateException(
+                        "double reduction already defined with different semantics: " + topicName);
+            }
         }
     }
 
@@ -275,14 +299,16 @@ public final class ActorEventBus implements AutoCloseable {
 
     void closeFromGroup() {
         if (!closed.compareAndSet(false, true)) return;
-        for (TopicState topic : topics.values()) {
-            for (Subscription<?> subscription : List.copyOf(topic.subscriptions.values())) {
-                subscription.closeChannelOnly();
+        synchronized (definitionLock) {
+            for (TopicState topic : topics.values()) {
+                for (Subscription<?> subscription : List.copyOf(topic.subscriptions.values())) {
+                    subscription.closeChannelOnly();
+                }
+                topic.subscriptions.clear();
             }
-            topic.subscriptions.clear();
+            topics.clear();
+            doubleReductions.clear();
         }
-        topics.clear();
-        doubleReductions.clear();
     }
 
     private PublishReceipt publishFrozen(
@@ -299,34 +325,82 @@ public final class ActorEventBus implements AutoCloseable {
                 System.nanoTime(),
                 frozenValue);
 
-        List<Subscription<?>> subscriptions = List.copyOf(topic.subscriptions.values());
-        if (subscriptions.isEmpty()) {
+        List<Subscription<?>> snapshot = List.copyOf(topic.subscriptions.values());
+        if (snapshot.isEmpty()) {
             return new PublishReceipt(0, 0, 0, 0, OresFuture.completed(List.of()));
+        }
+
+        List<Subscription<?>> active = new ArrayList<>(snapshot.size());
+        for (Subscription<?> subscription : snapshot) {
+            if (subscription.closed() || !group.isMember(subscription.subscriber)) {
+                topic.subscriptions.remove(subscription.subscriber, subscription);
+                subscription.closeChannelOnly();
+            } else {
+                active.add(subscription);
+            }
+        }
+        if (active.isEmpty()) {
+            return new PublishReceipt(0, 0, 0, 0, OresFuture.completed(List.of()));
+        }
+
+        /*
+         * Reliable publication pre-admits one bounded outstanding event at every
+         * subscriber before touching any channel. This prevents a caller from
+         * ignoring backpressure Futures and growing ChannelRuntime's pending
+         * writer queue without bound, and it avoids partial fanout when the
+         * backlog is already exhausted at one subscriber.
+         */
+        if (topic.policy == DeliveryPolicy.RELIABLE) {
+            List<Subscription<?>> reserved = new ArrayList<>(active.size());
+            for (Subscription<?> subscription : active) {
+                if (!subscription.reserveReliableEvent()) {
+                    if (subscription.closed() || !group.isMember(subscription.subscriber)) {
+                        topic.subscriptions.remove(subscription.subscriber, subscription);
+                        subscription.closeChannelOnly();
+                        continue;
+                    }
+                    for (Subscription<?> admitted : reserved) {
+                        admitted.releaseReliableEvent();
+                    }
+                    throw new EventBackpressureException(
+                            topic.name,
+                            subscription.subscriber,
+                            subscription.reliableOutstandingLimit);
+                }
+                reserved.add(subscription);
+            }
+
+            List<OresFuture<Void>> writes = new ArrayList<>(reserved.size());
+            int started = 0;
+            try {
+                for (; started < reserved.size(); started++) {
+                    @SuppressWarnings("unchecked")
+                    Subscription<Object> subscription =
+                            (Subscription<Object>) reserved.get(started);
+                    writes.add(subscription.writeReliableReserved(event));
+                }
+            } catch (Throwable failure) {
+                for (int i = started + 1; i < reserved.size(); i++) {
+                    reserved.get(i).releaseReliableEvent();
+                }
+                throw failure;
+            }
+
+            return new PublishReceipt(
+                    reserved.size(),
+                    reserved.size(),
+                    0,
+                    0,
+                    OresFutures.<Void>all(writes));
         }
 
         int accepted = 0;
         int dropped = 0;
         int coalesced = 0;
-        List<OresFuture<Void>> reliableWrites =
-                topic.policy == DeliveryPolicy.RELIABLE
-                        ? new ArrayList<>(subscriptions.size())
-                        : List.of();
-
-        for (Subscription<?> raw : subscriptions) {
-            if (raw.closed() || !group.isMember(raw.subscriber)) {
-                topic.subscriptions.remove(raw.subscriber, raw);
-                raw.closeChannelOnly();
-                continue;
-            }
-
+        for (Subscription<?> raw : active) {
             @SuppressWarnings("unchecked")
             Subscription<Object> subscription = (Subscription<Object>) raw;
             switch (topic.policy) {
-                case RELIABLE -> {
-                    OresFuture<Void> write = subscription.writeReliable(event);
-                    reliableWrites.add(write);
-                    accepted++;
-                }
                 case LATEST -> {
                     int replaced = subscription.writeLatest(event);
                     accepted++;
@@ -336,16 +410,18 @@ public final class ActorEventBus implements AutoCloseable {
                     if (subscription.writeLossy(event)) accepted++;
                     else dropped++;
                 }
+                case RELIABLE -> throw new AssertionError("reliable publication handled above");
             }
         }
 
         topic.dropped.addAndGet(dropped);
         topic.coalesced.addAndGet(coalesced);
-        OresFuture<List<Void>> completion =
-                topic.policy == DeliveryPolicy.RELIABLE
-                        ? OresFutures.<Void>all(reliableWrites)
-                        : OresFuture.completed(List.of());
-        return new PublishReceipt(subscriptions.size(), accepted, dropped, coalesced, completion);
+        return new PublishReceipt(
+                active.size(),
+                accepted,
+                dropped,
+                coalesced,
+                OresFuture.completed(List.of()));
     }
 
     private TopicState requireTopic(String name) {
@@ -416,6 +492,7 @@ public final class ActorEventBus implements AutoCloseable {
     private static final class DoubleReductionState {
         private final String name;
         private final DoubleReductionKind kind;
+        private final long initialBits;
         private final AtomicLong bits;
 
         private DoubleReductionState(
@@ -424,11 +501,19 @@ public final class ActorEventBus implements AutoCloseable {
                 double initialValue) {
             this.name = name;
             this.kind = kind;
-            this.bits = new AtomicLong(Double.doubleToRawLongBits(initialValue));
+            this.initialBits = Double.doubleToRawLongBits(initialValue);
+            this.bits = new AtomicLong(initialBits);
         }
 
         private double current() {
             return Double.longBitsToDouble(bits.get());
+        }
+
+        private boolean sameDefinition(
+                DoubleReductionKind requestedKind,
+                double requestedInitialValue) {
+            return kind == requestedKind
+                    && initialBits == Double.doubleToRawLongBits(requestedInitialValue);
         }
 
         private boolean improves(double candidate, double observed) {
@@ -448,6 +533,8 @@ public final class ActorEventBus implements AutoCloseable {
         private final ActorRuntime.ActorId subscriber;
         private final ChannelRuntime.Channel<Event<T>> channel;
         private final Object latestLock = new Object();
+        private final AtomicInteger reliableOutstanding = new AtomicInteger();
+        private final int reliableOutstandingLimit;
         private final AtomicBoolean subscriptionClosed = new AtomicBoolean();
 
         private Subscription(
@@ -457,6 +544,8 @@ public final class ActorEventBus implements AutoCloseable {
             this.topic = topic;
             this.subscriber = subscriber;
             this.channel = new ChannelRuntime.Channel<>(capacity);
+            long bounded = Math.max((long) capacity + 1L, (long) capacity * 2L);
+            this.reliableOutstandingLimit = (int) Math.min(Integer.MAX_VALUE, bounded);
         }
 
         public String topic() {
@@ -485,19 +574,61 @@ public final class ActorEventBus implements AutoCloseable {
 
         public Optional<Event<T>> tryRead() {
             requireReadable();
-            return channel.tryRead();
+            Optional<Event<T>> event = channel.tryRead();
+            if (event.isPresent() && topic.policy == DeliveryPolicy.RELIABLE) {
+                releaseReliableEvent();
+            }
+            return event;
         }
 
         public OresFuture<Event<T>> readAsync() {
             requireReadable();
-            return channel.readAsync();
+            OresFuture<Event<T>> read = channel.readAsync();
+            if (topic.policy == DeliveryPolicy.RELIABLE) {
+                read.whenCompleteRuntime((value, failure) -> {
+                    if (failure == null) releaseReliableEvent();
+                });
+            }
+            return read;
         }
 
-        private OresFuture<Void> writeReliable(Event<T> event) {
-            if (subscriptionClosed.get()) {
-                return OresFuture.failed(new IllegalStateException("event subscription is closed"));
+        private boolean reserveReliableEvent() {
+            if (subscriptionClosed.get()) return false;
+            while (true) {
+                int current = reliableOutstanding.get();
+                if (current >= reliableOutstandingLimit) return false;
+                if (reliableOutstanding.compareAndSet(current, current + 1)) {
+                    if (!subscriptionClosed.get()) return true;
+                    releaseReliableEvent();
+                    return false;
+                }
             }
-            return channel.writeAsync(event);
+        }
+
+        private void releaseReliableEvent() {
+            while (true) {
+                int current = reliableOutstanding.get();
+                if (current == 0) return;
+                if (reliableOutstanding.compareAndSet(current, current - 1)) return;
+            }
+        }
+
+        private OresFuture<Void> writeReliableReserved(Event<T> event) {
+            try {
+                if (subscriptionClosed.get()) {
+                    releaseReliableEvent();
+                    return OresFuture.failed(
+                            new IllegalStateException("event subscription is closed"));
+                }
+                OresFuture<Void> write = channel.writeAsync(event);
+                write.whenCompleteRuntime((ignored, failure) -> {
+                    if (failure != null) releaseReliableEvent();
+                });
+                return write;
+            } catch (Throwable failure) {
+                releaseReliableEvent();
+                throw failure;
+            }
         }
 
         private boolean writeLossy(Event<T> event) {
@@ -553,6 +684,9 @@ public final class ActorEventBus implements AutoCloseable {
             if (!subscriptionClosed.compareAndSet(false, true)) return;
             channel.close();
             while (channel.tryRead().isPresent()) {
+                if (topic.policy == DeliveryPolicy.RELIABLE) {
+                    releaseReliableEvent();
+                }
                 // Drain buffered immutable event references so group teardown
                 // does not retain payloads after the subscription is gone.
             }
