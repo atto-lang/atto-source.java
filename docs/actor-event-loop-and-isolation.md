@@ -57,32 +57,29 @@ and deadlines. Arbitrary trusted native/JVM stacks are never asynchronously
 suspended at an unsafe instruction. A message that ignores safepoints is handled
 by the watchdog/fail-stop path rather than unsafe thread suspension.
 
-## Shared actors: typed protocol over one runtime mailbox
+## Shared actors: one public mailbox ingress
 
-Shared actors expose a typed public method surface while retaining exactly one
-runtime-owned mailbox and one active execution lease.
+Shared actors do not expose an object-style public method surface.
 
 A shared actor may declare:
 
-- private mailbox-owned state;
-- private helper methods called directly on `self` during a turn;
-- one or more public instance methods forming its typed protocol.
+- private state;
+- private helper methods;
+- exactly one effective public `receive(Message): void` mailbox ingress.
 
-The compiler lowers those public methods into a hidden tagged mailbox
-dispatcher. External `ActorRef<Protocol>.method(...)` calls enqueue typed
-requests; they do not concurrently invoke the mutable actor object. Protocol
-methods return `Future<T>` through the reference projection.
-
-Public static actor functions remain rejected. Protocol methods are not
-first-class bound method objects; use an explicit closure when callback capture
-is intended.
+All external interaction goes through the actor reference/mailbox. Public static
+helpers and additional public methods are rejected.
 
 This preserves semantic isolation even though the backing address space is
 shared: mutable actor-owned state is reachable only while that actor holds its
-execution lease. Cross-actor shared mutation must use explicit checked
-capabilities, while ordinary actor state never becomes a concurrently callable
-shared object.
+execution lease. Cross-actor shared mutation must use explicit synchronized
+capabilities such as runtime-managed shared cells/mutexes; ordinary actor state
+does not become concurrently callable shared-object state.
 
+The public ingress is deliberately singular: OresVM owns the permanent
+Erlang-style mailbox loop and source code supplies one serialized
+`receive(Message): void` turn handler. External code enqueues through
+`ActorRef.send(message)`; it does not invoke actor methods directly.
 
 ## Private / isoactors
 
