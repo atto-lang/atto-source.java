@@ -28,9 +28,9 @@ final class ModuleContractsTest {
     @Test
     void modulesConformWithFunctionsAndFieldsAndCanBeIteratedAsTypedHandles() throws Exception {
         String output = run("""
-                pub define interface StorageModule
+                pub define trait StorageModule as
                   kind: String;
-                  fnc health() => int;
+                  fnc health(): int;
                 end
 
                 define module RedisStorage with StorageModule as
@@ -63,9 +63,9 @@ final class ModuleContractsTest {
         IllegalArgumentException missingField = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        pub define interface StorageModule
+                        pub define trait StorageModule as
                           kind: String;
-                          fnc health() => int;
+                          fnc health(): int;
                         end
 
                         define module Broken with StorageModule as
@@ -77,9 +77,9 @@ final class ModuleContractsTest {
         IllegalArgumentException badCallable = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        pub define interface StorageModule
+                        pub define trait StorageModule as
                           kind: String;
-                          fnc health() => int;
+                          fnc health(): int;
                         end
 
                         define module Broken with StorageModule as
@@ -93,9 +93,9 @@ final class ModuleContractsTest {
     @Test
     void moduleHandleTypeCannotBeSatisfiedByAnOrdinaryStructuralRecord() {
         assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
-                pub define interface StorageModule
+                pub define trait StorageModule as
                   kind: String;
-                  fnc health() => int;
+                  fnc health(): int;
                 end
 
                 fnc use(Module<StorageModule> storage): int {
@@ -114,9 +114,9 @@ final class ModuleContractsTest {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> sources = new LinkedHashMap<>();
         sources.put("storage-contract.ores", """
-                pub define interface StorageModule
+                pub define trait StorageModule as
                   kind: String;
-                  fnc health() => int;
+                  fnc health(): int;
                 end
                 """);
         sources.put("redis.ores", """
@@ -157,9 +157,9 @@ final class ModuleContractsTest {
         Path app = tempDir.resolve("app.ores");
 
         Files.writeString(contract, """
-                pub define interface StorageModule
+                pub define trait StorageModule as
                   kind: String;
-                  fnc health() => int;
+                  fnc health(): int;
                 end
                 """);
 
@@ -206,9 +206,9 @@ final class ModuleContractsTest {
         IncrementalCompiler compiler = new IncrementalCompiler();
         Map<String, String> sources = Map.of(
                 "storage-contract.ores", """
-                        pub define interface StorageModule
+                        pub define trait StorageModule as
                           kind: String;
-                          fnc health() => int;
+                          fnc health(): int;
                         end
                         """,
                 "broken.ores", """
