@@ -411,10 +411,16 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
         if (hook != null && cancelHookRun.compareAndSet(false, true)) {
             try {
                 hook.run();
+            } catch (VirtualMachineError fatal) {
+                throw fatal;
+            } catch (ThreadDeath fatal) {
+                throw fatal;
+            } catch (LinkageError fatal) {
+                throw fatal;
             } catch (RuntimeException | Error ignored) {
-                // Cancellation state is already authoritative. A host
-                // cancellation hook cannot roll it back or poison waiter
-                // delivery.
+                // Cancellation state is already authoritative. Ordinary host
+                // cancellation-hook failures cannot roll it back or poison
+                // waiter delivery. Fatal VM/linkage errors must still escape.
             }
         }
         return true;
@@ -518,10 +524,15 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             } else {
                 throw new IllegalStateException("attempted to notify waiter from pending Future");
             }
+        } catch (VirtualMachineError fatal) {
+            throw fatal;
+        } catch (ThreadDeath fatal) {
+            throw fatal;
+        } catch (LinkageError fatal) {
+            throw fatal;
         } catch (RuntimeException | Error ignored) {
-            // Runtime waiter failures must not stop delivery to other waiters or
-            // mutate the settled Future. Scheduler plumbing owns its own
-            // failure path.
+            // Ordinary runtime-plumbing failures must not mutate the settled
+            // Future. Fatal VM/thread/linkage errors are never swallowed.
         }
     }
 
