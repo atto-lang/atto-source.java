@@ -48,6 +48,76 @@ final class ActorStructuredCancellationTest {
     }
 
     @Test
+    void childActorRefDoesNotGrantAuthorityToCancelParent() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch denied = new CountDownLatch(1);
+
+            ActorRuntime.ActorRef<Object> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        if ("spawn-child".equals(message)) {
+                            ActorRuntime.ActorRef<Object> child =
+                                    context.runtime().spawnShared(
+                                            factoryContext -> (childMessage, childContext) -> {
+                                                if (childMessage instanceof ActorRuntime.ActorRef<?> parentRef) {
+                                                    try {
+                                                        parentRef.cancel();
+                                                    } catch (SecurityException expected) {
+                                                        @SuppressWarnings("unchecked")
+                                                        ActorRuntime.ActorRef<Object> reply =
+                                                                (ActorRuntime.ActorRef<Object>) parentRef;
+                                                        reply.send("denied");
+                                                        childContext.self().stop();
+                                                    }
+                                                }
+                                            });
+                            child.send(context.self());
+                            return;
+                        }
+
+                        if ("denied".equals(message)) {
+                            denied.countDown();
+                            context.self().stop();
+                        }
+                    });
+
+            parent.send("spawn-child");
+
+            assertTrue(denied.await(2, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(parent.failure().isEmpty());
+        }
+    }
+
+    @Test
+    void parentMayCancelStructuredChildWithoutBlockingCarrier() throws Exception {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            CountDownLatch requested = new CountDownLatch(1);
+            AtomicReference<ActorRuntime.ActorRef<String>> childRef =
+                    new AtomicReference<>();
+
+            ActorRuntime.ActorRef<String> parent =
+                    runtime.spawnShared(() -> (message, context) -> {
+                        ActorRuntime.ActorRef<String> child =
+                                context.runtime().spawnPrivate(
+                                        factoryContext -> (childMessage, childContext) -> { });
+                        childRef.set(child);
+                        assertTrue(child.cancel());
+                        requested.countDown();
+                        context.self().stop();
+                    });
+
+            parent.send("cancel-child");
+
+            assertTrue(requested.await(2, TimeUnit.SECONDS));
+            assertTrue(parent.awaitTermination(2, TimeUnit.SECONDS));
+            assertTrue(childRef.get().awaitTermination(2, TimeUnit.SECONDS));
+            assertInstanceOf(
+                    ActorRuntime.ActorCancelledException.class,
+                    childRef.get().failure().orElseThrow());
+        }
+    }
+
+    @Test
     void explicitCancellationCascadesThroughChildTree() throws Exception {
         try (ActorRuntime runtime = new ActorRuntime()) {
             CountDownLatch childCreated = new CountDownLatch(1);
