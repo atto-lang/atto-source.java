@@ -46,19 +46,19 @@ public final class Parser {
                 }
                 boolean afterDefineAbstract = match(ABSTRACT);
                 if (match(MODULE)) {
-                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
+                    if (modifiers.visibility != Ast.Visibility.PRIVATE || modifiers.async || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic || modifiers.isAbstract || modifiers.shared) {
                         throw error(previous(), "modules do not accept function/class modifiers");
                     }
                     modules.add(parseModule(annotations));
                     continue;
                 }
                 if (match(CLASS)) {
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                    if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
                     rootDeclarations.add(parseClass(modifiers.isAbstract || afterDefineAbstract));
                     continue;
                 }
                 if (match(INTERFACE)) {
-                    if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                    if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
                     rootDeclarations.add(parseInterface(modifiers.visibility));
                     continue;
                 }
@@ -170,11 +170,11 @@ public final class Parser {
             }
             boolean afterDefineAbstract = match(ABSTRACT);
             if (match(CLASS)) {
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
                 return parseClass(modifiers.isAbstract || afterDefineAbstract);
             }
             if (match(INTERFACE)) {
-                if (modifiers.nonLexical) throw error(previous(), "'nlex' applies only to fnc, routine, or lambda");
+                if (modifiers.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
                 return parseInterface(modifiers.visibility);
             }
             throw error(previous(), "expected class or interface after 'define'");
@@ -201,7 +201,7 @@ public final class Parser {
             }
             if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC, actorKind);
             if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE, actorKind);
-            if (modifiers.async || modifiers.nonLexical || modifiers.isStatic || modifiers.isAbstract) {
+            if (modifiers.async || modifiers.hasCallableOnlyModifiers() || modifiers.isStatic || modifiers.isAbstract) {
                 throw error(actorToken, "actor declarations do not accept async, nlex, static, or abstract modifiers");
             }
             return parseActorClass(actorKind);
@@ -209,7 +209,7 @@ public final class Parser {
         if (modifiers.shared) throw error(previous(), "'shared' must modify an actor declaration");
         if (match(FNC)) return parseFunction(annotations, modifiers, Ast.CallableKind.FNC);
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
-        if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
+        if (modifiers.hasCallableOnlyModifiers()) throw error(peek(), "'nlex', 'pure', and 'trap' are callable-only modifiers");
         if (match(INTERFACE)) return parseInterface(modifiers.visibility);
         if (match(TYPE)) return parseTypeAlias();
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
@@ -230,26 +230,20 @@ public final class Parser {
         String name = consumeCallableName("expected callable name");
         List<String> generics = parseGenericParameters();
 
-        if (match(EQUAL)) {
-            consume(PIPE, "lambda-style callable declarations use '= |Type name, ...| -> [ReturnType] { ... }'");
-            List<Ast.Param> params = parseDeclaredPipeParameters();
-            consume(PIPE, "expected closing '|' in lambda-style callable declaration");
-            consume(ARROW, "lambda-style callable declarations use the slim arrow '->'");
-            Ast.TypeRef returnType = check(LBRACE)
-                    ? Ast.TypeRef.simple("void")
-                    : parseTypeRef();
-            List<Ast.Stmt> body = parseBlock();
-            return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind,
-                    generics, params, returnType, annotations, body);
+        if (check(EQUAL)) {
+            throw error(peek(),
+                    "function expressions are executable-scope-only; named fnc/routine declarations use '(...)', "
+                            + "and local callable values use 'let fnc name = || -> { ... };'");
         }
 
-        consume(LPAREN, "expected '(' after callable name or '=' for lambda-style declaration");
+        consume(LPAREN, "expected '(' after callable name");
         java.util.Set<String> structuralNames = structuralAnnotationNames(annotations);
         List<Ast.Param> params = applyStructuralAnnotations(parseParametersUntil(RPAREN, structuralNames), annotations);
         consume(RPAREN, "expected ')' after parameters");
         Ast.TypeRef returnType = parseReturnType(annotations);
         List<Ast.Stmt> body = parseBlock();
-        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical, actorKind, generics, params,
+        return new Ast.FunctionDecl(name, kind, modifiers.visibility, modifiers.async, modifiers.nonLexical,
+                modifiers.pure, modifiers.trapped, actorKind, generics, params,
                 returnType, annotations, body);
     }
 
@@ -269,7 +263,7 @@ public final class Parser {
                 if (mods.isStatic) throw error(peek(), "static class functions use 'static fnc', not 'static fn'");
                 throw error(peek(), "instance methods omit 'fn'/'fnc'; declare the method name directly");
             }
-            if (mods.nonLexical) throw error(peek(), "'nlex' is unnecessary on class members; methods/static fnc never capture enclosing local scopes");
+            if (mods.hasCallableOnlyModifiers()) throw error(peek(), "'nlex', 'pure', and 'trap' are not class-member modifiers in this compiler revision");
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "static data members are not implemented yet; static class functions use 'static fnc'");
                 fields.add(parseField(annotations, mods.visibility));
@@ -311,7 +305,7 @@ public final class Parser {
                 throw error(peek(), "actor methods omit 'fn'/'fnc'; declare the method name directly");
             }
             if (mods.shared) throw error(previous(), "'shared' is only valid on an actor declaration, not its members");
-            if (mods.nonLexical) throw error(previous(), "'nlex' is unnecessary on actor members; actor methods already execute in the actor turn scope");
+            if (mods.hasCallableOnlyModifiers()) throw error(previous(), "'nlex', 'pure', and 'trap' are not actor-member modifiers");
 
             if (isBindingKind(peek().type())) {
                 if (mods.isStatic) throw error(peek(), "actor state cannot be static");
@@ -347,7 +341,10 @@ public final class Parser {
         List<Ast.InterfaceMember> members = new ArrayList<>();
         while (!check(terminator) && !check(EOF)) {
             parseAnnotations();
-            parseModifiers();
+            Modifiers mods = parseModifiers();
+            if (mods.hasCallableOnlyModifiers()) {
+                throw error(previous(), "'nlex', 'pure', and 'trap' are not interface-member modifiers");
+            }
 
             if (isLegacyFnSpelling()) {
                 throw error(peek(), "interface functions are declared with 'fnc', not 'fn'");
@@ -401,6 +398,7 @@ public final class Parser {
             name = consume(IDENT, "expected field name").lexeme();
         }
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        rejectFunctionExpressionOutsideExecutable(initializer, "class/actor field initializer");
         if (type == null && initializer == null) {
             throw error(previous(), "inferred field '" + name + "' requires an initializer");
         }
@@ -413,6 +411,7 @@ public final class Parser {
         consume(COLON, "expected ':' after field name");
         Ast.TypeRef type = parseTypeRef();
         Ast.Expr initializer = match(EQUAL) ? parseExpression() : null;
+        rejectFunctionExpressionOutsideExecutable(initializer, "class/actor field initializer");
         Ast.BindingKind kind = hasAnnotation(annotations, "FromJson") ? Ast.BindingKind.LET : Ast.BindingKind.VAL;
         consumeClassFieldTerminator("field declaration should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
@@ -429,8 +428,66 @@ public final class Parser {
         }
         consume(EQUAL, "module bindings require an initializer");
         Ast.Expr initializer = parseExpression();
+        rejectFunctionExpressionOutsideExecutable(initializer, "file/module binding initializer");
         consumeStatementTerminator("module binding should end with ';'");
         return new Ast.FieldDecl(name, visibility, kind, type, annotations, initializer);
+    }
+
+    private void rejectFunctionExpressionOutsideExecutable(Ast.Expr expr, String context) {
+        if (containsFunctionExpression(expr)) {
+            throw error(previous(),
+                    "function expressions are executable-scope-only and are not valid in " + context);
+        }
+    }
+
+    private boolean containsFunctionExpression(Ast.Expr expr) {
+        if (expr == null) return false;
+        if (expr instanceof Ast.LambdaExpr) return true;
+        if (expr instanceof Ast.LiteralExpr || expr instanceof Ast.NameExpr) return false;
+        if (expr instanceof Ast.BinaryExpr binary) {
+            return containsFunctionExpression(binary.left()) || containsFunctionExpression(binary.right());
+        }
+        if (expr instanceof Ast.UnaryExpr unary) return containsFunctionExpression(unary.operand());
+        if (expr instanceof Ast.AssignExpr assign) {
+            return containsFunctionExpression(assign.target()) || containsFunctionExpression(assign.value());
+        }
+        if (expr instanceof Ast.ConditionalExpr conditional) {
+            return containsFunctionExpression(conditional.condition())
+                    || containsFunctionExpression(conditional.whenTrue())
+                    || containsFunctionExpression(conditional.whenFalse());
+        }
+        if (expr instanceof Ast.TypeTestExpr tested) return containsFunctionExpression(tested.value());
+        if (expr instanceof Ast.PatternTestExpr tested) return containsFunctionExpression(tested.value());
+        if (expr instanceof Ast.CastExpr cast) return containsFunctionExpression(cast.value());
+        if (expr instanceof Ast.CallExpr call) {
+            if (containsFunctionExpression(call.callee())) return true;
+            for (Ast.Expr arg : call.arguments()) if (containsFunctionExpression(arg)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.MemberExpr member) return containsFunctionExpression(member.receiver());
+        if (expr instanceof Ast.IndexExpr index) {
+            return containsFunctionExpression(index.receiver()) || containsFunctionExpression(index.index());
+        }
+        if (expr instanceof Ast.NewExpr created) {
+            for (Ast.Expr arg : created.arguments()) if (containsFunctionExpression(arg)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.AwaitExpr awaited) return containsFunctionExpression(awaited.expression());
+        if (expr instanceof Ast.ListExpr list) {
+            for (Ast.Expr item : list.elements()) if (containsFunctionExpression(item)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.TupleExpr tuple) {
+            for (Ast.Expr item : tuple.elements()) if (containsFunctionExpression(item)) return true;
+            return false;
+        }
+        if (expr instanceof Ast.ObjectExpr object) {
+            for (Ast.ObjectField field : object.fields()) {
+                if (containsFunctionExpression(field.dynamicName()) || containsFunctionExpression(field.value())) return true;
+            }
+            return false;
+        }
+        return false;
     }
 
     private Ast.MethodDecl parseMethod(List<Ast.Annotation> annotations, Modifiers mods) {
@@ -504,12 +561,16 @@ public final class Parser {
         Ast.Visibility visibility = Ast.Visibility.PRIVATE;
         boolean async = false;
         boolean nonLexical = false;
+        boolean pure = false;
+        boolean trapped = false;
         boolean isStatic = false;
         boolean isAbstract = false;
         boolean shared = false;
         boolean visibilitySeen = false;
         boolean asyncSeen = false;
         boolean nonLexicalSeen = false;
+        boolean pureSeen = false;
+        boolean trapSeen = false;
         boolean staticSeen = false;
         boolean abstractSeen = false;
         boolean sharedSeen = false;
@@ -531,6 +592,14 @@ public final class Parser {
                 if (nonLexicalSeen) throw error(previous(), "duplicate 'nlex' modifier");
                 nonLexicalSeen = true;
                 nonLexical = true;
+            } else if (match(PURE)) {
+                if (pureSeen) throw error(previous(), "duplicate 'pure' modifier");
+                pureSeen = true;
+                pure = true;
+            } else if (match(TRAP)) {
+                if (trapSeen) throw error(previous(), "duplicate 'trap' modifier");
+                trapSeen = true;
+                trapped = true;
             } else if (match(STATIC)) {
                 if (staticSeen) throw error(previous(), "duplicate 'static' modifier");
                 staticSeen = true;
@@ -547,7 +616,7 @@ public final class Parser {
                 break;
             }
         }
-        return new Modifiers(visibility, async, nonLexical, isStatic, isAbstract, shared);
+        return new Modifiers(visibility, async, nonLexical, pure, trapped, isStatic, isAbstract, shared);
     }
 
     private Ast.TypeRef parseReturnType(List<Ast.Annotation> annotations) {
@@ -802,6 +871,22 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        if (check(FNC) || check(ROUTINE)) {
+            throw error(peek(),
+                    "named fnc/routine declarations are not allowed inside executable scopes; "
+                            + "use 'let fnc name = || -> { ... };' for a local callable value");
+        }
+        if (check(PUB) || check(PRIVATE) || check(STATIC) || check(ABSTRACT) || check(ASYNC)
+                || check(PURE) || check(TRAP)) {
+            throw error(peek(),
+                    "declaration/member modifiers are not valid in executable scope; "
+                            + "local callable values use 'let fnc name = || -> { ... };'");
+        }
+        if (check(NLEX) && (checkNext(FNC) || checkNext(ROUTINE))) {
+            throw error(peek(),
+                    "'nlex' cannot introduce a nested named declaration; "
+                            + "use 'let fnc name = nlex || -> { ... };'");
+        }
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
@@ -1078,6 +1163,17 @@ public final class Parser {
 
     private Ast.BindingStmt parseBindingStatement() {
         Ast.BindingKind kind = parseBindingKind();
+        if (match(FNC)) {
+            String name = consume(IDENT, "expected local function-expression binding name").lexeme();
+            consume(EQUAL, "local function-expression binding requires '='");
+            Ast.Expr initializer = parseExpression();
+            if (!(initializer instanceof Ast.LambdaExpr)) {
+                throw error(previous(),
+                        "'fnc' after a local binding kind requires a function expression such as '|| -> { ... }'");
+            }
+            consumeStatementTerminator("local function-expression binding should end with ';'");
+            return new Ast.BindingStmt(kind, null, name, initializer);
+        }
         Ast.TypeRef type = null;
         String name;
         if (check(IDENT) && checkNext(EQUAL)) name = advance().lexeme();
@@ -1868,5 +1964,15 @@ public final class Parser {
         return new IllegalArgumentException("Oreslang parse error at " + token.line() + ":" + token.column() + ": " + message);
     }
 
-    private record Modifiers(Ast.Visibility visibility, boolean async, boolean nonLexical, boolean isStatic, boolean isAbstract, boolean shared) { }
+    private record Modifiers(
+            Ast.Visibility visibility,
+            boolean async,
+            boolean nonLexical,
+            boolean pure,
+            boolean trapped,
+            boolean isStatic,
+            boolean isAbstract,
+            boolean shared) {
+        boolean hasCallableOnlyModifiers() { return nonLexical || pure || trapped; }
+    }
 }
