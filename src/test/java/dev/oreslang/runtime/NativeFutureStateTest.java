@@ -3,6 +3,9 @@ package dev.oreslang.runtime;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -27,6 +30,41 @@ final class NativeFutureStateTest {
         assertFalse(state.isCancelled());
         assertFalse(state.tryBeginSettlement(),
                 "terminal Futures must reject later settlement attempts");
+    }
+
+
+    @Test
+    void concurrentProducersHaveExactlyOneNativeSettlementWinner() throws Exception {
+        NativeFutureState state = new NativeFutureState();
+        int contenders = 32;
+        CountDownLatch ready = new CountDownLatch(contenders);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(contenders);
+        AtomicInteger winners = new AtomicInteger();
+
+        for (int i = 0; i < contenders; i++) {
+            Thread.ofPlatform().daemon(true).start(() -> {
+                ready.countDown();
+                try {
+                    assertTrue(start.await(5, TimeUnit.SECONDS));
+                    if (state.tryBeginSettlement()) {
+                        winners.incrementAndGet();
+                        state.publish(NativeFutureState.SUCCESS);
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    fail(interrupted);
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+
+        assertTrue(ready.await(5, TimeUnit.SECONDS));
+        start.countDown();
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertEquals(1, winners.get());
+        assertEquals(NativeFutureState.SUCCESS, state.state());
     }
 
     @Test
