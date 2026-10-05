@@ -2970,6 +2970,9 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            return requireWithinLimit(48L, limit);
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross actor boundaries");
@@ -3037,6 +3040,7 @@ public final class ActorRuntime implements AutoCloseable {
             throw new IllegalArgumentException("actor-local mutex state cannot cross actor boundaries");
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (seen.put(value, Boolean.TRUE) != null) return 0L;
 
         long bytes = 24L;
@@ -3088,6 +3092,9 @@ public final class ActorRuntime implements AutoCloseable {
             return estimatePrivateTransportBytes(shared.value(), visiting, depth + 1, limit);
         }
         if (value instanceof ActorRuntime.ActorRef<?>) return requireWithinLimit(48L, limit);
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) {
+            return requireWithinLimit(48L, limit);
+        }
 
         if (visiting.put(value, Boolean.TRUE) != null) {
             throw new IllegalArgumentException("cyclic values cannot cross private actor boundaries");
@@ -3149,7 +3156,7 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
-        if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         return -1L;
     }
@@ -3200,9 +3207,10 @@ public final class ActorRuntime implements AutoCloseable {
         if (value instanceof BigInteger integer) return 32L + integer.toByteArray().length;
         if (value instanceof BigDecimal decimal) return 48L + decimal.unscaledValue().toByteArray().length;
         if (value instanceof String string) return 40L + (long) string.length() * 2L;
-        if (value instanceof UUID || value instanceof ActorId) return 40L;
+        if (value instanceof UUID || value instanceof ActorId || value instanceof ActorGroupId) return 40L;
         if (value instanceof Enum<?>) return 24L;
         if (value instanceof ActorRuntime.ActorRef<?>) return 48L;
+        if (value instanceof ActorRuntime.ActorGroupJoinCapability) return 48L;
         if (value instanceof ActorRuntime.SyncCell<?>) return 64L;
         if (value instanceof OresMutex.Shared<?>) return 64L;
         if (value instanceof OresMutex.Local<?> || value instanceof OresMutex.Guard<?>) {
@@ -3246,7 +3254,8 @@ public final class ActorRuntime implements AutoCloseable {
         return value == null || value instanceof String || value instanceof Boolean || value instanceof Character
                 || value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long
                 || value instanceof Float || value instanceof Double || value instanceof BigInteger || value instanceof BigDecimal
-                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId;
+                || value instanceof Enum<?> || value instanceof UUID || value instanceof ActorId
+                || value instanceof ActorGroupId;
     }
 
     @Override
