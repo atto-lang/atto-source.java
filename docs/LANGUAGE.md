@@ -1150,7 +1150,7 @@ pub copy() => Bucket {
 
 `share` is deliberately **not** part of the Copy contract. It preserves runtime identity and changes ownership authority rather than constructing independent storage. The same-reference shared-ownership semantics are authoritative in the pointerless-reference stack (#186); this copy-focused draft must not reintroduce detached snapshot/freeze semantics.
 
-The legacy `&T` / `&mut T` syntax remains supported for compatibility. `borrow(x)` is the preferred pointer-free immutable-borrow spelling while the broader Java-like default-borrow parameter model continues to evolve.
+This copy-focused branch predates the final pointerless surface. When consolidated with #186, `&T`, `&mut T`, unary `&`, and pointer dereference are rejected; temporary access is expressed through ordinary reference parameters, `Type mut name`, and the reserved `rt borrow` / `rt take` / `rt copy` / `rt share` operations. The older bare intrinsic spellings in examples on this branch are migration-only, not the final surface contract.
 
 ## Multi-threaded targets
 
@@ -1158,7 +1158,7 @@ Actors/isolate message passing remains the primary concurrency model, but the ow
 
 The same compiled program can target a secondary multi-threaded runtime because:
 
-- mutable state has one owner unless temporarily accessed through an exclusive `&mut` borrow;
+- mutable state has one owner unless temporarily accessed through the pointerless exclusive `Type mut name` parameter/borrow contract;
 - shared aliases are immutable;
 - move-only values cannot remain accessible from both sides of an ownership transfer;
 - closures cannot smuggle an outstanding stack borrow into a longer-lived task;
