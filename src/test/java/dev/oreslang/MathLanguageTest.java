@@ -179,6 +179,27 @@ final class MathLanguageTest {
     }
 
     @Test
+    void conditionNumberSurfaceDoesNotConfuseFrobeniusWithSpectralConditioning() {
+        OresMatrix identity = OresMatrix.identity(2);
+        assertEquals(2.0, identity.conditionFrobenius(), 1e-12);
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                pub fnc explicit(Matrix<float> a) => float {
+                  return a.condition_frobenius();
+                }
+                """)));
+
+        IllegalArgumentException ambiguous = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub fnc ambiguous(Matrix<float> a) => float {
+                          return a.condition();
+                        }
+                        """)));
+        assertTrue(ambiguous.getMessage().contains("spectral/2-norm"));
+    }
+
+    @Test
     void integerDenseLiteralsPromoteToFloatAndDecimalDenseTypesAreRejected() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 pub fnc promote() => Matrix<float> {
