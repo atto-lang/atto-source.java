@@ -48,10 +48,26 @@ public final class HeterogeneousTaskMapper {
         }
     }
 
-    public record Access(RegionSlice slice, Privilege privilege, String reductionOperator) {
+    /**
+     * Empty fields means the entire logical slice. A non-empty set is a
+     * compiler-validated field footprint. This mirrors Regent-style field
+     * privileges without exposing physical layout or device addresses.
+     */
+    public record Access(
+            RegionSlice slice,
+            Set<String> fields,
+            Privilege privilege,
+            String reductionOperator) {
         public Access {
             Objects.requireNonNull(slice, "slice");
+            Objects.requireNonNull(fields, "fields");
             Objects.requireNonNull(privilege, "privilege");
+            fields = Set.copyOf(fields);
+            for (String field : fields) {
+                if (field == null || field.isBlank()) {
+                    throw new IllegalArgumentException("task access field names cannot be blank");
+                }
+            }
             if (privilege == Privilege.REDUCE) {
                 if (reductionOperator == null || reductionOperator.isBlank()) {
                     throw new IllegalArgumentException("reduction access requires a named reduction operator");
@@ -61,16 +77,41 @@ public final class HeterogeneousTaskMapper {
             }
         }
 
+        public Access(RegionSlice slice, Privilege privilege, String reductionOperator) {
+            this(slice, Set.of(), privilege, reductionOperator);
+        }
+
         public static Access read(RegionSlice slice) {
-            return new Access(slice, Privilege.READ, null);
+            return new Access(slice, Set.of(), Privilege.READ, null);
+        }
+
+        public static Access readFields(RegionSlice slice, String... fields) {
+            return new Access(slice, Set.of(fields), Privilege.READ, null);
         }
 
         public static Access write(RegionSlice slice) {
-            return new Access(slice, Privilege.WRITE, null);
+            return new Access(slice, Set.of(), Privilege.WRITE, null);
+        }
+
+        public static Access writeFields(RegionSlice slice, String... fields) {
+            return new Access(slice, Set.of(fields), Privilege.WRITE, null);
         }
 
         public static Access reduce(RegionSlice slice, String operator) {
-            return new Access(slice, Privilege.REDUCE, operator);
+            return new Access(slice, Set.of(), Privilege.REDUCE, operator);
+        }
+
+        public static Access reduceFields(RegionSlice slice, String operator, String... fields) {
+            return new Access(slice, Set.of(fields), Privilege.REDUCE, operator);
+        }
+
+        public boolean mayOverlapFields(Access other) {
+            Objects.requireNonNull(other, "other");
+            if (fields.isEmpty() || other.fields.isEmpty()) return true;
+            for (String field : fields) {
+                if (other.fields.contains(field)) return true;
+            }
+            return false;
         }
     }
 
@@ -115,8 +156,9 @@ public final class HeterogeneousTaskMapper {
     }
 
     /**
-     * Conservative non-interference check. Aliasing read/read accesses are
-     * independent. Any aliasing write or reduction is ordered for now.
+     * Conservative non-interference check. Disjoint region partitions and
+     * disjoint field footprints may overlap. Aliasing read/read accesses are
+     * independent. Any overlapping write or reduction is ordered for now.
      * Reduction relaxation requires a separately registered associative/
      * commutative operator contract and is intentionally not guessed here.
      */
@@ -126,6 +168,7 @@ public final class HeterogeneousTaskMapper {
         for (Access a : left.accesses()) {
             for (Access b : right.accesses()) {
                 if (!a.slice().mayAlias(b.slice())) continue;
+                if (!a.mayOverlapFields(b)) continue;
                 if (a.privilege() == Privilege.READ && b.privilege() == Privilege.READ) continue;
                 return false;
             }

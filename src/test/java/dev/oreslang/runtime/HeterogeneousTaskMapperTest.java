@@ -34,6 +34,28 @@ final class HeterogeneousTaskMapperTest {
     }
 
     @Test
+    void disjointFieldWritesOnSameRegionMayRunInParallel() {
+        var region = HeterogeneousTaskMapper.RegionSlice.root(3);
+        var cpu = new HeterogeneousTaskMapper.Variant("cpu", HeterogeneousTaskMapper.ProcessorKind.CPU, 0);
+
+        var positions = new HeterogeneousTaskMapper.TaskSpec(
+                "positions",
+                List.of(HeterogeneousTaskMapper.Access.writeFields(region, "x", "y")),
+                List.of(cpu));
+        var temperature = new HeterogeneousTaskMapper.TaskSpec(
+                "temperature",
+                List.of(HeterogeneousTaskMapper.Access.writeFields(region, "temperature")),
+                List.of(cpu));
+        var wholeRegion = new HeterogeneousTaskMapper.TaskSpec(
+                "whole",
+                List.of(HeterogeneousTaskMapper.Access.write(region)),
+                List.of(cpu));
+
+        assertTrue(mapper.independent(positions, temperature));
+        assertFalse(mapper.independent(positions, wholeRegion));
+    }
+
+    @Test
     void certifiedDisjointPartitionsMayRunInParallel() {
         var left = new HeterogeneousTaskMapper.RegionSlice(7, 701, 99);
         var right = new HeterogeneousTaskMapper.RegionSlice(7, 702, 99);
