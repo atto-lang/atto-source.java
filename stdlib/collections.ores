@@ -87,6 +87,30 @@ define module collections
       return;
     }
 
+    // Eager functional operators use ordinary Oreslang Fnc values and the
+    // iterable contract. They intentionally have no dependency on rx-ores;
+    // reactive adapters can consume/produce these collections through
+    // [Symbol.iterator]() without the core collection layer knowing about Rx.
+    pub reduce(Fnc<T, T, T> reducer): Option<T> {
+      if self.items.size == 0; then
+        return None;
+      fi
+
+      let T accumulator = self.items.get(0);
+      for (let int index = 1; index < self.items.size; index = index + 1) {
+        accumulator = reducer(accumulator, self.items.get(index));
+      }
+      return Some(accumulator);
+    }
+
+    pub reduce<U>(U initial, Fnc<U, T, U> reducer): U {
+      let U accumulator = initial;
+      for item of self.items do
+        accumulator = reducer(accumulator, item);
+      done
+      return accumulator;
+    }
+
     pub to_array(): Array<T> {
       let Array<T> copy = new Array<T>();
       for item of self.items do
@@ -102,15 +126,68 @@ define module collections
 
   // List is the general-purpose growable sequence.
   define class List<T> extends SequenceCore<T> as
+    pub map<U>(Fnc<T, U> mapper): List<U> {
+      let List<U> output = new List<U>();
+      for item of self do
+        output.add(mapper(item));
+      done
+      return output;
+    }
+
+    pub filter(Fnc<T, bool> predicate): List<T> {
+      let List<T> output = new List<T>();
+      for item of self do
+        if predicate(item); then
+          output.add(item);
+        fi
+      done
+      return output;
+    }
+
   end
 
   // ArrayList names the contiguous growable-array implementation explicitly.
   define class ArrayList<T> extends SequenceCore<T> as
+    pub map<U>(Fnc<T, U> mapper): ArrayList<U> {
+      let ArrayList<U> output = new ArrayList<U>();
+      for item of self do
+        output.add(mapper(item));
+      done
+      return output;
+    }
+
+    pub filter(Fnc<T, bool> predicate): ArrayList<T> {
+      let ArrayList<T> output = new ArrayList<T>();
+      for item of self do
+        if predicate(item); then
+          output.add(item);
+        fi
+      done
+      return output;
+    }
+
   end
 
   // Vector is a growable contiguous vector. Synchronization is intentionally
   // not implicit; shared mutation belongs behind Oreslang Mutex/RwLock policy.
   define class Vector<T> extends SequenceCore<T> as
+    pub map<U>(Fnc<T, U> mapper): Vector<U> {
+      let Vector<U> output = new Vector<U>();
+      for item of self do
+        output.add(mapper(item));
+      done
+      return output;
+    }
+
+    pub filter(Fnc<T, bool> predicate): Vector<T> {
+      let Vector<T> output = new Vector<T>();
+      for item of self do
+        if predicate(item); then
+          output.add(item);
+        fi
+      done
+      return output;
+    }
   end
 
   define class Stack<T> extends SequenceCore<T> as
