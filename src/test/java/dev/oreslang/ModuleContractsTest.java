@@ -2,19 +2,28 @@ package dev.oreslang;
 
 import dev.oreslang.compiler.IncrementalCompiler;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.runtime.ExecutionProfile;
+import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.LinkedProgramRunner;
 import dev.oreslang.types.TypeChecker;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ModuleContractsTest {
+    @TempDir
+    Path tempDir;
+
 
     @Test
     void modulesConformWithFunctionsAndFieldsAndCanBeIteratedAsTypedHandles() throws Exception {
@@ -139,6 +148,57 @@ final class ModuleContractsTest {
         assertEquals(3, result.rebuiltUnits().size());
         assertTrue(result.units().containsKey("redis.ores"));
         assertTrue(result.units().containsKey("postgres.ores"));
+    }
+
+    @Test
+    void linkedRuntimeKeepsImportedContractTypesForProgrammaticModuleDispatch() throws Exception {
+        Path contract = tempDir.resolve("storage-contract.ores");
+        Path redis = tempDir.resolve("redis.ores");
+        Path app = tempDir.resolve("app.ores");
+
+        Files.writeString(contract, """
+                pub define interface StorageModule
+                  kind: String;
+                  fnc health() => int;
+                end
+                """);
+
+        Files.writeString(redis, """
+                import interface StorageModule from "./storage-contract.ores";
+
+                define module RedisStorage with StorageModule as
+                  pub const String kind = "redis";
+                  pub fnc health(): int { return 7; }
+                end
+                """);
+
+        Files.writeString(app, """
+                import interface StorageModule from "./storage-contract.ores";
+                import module RedisStorage from "./redis.ores";
+
+                fnc inspect(Module<StorageModule> storage): void {
+                  stdio.stdout.write(storage.kind);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(storage.health());
+                  return;
+                }
+
+                pub routine main(): void {
+                  inspect(RedisStorage);
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ByteArrayOutputStream error = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                app,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                output,
+                error);
+
+        assertEquals("redis:7", output.toString(StandardCharsets.UTF_8));
     }
 
     @Test
