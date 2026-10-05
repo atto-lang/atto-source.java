@@ -29,7 +29,11 @@ final class PrivateVisibilityTest {
     void declaringClassMayAccessPrivateMembersAcrossInstancesAndClosures() throws Exception {
         String output = run("""
                 define class Vault as
-                  private let int secret = 1;
+                  private let int secret = Vault.initial_secret();
+
+                  private static fnc initial_secret(): int {
+                    return 1;
+                  }
 
                   private reveal(): int {
                     return self.secret;
@@ -42,6 +46,11 @@ final class PrivateVisibilityTest {
                   pub bump_and_read(Vault other): int {
                     other.secret = other.secret + 1;
                     return other.reveal();
+                  }
+
+                  pub destructured(Vault other): int {
+                    val { secret } = other;
+                    return secret;
                   }
 
                   pub static fnc expose_hidden(): int {
@@ -62,6 +71,8 @@ final class PrivateVisibilityTest {
 
                   stdio.stdout.write(left.bump_and_read(right));
                   stdio.stdout.write(":");
+                  stdio.stdout.write(left.destructured(right));
+                  stdio.stdout.write(":");
                   stdio.stdout.write(Vault.expose_hidden());
                   stdio.stdout.write(":");
                   stdio.stdout.write(callback());
@@ -69,7 +80,7 @@ final class PrivateVisibilityTest {
                 }
                 """);
 
-        assertEquals("2:7:7", output);
+        assertEquals("2:2:7:7", output);
     }
 
     @Test
