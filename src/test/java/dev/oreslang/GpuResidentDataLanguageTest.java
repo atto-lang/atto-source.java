@@ -193,6 +193,16 @@ final class GpuResidentDataLanguageTest {
                         }
                         """)));
         assertTrue(download.getMessage().contains("host orchestration"));
+
+        IllegalArgumentException release = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        gpu fnc bad(GpuArray<i32> values) => void {
+                          values.release();
+                          return;
+                        }
+                        """)));
+        assertTrue(release.getMessage().contains("host orchestration"));
     }
 
     @Test
