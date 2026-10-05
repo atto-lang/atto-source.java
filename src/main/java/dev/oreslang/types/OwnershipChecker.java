@@ -661,6 +661,7 @@ public final class OwnershipChecker {
                         fn.parameters(), fn.returnType(), call, scope, Map.of());
                 checkArguments(call.arguments(), signature.parameters(), scope, "function " + fn.name());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                if (fn.trapped()) callResult = trapResultType(callResult);
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -678,6 +679,7 @@ public final class OwnershipChecker {
                         scope,
                         "function " + namespace.name() + "." + qualified.member());
                 Ast.TypeRef callResult = callableResultType(signature.result(), fn.async(), fn.generator());
+                if (fn.trapped()) callResult = trapResultType(callResult);
                 return new ValueInfo(callResult, kindOfType(callResult), null);
             }
         }
@@ -1639,6 +1641,15 @@ public final class OwnershipChecker {
             current = current.aliasSource != null ? current.aliasSource : current.borrowSource;
         }
         return false;
+    }
+
+    private Ast.TypeRef trapResultType(Ast.TypeRef successType) {
+        Ast.TypeRef success = successType.name().equals("void")
+                ? Ast.TypeRef.tupleType(List.of())
+                : successType;
+        return Ast.TypeRef.tupleType(List.of(
+                new Ast.TypeRef("Option", List.of(success), false),
+                new Ast.TypeRef("Option", List.of(Ast.TypeRef.simple("Exception")), false)));
     }
 
     private Ast.TypeRef collectionElementType(Ast.TypeRef type) {
