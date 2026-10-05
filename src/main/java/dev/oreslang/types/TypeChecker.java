@@ -1896,6 +1896,14 @@ public final class TypeChecker {
             if (contextual != null) return contextual;
         }
         if (expr instanceof Ast.ListExpr list) {
+            if (expected instanceof ListType expectedList) {
+                for (int i = 0; i < list.elements().size(); i++) {
+                    Type actual = typeOfAgainstExpected(
+                            list.elements().get(i), expectedList.element(), env, generics, self);
+                    requireAssignable(actual, expectedList.element(), "list element " + (i + 1));
+                }
+                return expectedList;
+            }
             if (expected instanceof Tuple) {
                 return new Tuple(list.elements().stream().map(item -> typeOf(item, env, generics, self)).toList());
             }
