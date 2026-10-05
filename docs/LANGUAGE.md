@@ -130,17 +130,18 @@ Functions use `fnc` and are private by default. `pub` exports them. Return state
 
 Class fields, instance methods, and `static fnc` members are also private by default unless marked `pub`. Private class-member access is scoped to the **declaring class**, not to a particular receiver instance: code declared in class `A` may access an `A` private member on another `A` instance, but subclasses and external callers may not. A lexical lambda created inside an `A` method retains that private-access authority with its lexical environment; an explicit or inherited `nlex` lambda does not. Runtime member dispatch enforces the same rule for dynamically linked/wildcard-imported values whose static type is `Unknown`, so imports cannot bypass private visibility. Public/structural class shapes expose only public members.
 
-Named executable declarations use a colon for the return type:
+Named executable callables may spell their return type with either `: T` or
+the executable slim arrow `-> T`; both forms are equivalent:
 
 ```ores
-pub fnc run(): (() => void) {
+pub fnc run() -> (() => void) {
   return || -> {
     return;
   };
 }
 ```
 
-Named executable callables may spell their return type with either `: T` or `-> T`; both forms are equivalent. The equivalent lambda-style declaration also uses executable `->` syntax:
+The equivalent lambda-style declaration also uses executable `->` syntax:
 
 ```ores
 pub fnc run = || -> (() => void) {
@@ -150,7 +151,9 @@ pub fnc run = || -> (() => void) {
 }
 ```
 
-Here `() => void` is a function **type**, while `|| -> { ... }` is executable lambda syntax. The fat arrow is never the return separator for an executable declaration.
+Here `() => void` is a function **type**, while `->` is executable syntax.
+The fat arrow `=>` is never the return separator for an executable
+declaration; it remains type-level syntax.
 
 ```ores
 fnc add(int a, int b): int {
@@ -163,7 +166,7 @@ fnc answer() {
 }
 ```
 
-`@Ret<T>` and `: T` are equivalent. If both are present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
+`@Ret<T>`, `: T`, and `-> T` declare the same return type. If more than one form is present they must agree. A function returns exactly one value; multiple logical values are represented by a tuple, array, object, class value, or another aggregate.
 
 Return types may be unions, homogeneous arrays, finite tuple types, or structural record types:
 
@@ -1044,8 +1047,7 @@ Static data fields are intentionally not part of v0.5 yet; `static` on a class b
 The arrows have distinct jobs:
 
 - `:` declares the return type of a **named executable callable/method**.
-- `->` is executable syntax for lambdas and lambda-style callable declarations, and is also accepted as an alternative named-callable return separator: `fnc f() -> int { ... }`.
-- `:` remains an equivalent named-callable return separator: `fnc f(): int { ... }`.
+- `->` is executable syntax for lambdas and lambda-style callable declarations.
 - `=>` is type-level syntax for function types and interface callable signatures.
 
 Function aliases can use `typeof fnc`:
@@ -1212,6 +1214,33 @@ Borrow rules:
 The initial checker is deliberately conservative around complex branch/loop lifetime shortening. It rejects uncertain aliasing rather than silently accepting it. Later control-flow/NLL work may accept more programs without weakening these invariants.
 
 Structural parameters remain read-only views and therefore do not consume the supplied value.
+
+## Type refinement, pattern matching, and case dispatch
+
+Oreslang keeps four related operations separate:
+
+- `is` performs a nominal type test and flow refinement. `x is Dog dog`
+  binds `dog` only on the successful edge.
+- `matches` tests a full pattern, for example
+  `if value matches Some(inner) then ... fi`.
+- `as` is a checked cast; `as?` returns `Option<T>`.
+- `match` performs proof-checked pattern partitioning, while `switch` is
+  constant/equality case dispatch.
+
+Every `if` closes with `fi`, even when its branch bodies use braces.
+Executable match/switch arms use `->`; `=>` remains type-level syntax.
+
+Plain `match` is exclusive-by-default. The checker proves every pair of
+explicit arms disjoint and proves coverage, or rejects the program. A final
+unguarded `else`, `_`, or catch-all binding represents the complement of
+the preceding explicit arms. `match first` is the explicit ordered escape
+hatch when priority is intended.
+
+Refinement and pattern bindings are ownership aliases, not copies. A move
+through a narrowed alias consumes the same underlying move-only place.
+
+See [PATTERN_MATCHING.md](PATTERN_MATCHING.md) for the proof model and
+[NATIVE_RUNTIME_ABI.md](NATIVE_RUNTIME_ABI.md) for backend requirements.
 
 ## Multi-threaded targets
 
