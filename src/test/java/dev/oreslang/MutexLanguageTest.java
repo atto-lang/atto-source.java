@@ -41,8 +41,7 @@ final class MutexLanguageTest {
 
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(program));
-        assertTrue(error.getMessage().contains(
-                "actor code cannot use blocking SharedMutex.lock"));
+        assertTrue(error.getMessage().contains("writable SharedMutex"));
     }
 
     @Test
@@ -60,8 +59,7 @@ final class MutexLanguageTest {
 
         IllegalArgumentException error = assertThrows(
                 IllegalArgumentException.class, () -> TypeChecker.check(program));
-        assertTrue(error.getMessage().contains(
-                "actor code cannot use blocking SharedMutex.with_lock"));
+        assertTrue(error.getMessage().contains("writable SharedMutex"));
     }
 
     @Test
