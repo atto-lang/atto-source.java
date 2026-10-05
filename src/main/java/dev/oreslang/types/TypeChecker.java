@@ -46,6 +46,14 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private static final Set<String> RESERVED_IMPORT_BINDINGS = Set.of(
+            "stdio", "process", "actor", "Futures",
+            "Mutex", "SharedMutex", "RwLock",
+            "print", "None", "Some", "Ok", "Err",
+            "Actor", "IsoActor", "UntrustedActor",
+            "Object", "List", "Array", "Map", "String",
+            "Future", "Option", "Result", "ActorRef", "ActorSpawn",
+            "MutexGuard", "RwReadGuard", "RwWriteGuard", "Fnc");
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private boolean currentActorConstructor;
@@ -65,6 +73,7 @@ public final class TypeChecker {
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collect(program);
+        checker.validateImportBindingCollisions(program);
         checker.validateEntryExport(program);
         checker.validateRoutineRecursion();
         checker.validate(program);
@@ -85,6 +94,11 @@ public final class TypeChecker {
                 if (imported.namespace() == null || imported.namespace().isBlank()) {
                     throw new IllegalArgumentException("wildcard imports require a namespace alias");
                 }
+                if (RESERVED_IMPORT_BINDINGS.contains(imported.namespace())) {
+                    throw new IllegalArgumentException(
+                            "import namespace alias '" + imported.namespace()
+                                    + "' conflicts with a compiler/runtime builtin");
+                }
                 if (!exposed.add(imported.namespace())) {
                     throw new IllegalArgumentException("duplicate imported name '" + imported.namespace() + "'");
                 }
@@ -99,6 +113,11 @@ public final class TypeChecker {
                 if (localName == null || localName.isBlank()) {
                     throw new IllegalArgumentException("import alias cannot be blank");
                 }
+                if (RESERVED_IMPORT_BINDINGS.contains(localName)) {
+                    throw new IllegalArgumentException(
+                            "import binding '" + localName
+                                    + "' conflicts with a compiler/runtime builtin");
+                }
                 if (!exposed.add(localName)) {
                     throw new IllegalArgumentException("duplicate imported name '" + localName + "'");
                 }
@@ -108,6 +127,46 @@ public final class TypeChecker {
                 }
             }
         }
+    }
+
+    private void validateImportBindingCollisions(Ast.Program program) {
+        Set<String> importedBindings = new HashSet<>();
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.wildcard()) {
+                importedBindings.add(imported.namespace());
+            } else {
+                for (String importedName : imported.names()) {
+                    importedBindings.add(imported.localName(importedName));
+                }
+            }
+        }
+        if (importedBindings.isEmpty()) return;
+
+        Set<String> locals = new HashSet<>();
+        for (Ast.ModuleDecl module : program.modules()) {
+            if (!module.name().equals(Parser.ROOT_MODULE)) locals.add(module.name());
+            for (Ast.Decl decl : module.declarations()) {
+                String name = declarationName(decl);
+                if (name != null) locals.add(name);
+            }
+        }
+
+        for (String imported : importedBindings) {
+            if (locals.contains(imported)) {
+                throw new IllegalArgumentException(
+                        "import binding '" + imported
+                                + "' conflicts with a local declaration/module of the same name");
+            }
+        }
+    }
+
+    private static String declarationName(Ast.Decl decl) {
+        if (decl instanceof Ast.FunctionDecl fn) return fn.name();
+        if (decl instanceof Ast.ClassDecl klass) return klass.name();
+        if (decl instanceof Ast.InterfaceDecl iface) return iface.name();
+        if (decl instanceof Ast.TypeAliasDecl alias) return alias.name();
+        if (decl instanceof Ast.FieldDecl field) return field.name();
+        return null;
     }
 
     private void validateEntryExport(Ast.Program program) {
@@ -124,21 +183,57 @@ public final class TypeChecker {
         if (entries.isEmpty()) return;
 
         String name = entries.getFirst().name();
-        if (findClass(name) != null) return;
+        int matches = 0;
+        String matchedKind = null;
+
+        Ast.ClassDecl klass = findClass(name);
+        if (klass != null) {
+            matches++;
+            matchedKind = klass.actorKind() == Ast.ActorKind.NONE ? "class" : "actor";
+        }
 
         Ast.FunctionDecl fn = findFunction(name);
         if (fn != null) {
             if (fn.visibility() != Ast.Visibility.PUBLIC) {
                 throw new IllegalArgumentException("entry function '" + name + "' must be public");
             }
-            return;
+            matches++;
+            matchedKind = "callable";
         }
 
         Ast.ModuleDecl module = modules.get(name);
-        if (module != null && !module.name().equals(Parser.ROOT_MODULE)) return;
+        if (module != null && !module.name().equals(Parser.ROOT_MODULE)) {
+            matches++;
+            matchedKind = "module";
+        }
 
-        throw new IllegalArgumentException(
-                "export entry '" + name + "' must name a class/actor, public fnc/routine, or named module in this code unit");
+        for (Ast.ModuleDecl candidate : program.modules()) {
+            for (Ast.Decl decl : candidate.declarations()) {
+                if (decl instanceof Ast.FieldDecl field
+                        && field.visibility() == Ast.Visibility.PUBLIC
+                        && field.name().equals(name)) {
+                    matches++;
+                    matchedKind = "binding";
+                }
+            }
+        }
+
+        if (matches == 0) {
+            throw new IllegalArgumentException(
+                    "export entry '" + name
+                            + "' must name exactly one exported class/actor, public fnc/routine, named module, or public binding");
+        }
+        if (matches > 1) {
+            throw new IllegalArgumentException(
+                    "export entry '" + name
+                            + "' is ambiguous across exported declaration categories");
+        }
+
+        if ("binding".equals(matchedKind)) {
+            throw new IllegalArgumentException(
+                    "export entry '" + name
+                            + "' cannot be a plain binding; hot-load entries must be callable, actor/class, or module values");
+        }
     }
 
     private void collect(Ast.Program program) {
