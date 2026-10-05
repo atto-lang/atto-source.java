@@ -1041,11 +1041,11 @@ public final class TypeChecker {
                         Type protocolType = named.arguments().getFirst();
                         if (!(protocolType instanceof Named actorType)) {
                             throw new IllegalArgumentException(
-                                    "ActorRef protocol must be a named actor class");
+                                    "ActorRef protocol must be a named actor class or interface");
                         }
                         if (call.typeArgumentsPresent()) {
                             throw new IllegalArgumentException(
-                                    "ActorRef mailbox operations do not accept method type arguments");
+                                    "ActorRef protocol calls do not accept method type arguments");
                         }
 
                         if (member.member().equals("is_alive")) {
@@ -1059,51 +1059,88 @@ public final class TypeChecker {
                             }
                             return Primitive.BOOL;
                         }
+                        if (member.member().equals("send")
+                                || member.member().equals("receive")
+                                || member.member().equals("mailbox")) {
+                            throw new IllegalArgumentException(
+                                    "raw ActorRef mailbox operations are runtime-private; "
+                                            + "invoke a declared typed actor protocol method instead");
+                        }
 
                         Ast.ClassDecl actorClass = findClass(actorType.name());
-                        if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
-                            throw new IllegalArgumentException(
-                                    "ActorRef<" + actorType.name()
-                                            + "> must name a concrete actor class for mailbox send");
-                        }
-                        if (member.member().equals("receive")) {
-                            throw new IllegalArgumentException(
-                                    "actor receive(message) is runtime-owned; enqueue through ActorRef.send(message)");
-                        }
-                        if (!member.member().equals("send")) {
-                            throw new IllegalArgumentException(
-                                    "unknown concrete ActorRef behavioral operation '"
-                                            + member.member() + "'; use send(message)");
-                        }
-                        if (call.arguments().size() != 1) {
-                            throw new IllegalArgumentException(
-                                    "ActorRef.send expects exactly one message");
+                        if (actorClass != null && actorClass.actorKind() != Ast.ActorKind.NONE) {
+                            ResolvedMethod target = findMethodTarget(
+                                    actorClass,
+                                    actorType,
+                                    member.member(),
+                                    call.arguments().size(),
+                                    new LinkedHashSet<>());
+                            if (target == null
+                                    || target.method().isStatic()
+                                    || target.method().visibility() != Ast.Visibility.PUBLIC
+                                    || target.method().name().equals("constructor")) {
+                                throw new IllegalArgumentException(
+                                        "no public actor protocol method '" + member.member()
+                                                + "' with arity " + call.arguments().size()
+                                                + " on " + actorClass.name());
+                            }
+                            Ast.MethodDecl method = target.method();
+                            Map<String, Type> bindings =
+                                    classGenericBindings(target.owner(), target.ownerType());
+                            Type result = checkGenericCallable(
+                                    target.owner().genericParameters(),
+                                    method.parameters(),
+                                    method.returnType(),
+                                    call.arguments(),
+                                    env,
+                                    generics,
+                                    self,
+                                    target.ownerType(),
+                                    bindings,
+                                    "actor protocol method "
+                                            + target.owner().name() + "." + method.name());
+                            return new Named("Future", List.of(result));
                         }
 
-                        Ast.MethodDecl receive = actorClass.methods().stream()
-                                .filter(method -> !method.isStatic()
-                                        && method.visibility() == Ast.Visibility.PUBLIC
-                                        && method.name().equals("receive"))
-                                .findFirst()
-                                .orElseThrow(() -> new IllegalArgumentException(
-                                        "actor class '" + actorClass.name()
-                                                + "' has no public receive(message) contract"));
-                        Map<String, Type> bindings =
-                                classGenericBindings(actorClass, actorType);
-                        Type expectedMessage = substituteGenerics(
-                                resolveParam(
-                                        receive.parameters().getFirst(),
-                                        new HashSet<>(actorClass.genericParameters()),
-                                        actorType),
+                        Ast.InterfaceDecl protocol = findInterface(actorType.name());
+                        if (protocol == null) {
+                            throw new IllegalArgumentException(
+                                    "ActorRef<" + actorType.name()
+                                            + "> must name an actor class or actor protocol interface");
+                        }
+                        validateActorProtocolInterface(
+                                protocol,
+                                actorType,
+                                Ast.ActorKind.UNTRUSTED,
+                                "ActorRef<" + actorType.name() + ">");
+                        Map<String, Type> bindings = genericBindings(
+                                protocol.genericParameters(),
+                                actorType.arguments(),
+                                "actor protocol interface " + protocol.name());
+                        Record shape = (Record) substituteGenerics(
+                                interfaceShape(
+                                        protocol,
+                                        Set.copyOf(protocol.genericParameters()),
+                                        new LinkedHashSet<>()),
                                 bindings);
-                        Ast.Expr argument = call.arguments().getFirst();
-                        validateLambdaArgument(
-                                argument, expectedMessage, env, generics, self);
-                        requireAssignable(
-                                typeOf(argument, env, generics, self),
-                                expectedMessage,
-                                "ActorRef.send message for " + actorClass.name());
-                        return Primitive.VOID;
+                        Type endpoint = shape.members().get(
+                                methodContractKey(member.member(), call.arguments().size(), 0));
+                        if (!(endpoint instanceof Function fn)) {
+                            throw new IllegalArgumentException(
+                                    "no monomorphic actor protocol method '" + member.member()
+                                            + "' with arity " + call.arguments().size()
+                                            + " on interface " + protocol.name());
+                        }
+                        for (int i = 0; i < fn.parameters().size(); i++) {
+                            validateLambdaArgument(
+                                    call.arguments().get(i), fn.parameters().get(i), env, generics, self);
+                            requireAssignable(
+                                    typeOf(call.arguments().get(i), env, generics, self),
+                                    fn.parameters().get(i),
+                                    "argument " + (i + 1) + " to actor protocol "
+                                            + protocol.name() + "." + member.member());
+                        }
+                        return new Named("Future", List.of(fn.result()));
                     }
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
@@ -2049,37 +2086,18 @@ public final class TypeChecker {
                     }
                     yield new Function(List.of(), Primitive.BOOL);
                 }
-                case "send" -> {
-                    if (named.arguments().size() != 1
-                            || !(named.arguments().getFirst() instanceof Named actorType)) {
+                case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
+                        "raw ActorRef mailbox operations are runtime-private; "
+                                + "invoke a declared typed actor protocol method instead");
+                default -> {
+                    if (named.arguments().size() == 1) {
                         throw new IllegalArgumentException(
-                                "ActorRef.send requires ActorRef<ConcreteActor>");
+                                "actor protocol methods are not first-class values; invoke '"
+                                        + member + "(...)' directly through the ActorRef");
                     }
-                    Ast.ClassDecl actorClass = findClass(actorType.name());
-                    if (actorClass == null || actorClass.actorKind() == Ast.ActorKind.NONE) {
-                        throw new IllegalArgumentException(
-                                "ActorRef.send requires a concrete actor class");
-                    }
-                    Ast.MethodDecl receive = actorClass.methods().stream()
-                            .filter(method -> !method.isStatic()
-                                    && method.visibility() == Ast.Visibility.PUBLIC
-                                    && method.name().equals("receive"))
-                            .findFirst()
-                            .orElseThrow(() -> new IllegalArgumentException(
-                                    "actor class '" + actorClass.name()
-                                            + "' has no public receive(message) contract"));
-                    Type message = substituteGenerics(
-                            resolveParam(
-                                    receive.parameters().getFirst(),
-                                    new HashSet<>(actorClass.genericParameters()),
-                                    actorType),
-                            classGenericBindings(actorClass, actorType));
-                    yield new Function(List.of(message), Primitive.VOID);
+                    throw new IllegalArgumentException(
+                            "unknown ActorRef member '" + member + "'");
                 }
-                case "receive", "mailbox" -> throw new IllegalArgumentException(
-                        "actor receive/mailbox is runtime-owned; use ActorRef.send(message)");
-                default -> throw new IllegalArgumentException(
-                        "unknown ActorRef member '" + member + "'");
             };
         }
         return null;
