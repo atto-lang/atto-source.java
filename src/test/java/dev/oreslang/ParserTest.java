@@ -631,6 +631,43 @@ final class ParserTest {
     }
 
     @Test
+    void actorFieldInitializationCannotVirtualDispatchOrShadowInheritedState() {
+        IllegalArgumentException virtualDispatch = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Parent as
+                          let int seed = self.compute();
+
+                          private compute(): int {
+                            return 1;
+                          }
+
+                          pub run(): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                virtualDispatch.getMessage().contains("virtual dispatch is forbidden"),
+                virtualDispatch.getMessage());
+
+        IllegalArgumentException shadow = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define actor Parent as
+                          let int value = 1;
+                          pub read(): int { return self.value; }
+                        end
+
+                        define actor Child extends Parent as
+                          let int value = 2;
+                          pub ping(): void { return; }
+                        end
+                        """)));
+        assertTrue(
+                shadow.getMessage().contains("cannot shadow inherited actor state field"),
+                shadow.getMessage());
+    }
+
+    @Test
     void actorFieldsCannotPersistBorrowsOrMutexGuardsAcrossTurns() {
         IllegalArgumentException guard = assertThrows(
                 IllegalArgumentException.class,
