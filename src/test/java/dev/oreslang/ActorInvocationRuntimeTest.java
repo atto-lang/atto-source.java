@@ -6,6 +6,7 @@ import dev.oreslang.runtime.OresMutex;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -34,6 +35,25 @@ final class ActorInvocationRuntimeTest {
 
             assertEquals(ActorRuntime.ActorKind.SHARED, shared);
             assertEquals(ActorRuntime.ActorKind.PRIVATE, isolated);
+        }
+    }
+
+
+    @Test
+    void invokeReturnsOnlyAfterActorDomainIsFinalized() {
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            AtomicBoolean retired = new AtomicBoolean();
+            runtime.setActorExitHook(ignored -> retired.set(true));
+
+            int result = runtime.invoke(
+                    ActorRuntime.ActorKind.SHARED,
+                    41,
+                    (message, context) -> message + 1);
+
+            assertEquals(42, result);
+            assertTrue(retired.get(),
+                    "invoke must not return while its actor carrier is still unwinding");
+            assertEquals(0, runtime.actorCount());
         }
     }
 
