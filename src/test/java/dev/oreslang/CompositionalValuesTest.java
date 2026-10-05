@@ -77,6 +77,36 @@ final class CompositionalValuesTest {
     }
 
     @Test
+    void propagationStillRunsLexicalDeferInSyncAndAsyncCallables() throws Exception {
+        String program = """
+                fnc sync_fail(Option<int> value) => Option<int> {
+                  defer stdio.println("sync-cleanup");
+                  val n = value?;
+                  return Some(n);
+                }
+
+                async fnc async_fail(Option<int> value) => Option<int> {
+                  defer stdio.println("async-cleanup");
+                  val n = value?;
+                  return Some(n);
+                }
+
+                pub async routine main() => void {
+                  stdio.println(sync_fail(None).is_none());
+                  val async_result = await async_fail(None);
+                  stdio.println(async_result.is_none());
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+        String output = run(program, "propagation-defer.ores");
+        assertTrue(output.contains("sync-cleanup"));
+        assertTrue(output.contains("async-cleanup"));
+        assertTrue(output.lines().filter("true"::equals).count() >= 2);
+    }
+
+    @Test
     void optionAndResultCompositionObeyCoreLawsAndAliases() throws Exception {
         String program = """
                 pub fnc main() => void {
