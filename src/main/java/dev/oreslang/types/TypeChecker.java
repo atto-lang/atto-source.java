@@ -144,6 +144,7 @@ public final class TypeChecker {
         for (Ast.ClassDecl klass : classOwners.keySet()) validateLocalClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) validateInheritedClassOverloads(klass);
         for (Ast.ClassDecl klass : classOwners.keySet()) validateAbstractMethodSlots(klass);
+        for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) validateInterfaceAritySlots(iface, new LinkedHashSet<>());
         for (Ast.ClassDecl klass : classOwners.keySet()) classShape(klass, new LinkedHashSet<>());
         for (Ast.InterfaceDecl iface : interfaceOwners.keySet()) interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
 
@@ -374,12 +375,6 @@ public final class TypeChecker {
 
     private record MethodOrigin(Ast.ClassDecl owner, Named ownerType) { }
 
-    private record ResolvedMethod(
-            Ast.MethodDecl method,
-            Ast.ClassDecl owner,
-            Named ownerType,
-            Named receiverType) { }
-
     private void validateInheritedClassOverloads(Ast.ClassDecl klass) {
         validateInheritedClassOverloads(klass, false);
         validateInheritedClassOverloads(klass, true);
@@ -396,6 +391,19 @@ public final class TypeChecker {
                 inheritedMethodOrigins(klass, classType, staticNamespace, new LinkedHashSet<>());
 
         for (Map.Entry<Ast.MethodArity, List<MethodOrigin>> entry : inherited.entrySet()) {
+            for (Ast.MethodDecl local : klass.methods()) {
+                if (local.isStatic() != staticNamespace || !local.overloadIdentity().equals(entry.getKey())) continue;
+                for (MethodOrigin origin : entry.getValue()) {
+                    for (Ast.MethodDecl parentMethod : origin.owner().methods()) {
+                        if (parentMethod.isStatic() == staticNamespace
+                                && parentMethod.overloadIdentity().equals(entry.getKey())
+                                && parentMethod.genericParameters().size() != local.genericParameters().size()) {
+                            throw new IllegalArgumentException("incompatible generic arity for method slot '"
+                                    + klass.name() + "." + local.name() + "' with arity " + local.arity());
+                        }
+                    }
+                }
+            }
             if (locallyResolved.contains(entry.getKey())) continue;
             List<MethodOrigin> origins = entry.getValue();
             if (origins.size() <= 1) continue;
@@ -491,6 +499,42 @@ public final class TypeChecker {
         String owner = qualifiedClassName(origin.owner());
         if (origin.ownerType().arguments().isEmpty()) return owner;
         return owner + origin.ownerType().arguments();
+    }
+
+    private Map<Ast.MethodArity, Integer> validateInterfaceAritySlots(
+            Ast.InterfaceDecl iface, Set<Ast.InterfaceDecl> stack) {
+        if (!stack.add(iface)) throw new IllegalArgumentException("interface inheritance cycle involving '" + iface.name() + "'");
+        try {
+            Map<Ast.MethodArity, Integer> slots = new LinkedHashMap<>();
+            for (Ast.TypeRef parentRef : iface.parents()) {
+                Ast.InterfaceDecl parent = findInterface(parentRef.name());
+                if (parent == null) continue; // interfaceShape diagnoses unknown parents.
+                for (var entry : validateInterfaceAritySlots(parent, stack).entrySet()) {
+                    Integer existing = slots.putIfAbsent(entry.getKey(), entry.getValue());
+                    if (existing != null && !existing.equals(entry.getValue())) {
+                        throw new IllegalArgumentException("incompatible generic arity for interface method slot '"
+                                + iface.name() + "." + entry.getKey().name() + "'");
+                    }
+                }
+            }
+            Set<Ast.MethodArity> localSlots = new HashSet<>();
+            for (Ast.InterfaceMember member : iface.members()) {
+                if (!(member instanceof Ast.InterfaceFunctionDecl fn)) continue;
+                Ast.MethodArity slot = new Ast.MethodArity(fn.name(), fn.parameters().size());
+                if (!localSlots.add(slot)) {
+                    throw new IllegalArgumentException("interface method '" + iface.name() + "." + fn.name()
+                            + "' already has arity " + fn.parameters().size() + "; overload identity is name + arity only");
+                }
+                Integer inheritedCount = slots.putIfAbsent(slot, fn.genericParameters().size());
+                if (inheritedCount != null && inheritedCount != fn.genericParameters().size()) {
+                    throw new IllegalArgumentException("incompatible generic arity for interface method slot '"
+                            + iface.name() + "." + fn.name() + "'");
+                }
+            }
+            return slots;
+        } finally {
+            stack.remove(iface);
+        }
     }
 
     private void validateAbstractMethodSlots(Ast.ClassDecl klass) {
@@ -2968,7 +3012,10 @@ public final class TypeChecker {
 
     private void mergeMember(Map<String, Type> members, String name, Type type, String owner) {
         Type existing = members.get(name);
-        if (existing != null && (!assignable(existing, type) || !assignable(type, existing))) {
+        boolean methodSlot = name.contains("$arity") && existing instanceof Function && type instanceof Function;
+        boolean compatible = methodSlot ? existing.equals(type)
+                : existing == null || (assignable(existing, type) && assignable(type, existing));
+        if (!compatible) {
             throw new IllegalArgumentException("conflicting member '" + name + "' in " + owner + ": " + existing + " vs " + type);
         }
         members.put(name, type);
