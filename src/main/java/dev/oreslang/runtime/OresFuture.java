@@ -430,7 +430,7 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
 
     @Override
     public boolean cancel(boolean mayInterruptIfRunning) {
-        BooleanSupplier admission = cancelAdmission.getAndSet(null);
+        BooleanSupplier admission = cancelAdmission.get();
         if (admission != null) {
             final boolean admitted;
             try {
@@ -442,6 +442,11 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
                 return false;
             }
             if (!admitted) return false;
+
+            // Claim cancellation authority only after the operation-specific
+            // gate says cancellation won. A producer that committed in the
+            // meantime clears/replaces this slot and makes the CAS fail.
+            if (!cancelAdmission.compareAndSet(admission, null)) return false;
         }
 
         CancellationException cancelled =
