@@ -1184,58 +1184,20 @@ public final class TypeChecker {
             return nominal;
         }
         if (expr instanceof Ast.SpawnExpr spawned) {
-            if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
-                throw new IllegalArgumentException(
-                        "untrusted actors cannot spawn child actors; use bounded async I/O/Futures instead");
-            }
-            Ast.CallExpr call = spawned.call();
-            Ast.FunctionDecl target;
-            String label;
-            if (call.callee() instanceof Ast.NameExpr functionName) {
-                target = findFunction(functionName.name());
-                label = "actor callable " + functionName.name();
-            } else if (call.callee() instanceof Ast.MemberExpr qualified
-                    && qualified.receiver() instanceof Ast.NameExpr namespace
-                    && modules.containsKey(namespace.name())) {
-                target = functions.get(namespace.name() + "." + qualified.member());
-                label = "actor callable " + namespace.name() + "." + qualified.member();
-            } else {
-                throw new IllegalArgumentException(
-                        "spawn requires a direct actor fnc/routine call, optionally module-qualified");
-            }
-            if (target == null) throw new IllegalArgumentException("spawn target is not a known callable");
-            if (target.actorKind() == Ast.ActorKind.NONE) {
-                throw new IllegalArgumentException(
-                        "spawn target '" + target.name() + "' is not declared with the actor keyword");
-            }
-            if (currentActorKind == Ast.ActorKind.PRIVATE
-                    && target.actorKind() == Ast.ActorKind.SHARED) {
-                throw new IllegalArgumentException(
-                        "isoactor/private actor code cannot spawn shared actor callable '"
-                                + target.name()
-                                + "' because that would escalate into the SHARED_MEMORY domain");
-            }
-            validateCallTypeArgumentMarker(call, target.genericParameters(), label);
-            Type result = checkGenericCallable(
-                    target.genericParameters(),
-                    target.parameters(),
-                    target.returnType(),
-                    call.arguments(),
-                    env, generics, self,
-                    null,
-                    explicitGenericBindings(
-                            target.genericParameters(),
-                            call.typeArguments(),
-                            generics,
-                            self,
-                            label),
-                    label);
-            return new Named("ActorSpawn", List.of(result));
+            // Plain spawn is intentionally identity-only at the source level.
+            // The runtime still creates an internal two-phase ActorSpawn ticket,
+            // but ordinary source evaluation projects that ticket to ActorId.
+            checkSpawnCallableResult(spawned, env, generics, self);
+            return new Named("ActorId", List.of());
         }
         if (expr instanceof Ast.AwaitExpr awaited) {
             if (!currentMaySuspend) {
                 throw new IllegalArgumentException(
                         "await is only legal inside an async fnc/routine/lambda or an actor callable/method");
+            }
+            if (awaited.expression() instanceof Ast.SpawnExpr spawned) {
+                Type result = checkSpawnCallableResult(spawned, env, generics, self);
+                return new Named("StartedActor", List.of(result));
             }
             return awaitablePayload(
                     typeOf(awaited.expression(), env, generics, self),
@@ -1297,6 +1259,66 @@ public final class TypeChecker {
             return new Function(parameters, invocationResult);
         }
         return Unknown.INSTANCE;
+    }
+
+    private Type checkSpawnCallableResult(
+            Ast.SpawnExpr spawned,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+            throw new IllegalArgumentException(
+                    "untrusted actors cannot spawn child actors; use bounded async I/O/Futures instead");
+        }
+
+        Ast.CallExpr call = spawned.call();
+        Ast.FunctionDecl target;
+        String label;
+        if (call.callee() instanceof Ast.NameExpr functionName) {
+            target = findFunction(functionName.name());
+            label = "actor callable " + functionName.name();
+        } else if (call.callee() instanceof Ast.MemberExpr qualified
+                && qualified.receiver() instanceof Ast.NameExpr namespace
+                && modules.containsKey(namespace.name())) {
+            target = functions.get(namespace.name() + "." + qualified.member());
+            label = "actor callable " + namespace.name() + "." + qualified.member();
+        } else {
+            throw new IllegalArgumentException(
+                    "spawn requires a direct actor fnc/routine call, optionally module-qualified");
+        }
+
+        if (target == null) {
+            throw new IllegalArgumentException("spawn target is not a known callable");
+        }
+        if (target.actorKind() == Ast.ActorKind.NONE) {
+            throw new IllegalArgumentException(
+                    "spawn target '" + target.name() + "' is not declared with the actor keyword");
+        }
+        if (currentActorKind == Ast.ActorKind.PRIVATE
+                && target.actorKind() == Ast.ActorKind.SHARED) {
+            throw new IllegalArgumentException(
+                    "isoactor/private actor code cannot spawn shared actor callable '"
+                            + target.name()
+                            + "' because that would escalate into the SHARED_MEMORY domain");
+        }
+
+        validateCallTypeArgumentMarker(call, target.genericParameters(), label);
+        return checkGenericCallable(
+                target.genericParameters(),
+                target.parameters(),
+                target.returnType(),
+                call.arguments(),
+                env,
+                generics,
+                self,
+                null,
+                explicitGenericBindings(
+                        target.genericParameters(),
+                        call.typeArguments(),
+                        generics,
+                        self,
+                        label),
+                label);
     }
 
     private Type typeOfAgainstExpected(Ast.Expr expr, Type expected, Env env, Set<String> generics, Type self) {
@@ -1519,6 +1541,7 @@ public final class TypeChecker {
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
                 || named.name().equals("RwReadGuard") || named.name().equals("RwWriteGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
+                || named.name().equals("StartedActor")
                 || named.name().equals("Awaitable") || named.name().equals("Callback")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
@@ -1605,6 +1628,7 @@ public final class TypeChecker {
                 || named.name().equals("RwLock")
                 || named.name().equals("RwReadGuard") || named.name().equals("RwWriteGuard")
                 || named.name().equals("Future") || named.name().equals("ActorSpawn")
+                || named.name().equals("StartedActor")
                 || named.name().equals("Awaitable") || named.name().equals("Callback")
                 || named.name().equals("OresScheduler")
                 || named.name().equals("SharedMutex")) return false;
@@ -1721,28 +1745,28 @@ public final class TypeChecker {
 
     private Type builtinActorHandleMember(Type receiver, String member) {
         if (!(receiver instanceof Named named)) return null;
-        if (named.name().equals("ActorSpawn") && named.arguments().size() == 1) {
+        if (named.name().equals("StartedActor") && named.arguments().size() == 1) {
             Type result = named.arguments().getFirst();
             return switch (member) {
                 case "id" -> new Named("ActorId", List.of());
-                case "ready" -> new Named(
-                        "Future",
-                        List.of(new Named("ActorRef", List.of())));
-                case "get_awaited" -> new Function(
-                        List.of(),
-                        new Named(
-                                "Future",
-                                List.of(new Named("ActorRef", List.of()))));
+                case "is_alive" -> {
+                    if (currentActorKind == Ast.ActorKind.UNTRUSTED) {
+                        throw new IllegalArgumentException(
+                                "untrusted actors cannot inspect StartedActor lifecycle state");
+                    }
+                    yield new Function(List.of(), Primitive.BOOL);
+                }
                 case "done" -> new Named("Future", List.of(Primitive.BOOL));
                 case "result" -> {
                     if (result == Primitive.VOID) {
                         throw new IllegalArgumentException(
-                                "void actor callable has no result value; await spawn.done for completion");
+                                "void actor callable has no result value; await started.done for completion");
                     }
                     yield new Named("Future", List.of(result));
                 }
                 default -> throw new IllegalArgumentException(
-                        "unknown ActorSpawn member '" + member + "'");
+                        "unknown StartedActor member '" + member
+                                + "'; await spawn exposes identity/lifecycle/completion only");
             };
         }
         if (named.name().equals("ActorRef") && named.arguments().isEmpty()) {
@@ -2858,6 +2882,8 @@ public final class TypeChecker {
                 Type element = resolve(ref.arguments().getFirst(), generics, self);
                 yield new Named("Future", List.of(element));
             }
+            case "StartedActor" -> throw new IllegalArgumentException(
+                    "StartedActor<R> is compiler-managed and can only be produced by direct await spawn");
             case "Awaitable" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) {
                     throw new IllegalArgumentException(
