@@ -31,8 +31,10 @@ public final class CapabilityChecker {
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
     private final Set<Object> typeExpansionStack =
             java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+    private final PermissionCheckMode permissionCheckMode;
 
-    private CapabilityChecker(Ast.Program program) {
+    private CapabilityChecker(Ast.Program program, PermissionCheckMode permissionCheckMode) {
+        this.permissionCheckMode = permissionCheckMode;
         for (Ast.ImportDecl imported : program.imports()) {
             ImportRules.validate(imported);
             if (!ImportRules.isJavaPath(imported.path())) continue;
@@ -56,7 +58,14 @@ public final class CapabilityChecker {
     }
 
     public static void check(Ast.Program program, IsolatePolicy policy) {
-        new CapabilityChecker(program).checkProgram(program, policy);
+        check(program, policy, PermissionCheckMode.COMPILE);
+    }
+
+    public static void check(
+            Ast.Program program,
+            IsolatePolicy policy,
+            PermissionCheckMode permissionCheckMode) {
+        new CapabilityChecker(program, permissionCheckMode).checkProgram(program, policy);
     }
 
     private static <T> void index(
@@ -338,9 +347,27 @@ public final class CapabilityChecker {
                 if (path.startsWith("process.share_readonly")) require(policy, IsolatePolicy.Capability.ACTOR_SHARE_READONLY, path);
                 if (path.equals("process.gc") || path.startsWith("process.gc.")) require(policy, IsolatePolicy.Capability.GC_CONTROL, path);
                 if (path.equals("SharedMutex") || path.startsWith("SharedMutex.")) require(policy, IsolatePolicy.Capability.SHARED_MEMORY, path);
-                if (path.startsWith("network.")) require(policy, IsolatePolicy.Capability.NETWORK, path);
-                if (path.startsWith("fs.read")) require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
-                if (path.startsWith("fs.write")) require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
+                if (path.startsWith("network.") || path.startsWith("net.") || path.startsWith("http.")) {
+                    require(policy, IsolatePolicy.Capability.NETWORK, path);
+                }
+                if (path.startsWith("fs.read")
+                        || path.startsWith("fs.exists")
+                        || path.startsWith("fs.stat")
+                        || path.startsWith("File.read")
+                        || path.startsWith("File.exists")
+                        || path.startsWith("File.stat")) {
+                    require(policy, IsolatePolicy.Capability.FILESYSTEM_READ, path);
+                }
+                if (path.startsWith("fs.write")
+                        || path.startsWith("fs.append")
+                        || path.startsWith("fs.remove")
+                        || path.startsWith("fs.mkdir")
+                        || path.startsWith("File.write")
+                        || path.startsWith("File.append")
+                        || path.startsWith("File.remove")
+                        || path.startsWith("File.mkdir")) {
+                    require(policy, IsolatePolicy.Capability.FILESYSTEM_WRITE, path);
+                }
                 if (path.startsWith("env.")) require(policy, IsolatePolicy.Capability.ENVIRONMENT, path);
                 if (path.startsWith("ffi.")) require(policy, IsolatePolicy.Capability.FFI, path);
                 if (path.startsWith("polyglot.")) require(policy, IsolatePolicy.Capability.POLYGLOT, path);
@@ -384,7 +411,8 @@ public final class CapabilityChecker {
         return null;
     }
 
-    private static void require(IsolatePolicy policy, IsolatePolicy.Capability capability, String api) {
+    private void require(IsolatePolicy policy, IsolatePolicy.Capability capability, String api) {
+        if (permissionCheckMode.defersToRuntime(capability)) return;
         if (!policy.allows(capability)) {
             throw new SecurityException("Oreslang isolate denies capability " + capability + " required by " + api);
         }
