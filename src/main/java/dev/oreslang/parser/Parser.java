@@ -834,7 +834,7 @@ public final class Parser {
         if (match(IF)) return parseIf();
         if (match(MATCH)) return parseMatch();
         if (match(SWITCH)) return parseSwitch();
-        if (check(TRY) && checkNext(SELECT)) {
+        if (check(NB) && checkNext(SELECT)) {
             advance();
             advance();
             return parseSelect(true);
@@ -1334,7 +1334,11 @@ public final class Parser {
 
 
     private Ast.Stmt parseSelect(boolean nonBlocking) {
-        if (match(FROM)) return parseDynamicSelect(nonBlocking);
+        Ast.SelectPolicy policy = Ast.SelectPolicy.FAIR;
+        if (match(FAIR)) policy = Ast.SelectPolicy.FAIR;
+        else if (match(ORDERED)) policy = Ast.SelectPolicy.ORDERED;
+
+        if (match(FROM)) return parseDynamicSelect(nonBlocking, policy);
 
         consume(LBRACE, "expected '{' after select");
         List<Ast.SelectCase> cases = new ArrayList<>();
@@ -1362,7 +1366,10 @@ public final class Parser {
 
         consume(RBRACE, "expected '}' to close select");
         if (cases.isEmpty()) throw error(previous(), "select requires at least one channel case");
-        return new Ast.SelectStmt(cases, defaultBody, nonBlocking);
+        if (nonBlocking && defaultBody != null) {
+            throw error(previous(), "nb select registers pending cases and cannot have a default arm; use ordinary select with default for an immediate fallback");
+        }
+        return new Ast.SelectStmt(cases, defaultBody, nonBlocking, policy);
     }
 
     private Ast.SelectCase parseSelectCase() {
@@ -1403,7 +1410,9 @@ public final class Parser {
         return new Ast.SelectCase(operation, channel, value, bindingType, bindingName, parseBlock());
     }
 
-    private Ast.DynamicSelectStmt parseDynamicSelect(boolean nonBlocking) {
+    private Ast.DynamicSelectStmt parseDynamicSelect(
+            boolean nonBlocking,
+            Ast.SelectPolicy policy) {
         boolean previousSuppression = suppressRefinementOperators;
         suppressRefinementOperators = true;
         Ast.Expr entries;
@@ -1425,7 +1434,10 @@ public final class Parser {
             consume(ARROW, "select default uses the slim arrow '->'");
             defaultBody = parseBlock();
         }
-        return new Ast.DynamicSelectStmt(entries, binding, body, defaultBody, nonBlocking);
+        if (nonBlocking && defaultBody != null) {
+            throw error(previous(), "nb select registers pending cases and cannot have a default arm; use ordinary select with default for an immediate fallback");
+        }
+        return new Ast.DynamicSelectStmt(entries, binding, body, defaultBody, nonBlocking, policy);
     }
 
     private Ast.TryStmt parseTry() {
@@ -1703,7 +1715,7 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, SELECT, CHANNEL, READCH, WRITECH, FIRST, TYPE, TYPEOF,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, SELECT, NB, FAIR, ORDERED, CHANNEL, READCH, WRITECH, FIRST, TYPE, TYPEOF,
                     INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
