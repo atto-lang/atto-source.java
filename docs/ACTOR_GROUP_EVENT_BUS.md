@@ -28,6 +28,14 @@ Host-created groups live until explicitly closed or until ActorRuntime teardown.
 Actor termination removes that actor's subscriptions before the runtime forgets
 the actor.
 
+Group resources are policy-bounded: actor-created group count, memberships,
+topic count, topic queue capacity, reliable outstanding delivery, and pending
+async reads all have finite ceilings. OresVM maintains a reverse actor-to-group
+membership index, so actor teardown touches only groups the actor actually
+joined rather than scanning every group in the runtime. Membership metadata and
+topic/subscriber metadata require current group membership (or host/supervisor
+authority), even when code retained a previously obtained group/bus handle.
+
 ## Delivery policies
 
 A topic has one bounded delivery policy.
@@ -43,7 +51,12 @@ A successful publication returns a PublishReceipt whose completion Future
 resolves when every reliable channel write has been admitted. Waiting for this
 Future never blocks an OresVM carrier thread.
 
-Reliable delivery is therefore backpressure, not infinite buffering.
+Reliable delivery is therefore backpressure, not infinite buffering. Outstanding
+reliable deliveries are capped by the subscriber actor's policy. Async read
+registrations are capped by that same policy as well, so dropping/ignoring read
+Futures cannot create an unbounded waiter list. Actor-owned read and publication
+Futures are registered with the actor runtime and are cancelled automatically
+during structured actor teardown.
 
 ### LATEST
 
