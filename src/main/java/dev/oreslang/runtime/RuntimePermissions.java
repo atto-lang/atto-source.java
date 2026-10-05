@@ -1,6 +1,8 @@
 package dev.oreslang.runtime;
 
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -263,7 +265,16 @@ public final class RuntimePermissions {
 
     private static String normalizePath(String value) {
         try {
-            return Path.of(value).toAbsolutePath().normalize().toString();
+            Path path = Path.of(value).toAbsolutePath().normalize();
+            if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+                try {
+                    path = path.toRealPath();
+                } catch (java.io.IOException failure) {
+                    throw new IllegalArgumentException(
+                            "cannot resolve permission path '" + value + "'", failure);
+                }
+            }
+            return path.toString();
         } catch (InvalidPathException invalid) {
             throw new IllegalArgumentException("invalid permission path '" + value + "'", invalid);
         }
