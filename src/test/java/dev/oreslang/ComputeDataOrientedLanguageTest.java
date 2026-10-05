@@ -761,11 +761,20 @@ end
         assertComputeRejected("""
                 compute fnc bad(Region<int> values): void
                 reads values;
-                writes values;
+                reads values;
                 {
                   return;
                 }
                 """);
+
+        assertDoesNotThrow(() -> OresCompiler.parseAndTypeCheck("""
+                compute fnc readThenWrite(Region<int> values): void
+                reads values;
+                writes values;
+                {
+                  return;
+                }
+                """));
     }
 
     @Test
