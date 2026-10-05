@@ -827,7 +827,7 @@ for (const item of complex_iterable()) do
 done
 ```
 
-Parentheses never make a bare name into a declaration: `for (item of values)` is still an error. Element types are inferred from the iterable in the current grammar; write `for const item of values`, not `for const int item of values`. Constrain or cast the iterable when a stronger element type is required.
+Parentheses never make a bare name or typed-looking name into a declaration: `for (item of values)` and `for (int item of values)` are both errors until the binding begins with `const` or `let`. Element types are inferred from the iterable in the current grammar; write `for const item of values`, not `for const int item of values`. Constrain or cast the iterable when a stronger element type is required.
 
 A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 

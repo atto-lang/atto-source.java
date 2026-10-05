@@ -868,6 +868,10 @@ public final class Parser {
                 return new Ast.ForOfStmt(kind, name, iterable, parseLoopBody());
             }
 
+            if (looksLikeTypedForOfBinding()) {
+                throw typedForOfUndeclaredBindingError();
+            }
+
             Ast.Stmt initializer = parseUnparenthesizedForInitializer();
             consume(SEMICOLON, "expected ';' after for initializer");
             Ast.Expr condition = check(SEMICOLON) ? null : parseExpression();
@@ -915,6 +919,10 @@ public final class Parser {
             Ast.Expr update = check(RPAREN) ? null : parseForUpdate();
             consume(RPAREN, "expected ')' after for header");
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
+        }
+
+        if (looksLikeTypedForOfBinding()) {
+            throw typedForOfUndeclaredBindingError();
         }
 
         if (looksLikeTypedForInitializer()) {
@@ -982,6 +990,20 @@ public final class Parser {
         return error(peek(),
                 "for-of element types are inferred; use 'for const name of iterable' or "
                         + "'for let name of iterable' and constrain/cast the iterable instead");
+    }
+
+    private IllegalArgumentException typedForOfUndeclaredBindingError() {
+        int mark = current;
+        Token name;
+        try {
+            parseTypeRef();
+            name = consume(IDENT, "expected iterator binding name after type");
+        } finally {
+            current = mark;
+        }
+        return error(name,
+                "variable used before declared '" + name.lexeme()
+                        + "'; for-of bindings require 'const' or 'let'");
     }
 
     private boolean looksLikeForOfDestructurePattern() {

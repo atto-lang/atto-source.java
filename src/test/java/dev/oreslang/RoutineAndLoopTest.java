@@ -324,6 +324,31 @@ final class RoutineAndLoopTest {
                         """));
         assertTrue(typed.getMessage().contains("for-of element types are inferred"));
 
+        IllegalArgumentException bareTyped = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for int item of arr[1, 2] do
+                            stdio.stdout.write(item);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(bareTyped.getMessage().contains("variable used before declared 'item'"));
+        assertTrue(bareTyped.getMessage().contains("require 'const' or 'let'"));
+
+        IllegalArgumentException parenthesizedBareTyped = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for (int item of arr[1, 2]) do
+                            stdio.stdout.write(item);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(parenthesizedBareTyped.getMessage().contains("variable used before declared 'item'"));
+
         IllegalArgumentException duplicate = assertThrows(
                 IllegalArgumentException.class,
                 () -> Parser.parse("""
