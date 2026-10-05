@@ -105,7 +105,28 @@ public final class ComputeContractChecker {
             }
         }
 
-        return new ComputeContract(fn.name(), effects, layouts, placement);
+        LinkedHashMap<String, RegionEffect> normalized = new LinkedHashMap<>();
+        for (RegionEffect effect : effects) {
+            String key = effect.rootParameter() + "\u0000" + effect.fieldPath();
+            RegionEffect previous = normalized.get(key);
+            if (previous == null) {
+                normalized.put(key, effect);
+            } else if ((previous.privilege().equals("reads") && effect.privilege().equals("writes"))
+                    || (previous.privilege().equals("writes") && effect.privilege().equals("reads"))) {
+                normalized.put(
+                        key,
+                        previous.privilege().equals("writes") ? previous : effect);
+            } else {
+                // validateComputeMetadata rejects other exact-footprint duplicates.
+                normalized.put(key, effect);
+            }
+        }
+
+        return new ComputeContract(
+                fn.name(),
+                List.copyOf(normalized.values()),
+                layouts,
+                placement);
     }
 
     public static boolean isCompute(Ast.FunctionDecl fn) {
@@ -326,12 +347,22 @@ public final class ComputeContractChecker {
             String path,
             String privilege) {
         String previous = claims.putIfAbsent(path, privilege);
-        if (previous != null) {
-            throw new IllegalArgumentException(
-                    "region effect footprint '" + path
-                            + "' is declared more than once ("
-                            + previous + " and " + privilege + ")");
+        if (previous == null) return;
+
+        // WRITE semantically includes read access. Preserve source compatibility
+        // while normalizing this exact-footprint pair to the stronger privilege.
+        if (previous.equals("reads") && privilege.equals("writes")) {
+            claims.put(path, "writes");
+            return;
         }
+        if (previous.equals("writes") && privilege.equals("reads")) {
+            return;
+        }
+
+        throw new IllegalArgumentException(
+                "region effect footprint '" + path
+                        + "' has duplicate/conflicting declarations ("
+                        + previous + " and " + privilege + ")");
     }
 
     private void validateRegionPath(
