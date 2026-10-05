@@ -2248,6 +2248,10 @@ public final class TypeChecker {
             validateActorCallableBoundaryType(list.element(), actorKind, false, where + " element");
             return;
         }
+        if (type instanceof FixedArray fixed) {
+            validateActorCallableBoundaryType(fixed.element(), actorKind, false, where + " FixedArray element");
+            return;
+        }
         if (type instanceof Tuple tuple) {
             for (int i = 0; i < tuple.elements().size(); i++) {
                 validateActorCallableBoundaryType(tuple.elements().get(i), actorKind, false, where + " tuple element " + i);
@@ -2866,6 +2870,7 @@ public final class TypeChecker {
                             result,
                             classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
                     if (result instanceof ListType list) return list.element();
+                    if (result instanceof FixedArray fixed) return fixed.element();
                     if (result instanceof Tuple tuple) return iterableElementType(tuple);
                     if (result instanceof Named generated
                             && generated.name().equals("Iterator")
@@ -2873,12 +2878,12 @@ public final class TypeChecker {
                         return generated.arguments().getFirst();
                     }
                     throw new IllegalArgumentException(
-                            "[Symbol.iterator]() must return Array<T>, List<T>, a tuple, or Generator<T>");
+                            "[Symbol.iterator]() must return Array<T>, List<T>, FixedArray<T,N>, a tuple, or Generator<T>");
                 }
             }
         }
         throw new IllegalArgumentException(
-                "for-of requires an array/list, tuple, Generator<T>, or a class with [Symbol.iterator]()");
+                "for-of requires an array/list, FixedArray, tuple, Generator<T>, or a class with [Symbol.iterator]()");
     }
 
     private Type asyncIterableElementType(Type iterable) {
@@ -3572,6 +3577,7 @@ public final class TypeChecker {
                 rejectStaticClassGenericReference(binding.declaredType(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(binding.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DestructureStmt destructure) {
+                rejectStaticClassGenericReference(destructure.declaredType(), classGenerics, klass, method);
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
@@ -3675,6 +3681,8 @@ public final class TypeChecker {
             }
         } else if (expression instanceof Ast.AwaitExpr awaited) {
             rejectStaticClassGenericReferences(awaited.expression(), classGenerics, klass, method);
+        } else if (expression instanceof Ast.SpreadExpr spread) {
+            rejectStaticClassGenericReferences(spread.expression(), classGenerics, klass, method);
         } else if (expression instanceof Ast.ListExpr list) {
             for (Ast.Expr item : list.elements()) {
                 rejectStaticClassGenericReferences(item, classGenerics, klass, method);
