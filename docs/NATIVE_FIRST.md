@@ -9,7 +9,7 @@ implement Oreslang standard-library semantics.
 ## Layering
 
 1. **Oreslang source owns language/library semantics**
-   - packaged core modules live under `std/*`;
+   - canonical source files live under repository-root `stdlib/**/*.ores` and are imported as `std/*`;
    - functions, collections algorithms, streams, protocol logic, networking state machines, file APIs,
      synchronization APIs, and user-visible behavior should be written in Oreslang where the language
      can express them safely;
@@ -58,8 +58,9 @@ for a missing primitive only when it:
 
 ## Built-in core modules
 
-`LinkedProgramRunner` resolves imports beginning with `std/` from packaged Oreslang source
-resources. These modules are parsed, type-checked, linked, tree-shaken, and executed like ordinary
+`LinkedProgramRunner` resolves imports beginning with `std/` from compiler-owned Oreslang source
+resources. The canonical editable sources are `stdlib/**/*.ores`; Maven packages them under the
+collision-resistant classpath prefix `dev/oreslang/std/`. These modules are parsed, type-checked, linked, tree-shaken, and executed like ordinary
 Oreslang units.
 
 Core modules fail closed if they contain:
@@ -70,3 +71,26 @@ Core modules fail closed if they contain:
 - a non-`std/*` dependency.
 
 This makes "native-first" mechanically enforceable rather than a style recommendation.
+
+
+## Review gate
+
+Every new user-visible runtime/library feature should answer these questions before adding Java:
+
+1. Is this parser/type/effect/lowering, scheduler/isolate/GC, capability enforcement, or a native-handle adapter?
+2. Can the same behavior be expressed safely as an Oreslang `stdlib/**/*.ores` module?
+3. If Java is required, is the Java surface smaller than the user-visible feature?
+4. If JNI/native code is required, are descriptors, pointers and device handles hidden behind opaque generation-safe values?
+5. Do JIT, AOT, hybrid and isolate modes execute the same Oreslang stdlib semantics?
+
+If (2) is yes, the behavior belongs in Oreslang first. Java convenience libraries are not a reason to bypass the stdlib boundary.
+
+The intended layering is:
+
+```text
+application .ores
+  -> std/*.ores
+  -> narrow runtime intrinsic
+  -> Java/Truffle host kernel
+  -> JNI/native OS or device primitive when required
+```
