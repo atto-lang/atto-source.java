@@ -133,6 +133,7 @@ statement       = binding_decl
                 | if_stmt
                 | match_stmt
                 | switch_stmt
+                | select_stmt
                 | try_stmt
                 | defer_stmt
                 | for_stmt
@@ -171,6 +172,19 @@ switch_stmt     = "switch" expression [ ";" ]
                   { switch_case } [ switch_default ] "end" ;
 switch_case     = "case" expression { "," expression } "->" block ;
 switch_default  = "default" "->" block ;
+
+select_stmt      = [ "try" ] "select"
+                  ( static_select | dynamic_select ) ;
+static_select    = "{"
+                  select_case { select_case }
+                  [ select_default ]
+                  "}" ;
+select_case      = "case"
+                  ( "readch" "(" expression ")" [ "as" [ type_ref ] IDENT ]
+                  | "writech" "(" expression "," expression ")" )
+                  "->" block ;
+select_default   = "default" "->" block ;
+dynamic_select   = "from" expression [ "as" IDENT ] block [ select_default ] ;
 
 try_stmt        = "try" block "catch" "(" IDENT ")" block [ "finally" block ] ;
 
@@ -211,7 +225,8 @@ call_suffix     = "(" [ argument_list ] ")" ;
 member_suffix   = "." member_name ;
 member_name     = IDENT | "stop" | "do" | "done"
                 | "match" | "matches" | "is" | "when"
-                | "case" | "default" | "first" | "switch" ;
+                | "case" | "default" | "first" | "switch"
+                | "select" | "channel" | "readch" | "writech" ;
 index_suffix    = "[" expression "]" ;
 argument_list   = expression { "," expression } ;
 
