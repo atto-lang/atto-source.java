@@ -1079,6 +1079,9 @@ public final class TypeChecker {
                     return asyncResult(fn.async(), result);
                 }
                 if (receiver instanceof Named named) {
+                    Type compositionResult = builtinCompositionCall(
+                            call, member, named, env, generics, self);
+                    if (compositionResult != null) return compositionResult;
                     if (named.name().equals("SharedMutex")
                             && currentActorKind != Ast.ActorKind.NONE
                             && member.member().equals("with_lock")) {
@@ -1242,6 +1245,12 @@ public final class TypeChecker {
             if (sumMember != null) return sumMember;
             if (sumReceiver instanceof Named sumNamed
                     && (sumNamed.name().equals("Option") || sumNamed.name().equals("Result"))) {
+                if (isBuiltinCompositionMember(sumNamed.name(), member.member())) {
+                    throw new IllegalArgumentException(
+                            "generic composition member '" + sumNamed.name() + "." + member.member()
+                                    + "' is direct-call-only; invoke it directly with an explicit output type "
+                                    + "instead of extracting a polymorphic function value");
+                }
                 throw new IllegalArgumentException(
                         "unknown " + sumNamed.name() + " member '" + member.member() + "'");
             }
@@ -2182,6 +2191,163 @@ public final class TypeChecker {
             };
         }
         return null;
+    }
+
+    private static boolean isBuiltinCompositionMember(
+            String family,
+            String operation) {
+        return switch (family) {
+            case "Option" -> java.util.Set.of(
+                    "map", "flat_map", "and_then", "or_else", "flatten")
+                    .contains(operation);
+            case "Result" -> java.util.Set.of(
+                    "map", "flat_map", "and_then", "map_err", "or_else", "flatten")
+                    .contains(operation);
+            default -> false;
+        };
+    }
+
+    private Type builtinCompositionCall(
+            Ast.CallExpr call,
+            Ast.MemberExpr member,
+            Named receiver,
+            Env env,
+            Set<String> generics,
+            Type self) {
+        String family = receiver.name();
+        String operation = member.member();
+        if (!isBuiltinCompositionMember(family, operation)) return null;
+
+        int expectedTypeArguments = family.equals("Option") ? 1 : 2;
+        if (receiver.arguments().size() != expectedTypeArguments) {
+            throw new IllegalArgumentException(
+                    family + " composition requires exactly "
+                            + expectedTypeArguments + " type argument(s)");
+        }
+
+        if (operation.equals("flatten")) {
+            if (call.typeArgumentsPresent() || !call.arguments().isEmpty()) {
+                throw new IllegalArgumentException(
+                        family + ".flatten expects no arguments or type arguments");
+            }
+            Type nested = receiver.arguments().getFirst();
+            if (!(nested instanceof Named nestedNamed)
+                    || !nestedNamed.name().equals(family)) {
+                throw new IllegalArgumentException(
+                        family + ".flatten requires a nested " + family + " value");
+            }
+            if (family.equals("Option") && nestedNamed.arguments().size() != 1) {
+                throw new IllegalArgumentException(
+                        "Option.flatten requires Option<Option<T>>");
+            }
+            if (family.equals("Result")) {
+                if (nestedNamed.arguments().size() != 2) {
+                    throw new IllegalArgumentException(
+                            "Result.flatten requires Result<Result<T,E>,E>");
+                }
+                Type outerError = receiver.arguments().get(1);
+                Type innerError = nestedNamed.arguments().get(1);
+                requireAssignable(innerError, outerError, "Result.flatten error");
+                requireAssignable(outerError, innerError, "Result.flatten error");
+            }
+            return nested;
+        }
+
+        if (call.arguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    family + "." + operation + " expects exactly one callback");
+        }
+        Ast.Expr callback = call.arguments().getFirst();
+
+        if (family.equals("Option") && operation.equals("or_else")) {
+            if (call.typeArgumentsPresent()) {
+                throw new IllegalArgumentException(
+                        "Option.or_else does not accept call-site type arguments");
+            }
+            Type expected = new Function(List.of(), receiver);
+            validateCompositionCallback(
+                    callback, expected, env, generics, self, "Option.or_else");
+            return receiver;
+        }
+
+        Type output = compositionTypeArgument(
+                call, generics, self, family + "." + operation);
+        Type input = receiver.arguments().getFirst();
+        Type callbackResult;
+        Type result;
+
+        switch (family) {
+            case "Option" -> {
+                callbackResult = operation.equals("map")
+                        ? output
+                        : new Named("Option", List.of(output));
+                result = new Named("Option", List.of(output));
+            }
+            case "Result" -> {
+                Type error = receiver.arguments().get(1);
+                if (operation.equals("map_err")) {
+                    input = error;
+                    callbackResult = output;
+                    result = new Named(
+                            "Result",
+                            List.of(receiver.arguments().getFirst(), output));
+                } else if (operation.equals("or_else")) {
+                    input = error;
+                    callbackResult = new Named(
+                            "Result",
+                            List.of(receiver.arguments().getFirst(), output));
+                    result = callbackResult;
+                } else {
+                    callbackResult = operation.equals("map")
+                            ? output
+                            : new Named("Result", List.of(output, error));
+                    result = new Named("Result", List.of(output, error));
+                }
+            }
+            default -> throw new IllegalStateException(
+                    "unreachable composition family " + family);
+        }
+
+        validateCompositionCallback(
+                callback,
+                new Function(List.of(input), callbackResult),
+                env,
+                generics,
+                self,
+                family + "." + operation);
+        return result;
+    }
+
+    private Type compositionTypeArgument(
+            Ast.CallExpr call,
+            Set<String> generics,
+            Type self,
+            String operation) {
+        if (!call.typeArgumentsPresent() || call.typeArguments().size() != 1) {
+            throw new IllegalArgumentException(
+                    operation + " requires one explicit output type argument in v0, "
+                            + "for example .map<int>(...)");
+        }
+        return resolve(call.typeArguments().getFirst(), generics, self);
+    }
+
+    private void validateCompositionCallback(
+            Ast.Expr callback,
+            Type expected,
+            Env env,
+            Set<String> generics,
+            Type self,
+            String operation) {
+        if (!(expected instanceof Function function)) {
+            throw new IllegalStateException(
+                    "composition callback must have function type");
+        }
+        if (callback instanceof Ast.LambdaExpr lambda) {
+            validateLambdaAgainstExpected(lambda, function, env, generics, self);
+            return;
+        }
+        Type actual = typeOf(callback, env, generics, self);
+        requireAssignable(actual, expected, operation + " callback");
     }
 
     private Type builtinMutexMember(Type receiver, String member) {
