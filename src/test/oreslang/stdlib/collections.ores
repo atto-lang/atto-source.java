@@ -19,13 +19,13 @@ fnc add_float(float total, int value): float {
 }
 
 fnc list_functional_contract(): TestOutcome {
-  let List<int> values = new collections.List<int>();
+  let collections.List<int> values = new collections.List<int>();
   values.add(1);
   values.add(2);
   values.add(3);
 
-  val List<int> mapped = values.map(twice);
-  val List<int> filtered = values.filter(is_even);
+  val collections.List<int> mapped = values.map(twice);
+  val collections.List<int> filtered = values.filter(is_even);
 
   if values.size() != 3; do
     return fail("map/filter must not mutate List source");
@@ -46,10 +46,10 @@ fnc list_functional_contract(): TestOutcome {
 }
 
 fnc family_and_generic_contract(): TestOutcome {
-  let ArrayList<int> array_list = new collections.ArrayList<int>();
+  let collections.ArrayList<int> array_list = new collections.ArrayList<int>();
   array_list.add(4);
   array_list.add(5);
-  val ArrayList<int> mapped_array = array_list.map(twice);
+  val collections.ArrayList<int> mapped_array = array_list.map(twice);
   if mapped_array.get(1) != 10; do
     return fail("ArrayList.map must preserve ArrayList family");
   fi
@@ -57,15 +57,15 @@ fnc family_and_generic_contract(): TestOutcome {
     return fail("ArrayList.reduce must support independent accumulator type");
   fi
 
-  let Vector<int> vector = new collections.Vector<int>();
+  let collections.Vector<int> vector = new collections.Vector<int>();
   vector.add(6);
   vector.add(7);
-  val Vector<bool> mapped_vector = vector.map(is_even);
+  val collections.Vector<bool> mapped_vector = vector.map(is_even);
   if mapped_vector.get(0) != true || mapped_vector.get(1) != false; do
     return fail("Vector.map must permit element type transformation");
   fi
 
-  let Vector<int> empty = new collections.Vector<int>();
+  let collections.Vector<int> empty = new collections.Vector<int>();
   if !empty.reduce(add_ints).is_none(); do
     return fail("unseeded reduce on empty sequence must return None");
   fi
@@ -73,7 +73,7 @@ fnc family_and_generic_contract(): TestOutcome {
 }
 
 fnc iterator_snapshot_contract(): TestOutcome {
-  let List<int> values = new collections.List<int>();
+  let collections.List<int> values = new collections.List<int>();
   values.add(10);
   values.add(20);
   values.add(30);
