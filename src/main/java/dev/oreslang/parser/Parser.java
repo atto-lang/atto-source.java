@@ -814,6 +814,30 @@ public final class Parser {
     }
 
     private Ast.Stmt parseStatement() {
+        // Runtime blocks may create values, never declaration identities. This
+        // keeps source semantics compatible with both closed-world AOT and JIT:
+        // JIT may specialize known declarations, but it cannot invent modules,
+        // namespaces, classes, or trait/impl identities while executing code.
+        if (check(NAMESPACE)) {
+            throw error(peek(), "namespace declarations are file-scope compile-time declarations and cannot execute inside a block");
+        }
+        if (check(DEFINE)) {
+            Token define = peek();
+            Token.Type next = current + 1 < tokens.size() ? tokens.get(current + 1).type() : EOF;
+            if (next == MODULE) {
+                throw error(define, "module declarations are compile-time declarations and cannot execute inside a block");
+            }
+            if (next == CLASS) {
+                throw error(define, "class declarations are compile-time declarations and cannot execute inside a block");
+            }
+            if (next == TRAIT) {
+                throw error(define, "trait declarations are compile-time declarations and cannot execute inside a block");
+            }
+        }
+        if (check(TRAIT)) {
+            throw error(peek(), "trait declarations are static/module-scope declarations; runtime trait creation is forbidden");
+        }
+
         if (isBindingKind(peek().type()) && looksLikePrefixedDestructure()) {
             Ast.BindingKind inherited = parseBindingKind();
             return parseDestructure(check(LBRACKET) ? Ast.DestructureKind.SEQUENCE : Ast.DestructureKind.OBJECT, inherited);
@@ -1632,8 +1656,8 @@ public final class Parser {
             case IDENT,
                     DEFINE, CLASS, MODULE, NAMESPACE, IMPORT, FROM, AS, EXTENDS, IMPLEMENTS,
                     TRY, CATCH, FINALLY, END, FI, IF, DO, ELSE, THEN,
-                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, FIRST, TYPE, TYPEOF,
-                    INTERFACE, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
+                    NEW, STOP, DONE, AWAIT, ASYNC, NLEX, ACTOR, ISOACTOR, SHARED, DEF, FNC, ROUTINE, FOR, OF, LOOP, BLOCK, BREAK, CONTINUE, YIELD, SUPER, ELSEIF, SWITCH, MATCH, MATCHES, IS, WHEN, CASE, DEFAULT, FIRST, TYPE, TYPES, TYPEOF,
+                    INTERFACE, TRAIT, STRUCT, IMPL, ABSTRACT, VOID, STATIC, PUB, PRIVATE, STRUCTURAL, RETURN, DEFER,
                     VAL, CONST, LET, MUT, SELF, TRUE, FALSE, NULL, OBJ, ARR -> true;
             default -> false;
         };
