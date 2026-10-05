@@ -113,6 +113,63 @@ final class SelfTypeSemanticsTest {
     }
 
     @Test
+    void genericParentSelfReturnRebindsToTheConcreteChild() throws Exception {
+        String output = run("""
+                define module m
+                  define class Box<T> as
+                    pub same(): self {
+                      return self;
+                    }
+                  end
+
+                  define class Child extends Box<int> as
+                    pub child_only(): int {
+                      return 11;
+                    }
+                  end
+                end
+
+                pub routine main(): void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.same().child_only());
+                }
+                """);
+
+        assertEquals("11", output);
+    }
+
+    @Test
+    void contextualBoundMethodExtractionKeepsSelfPolymorphic() throws Exception {
+        String output = run("""
+                define module m
+                  define class Base as
+                    pub same(): self {
+                      return self;
+                    }
+                  end
+
+                  define class Child extends Base as
+                    pub child_only(): int {
+                      return 12;
+                    }
+
+                    pub via_callback(): int {
+                      val Fnc<self> callback = self.same;
+                      return callback().child_only();
+                    }
+                  end
+                end
+
+                pub routine main(): void {
+                  val child = new m.Child();
+                  stdio.stdout.write(child.via_callback());
+                }
+                """);
+
+        assertEquals("12", output);
+    }
+
+    @Test
     void childOverrideCanKeepTheSameReceiverPolymorphicContract() throws Exception {
         String output = run("""
                 define module m
