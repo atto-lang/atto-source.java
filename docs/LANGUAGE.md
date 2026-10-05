@@ -2,6 +2,8 @@
 
 Oreslang is a statically typed guest language for GraalVM/Truffle. Named types are nominal by default; structural compatibility is explicit at selected boundaries. Its core invariants are explicit mutation, actor-owned mutable heaps, message-only actor communication, read-only sharing, and a stricter isolate profile for untrusted FaaS execution.
 
+Oreslang also supports data-oriented heterogeneous compute without making it a separate language mode: logical `Region<T>` data, effects, layouts, CPU/GPU placement, parallel/SIMD loops, dataflow DAGs, and static aspects are defined in [data-oriented-compute.md](data-oriented-compute.md). OOP/actors remain the identity and lifecycle layer; physical data layout and placement remain backend choices.
+
 ## Files, modules, and imports
 
 A source file may contain multiple named modules. A module is a namespace: exported members are accessed through the module name, such as `math.add(1, 2)`.
