@@ -149,7 +149,7 @@ public final class ActorRuntime implements AutoCloseable {
         return CURRENT_MAILMAN_RUNTIME.get() != null;
     }
 
-    public static ActorRuntime currentRootRuntime() {
+    static ActorRuntime currentRootRuntime() {
         return CURRENT_ROOT_RUNTIME.get();
     }
 
@@ -163,7 +163,7 @@ public final class ActorRuntime implements AutoCloseable {
         return current == null ? null : current.policy();
     }
 
-    public static ActorRuntime currentActorRuntime() {
+    static ActorRuntime currentActorRuntime() {
         ActorExecutionContext current = CURRENT_ACTOR_EXECUTION.get();
         return current == null ? null : current.runtime();
     }
@@ -2843,12 +2843,33 @@ public final class ActorRuntime implements AutoCloseable {
     }
 
     private void requireCallerRuntimeAffinity(String operation) {
-        ActorRuntime caller = currentActorRuntime();
-        if (caller == null) caller = currentRootRuntime();
-        if (caller == null) caller = CURRENT_MAILMAN_RUNTIME.get();
-        if (caller != null && caller != this) {
+        ActorRuntime actorCaller = currentActorRuntime();
+        if (actorCaller != null && actorCaller != this) {
             throw new SecurityException(
-                    "guest execution cannot " + operation + " through another ActorRuntime");
+                    "actor execution cannot " + operation + " through another ActorRuntime");
+        }
+
+        ActorRuntime mailmanCaller = CURRENT_MAILMAN_RUNTIME.get();
+        if (mailmanCaller != null && mailmanCaller != this) {
+            throw new SecurityException(
+                    "mailman execution cannot " + operation + " through another ActorRuntime");
+        }
+
+        ActorRuntime rootCaller = currentRootRuntime();
+        if (rootCaller == null || rootCaller == this) return;
+
+        // Root/main work is physically owned by the OresVM CONTROL scheduler,
+        // while each OresContext owns a distinct logical ActorRuntime registry.
+        // The official launcher therefore enters a context from a lightweight
+        // root runtime attached to the same VM. Permit that bridge only when
+        // physical VM identity matches and the context runtime cannot widen the
+        // root/control policy. Actor and mailman callers above remain exact-
+        // runtime only.
+        if (rootCaller.vm != this.vm
+                || !this.policyCeiling.isNoMorePermissiveThan(rootCaller.policyCeiling)) {
+            throw new SecurityException(
+                    "root/control execution cannot " + operation
+                            + " through an unrelated or more-privileged ActorRuntime");
         }
     }
 
@@ -3345,6 +3366,22 @@ public final class ActorRuntime implements AutoCloseable {
                         IsolatePolicy.Capability.SHARED_MEMORY,
                         IsolatePolicy.Capability.ACTOR_SHARE_READONLY)
                 : policy;
+
+        // Memory-isolated PRIVATE actors are co-resident with the VM/JVM but
+        // must not receive host escape hatches that can pierce confinement.
+        // Keep this runtime rule aligned with CapabilityChecker and the
+        // TRUSTED_ISOACTOR_JIT hot-loader policy: same process/isolate does not
+        // imply permission to reflect into runtime state, create threads, enter
+        // another polyglot language, or reach native/FFI memory.
+        if (kind == ActorKind.PRIVATE) {
+            effectivePolicy = effectivePolicy.withoutCapabilities(
+                    IsolatePolicy.Capability.FFI,
+                    IsolatePolicy.Capability.NATIVE,
+                    IsolatePolicy.Capability.REFLECTION,
+                    IsolatePolicy.Capability.THREAD_CREATE,
+                    IsolatePolicy.Capability.POLYGLOT);
+        }
+
         // Whole-process GC is control-plane authority. Every actor kind,
         // including shared actors, is confined to actor-local collection.
         effectivePolicy = effectivePolicy.withoutCapabilities(
