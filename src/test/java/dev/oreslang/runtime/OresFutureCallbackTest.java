@@ -61,13 +61,20 @@ final class OresFutureCallbackTest {
         assertEquals(1, ordinary.join());
 
         OresFuture<Integer> fatal = new OresFuture<>();
+        AtomicBoolean laterWaiterObserved = new AtomicBoolean();
         fatal.whenCompleteRuntime((value, failure) -> {
             throw new TestFatalError("fatal waiter");
         });
+        fatal.whenCompleteRuntime((value, failure) -> laterWaiterObserved.set(true));
+
         TestFatalError thrown = assertThrows(
                 TestFatalError.class,
                 () -> fatal.completeFromRuntime(2));
         assertEquals("fatal waiter", thrown.getMessage());
+        assertTrue(
+                laterWaiterObserved.get(),
+                "settlement must drain already-registered waiters before rethrowing a fatal");
+        assertEquals(0, fatal.pendingRuntimeWaiterCount());
         assertEquals(2, fatal.join(),
                 "settlement remains authoritative even though the fatal error escapes");
     }
@@ -118,6 +125,24 @@ final class OresFutureCallbackTest {
                 () -> future.get(5, TimeUnit.SECONDS));
         assertInstanceOf(IllegalStateException.class, failure.getCause());
         assertEquals("registration failed", failure.getCause().getMessage());
+    }
+
+    @Test
+    void registrarFatalErrorsAlwaysEscape() {
+        TestFatalError beforeSettlement = assertThrows(
+                TestFatalError.class,
+                () -> OresFuture.<Integer>fromCallback(callback -> {
+                    throw new TestFatalError("fatal registrar");
+                }));
+        assertEquals("fatal registrar", beforeSettlement.getMessage());
+
+        TestFatalError afterSettlement = assertThrows(
+                TestFatalError.class,
+                () -> OresFuture.<Integer>fromCallback(callback -> {
+                    callback.resolve(7);
+                    throw new TestFatalError("fatal after resolve");
+                }));
+        assertEquals("fatal after resolve", afterSettlement.getMessage());
     }
 
     @Test
