@@ -11,6 +11,7 @@ import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
+import dev.oreslang.runtime.NativeIo;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
@@ -60,7 +61,7 @@ public final class OresEvalRootNode extends RootNode {
 
     @TruffleBoundary
     private Object executeBoundary(OresContext context, Object[] arguments) {
-        CapabilityChecker.check(program, context.isolatePolicy());
+        CapabilityChecker.check(program, context.isolatePolicy(), context.permissionCheckMode());
         if (arguments.length == 3
                 && REGISTER_IMPORT_COMMAND.equals(arguments[0])
                 && arguments[1] instanceof String importPath
@@ -1075,6 +1076,10 @@ public final class OresEvalRootNode extends RootNode {
                 Object local = env.lookup(name.name());
                 if (local != Env.MISSING) return local;
                 if (name.name().equals("stdio")) return new StdioFacade(context);
+                if (name.name().equals("fs") || name.name().equals("File")) return new FileSystemFacade(context);
+                if (name.name().equals("network") || name.name().equals("net")) return new NetworkFacade(context);
+                if (name.name().equals("http")) return new HttpFacade(context);
+                if (name.name().equals("env")) return new EnvFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
@@ -1389,6 +1394,7 @@ public final class OresEvalRootNode extends RootNode {
                     case "print" -> (Invokable) stdio::print;
                     case "println" -> (Invokable) stdio::println;
                     case "stdout" -> new StdoutFacade(stdio.context());
+                    case "stdin" -> new StdinFacade(stdio.context());
                     default -> throw new IllegalArgumentException("unknown stdio member " + name);
                 };
             }
@@ -1397,6 +1403,62 @@ public final class OresEvalRootNode extends RootNode {
                     case "write" -> (Invokable) stdout::write;
                     case "println" -> (Invokable) stdout::println;
                     default -> throw new IllegalArgumentException("unknown stdout member " + name);
+                };
+            }
+            if (receiver instanceof StdinFacade stdin) {
+                return switch (name) {
+                    case "read_line" -> (Invokable) stdin::readLine;
+                    default -> throw new IllegalArgumentException("unknown stdin member " + name);
+                };
+            }
+            if (receiver instanceof FileSystemFacade fs) {
+                return switch (name) {
+                    case "read_text" -> (Invokable) fs::readText;
+                    case "write_text" -> (Invokable) fs::writeText;
+                    case "append_text" -> (Invokable) fs::appendText;
+                    case "exists" -> (Invokable) fs::exists;
+                    case "remove" -> (Invokable) fs::remove;
+                    case "mkdir_all" -> (Invokable) fs::mkdirAll;
+                    default -> throw new IllegalArgumentException("unknown filesystem member " + name);
+                };
+            }
+            if (receiver instanceof NetworkFacade network) {
+                return switch (name) {
+                    case "connect" -> (Invokable) network::connect;
+                    default -> throw new IllegalArgumentException("unknown network member " + name);
+                };
+            }
+            if (receiver instanceof NativeIo.TcpConnection socket) {
+                return switch (name) {
+                    case "read_line" -> (Invokable) args -> {
+                        requireZero(args, "network.socket.read_line");
+                        String value = socket.readLine();
+                        return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
+                    };
+                    case "write_text" -> (Invokable) args -> {
+                        socket.writeText(requireStringArg(args, "network.socket.write_text"));
+                        return null;
+                    };
+                    case "close" -> (Invokable) args -> {
+                        requireZero(args, "network.socket.close");
+                        socket.close();
+                        return null;
+                    };
+                    default -> throw new IllegalArgumentException("unknown network socket member " + name);
+                };
+            }
+            if (receiver instanceof HttpFacade http) {
+                return switch (name) {
+                    case "get_text" -> (Invokable) http::getText;
+                    case "post_text" -> (Invokable) http::postText;
+                    default -> throw new IllegalArgumentException("unknown http member " + name);
+                };
+            }
+            if (receiver instanceof EnvFacade environment) {
+                return switch (name) {
+                    case "get" -> (Invokable) environment::get;
+                    case "has" -> (Invokable) environment::has;
+                    default -> throw new IllegalArgumentException("unknown env member " + name);
                 };
             }
             if (receiver instanceof ProcessFacade process) {
@@ -2856,6 +2918,74 @@ public final class OresEvalRootNode extends RootNode {
     private static final class OresCastError extends RuntimeException {
         private OresCastError(String message) { super(message, null, false, false); }
     }
+    private record FileSystemFacade(OresContext context) {
+        private Object readText(List<Object> args) {
+            return NativeIo.readText(context, requireStringArg(args, "fs.read_text"));
+        }
+        private Object writeText(List<Object> args) {
+            requireTwo(args, "fs.write_text");
+            NativeIo.writeText(
+                    context,
+                    requireString(args.get(0), "fs.write_text path"),
+                    requireString(args.get(1), "fs.write_text value"));
+            return null;
+        }
+        private Object appendText(List<Object> args) {
+            requireTwo(args, "fs.append_text");
+            NativeIo.appendText(
+                    context,
+                    requireString(args.get(0), "fs.append_text path"),
+                    requireString(args.get(1), "fs.append_text value"));
+            return null;
+        }
+        private Object exists(List<Object> args) {
+            return NativeIo.exists(context, requireStringArg(args, "fs.exists"));
+        }
+        private Object remove(List<Object> args) {
+            NativeIo.remove(context, requireStringArg(args, "fs.remove"));
+            return null;
+        }
+        private Object mkdirAll(List<Object> args) {
+            NativeIo.createDirectories(context, requireStringArg(args, "fs.mkdir_all"));
+            return null;
+        }
+    }
+
+    private record NetworkFacade(OresContext context) {
+        private Object connect(List<Object> args) {
+            requireTwo(args, "network.connect");
+            String host = requireString(args.get(0), "network.connect host");
+            Object portValue = args.get(1);
+            if (!(portValue instanceof Number number)) {
+                throw new IllegalArgumentException("network.connect port must be an integer");
+            }
+            return NativeIo.connect(context, host, number.intValue());
+        }
+    }
+
+    private record HttpFacade(OresContext context) {
+        private Object getText(List<Object> args) {
+            return NativeIo.httpGetText(context, requireStringArg(args, "http.get_text"));
+        }
+        private Object postText(List<Object> args) {
+            requireTwo(args, "http.post_text");
+            return NativeIo.httpPostText(
+                    context,
+                    requireString(args.get(0), "http.post_text url"),
+                    requireString(args.get(1), "http.post_text body"));
+        }
+    }
+
+    private record EnvFacade(OresContext context) {
+        private Object get(List<Object> args) {
+            String value = NativeIo.envGet(context, requireStringArg(args, "env.get"));
+            return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
+        }
+        private Object has(List<Object> args) {
+            return NativeIo.envHas(context, requireStringArg(args, "env.has"));
+        }
+    }
+
     private record StdioFacade(OresContext context) {
         private Object print(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.print");requireOne(args,"stdio.print");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.println");requireOne(args,"stdio.println");context.output().println(String.valueOf(args.getFirst()));return null;}
@@ -2863,6 +2993,18 @@ public final class OresEvalRootNode extends RootNode {
     private record StdoutFacade(OresContext context) {
         private Object write(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.write");requireOne(args,"stdio.stdout.write");context.output().print(String.valueOf(args.getFirst()));context.output().flush();return null;}
         private Object println(List<Object> args){context.requireCapability(IsolatePolicy.Capability.STDOUT,"stdio.stdout.println");requireOne(args,"stdio.stdout.println");context.output().println(String.valueOf(args.getFirst()));return null;}
+    }
+    private record StdinFacade(OresContext context) {
+        private Object readLine(List<Object> args) {
+            context.requireCapability(IsolatePolicy.Capability.STDIN, "stdio.stdin.read_line");
+            requireZero(args, "stdio.stdin.read_line");
+            try {
+                String value = context.input().readLine();
+                return value == null ? new OptionValue(false, null) : new OptionValue(true, value);
+            } catch (java.io.IOException failure) {
+                throw new IllegalStateException("stdin read failed: " + failure.getMessage(), failure);
+            }
+        }
     }
     private record ProcessFacade(OresContext context) {
         private String contextId(){context.requireCapability(IsolatePolicy.Capability.PROCESS_INFO,"process.context_id");return context.contextId().toString();}
@@ -2875,6 +3017,8 @@ public final class OresEvalRootNode extends RootNode {
     }
     private static void requireZero(List<Object> args,String name){if(!args.isEmpty())throw new IllegalArgumentException(name+" expects no arguments");}
     private static void requireOne(List<Object> args,String name){if(args.size()!=1)throw new IllegalArgumentException(name+" expects one argument");}
+    private static void requireTwo(List<Object> args,String name){if(args.size()!=2)throw new IllegalArgumentException(name+" expects two arguments");}
+    private static String requireString(Object value,String name){if(!(value instanceof String text))throw new IllegalArgumentException(name+" expects a String");return text;}
     private static String requireStringArg(List<Object> args,String name){
         requireOne(args,name);
         if(!(args.getFirst() instanceof String message)) throw new IllegalArgumentException(name+" expects a String message");
