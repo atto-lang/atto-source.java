@@ -1791,6 +1791,7 @@ public final class ActorRuntime implements AutoCloseable {
                 IsolatePolicy.Capability.STDIN,
                 IsolatePolicy.Capability.STDOUT,
                 IsolatePolicy.Capability.PROCESS_INFO,
+                IsolatePolicy.Capability.GC_CONTROL,
                 IsolatePolicy.Capability.ACTOR_SHARE_READONLY,
                 IsolatePolicy.Capability.SHARED_MEMORY,
                 IsolatePolicy.Capability.NETWORK,
