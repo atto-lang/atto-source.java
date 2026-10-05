@@ -3,6 +3,7 @@ package dev.oreslang;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.runtime.ActorRuntime;
+import dev.oreslang.runtime.ImmutableGuestValue;
 import dev.oreslang.runtime.math.ElectricalMath;
 import dev.oreslang.runtime.math.OresComplex;
 import dev.oreslang.runtime.math.OresMatrix;
@@ -124,6 +125,21 @@ final class MathLanguageTest {
                   return real.solve(complex_rhs);
                 }
                 """)));
+    }
+
+    @Test
+    void immutableGuestValueTrustBoundaryIsClosedToAuditedRuntimeTypes() {
+        assertTrue(ImmutableGuestValue.class.isSealed());
+        var permitted = java.util.Arrays.stream(ImmutableGuestValue.class.getPermittedSubclasses())
+                .map(Class::getName)
+                .collect(java.util.stream.Collectors.toSet());
+
+        assertEquals(
+                java.util.Set.of(
+                        OresComplex.class.getName(),
+                        OresMatrix.class.getName(),
+                        OresVector.class.getName()),
+                permitted);
     }
 
     @Test
