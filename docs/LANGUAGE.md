@@ -333,7 +333,7 @@ val inv = a.inverse();
 val n = a.norm();
 ```
 
-`@` is reserved for linear-algebra multiplication. This avoids the common ambiguity between element-wise/scalar multiplication and matrix multiplication. Matrix shape compatibility is checked at runtime; numeric category compatibility is checked statically. The JVM runtime delegates dense kernels and decompositions to EJML while keeping Oreslang values immutable at the guest-language boundary. Those values implement the runtime's immutable-guest-value contract, so trusted actors can transport them without copying mutable host objects; mailbox/memory quotas still charge their logical primitive-buffer footprint.
+`@` is reserved for linear-algebra multiplication. This avoids the common ambiguity between element-wise/scalar multiplication and matrix multiplication. Matrix shape compatibility is checked at runtime; numeric category compatibility is checked statically. Oreslang defines the reference dense semantics itself using contiguous row-major primitive storage and Oreslang-compatible complex arithmetic; no Java numerical library defines the result. The Truffle implementation is only a VM representation. Optional native BLAS/GPU/JNI backends may accelerate the same operations, but they must preserve Oreslang's shape, aliasing, precision, complex-arithmetic, and failure semantics. Numeric values remain immutable at the guest-language boundary, so trusted actors can transport them without exposing mutable host objects; mailbox/memory quotas still charge their logical primitive-buffer footprint.
 
 The `math` facade contains constants and complex helpers:
 
@@ -355,7 +355,7 @@ val y = ee.admittance(total);
 val source = ee.phasor_deg(120.0, -30.0);
 ```
 
-The core facade is intentionally small. Larger FFT, signal-processing, sparse-matrix, optimization, or domain-specific packages can bind to mature JVM libraries behind the same Oreslang types rather than reimplementing numerical kernels.
+The core facade is intentionally small. Larger FFT, signal-processing, sparse-matrix, optimization, or domain-specific packages should be implemented in Oreslang first where practical. Hardware-optimized libraries may be reached through a narrow native/JNI/FFI accelerator ABI, but those adapters are optional implementations, not the semantic authority and not guest-visible Java APIs.
 
 ## Lambdas
 
