@@ -140,6 +140,15 @@ public final class Ast {
             body = List.copyOf(body);
         }
 
+        /** Compatibility constructor for generator-aware passes without explicit effects. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean generator, boolean nonLexical, ActorKind actorKind,
+                            List<String> genericParameters, List<Param> parameters,
+                            TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
+            this(name, kind, visibility, async, generator, nonLexical, false, false, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
+
         /** Compatibility constructor for non-generator callables without explicit effects. */
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             boolean nonLexical, ActorKind actorKind, List<String> genericParameters,
