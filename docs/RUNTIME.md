@@ -131,7 +131,7 @@ Actor failures are fail-stop in this layer. The actor ref retains the failure ca
 
 ## Immutable numeric guest values
 
-Runtime-owned numeric aggregates such as `complex`, `Matrix<float|complex>`, and `Vector<float|complex>` are deeply immutable at the Oreslang boundary. Their backing numerical-library objects are private implementation details and are never exposed to guest code.
+Runtime-owned numeric aggregates such as `complex`, `Matrix<float|complex>`, and `Vector<float|complex>` are deeply immutable at the Oreslang boundary. The portable reference representation uses contiguous primitive storage owned by the Oreslang runtime; no Java numerical-library object is part of the value model. Optional JNI/FFI accelerators may consume validated primitive buffers or opaque native resource IDs, but those handles never become guest-visible state.
 
 Such values implement `ImmutableGuestValue`. Trusted actor transport may therefore retain the immutable value instead of deep-copying a primitive buffer on every message, while actor mailbox and memory accounting charges the value's conservative logical byte footprint. The marker is a runtime-owned contract: an implementation must not expose mutable backing state.
 
