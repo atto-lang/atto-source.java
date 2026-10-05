@@ -2116,13 +2116,15 @@ public final class TypeChecker {
     private void validateFieldLayout(Ast.ClassDecl klass) {
         collectFieldLayout(
                 klass,
+                nominalClassType(klass),
                 new LinkedHashMap<>(),
                 new LinkedHashSet<>());
     }
 
     private void collectFieldLayout(
             Ast.ClassDecl klass,
-            Map<String, Ast.ClassDecl> owners,
+            Named concreteType,
+            Map<String, ResolvedField> fields,
             Set<Ast.ClassDecl> stack) {
         if (!stack.add(klass)) {
             throw new IllegalArgumentException(
@@ -2131,7 +2133,9 @@ public final class TypeChecker {
 
         for (Ast.TypeRef parentRef : klass.parents()) {
             Ast.ClassDecl parent = resolveClassParent(parentRef, klass);
-            if (parent != null) collectFieldLayout(parent, owners, stack);
+            if (parent == null) continue;
+            Named parentType = concreteParentType(parentRef, klass, concreteType);
+            collectFieldLayout(parent, parentType, fields, stack);
         }
 
         Set<String> localNames = new LinkedHashSet<>();
@@ -2141,13 +2145,17 @@ public final class TypeChecker {
                         "duplicate field '" + klass.name() + "." + field.name() + "'");
             }
 
-            Ast.ClassDecl previous = owners.putIfAbsent(field.name(), klass);
-            if (previous != null && previous != klass) {
+            ResolvedField candidate = new ResolvedField(klass, concreteType, field);
+            ResolvedField previous = fields.putIfAbsent(field.name(), candidate);
+            if (previous != null
+                    && (previous.owner() != candidate.owner()
+                            || !previous.ownerType().equals(candidate.ownerType()))) {
                 throw new IllegalArgumentException(
                         "field '" + klass.name() + "." + field.name()
-                                + "' collides with inherited field declared by "
-                                + previous.name()
-                                + "; class storage field names must be unique across inheritance");
+                                + "' collides with inherited field slot "
+                                + previous.owner().name() + previous.ownerType().arguments()
+                                + "; class storage field names must be unique across inheritance "
+                                + "and generic diamond paths must use the same concrete instantiation");
             }
         }
 
