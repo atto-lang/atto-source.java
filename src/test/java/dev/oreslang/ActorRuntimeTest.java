@@ -992,6 +992,65 @@ final class ActorRuntimeTest {
     }
 
     @Test
+    void actorCallableInvokeWaitsForCarrierToLeaveTurnExecutor() throws Exception {
+        CountDownLatch turnExecutorAfterGuestTurn = new CountDownLatch(1);
+        CountDownLatch releaseCarrier = new CountDownLatch(1);
+
+        ActorRuntime.TurnExecutor turnExecutor = turn -> {
+            turn.run();
+            turnExecutorAfterGuestTurn.countDown();
+
+            boolean released = false;
+            while (!released) {
+                try {
+                    released = releaseCarrier.await(25, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException ignored) {
+                    // Keep the carrier inside the host/Truffle boundary until
+                    // the test explicitly releases it.
+                }
+            }
+        };
+
+        ActorRuntime runtime = new ActorRuntime(
+                IsolatePolicy.developer(),
+                new ActorRuntime.DispatcherConfig(1, 1, 8),
+                turnExecutor);
+        AtomicReference<Integer> result = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread caller = new Thread(() -> {
+            try {
+                result.set(runtime.invoke(
+                        ActorRuntime.ActorKind.SHARED,
+                        41,
+                        (message, context) -> message + 1));
+            } catch (Throwable problem) {
+                failure.set(problem);
+            }
+        });
+
+        try {
+            caller.start();
+            assertTrue(turnExecutorAfterGuestTurn.await(2, TimeUnit.SECONDS));
+
+            Thread.sleep(50);
+            assertTrue(
+                    caller.isAlive(),
+                    "invoke must not return while its actor carrier is still inside the turn executor");
+
+            releaseCarrier.countDown();
+            caller.join(1000);
+
+            assertFalse(caller.isAlive());
+            assertNull(failure.get());
+            assertEquals(42, result.get());
+        } finally {
+            releaseCarrier.countDown();
+            runtime.close();
+        }
+    }
+
+    @Test
     void closeWaitsForCarrierToLeaveTurnExecutorAfterActorFinalizes() throws Exception {
         CountDownLatch turnExecutorAfterGuestTurn = new CountDownLatch(1);
         CountDownLatch releaseCarrier = new CountDownLatch(1);
