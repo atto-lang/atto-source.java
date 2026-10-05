@@ -369,6 +369,62 @@ final class ParserTest {
     }
 
     @Test
+    void actorRefInterfaceCapabilityRequiresActorSafeProtocolShape() {
+        IllegalArgumentException field = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          state: int;
+                          fnc run(): void;
+                        end
+
+                        define actor Holder as
+                          pub accept(target: ActorRef<BadAPI>): void { return; }
+                        end
+                        """)));
+        assertTrue(field.getMessage().contains("methods only"), field.getMessage());
+
+        IllegalArgumentException generic = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          fnc run<T>(value: T): void;
+                        end
+
+                        define actor Holder as
+                          pub accept(target: ActorRef<BadAPI>): void { return; }
+                        end
+                        """)));
+        assertTrue(generic.getMessage().contains("generic parameters"), generic.getMessage());
+
+        IllegalArgumentException mutable = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          fnc run(value: int mut): void;
+                        end
+
+                        define actor Holder as
+                          pub accept(target: ActorRef<BadAPI>): void { return; }
+                        end
+                        """)));
+        assertTrue(mutable.getMessage().contains("'mut'"), mutable.getMessage());
+
+        IllegalArgumentException future = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        define interface BadAPI
+                          fnc run(): Future<int>;
+                        end
+
+                        define actor Holder as
+                          pub accept(target: ActorRef<BadAPI>): void { return; }
+                        end
+                        """)));
+        assertTrue(future.getMessage().contains("Future"), future.getMessage());
+    }
+
+    @Test
     void actorWithoutLocalOrInheritedPublicProtocolIsRejected() {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
