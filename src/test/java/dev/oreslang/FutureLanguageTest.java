@@ -416,8 +416,8 @@ final class FutureLanguageTest {
     void ownershipCheckerUsesAwaitablePayloadTypeAfterAwait() {
         assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
                 define class IntBox implements Awaitable<int> as
-                  pub getAwait() => Future<int> {
-                    return Future.completed(7);
+                  pub async getAwait() => int {
+                    return 7;
                   }
                 end
 
