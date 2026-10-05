@@ -498,14 +498,17 @@ public final class OresEvalRootNode extends RootNode {
                     };
                     case "rows" -> (Invokable) args -> {
                         requireZero(args, "GpuMatrix.rows");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.rows");
                         return matrix.rows();
                     };
                     case "cols" -> (Invokable) args -> {
                         requireZero(args, "GpuMatrix.cols");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.cols");
                         return matrix.cols();
                     };
                     case "length" -> (Invokable) args -> {
                         requireZero(args, "GpuMatrix.length");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.length");
                         return matrix.length();
                     };
                     case "release" -> (Invokable) args -> {
