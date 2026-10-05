@@ -751,10 +751,21 @@ for item of values do
   work(item)
 done
 
+for [key, value] of entries do
+  consume(key, value)
+done
+
+for let [key, value] of mutable_entries {
+  value = normalize(value);
+  consume(key, value);
+}
+
 for (val item of values) {
   work(item);
 }
 ```
+
+A sequence pattern defaults to `val` bindings. `for let [k, v] ...` or `for const [k, v] ...` applies that binding kind to the pattern, while an explicit kind inside the pattern propagates to subsequent names. `_` discards one tuple/list position without creating a binding.
 
 A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 
