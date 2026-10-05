@@ -1,5 +1,6 @@
 package dev.oreslang.runtime;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -144,6 +145,10 @@ final class ActorEventBusTest {
 
             ActorEventBus.PublishReceipt second = group.events().publishSystem("cuts", 2);
             assertFalse(second.completion().isDone(), "full reliable subscription must apply async backpressure");
+            assertThrows(
+                    ActorEventBus.EventBackpressureException.class,
+                    () -> group.events().publishSystem("cuts", 3),
+                    "ignoring reliable futures must not create an unbounded pending-writer queue");
 
             subscriber.send("read");
             second.completion().get(2, TimeUnit.SECONDS);
@@ -224,10 +229,14 @@ final class ActorEventBusTest {
             assertTrue(group.events().reduceDouble("upper_bound", 80.0).changed());
             assertFalse(group.events().reduceDouble("upper_bound", 90.0).changed());
             assertEquals(80.0, group.events().readDoubleReduction("upper_bound"));
+            assertDoesNotThrow(() -> group.events().defineDoubleReduction(
+                    "upper_bound",
+                    ActorEventBus.DoubleReductionKind.MIN,
+                    Double.POSITIVE_INFINITY));
 
             subscriber.send("read");
             assertTrue(read.await(2, TimeUnit.SECONDS));
-            assertEquals(80.0, observed.get());
+            assertEquals(80.0, observed.get().doubleValue());
         }
     }
 
