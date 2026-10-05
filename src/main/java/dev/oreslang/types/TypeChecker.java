@@ -673,6 +673,13 @@ public final class TypeChecker {
             return;
         }
         if (stmt instanceof Ast.SelectStmt selected) {
+            if (selected.mode() == Ast.WaitMode.NONBLOCKING
+                    && currentActorKind == Ast.ActorKind.NONE) {
+                throw new IllegalArgumentException(
+                        "static 'nb select { ... }' requires an actor execution domain "
+                                + "because its selected branch executes later; "
+                                + "use 'nb select from cases' when only a Future<SelectResult> is needed");
+            }
             for (Ast.SelectArm arm : selected.arms()) {
                 Env armEnv = new Env(env);
                 if (arm.operation() != Ast.ChannelOperation.DEFAULT) {
@@ -1372,6 +1379,19 @@ public final class TypeChecker {
             }
             Type mutexMember = builtinMutexMember(receiver, member.member());
             if (mutexMember != null) return mutexMember;
+
+            Type selectedReceiver = deref(receiver);
+            if (selectedReceiver instanceof Named selected
+                    && selected.name().equals("SelectResult")) {
+                return switch (member.member()) {
+                    case "index" -> Primitive.INT;
+                    case "operation" -> Primitive.STRING;
+                    case "value" -> Unknown.INSTANCE;
+                    default -> throw new IllegalArgumentException(
+                            "unknown SelectResult member '" + member.member() + "'");
+                };
+            }
+
             receiver = unwrapMutexGuard(receiver);
             if (receiver instanceof Named named && named.name().equals("stdio.stdout") && member.member().equals("write")) {
                 return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
