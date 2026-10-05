@@ -292,7 +292,8 @@ public final class OresFuture<T> implements Future<T>, Awaitable<T> {
             Awaitable<? extends U> awaited = Objects.requireNonNull(
                     mapper.apply(value),
                     "Future.flat_map mapper returned null");
-            OresFuture<? extends U> nested = Objects.requireNonNull(
+            @SuppressWarnings("unchecked")
+            OresFuture<U> nested = (OresFuture<U>) Objects.requireNonNull(
                     awaited.getAwaited(),
                     "Awaitable.get_awaited returned null");
             nested.whenCompleteRuntime((nestedValue, failure) -> {
