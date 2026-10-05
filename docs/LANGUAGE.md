@@ -234,7 +234,7 @@ define class Combined extends Cacheable, Serializable implements HasId, Named as
 end
 ```
 
-Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child members may override inherited members only with compatible types.
+Parent order is significant and is the deterministic v0.2 method-resolution order after child methods: the first declared parent is searched before the next parent. The static checker rejects inheritance cycles and incompatible inherited member shapes. Child **methods** may override inherited methods only with compatible types. Storage fields are not virtual slots: a field name must be unique across the effective inheritance graph, so child fields may not shadow inherited fields and two distinct parent fields may not collide. Reaching the same field declaration twice through a diamond is not a collision.
 
 `Object` and `List` are extensible base classes:
 
