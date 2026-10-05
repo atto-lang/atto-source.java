@@ -51,17 +51,53 @@ public final class TypeChecker {
     private final Set<String> ambiguousInterfaces = new HashSet<>();
     private final Set<String> ambiguousTypeAliases = new HashSet<>();
     private final Set<String> importedValues = new HashSet<>();
+    private final Set<String> importedTypeBindingNames = new HashSet<>();
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
 
     public static Ast.Program check(Ast.Program program) {
+        return check(program, Map.of());
+    }
+
+    public static Ast.Program check(
+            Ast.Program program,
+            Map<String, Ast.Decl> importedTypes) {
+        if (importedTypes == null) throw new IllegalArgumentException("imported types cannot be null");
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
+        checker.collectImportedTypes(importedTypes);
         checker.collect(program);
         checker.validate(program);
         OwnershipChecker.check(program);
         return program;
+    }
+
+    private void collectImportedTypes(Map<String, Ast.Decl> importedTypes) {
+        for (Map.Entry<String, Ast.Decl> entry : importedTypes.entrySet()) {
+            String localName = entry.getKey();
+            if (localName == null || localName.isBlank()) {
+                throw new IllegalArgumentException("imported type binding name cannot be blank");
+            }
+            Ast.Decl declaration = entry.getValue();
+            if (declaration instanceof Ast.ClassDecl klass) {
+                if (classes.putIfAbsent(localName, klass) != null) {
+                    throw new IllegalArgumentException("duplicate imported class binding '" + localName + "'");
+                }
+            } else if (declaration instanceof Ast.InterfaceDecl iface) {
+                if (interfaces.putIfAbsent(localName, iface) != null) {
+                    throw new IllegalArgumentException("duplicate imported interface binding '" + localName + "'");
+                }
+            } else if (declaration instanceof Ast.TypeAliasDecl alias) {
+                if (typeAliases.putIfAbsent(localName, alias) != null) {
+                    throw new IllegalArgumentException("duplicate imported type binding '" + localName + "'");
+                }
+            } else {
+                throw new IllegalArgumentException(
+                        "imported type binding '" + localName + "' does not refer to a class, interface, or type alias");
+            }
+            importedTypeBindingNames.add(localName);
+        }
     }
 
     private void validateImports(Ast.Program program) {
@@ -90,7 +126,7 @@ public final class TypeChecker {
                 if (localNames.contains(name)) {
                     throw new IllegalArgumentException("imported name '" + name + "' conflicts with a local or builtin name");
                 }
-                if (imported.kind() != Ast.ImportKind.CLASS || ImportRules.isJavaPath(imported.path())) {
+                if (ImportRules.isRuntimeValueImport(imported)) {
                     importedValues.add(name);
                 }
             }
@@ -2642,13 +2678,19 @@ public final class TypeChecker {
                 Ast.ClassDecl knownClass = findClass(ref.name());
                 if (knownClass != null) {
                     validateGenericArity(ref, knownClass.genericParameters(), "class " + knownClass.name());
-                    yield new Named(qualifiedClassName(knownClass),
+                    String className = importedTypeBindingNames.contains(ref.name())
+                            ? ref.name()
+                            : qualifiedClassName(knownClass);
+                    yield new Named(className,
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 Ast.InterfaceDecl knownInterface = findInterface(ref.name());
                 if (knownInterface != null) {
                     validateGenericArity(ref, knownInterface.genericParameters(), "interface " + knownInterface.name());
-                    yield new Named(qualifiedInterfaceName(knownInterface),
+                    String interfaceName = importedTypeBindingNames.contains(ref.name())
+                            ? ref.name()
+                            : qualifiedInterfaceName(knownInterface);
+                    yield new Named(interfaceName,
                             ref.arguments().stream().map(arg -> resolve(arg, generics, self)).toList());
                 }
                 if (ref.inferArguments()) {
