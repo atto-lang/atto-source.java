@@ -310,7 +310,20 @@ public final class OwnershipChecker {
                                     Origin.LOCAL));
                 }
 
-                checkBlock(arm.body(), armScope, returnType);
+                if (selected.mode() == Ast.WaitMode.NONBLOCKING) {
+                    int previousLoopDepth = loopDepth;
+                    loopDepth = 0;
+                    try {
+                        checkBlock(
+                                arm.body(),
+                                armScope,
+                                Ast.TypeRef.simple("void"));
+                    } finally {
+                        loopDepth = previousLoopDepth;
+                    }
+                } else {
+                    checkBlock(arm.body(), armScope, returnType);
+                }
                 armScope.close();
                 Map<VarState, StateSnapshot> exit = stateSnapshot(scope);
 
