@@ -85,6 +85,58 @@ final class MathExecutionTest {
     }
 
     @Test
+    void legacyEeFacadeStaysInParityWithOreslangReferenceFormulas() throws Exception {
+        Path electrical = tempDir.resolve("electrical-parity.ores");
+        Path source = tempDir.resolve("main-parity.ores");
+        Files.copy(Path.of("stdlib/math/electrical.ores"), electrical);
+
+        Files.writeString(source, """
+                import fnc {
+                  omega as ores_omega,
+                  z_r as ores_z_r,
+                  z_l as ores_z_l,
+                  z_c_unchecked as ores_z_c,
+                  admittance as ores_admittance,
+                  parallel as ores_parallel
+                } from "./electrical-parity.ores";
+
+                pub routine main() => void {
+                  val w = ores_omega(60.0);
+                  stdio.stdout.write(w == ee.omega(60.0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(ores_z_r(100.0) == ee.z_r(100.0));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(ores_z_l(w, 0.01) == ee.z_l(w, 0.01));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(ores_z_c(w, 0.0001) == ee.z_c(w, 0.0001));
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(
+                    ores_parallel(ores_z_r(100.0), ores_z_r(100.0))
+                      == ee.parallel(ee.z_r(100.0), ee.z_r(100.0))
+                  );
+                  stdio.stdout.write("|");
+                  stdio.stdout.write(
+                    ores_admittance(ores_z_r(100.0))
+                      == ee.admittance(ee.z_r(100.0))
+                  );
+                  return;
+                }
+                """);
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        LinkedProgramRunner.run(
+                source,
+                IsolatePolicy.developer(),
+                ExecutionProfile.serverJit(),
+                output,
+                new ByteArrayOutputStream());
+
+        assertEquals(
+                "true|true|true|true|true|true",
+                output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void kotlinStyleFunctionAliasExecutesAcrossLinkedCodeUnits() throws Exception {
         Path library = tempDir.resolve("solver.ores");
         Path source = tempDir.resolve("main.ores");
