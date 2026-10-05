@@ -221,8 +221,14 @@ public final class Parser {
         if (match(ROUTINE)) return parseFunction(annotations, modifiers, Ast.CallableKind.ROUTINE);
         if (modifiers.structural) throw error(peek(), "'structural' applies only to fnc, routine, methods, or interface callable signatures");
         if (modifiers.nonLexical) throw error(peek(), "'nlex' applies only to fnc, routine, or lambda");
-        if (match(INTERFACE)) return parseInterface(modifiers.visibility);
-        if (match(TYPE)) return parseTypeAlias();
+        if (match(INTERFACE)) {
+            rejectCallableStructuralAnnotation(annotations, "interface declarations");
+            return parseInterface(modifiers.visibility);
+        }
+        if (match(TYPE)) {
+            rejectCallableStructuralAnnotation(annotations, "type aliases");
+            return parseTypeAlias();
+        }
         if (isBindingKind(peek().type())) return parseModuleBinding(annotations, modifiers.visibility);
         return null;
     }
@@ -555,7 +561,7 @@ public final class Parser {
                 if (asyncSeen) throw error(previous(), "duplicate 'async' modifier");
                 asyncSeen = true;
                 async = true;
-            } else if (matchContextualKeyword("structural")) {
+            } else if (matchContextualStructuralModifier()) {
                 if (structuralSeen) throw error(previous(), "duplicate 'structural' modifier");
                 structuralSeen = true;
                 structural = true;
@@ -1895,6 +1901,19 @@ public final class Parser {
     }
 
     private boolean isBindingKind(Token.Type type) { return type == CONST || type == VAL || type == LET; }
+
+    private boolean matchContextualStructuralModifier() {
+        if (!check(IDENT) || !peek().lexeme().equals("structural")) return false;
+        // Preserve ordinary identifiers such as:
+        //   structural(): int { ... }
+        //   structural<T>(T value): T { ... }
+        //   structural: int
+        // The modifier spelling is only consumed when it is not already
+        // syntactically the member/declaration name.
+        if (checkNext(LPAREN) || checkNext(LT) || checkNext(COLON)) return false;
+        advance();
+        return true;
+    }
 
     private boolean matchContextualShared() {
         if (match(SHARED)) return true;
