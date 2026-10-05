@@ -1773,7 +1773,7 @@ public final class TypeChecker {
         if (type == Primitive.VOID
                 || !isSharedSafe(type, new LinkedHashSet<>(), Map.of())) {
             throw new IllegalArgumentException(
-                    where + " must be concrete owned task-safe data; borrows, futures, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
+                    where + " must be concrete owned task-safe data; borrows, futures, iterators, mutexes, functions, actor values, host capabilities, and unresolved generics cannot cross an async task boundary");
         }
     }
 
@@ -1818,7 +1818,11 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
+        if (named.name().equals("Mutex")
+                || named.name().equals("MutexGuard")
+                || named.name().equals("Future")
+                || named.name().equals("Iterator")
+                || named.name().equals("AsyncIterator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1852,6 +1856,7 @@ public final class TypeChecker {
 
         // Built-in sum/container values are data-only when their arguments pass.
         if (named.name().equals("Option") || named.name().equals("Result")
+                || named.name().equals("IteratorResult")
                 || named.name().equals("OptionUnwrapError")) {
             return;
         }
@@ -1899,12 +1904,17 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("Future") || named.name().equals("SharedMutex")
+                || named.name().equals("Iterator") || named.name().equals("AsyncIterator")) return false;
         if (named.name().equals("DynamicStruct")) {
             return named.arguments().size() == 1
                     && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
         }
         if (named.name().equals("OptionUnwrapError")) return named.arguments().isEmpty();
+        if (named.name().equals("IteratorResult")) {
+            return named.arguments().size() == 1
+                    && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
+        }
         if (named.name().equals("Option")) {
             return named.arguments().size() == 1 && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
         }
