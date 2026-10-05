@@ -44,6 +44,7 @@ public final class TypeChecker {
     private final Map<String, Ast.InterfaceDecl> interfaces = new HashMap<>();
     private final Map<String, Ast.TypeAliasDecl> typeAliases = new HashMap<>();
     private final Map<String, Ast.ModuleDecl> modules = new HashMap<>();
+    private final Map<String, ModuleType> importedModules = new HashMap<>();
 
     private final IdentityHashMap<Ast.ClassDecl, String> classOwners = new IdentityHashMap<>();
     private final IdentityHashMap<Ast.InterfaceDecl, String> interfaceOwners = new IdentityHashMap<>();
@@ -63,41 +64,85 @@ public final class TypeChecker {
     private int loopDepth;
 
     public static Ast.Program check(Ast.Program program) {
-        return check(program, Map.of());
+        return check(program, Map.of(), Map.of());
     }
 
-    /**
-     * Type-check one code unit with the public interface declarations selected
-     * by its already-resolved imports. Imported interfaces remain type-only:
-     * this does not grant runtime access to the dependency or its filesystem
-     * path.
-     */
     public static Ast.Program check(
             Ast.Program program,
             Map<String, Ast.InterfaceDecl> importedInterfaces) {
+        return check(program, importedInterfaces, Map.of());
+    }
+
+    /**
+     * Type-check one code unit with the public contracts and module handles
+     * selected by its already-resolved imports. Imported contracts are
+     * type-only; imported modules retain a precise public shape without
+     * granting any additional filesystem/runtime authority.
+     */
+    public static Ast.Program check(
+            Ast.Program program,
+            Map<String, Ast.InterfaceDecl> importedInterfaces,
+            Map<String, ModuleType> importedModuleTypes) {
         program = AnnotationExpander.expand(program);
         TypeChecker checker = new TypeChecker();
         checker.validateImports(program);
         checker.collectImportedInterfaces(importedInterfaces);
+        checker.collectImportedModules(importedModuleTypes);
         checker.collect(program);
         checker.validate(program);
         OwnershipChecker.check(program);
         return program;
     }
 
+    /**
+     * Compute one exported module's precise first-class type in the provider's
+     * own import/type context. The caller is still responsible for validating
+     * the provider unit as a whole.
+     */
+    public static ModuleType exportedModuleType(
+            Ast.Program program,
+            Map<String, Ast.InterfaceDecl> importedInterfaces,
+            String moduleName) {
+        program = AnnotationExpander.expand(program);
+        TypeChecker checker = new TypeChecker();
+        checker.validateImports(program);
+        checker.collectImportedInterfaces(importedInterfaces);
+        checker.collect(program);
+        Ast.ModuleDecl module = checker.modules.get(moduleName);
+        if (module == null || module.name().equals(Parser.ROOT_MODULE)) {
+            throw new IllegalArgumentException("unknown exported module '" + moduleName + "'");
+        }
+        return checker.moduleType(module);
+    }
+
     private void collectImportedInterfaces(Map<String, Ast.InterfaceDecl> imported) {
-        if (imported == null) throw new IllegalArgumentException("imported interface map cannot be null");
+        if (imported == null) throw new IllegalArgumentException("imported contract map cannot be null");
         for (Map.Entry<String, Ast.InterfaceDecl> entry : imported.entrySet()) {
             String localName = entry.getKey();
             Ast.InterfaceDecl iface = entry.getValue();
             if (localName == null || localName.isBlank() || iface == null) {
-                throw new IllegalArgumentException("imported interfaces require a non-blank local name and declaration");
+                throw new IllegalArgumentException("imported contracts require a non-blank local name and declaration");
             }
             Ast.InterfaceDecl previous = interfaces.putIfAbsent(localName, iface);
             if (previous != null && previous != iface) {
-                throw new IllegalArgumentException("duplicate imported interface binding '" + localName + "'");
+                throw new IllegalArgumentException("duplicate imported contract binding '" + localName + "'");
             }
             importedInterfaceNames.putIfAbsent(iface, localName);
+        }
+    }
+
+    private void collectImportedModules(Map<String, ModuleType> imported) {
+        if (imported == null) throw new IllegalArgumentException("imported module type map cannot be null");
+        for (Map.Entry<String, ModuleType> entry : imported.entrySet()) {
+            String localName = entry.getKey();
+            ModuleType moduleType = entry.getValue();
+            if (localName == null || localName.isBlank() || moduleType == null) {
+                throw new IllegalArgumentException("imported modules require a non-blank local name and type");
+            }
+            ModuleType previous = importedModules.putIfAbsent(localName, moduleType);
+            if (previous != null && !previous.equals(moduleType)) {
+                throw new IllegalArgumentException("duplicate imported module binding '" + localName + "'");
+            }
         }
     }
 
@@ -1092,6 +1137,8 @@ public final class TypeChecker {
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
             if (moduleNamespace != null) return moduleType(moduleNamespace);
+            ModuleType importedModule = importedModules.get(name.name());
+            if (importedModule != null) return importedModule;
             Ast.ClassDecl classNamespace = findClass(name.name());
             if (classNamespace != null) return new ClassNamespace(qualifiedClassName(classNamespace));
             if (importedValues.contains(name.name())) return Unknown.INSTANCE;
@@ -1663,7 +1710,11 @@ public final class TypeChecker {
             }
             if (member.receiver() instanceof Ast.NameExpr name
                     && (name.name().equals("process") || name.name().equals("actor"))) return Unknown.INSTANCE;
-            if (member.receiver() instanceof Ast.NameExpr name && importedValues.contains(name.name())) return Unknown.INSTANCE;
+            if (member.receiver() instanceof Ast.NameExpr name
+                    && importedValues.contains(name.name())
+                    && !importedModules.containsKey(name.name())) {
+                return Unknown.INSTANCE;
+            }
 
             if (receiver instanceof ClassNamespace classNamespace) {
                 Ast.ClassDecl klass = findClass(classNamespace.className());
