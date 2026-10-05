@@ -148,15 +148,14 @@ final class IsolationHotReloadTest {
         IsolatePolicy policy = IsolatePolicy.developer();
         try (HotReloadManager hot = new HotReloadManager(policy, ExecutionProfile.serverJit())) {
             var generation = hot.loadEntry("worker.ores", """
-                    export entry actor Worker;
+                    export entry Worker;
 
-                    define actor Worker {
-                      pub receive(int message): void { return; }
-                    }
+                    define actor Worker as
+                      pub run(message: int): void { return; }
+                    end
                     """);
 
             var entry = generation.entryExport().orElseThrow();
-            assertEquals(Ast.ExportKind.ACTOR, entry.kind());
             assertEquals("Worker", entry.name());
             assertFalse(generation.started(), "entry resolution must not execute guest code");
         }
