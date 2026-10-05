@@ -363,6 +363,7 @@ public final class GpuRuntime {
         Backend backend = requireBackend("gpu callable '" + callable + "'");
         validateDeviceOwnership(invocation.arguments(), backend);
         List<ResourcePin> pins = pinDeviceResources(invocation.arguments(), backend);
+        Throwable primaryFailure = null;
         try {
             BackendInvocation backendInvocation = new BackendInvocation(
                     callable, callableKind, lowerBackendArguments(invocation.arguments(), backend));
@@ -379,8 +380,16 @@ public final class GpuRuntime {
             Object frozen = freezeValue(result, true);
             validateDeviceOwnership(frozen, backend);
             return frozen;
+        } catch (RuntimeException | Error failure) {
+            primaryFailure = failure;
+            throw failure;
         } finally {
-            closePins(pins);
+            try {
+                closePins(pins);
+            } catch (RuntimeException closeFailure) {
+                if (primaryFailure != null) primaryFailure.addSuppressed(closeFailure);
+                else throw closeFailure;
+            }
         }
     }
 
