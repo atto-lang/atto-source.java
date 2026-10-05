@@ -58,6 +58,43 @@ final class OresFutureCallbackTest {
     }
 
     @Test
+    void actorAwaitOfPreSettledFutureStillResumesOnLaterTurn() throws Exception {
+        OresFuture<Integer> ready = OresFuture.completed(42);
+        AtomicBoolean insideOriginalBehavior = new AtomicBoolean();
+        AtomicBoolean resumedInline = new AtomicBoolean();
+        java.util.concurrent.CountDownLatch resumed =
+                new java.util.concurrent.CountDownLatch(1);
+
+        try (ActorRuntime runtime = new ActorRuntime()) {
+            var actor = runtime.<String>spawn(() -> (message, context) -> {
+                insideOriginalBehavior.set(true);
+                try {
+                    context.suspendOn(
+                            ready,
+                            (value, failure, resumedContext) -> {
+                                resumedInline.set(insideOriginalBehavior.get());
+                                assertNull(failure);
+                                assertEquals(42, value);
+                                resumed.countDown();
+                                resumedContext.self().stop();
+                            });
+                } finally {
+                    insideOriginalBehavior.set(false);
+                }
+            });
+
+            actor.send("await-ready");
+
+            assertTrue(resumed.await(2, TimeUnit.SECONDS));
+            assertTrue(actor.awaitTermination(2, TimeUnit.SECONDS));
+            assertFalse(
+                    resumedInline.get(),
+                    "pre-settled await must unwind the original actor turn before resumption");
+            assertEquals(0, ready.pendingRuntimeWaiterCount());
+        }
+    }
+
+    @Test
     void stoppingSuspendedActorDetachesNeverSettlingFutureWaiter() throws Exception {
         OresFuture<Integer> never = new OresFuture<>();
 
