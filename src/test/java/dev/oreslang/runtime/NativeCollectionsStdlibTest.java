@@ -72,4 +72,88 @@ final class NativeCollectionsStdlibTest {
             Files.deleteIfExists(source);
         }
     }
+
+    @Test
+    void functionalSequenceOperatorsAreEagerTypePreservingAndNonMutating() throws Exception {
+        Path source = Files.createTempFile("ores-native-functional-collections-", ".ores");
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        try {
+            Files.writeString(source, """
+                    import module collections from "std/collections";
+
+                    fnc twice(int value): int {
+                      return value * 2;
+                    }
+
+                    fnc is_even(int value): bool {
+                      return value % 2 == 0;
+                    }
+
+                    fnc add_ints(int total, int value): int {
+                      return total + value;
+                    }
+
+                    pub routine main(): void {
+                      let list = new collections.List<int>();
+                      list.add(1);
+                      list.add(2);
+                      list.add(3);
+                      val list_mapped = list.map(twice);
+                      val list_filtered = list.filter(is_even);
+                      stdio.println(list.size());
+                      stdio.println(list_mapped.get(2));
+                      stdio.println(list_filtered.size());
+                      stdio.println(list_filtered.get(0));
+                      stdio.println(list.reduce(0, add_ints));
+                      stdio.println(list.reduce(add_ints).unwrap());
+
+                      let array_list = new collections.ArrayList<int>();
+                      array_list.add(4);
+                      array_list.add(5);
+                      val array_mapped = array_list.map(twice);
+                      val array_filtered = array_list.filter(is_even);
+                      stdio.println(array_list.size());
+                      stdio.println(array_mapped.get(1));
+                      stdio.println(array_filtered.get(0));
+                      stdio.println(array_list.reduce(10, add_ints));
+
+                      let vector = new collections.Vector<int>();
+                      vector.add(6);
+                      vector.add(7);
+                      val vector_mapped = vector.map(twice);
+                      val vector_filtered = vector.filter(is_even);
+                      stdio.println(vector.size());
+                      stdio.println(vector_mapped.get(1));
+                      stdio.println(vector_filtered.get(0));
+                      stdio.println(vector.reduce(add_ints).unwrap());
+
+                      let empty = new collections.Vector<int>();
+                      stdio.println(empty.reduce(add_ints).is_none());
+                      return;
+                    }
+                    """);
+
+            assertDoesNotThrow(() -> LinkedProgramRunner.run(
+                    source,
+                    IsolatePolicy.developer(),
+                    ExecutionProfile.serverJit(),
+                    out,
+                    err));
+
+            String errors = err.toString(StandardCharsets.UTF_8);
+            String output = out.toString(StandardCharsets.UTF_8).replace("\r\n", "\n");
+
+            assertTrue(output.contains("3\n6\n1\n2\n6\n6\n"),
+                    () -> "List map/filter/reduce failed or mutated source, stdout=" + output + ", stderr=" + errors);
+            assertTrue(output.contains("2\n10\n4\n19\n"),
+                    () -> "ArrayList map/filter/reduce failed, stdout=" + output + ", stderr=" + errors);
+            assertTrue(output.contains("2\n14\n6\n13\ntrue\n"),
+                    () -> "Vector map/filter/reduce failed, stdout=" + output + ", stderr=" + errors);
+        } finally {
+            Files.deleteIfExists(source);
+        }
+    }
+
 }
