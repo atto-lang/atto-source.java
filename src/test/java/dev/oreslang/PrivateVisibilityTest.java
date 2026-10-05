@@ -210,6 +210,10 @@ final class PrivateVisibilityTest {
                   private static fnc hidden(): int {
                     return 13;
                   }
+
+                  private [Symbol.iterator](): Array<int> {
+                    return arr[1, 2, 3];
+                  }
                 end
 
                 pub fnc make_vault(): Vault {
@@ -264,6 +268,25 @@ final class PrivateVisibilityTest {
                 PolyglotException.class,
                 () -> runLinked(destructureMain));
         assertTrue(destructureFailure.getMessage().contains("private field"));
+
+        Path iteratorMain = temp.resolve("iterator-main.ores");
+        Files.writeString(iteratorMain, """
+                import * as external from "./vault.ores";
+
+                pub routine main(): void {
+                  val vault = external.make_vault();
+                  for value of vault do
+                    stdio.stdout.write(value);
+                  done
+                  return;
+                }
+                """);
+
+        PolyglotException iteratorFailure = assertThrows(
+                PolyglotException.class,
+                () -> runLinked(iteratorMain));
+        assertTrue(iteratorFailure.getMessage().contains("private method"));
+        assertTrue(iteratorFailure.getMessage().contains("Symbol.iterator"));
     }
 
     private static String run(String program) throws Exception {
