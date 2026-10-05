@@ -103,6 +103,77 @@ final class EmbeddingIntrinsicRuntimeTest {
     }
 
     @Test
+    void meanPoolingIntrinsicSkipsPaddingAndCanNormalize() throws Exception {
+        String output = run("""
+                define class TokenEmbeddingBatch as
+                  pub val int rows;
+                  pub val int tokens_per_row;
+                  pub val int dimensions;
+                  pub val List<float> values;
+                  pub val List<bool> attention_mask;
+                  pub val String model_id;
+                  pub val String model_revision;
+                end
+
+                @Intrinsic(EmbeddingMeanPool)
+                fnc mean_pool_token_embeddings_into(
+                  &TokenEmbeddingBatch batch,
+                  List<float> mut output,
+                  bool normalize_output
+                ): Result<List<float>, String> {
+                  return Err("fallback mean-pool body executed");
+                }
+
+                pub routine main(): void {
+                  val TokenEmbeddingBatch tokens = new TokenEmbeddingBatch(
+                    2,
+                    3,
+                    2,
+                    arr[
+                      1.0, 2.0,
+                      3.0, 4.0,
+                      100.0, 100.0,
+                      3.0, 4.0,
+                      0.0, 0.0,
+                      0.0, 0.0
+                    ],
+                    arr[
+                      true, true, false,
+                      true, false, false
+                    ],
+                    "test-model",
+                    "v1"
+                  );
+
+                  val List<float> mean_output = arr[0.0, 0.0, 0.0, 0.0];
+                  val List<float> means =
+                    mean_pool_token_embeddings_into(&tokens, mean_output, false)
+                      .expect("mean pool intrinsic failed");
+
+                  val List<float> normalized_output = arr[0.0, 0.0, 0.0, 0.0];
+                  val List<float> normalized =
+                    mean_pool_token_embeddings_into(&tokens, normalized_output, true)
+                      .expect("normalized mean pool intrinsic failed");
+
+                  stdio.stdout.write(means[0]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(means[1]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(means[2]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(means[3]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(normalized[2]);
+                  stdio.stdout.write(":");
+                  stdio.stdout.write(normalized[3]);
+                  return;
+                }
+                """);
+
+        assertEquals("2.0:3.0:3.0:4.0:0.6:0.8", output);
+    }
+
+    @Test
     void normalizationIntrinsicPreservesResultErrors() throws Exception {
         String output = run("""
                 define class EmbeddingBatch as
