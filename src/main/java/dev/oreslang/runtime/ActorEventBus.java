@@ -245,27 +245,41 @@ public final class ActorEventBus implements AutoCloseable {
         }
         TopicState topic = requireTopic(name);
 
-        @SuppressWarnings("unchecked")
-        Subscription<T> existing = (Subscription<T>) topic.subscriptions.get(subscriber);
-        if (existing != null && !existing.closed()) return existing;
-
         int actorLimit = Math.max(1, ActorRuntime.currentActorPolicy().maxMailboxMessages());
         int capacity = Math.min(topic.capacity, actorLimit);
-        Subscription<T> created = new Subscription<>(topic, subscriber, capacity);
-        Subscription<?> raced = topic.subscriptions.putIfAbsent(subscriber, created);
-        if (raced != null) {
-            created.closeChannelOnly();
-            @SuppressWarnings("unchecked")
-            Subscription<T> typed = (Subscription<T>) raced;
-            return typed;
-        }
 
-        if (!group.isMember(subscriber) || closed.get()) {
-            topic.subscriptions.remove(subscriber, created);
-            created.closeChannelOnly();
-            throw new IllegalStateException("ActorGroup membership ended during subscription");
+        for (;;) {
+            @SuppressWarnings("unchecked")
+            Subscription<T> existing =
+                    (Subscription<T>) topic.subscriptions.get(subscriber);
+            if (existing != null) {
+                if (!existing.closed()) return existing;
+                topic.subscriptions.remove(subscriber, existing);
+                continue;
+            }
+
+            Subscription<T> created = new Subscription<>(topic, subscriber, capacity);
+            Subscription<?> raced =
+                    topic.subscriptions.putIfAbsent(subscriber, created);
+            if (raced != null) {
+                created.closeChannelOnly();
+                if (raced.closed()) {
+                    topic.subscriptions.remove(subscriber, raced);
+                    continue;
+                }
+                @SuppressWarnings("unchecked")
+                Subscription<T> typed = (Subscription<T>) raced;
+                return typed;
+            }
+
+            if (!group.isMember(subscriber) || closed.get()) {
+                topic.subscriptions.remove(subscriber, created);
+                created.closeChannelOnly();
+                throw new IllegalStateException(
+                        "ActorGroup membership ended during subscription");
+            }
+            return created;
         }
-        return created;
     }
 
     public PublishReceipt publish(String name, Object value) {
@@ -461,8 +475,12 @@ public final class ActorEventBus implements AutoCloseable {
                 switch (topic.policy) {
                     case LATEST -> {
                         int replaced = subscription.writeLatest(event);
-                        accepted++;
-                        coalesced += replaced;
+                        if (replaced >= 0) {
+                            accepted++;
+                            coalesced += replaced;
+                        } else {
+                            dropped++;
+                        }
                     }
                     case LOSSY -> {
                         if (subscription.writeLossy(event)) accepted++;
@@ -723,10 +741,11 @@ public final class ActorEventBus implements AutoCloseable {
         }
 
         /**
-         * Returns 1 when an older unread event was coalesced, otherwise 0.
+         * Returns 1 when an older unread event was coalesced, 0 when admitted
+         * without replacement, and -1 when a close race prevented admission.
          */
         private int writeLatest(Event<T> event) {
-            if (subscriptionClosed.get()) return 0;
+            if (subscriptionClosed.get()) return -1;
             synchronized (latestLock) {
                 event.retainDelivery();
                 boolean retained = true;
@@ -744,12 +763,12 @@ public final class ActorEventBus implements AutoCloseable {
 
                     event.releaseDelivery();
                     retained = false;
-                    if (subscriptionClosed.get()) return 0;
+                    if (subscriptionClosed.get()) return -1;
                     throw new IllegalStateException(
                             "LATEST event subscription failed to admit replacement value");
                 } catch (ChannelRuntime.ChannelClosedException closedChannel) {
                     if (retained) event.releaseDelivery();
-                    return 0;
+                    return -1;
                 } catch (Throwable failure) {
                     if (retained) event.releaseDelivery();
                     throw failure;
