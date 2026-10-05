@@ -730,7 +730,7 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfDestructureStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
-            Type element = iterableElementType(iterable);
+            Type element = iterableElementType(iterable, loop.asyncIteration());
             List<Type> elementTypes = sequenceDestructureTypes(element, loop.bindings().size());
             Env loopEnv = new Env(env);
             for (int i = 0; i < loop.bindings().size(); i++) {
@@ -741,7 +741,7 @@ public final class TypeChecker {
         }
         if (stmt instanceof Ast.ForOfStmt loop) {
             Type iterable = typeOf(loop.iterable(), env, generics, self);
-            Type element = iterableElementType(iterable);
+            Type element = iterableElementType(iterable, loop.asyncIteration());
             Env loopEnv = new Env(env);
             loopEnv.define(loop.bindingName(), element, loop.bindingKind());
             checkLoopBlock(loop.body(), loopEnv, generics, expectedReturn, self);
@@ -1044,6 +1044,29 @@ public final class TypeChecker {
             if (call.callee() instanceof Ast.MemberExpr member) {
                 Type receiver = deref(typeOf(member.receiver(), env, generics, self));
 
+                Type iteratorBuiltin = builtinIteratorMember(receiver, member.member());
+                if (iteratorBuiltin != null) {
+                    if (!(iteratorBuiltin instanceof Function builtin)) {
+                        throw new IllegalArgumentException(
+                                "iterator member '" + member.member() + "' is not callable");
+                    }
+                    if (call.typeArgumentsPresent()) {
+                        throw new IllegalArgumentException(
+                                "iterator member '" + member.member() + "' does not accept call-site type arguments");
+                    }
+                    if (builtin.parameters().size() != call.arguments().size()) {
+                        throw new IllegalArgumentException(
+                                "iterator member '" + member.member() + "' call arity mismatch");
+                    }
+                    for (int i = 0; i < builtin.parameters().size(); i++) {
+                        requireAssignable(
+                                typeOf(call.arguments().get(i), env, generics, self),
+                                builtin.parameters().get(i),
+                                "argument " + (i + 1));
+                    }
+                    return builtin.result();
+                }
+
                 if (receiver instanceof Named guard
                         && guard.name().equals("MutexGuard")
                         && guard.arguments().size() == 1) {
@@ -1339,6 +1362,8 @@ public final class TypeChecker {
             Type sumReceiver = deref(receiver);
             Type sumMember = builtinOptionResultMember(sumReceiver, member.member());
             if (sumMember != null) return sumMember;
+            Type iteratorMember = builtinIteratorMember(sumReceiver, member.member());
+            if (iteratorMember != null) return iteratorMember;
             if (sumReceiver instanceof Named sumNamed
                     && (sumNamed.name().equals("Option") || sumNamed.name().equals("Result"))) {
                 throw new IllegalArgumentException(
@@ -2283,6 +2308,39 @@ public final class TypeChecker {
         return null;
     }
 
+    private Type builtinIteratorMember(Type receiver, String member) {
+        if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
+        Type element = named.arguments().getFirst();
+
+        if (named.name().equals("Iterator")) {
+            return switch (member) {
+                case "next" -> new Function(
+                        List.of(),
+                        new Named("IteratorResult", List.of(element)));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> null;
+            };
+        }
+        if (named.name().equals("AsyncIterator")) {
+            return switch (member) {
+                case "next" -> new Function(
+                        List.of(),
+                        new Named("Future", List.of(
+                                new Named("IteratorResult", List.of(element)))));
+                case "close" -> new Function(List.of(), Primitive.VOID);
+                default -> null;
+            };
+        }
+        if (named.name().equals("IteratorResult")) {
+            return switch (member) {
+                case "done" -> Primitive.BOOL;
+                case "value" -> new Named("Option", List.of(element));
+                default -> null;
+            };
+        }
+        return null;
+    }
+
     private Type builtinMutexMember(Type receiver, String member) {
         if (!(receiver instanceof Named named) || named.arguments().size() != 1) return null;
         Type element = named.arguments().getFirst();
@@ -2325,16 +2383,73 @@ public final class TypeChecker {
     }
 
     private Type iterableElementType(Type iterable) {
+        return iterableElementType(iterable, false);
+    }
+
+    private Type iterableElementType(Type iterable, boolean asyncIteration) {
+        iterable = deref(iterable);
+
+        if (iterable instanceof Named named) {
+            if (named.name().equals("AsyncIterator")) {
+                if (named.arguments().size() != 1) {
+                    throw new IllegalArgumentException("AsyncIterator<T> requires one element type");
+                }
+                if (!asyncIteration) {
+                    throw new IllegalArgumentException(
+                            "ordinary for-of cannot consume AsyncIterator<T>; use 'for await ... of ...'");
+                }
+                return named.arguments().getFirst();
+            }
+            if (named.name().equals("Iterator")) {
+                if (named.arguments().size() != 1) {
+                    throw new IllegalArgumentException("Iterator<T> requires one element type");
+                }
+                return named.arguments().getFirst();
+            }
+
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null && asyncIteration) {
+                ResolvedMethod asyncTarget = findMethodTarget(
+                        klass, named, "Symbol.asyncIterator", 0, new LinkedHashSet<>());
+                if (asyncTarget != null) {
+                    Ast.MethodDecl iterator = asyncTarget.method();
+                    requireClassMemberVisible(
+                            iterator.visibility(), asyncTarget.owner(), "method", iterator.name());
+                    Set<String> iteratorGenerics =
+                            new HashSet<>(asyncTarget.owner().genericParameters());
+                    iteratorGenerics.addAll(iterator.genericParameters());
+                    Type result = resolve(
+                            iterator.returnType(), iteratorGenerics, asyncTarget.ownerType());
+                    result = substituteGenerics(
+                            result,
+                            classGenericBindings(asyncTarget.owner(), asyncTarget.ownerType()));
+                    if (result instanceof Named asyncNamed
+                            && asyncNamed.name().equals("AsyncIterator")
+                            && asyncNamed.arguments().size() == 1) {
+                        return asyncNamed.arguments().getFirst();
+                    }
+                    throw new IllegalArgumentException(
+                            "[Symbol.asyncIterator]() must return AsyncIterator<T>");
+                }
+            }
+        }
+
+        // for-await intentionally accepts synchronous iterables as a
+        // compatibility path; the runtime still routes each async iteration
+        // through the scheduler/Future boundary.
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
-            for (Type element : tuple.elements()) result = result == Unknown.INSTANCE ? element : commonType(result, element);
+            for (Type element : tuple.elements()) {
+                result = result == Unknown.INSTANCE ? element : commonType(result, element);
+            }
             return result;
         }
         if (iterable instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                ResolvedMethod iteratorTarget = findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
+                ResolvedMethod iteratorTarget = findMethodTarget(
+                        klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iteratorTarget != null) {
                     Ast.MethodDecl iterator = iteratorTarget.method();
                     requireClassMemberVisible(
@@ -2342,17 +2457,32 @@ public final class TypeChecker {
                             iteratorTarget.owner(),
                             "method",
                             iterator.name());
-                    Set<String> iteratorGenerics = new HashSet<>(iteratorTarget.owner().genericParameters());
+                    Set<String> iteratorGenerics =
+                            new HashSet<>(iteratorTarget.owner().genericParameters());
                     iteratorGenerics.addAll(iterator.genericParameters());
-                    Type result = resolve(iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
-                    result = substituteGenerics(result, classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
+                    Type result = resolve(
+                            iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
+                    result = substituteGenerics(
+                            result,
+                            classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
                     if (result instanceof ListType list) return list.element();
-                    if (result instanceof Tuple tuple) return iterableElementType(tuple);
-                    throw new IllegalArgumentException("[Symbol.iterator]() must return Array<T>, List<T>, or a tuple in v0");
+                    if (result instanceof Tuple tuple) {
+                        return iterableElementType(tuple, false);
+                    }
+                    if (result instanceof Named iteratorNamed
+                            && iteratorNamed.name().equals("Iterator")
+                            && iteratorNamed.arguments().size() == 1) {
+                        return iteratorNamed.arguments().getFirst();
+                    }
+                    throw new IllegalArgumentException(
+                            "[Symbol.iterator]() must return Array<T>, List<T>, tuple, or Iterator<T>");
                 }
             }
         }
-        throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
+        throw new IllegalArgumentException(
+                asyncIteration
+                        ? "for-await-of requires AsyncIterator<T> or a synchronous iterable"
+                        : "for-of requires Iterator<T>, array/list, tuple, or a class with [Symbol.iterator]()");
     }
 
     private Type widenCollectionElement(Type type) {
@@ -3397,6 +3527,17 @@ public final class TypeChecker {
                     throw new IllegalArgumentException("Mutex<T> requires an owned value type; borrowed payload types are invalid");
                 }
                 yield new Named("Mutex", List.of(element));
+            }
+            case "Iterator", "AsyncIterator", "IteratorResult" -> {
+                if (ref.inferArguments() || ref.arguments().size() != 1) {
+                    throw new IllegalArgumentException(
+                            ref.name() + " requires exactly one explicit type argument");
+                }
+                Type element = resolve(ref.arguments().getFirst(), generics, self);
+                if (element == Primitive.VOID) {
+                    throw new IllegalArgumentException(ref.name() + "<void> is invalid");
+                }
+                yield new Named(ref.name(), List.of(element));
             }
             case "Future" -> {
                 if (ref.inferArguments() || ref.arguments().size() != 1) throw new IllegalArgumentException("Future requires exactly one explicit type argument");
