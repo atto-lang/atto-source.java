@@ -480,6 +480,12 @@ public final class OresEvalRootNode extends RootNode {
                         context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.length");
                         return array.length();
                     };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "GpuArray.release");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuArray.release");
+                        context.gpuRuntime().release(array);
+                        return null;
+                    };
                     default -> throw new IllegalArgumentException("unknown GpuArray member " + name);
                 };
             }
@@ -502,6 +508,12 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "GpuMatrix.length");
                         return matrix.length();
                     };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "GpuMatrix.release");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuMatrix.release");
+                        context.gpuRuntime().release(matrix);
+                        return null;
+                    };
                     default -> throw new IllegalArgumentException("unknown GpuMatrix member " + name);
                 };
             }
@@ -516,6 +528,12 @@ public final class OresEvalRootNode extends RootNode {
                         requireZero(args, "GpuStream.copy_to_cpu");
                         context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.copy_to_cpu");
                         return context.gpuRuntime().downloadStream(stream);
+                    };
+                    case "release" -> (Invokable) args -> {
+                        requireZero(args, "GpuStream.release");
+                        context.requireCapability(IsolatePolicy.Capability.GPU, "GpuStream.release");
+                        context.gpuRuntime().release(stream);
+                        return null;
                     };
                     default -> throw new IllegalArgumentException("unknown GpuStream member " + name);
                 };
