@@ -69,40 +69,28 @@ Import paths are part of the AST/compiler contract; filesystem/package
 resolution is a host build/bundling concern so strict isolates do not gain
 ambient filesystem access merely by using `import`.
 
-### Circular imports and file initialization
+### Circular imports and linking
 
 Import cycles are legal. Oreslang does not reject a program merely because its
 file/module graph contains a cycle such as `a.ores -> b.ores -> a.ores`.
 
-The loader uses a staged lifecycle:
+The loader uses a staged, non-executing link lifecycle:
 
 1. parse and statically validate the complete reachable source graph;
 2. resolve/link imports for every code unit;
 3. compute strongly connected components (SCCs) of the import graph;
 4. for each dependency-first SCC, verify that **all** members are linked;
-5. run each member's optional file init hook;
-6. after initialization, invoke the entry unit's `main`.
+5. after linking, invoke only the explicitly selected program entrypoint.
 
-A file init hook has the exact shape:
+Oreslang has **no implicit file/module/class init hook**. A function named
+`init` is an ordinary function: it may have ordinary parameters/return types
+and it runs only when explicitly called. Merely importing, linking, loading, or
+hot-reloading a code unit never executes `init` or any other user function.
 
-```ores
-fnc init() => void {
-  // side effects are allowed here
-  return;
-}
-```
-
-It is private, synchronous, non-actor, non-generic, takes no parameters, and
-returns `void`. The hook runs at most once for that loaded code-unit
-generation. Inside a cycle, init hooks execute in deterministic normalized
-code-unit-id order, but code must rely only on the stronger barrier guarantee:
-**every peer in the cycle is already linked before any peer's init begins**.
-
-This means an init hook may call exported declarations from a cyclic peer
-without observing an "unloaded module" state. If application state requires a
-specific sequencing relationship *between* two init hooks in the same cycle,
-that relationship should be made explicit in application code rather than
-inferred from the import edges.
+Code that requires startup sequencing must make that sequencing explicit from
+`main`, an `export entry`, a supervisor, or another deliberately invoked
+callable. SCC ordering is therefore a deterministic link-planning detail, not
+an execution order.
 
 ## Module interfaces / OCaml-style module signatures
 
