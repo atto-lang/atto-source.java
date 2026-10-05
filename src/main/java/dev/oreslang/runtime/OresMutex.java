@@ -6,7 +6,6 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -62,62 +61,8 @@ public final class OresMutex {
      * timeout-complete it, or obtrude a value. Otherwise a queued lock request
      * could be detached from the mutex's domain/permit accounting.</p>
      */
-    public static final class GuardFuture<T> extends CompletableFuture<Guard<T>> {
+    public static final class GuardFuture<T> extends OresFuture<Guard<T>> {
         private GuardFuture() { }
-
-        private boolean completeFromRuntime(Guard<T> guard) {
-            return super.complete(guard);
-        }
-
-        private boolean failFromRuntime(Throwable failure) {
-            return super.completeExceptionally(failure);
-        }
-
-        @Override
-        public boolean complete(Guard<T> value) {
-            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
-        }
-
-        @Override
-        public boolean completeExceptionally(Throwable ex) {
-            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
-        }
-
-        @Override
-        public CompletableFuture<Guard<T>> completeAsync(
-                java.util.function.Supplier<? extends Guard<T>> supplier) {
-            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
-        }
-
-        @Override
-        public CompletableFuture<Guard<T>> completeAsync(
-                java.util.function.Supplier<? extends Guard<T>> supplier,
-                java.util.concurrent.Executor executor) {
-            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
-        }
-
-        @Override
-        public CompletableFuture<Guard<T>> orTimeout(long timeout, TimeUnit unit) {
-            throw new UnsupportedOperationException("use Oreslang timed lock acquisition, not GuardFuture.orTimeout");
-        }
-
-        @Override
-        public CompletableFuture<Guard<T>> completeOnTimeout(
-                Guard<T> value,
-                long timeout,
-                TimeUnit unit) {
-            throw new UnsupportedOperationException("use Oreslang timed lock acquisition, not GuardFuture.completeOnTimeout");
-        }
-
-        @Override
-        public void obtrudeValue(Guard<T> value) {
-            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
-        }
-
-        @Override
-        public void obtrudeException(Throwable ex) {
-            throw new UnsupportedOperationException("Mutex GuardFuture completion is runtime-owned");
-        }
     }
 
     /**
@@ -133,8 +78,8 @@ public final class OresMutex {
         Guard<T> lock();
         Optional<Guard<T>> tryLock();
         Optional<Guard<T>> lockFor(Duration timeout);
-        CompletableFuture<Guard<T>> lockAsync();
-        CompletableFuture<Guard<T>> lockAsyncFor(Duration timeout);
+        OresFuture<Guard<T>> lockAsync();
+        OresFuture<Guard<T>> lockAsyncFor(Duration timeout);
         <R> R withLock(Function<? super T, ? extends R> body);
         boolean isPoisoned();
     }
@@ -238,7 +183,7 @@ public final class OresMutex {
         }
 
         @Override
-        public CompletableFuture<Guard<T>> lockAsync() {
+        public OresFuture<Guard<T>> lockAsync() {
             GuardFuture<T> future = new GuardFuture<>();
             try {
                 future.completeFromRuntime(lock());
@@ -249,7 +194,7 @@ public final class OresMutex {
         }
 
         @Override
-        public CompletableFuture<Guard<T>> lockAsyncFor(Duration timeout) {
+        public OresFuture<Guard<T>> lockAsyncFor(Duration timeout) {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
             return lockAsync();
@@ -696,7 +641,7 @@ public final class OresMutex {
         }
 
         @Override
-        public CompletableFuture<Guard<T>> lockAsync() {
+        public OresFuture<Guard<T>> lockAsync() {
             Object ownerDomain = reserveDomain(false);
             int waiterLimit = asyncWaiterLimit();
             if (!reserveAsyncWaiter(waiterLimit)) {
@@ -718,7 +663,7 @@ public final class OresMutex {
                     enforceOwnerDomain,
                     future);
 
-            future.whenComplete((ignored, failure) -> {
+            future.whenCompleteRuntime((ignored, failure) -> {
                 boolean removed;
                 synchronized (asyncQueueLock) {
                     removed = asyncQueue.remove(waiter);
@@ -790,11 +735,11 @@ public final class OresMutex {
         }
 
         @Override
-        public CompletableFuture<Guard<T>> lockAsyncFor(Duration timeout) {
+        public OresFuture<Guard<T>> lockAsyncFor(Duration timeout) {
             Objects.requireNonNull(timeout, "timeout");
             if (timeout.isNegative()) throw new IllegalArgumentException("timeout must not be negative");
 
-            CompletableFuture<Guard<T>> pending = lockAsync();
+            OresFuture<Guard<T>> pending = lockAsync();
             if (!(pending instanceof GuardFuture<?>)) return pending;
 
             @SuppressWarnings("unchecked")
@@ -817,7 +762,7 @@ public final class OresMutex {
                 future.failFromRuntime(schedulingFailure);
                 return future;
             }
-            future.whenComplete((ignored, failure) -> timeoutTask.cancel(false));
+            future.whenCompleteRuntime((ignored, failure) -> timeoutTask.cancel(false));
             return future;
         }
 
