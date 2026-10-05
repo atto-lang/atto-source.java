@@ -506,6 +506,39 @@ final class ParserTest {
     }
 
     @Test
+    void importBindingsCannotShadowLocalDeclarationsOrBuiltins() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                import fnc {remote as local} from "./dep.ores";
+
+                fnc local() -> void { return; }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                import * as Futures from "./dep.ores";
+
+                fnc main() -> void { return; }
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                import class {Remote as Result} from "./dep.ores";
+
+                fnc main() -> void { return; }
+                """)));
+    }
+
+    @Test
+    void entryExportMustResolveUniquelyAcrossKinds() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define class Start as
+                end
+
+                pub fnc Start() -> void { return; }
+
+                export entry Start;
+                """)));
+    }
+
+    @Test
     void actorClassRejectsStaticEscapeHatchesAndReservedIntrinsicNames() {
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
                 define actor Bad as
