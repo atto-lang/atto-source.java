@@ -380,7 +380,7 @@ public final class TypeChecker {
             }
             Type fieldType = classFieldType(klass, field);
             if (field.initializer() != null && field.type() != null) {
-                Type actual = typeOf(field.initializer(), new Env(null), classGenerics, self);
+                Type actual = classFieldInitializerType(klass, field);
                 requireAssignable(actual, fieldType, "field initializer " + klass.name() + "." + field.name());
             }
             if (field.bindingKind() == Ast.BindingKind.CONST && field.initializer() != null && !constant(field.initializer())) {
@@ -2514,7 +2514,43 @@ public final class TypeChecker {
             throw new IllegalArgumentException("inferred field '" + klass.name() + "." + field.name()
                     + "' requires an initializer");
         }
-        return typeOf(field.initializer(), new Env(null), generics, self);
+        return classFieldInitializerType(klass, field);
+    }
+
+    /**
+     * Field initializers execute while an actor is STARTING, before READY is
+     * published. Type/effect checking must therefore use the same actor domain
+     * and no-suspension rules as the constructor. Runtime actor initializers
+     * also receive self, so expose the same typed self binding here.
+     */
+    private Type classFieldInitializerType(
+            Ast.ClassDecl klass,
+            Ast.FieldDecl field) {
+        if (field.initializer() == null) {
+            throw new IllegalArgumentException(
+                    "field '" + klass.name() + "." + field.name()
+                            + "' has no initializer");
+        }
+
+        Set<String> generics = Set.copyOf(klass.genericParameters());
+        Named self = nominalClassType(klass);
+        Env env = new Env(null);
+        if (klass.actorKind() != Ast.ActorKind.NONE) {
+            env.define("self", self, Ast.BindingKind.VAL);
+        }
+
+        Ast.ActorKind previousKind = currentActorKind;
+        boolean previousConstructor = currentActorConstructor;
+        try {
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                currentActorKind = klass.actorKind();
+                currentActorConstructor = true;
+            }
+            return typeOf(field.initializer(), env, generics, self);
+        } finally {
+            currentActorKind = previousKind;
+            currentActorConstructor = previousConstructor;
+        }
     }
 
     private List<ResolvedField> effectiveFieldTargets(Ast.ClassDecl klass, Named concreteType, Set<Ast.ClassDecl> stack) {
