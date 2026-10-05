@@ -11,7 +11,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.Semaphore;
 import java.util.function.Function;
 
 /**
@@ -256,7 +255,7 @@ public final class OresMutex {
         private static final ConcurrentHashMap<Object, Shared<?>> WAITING_ON =
                 new ConcurrentHashMap<>();
         private final T value;
-        private final Semaphore permit = new Semaphore(1, true);
+        private final NativePermit permit = new NativePermit();
         private final AtomicBoolean poisoned = new AtomicBoolean();
         private final AtomicInteger asyncWaiters = new AtomicInteger();
         private final AtomicReference<Object> currentOwnerDomain = new AtomicReference<>();
@@ -325,7 +324,7 @@ public final class OresMutex {
             Objects.requireNonNull(inspection, "inspection");
             final boolean acquired;
             try {
-                acquired = permit.tryAcquire(0L, TimeUnit.NANOSECONDS);
+                acquired = permit.tryAcquireFair(0L, TimeUnit.NANOSECONDS);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 throw new java.util.concurrent.CancellationException(
@@ -590,7 +589,7 @@ public final class OresMutex {
             Object ownerDomain = reserveDomain(true);
             if (ownerDomain == null) return Optional.empty();
             try {
-                if (!permit.tryAcquire(0L, TimeUnit.NANOSECONDS)) {
+                if (!permit.tryAcquireFair(0L, TimeUnit.NANOSECONDS)) {
                     releaseDomain(ownerDomain);
                     return Optional.empty();
                 }
@@ -613,7 +612,7 @@ public final class OresMutex {
             if (ownerDomain == null) return Optional.empty();
             try {
                 beginWait(ownerDomain);
-                if (!permit.tryAcquire(saturatedNanos(timeout), TimeUnit.NANOSECONDS)) {
+                if (!permit.tryAcquireFair(saturatedNanos(timeout), TimeUnit.NANOSECONDS)) {
                     endWait(ownerDomain);
                     releaseDomain(ownerDomain);
                     return Optional.empty();
@@ -681,7 +680,7 @@ public final class OresMutex {
                         // explicitly allowed to barge ahead of queued host
                         // waiters, which would violate our mixed-waiter
                         // fairness contract.
-                        if (permit.tryAcquire(0L, TimeUnit.NANOSECONDS)) {
+                        if (permit.tryAcquireFair(0L, TimeUnit.NANOSECONDS)) {
                             acquired = true;
                         } else {
                             beginWait(ownerDomain);
