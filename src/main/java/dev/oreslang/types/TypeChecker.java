@@ -483,6 +483,11 @@ public final class TypeChecker {
             if (iface == null) throw new IllegalArgumentException("unknown interface '" + interfaceRef.name() + "' implemented by " + klass.name());
             Type resolvedInterface = resolve(interfaceRef, classGenerics, self);
             if (!(resolvedInterface instanceof Named interfaceType)) throw new IllegalArgumentException("implemented interface must resolve to a named type");
+            if (klass.actorKind() != Ast.ActorKind.NONE) {
+                actorRefMessageType(
+                        interfaceType,
+                        "actor '" + klass.name() + "' implemented interface '" + iface.name() + "'");
+            }
             Record expectedTemplate = interfaceShape(iface, Set.copyOf(iface.genericParameters()), new LinkedHashSet<>());
             Record expected = (Record) substituteGenerics(expectedTemplate,
                     genericBindings(iface.genericParameters(), interfaceType.arguments(), "interface " + iface.name()));
@@ -1847,6 +1852,7 @@ public final class TypeChecker {
                     || receive.method().visibility() != Ast.Visibility.PUBLIC
                     || receive.method().isStatic()
                     || receive.method().isAbstract()
+                    || receive.method().async()
                     || !receive.method().genericParameters().isEmpty()
                     || receive.method().parameters().size() != 1) {
                 throw new IllegalArgumentException(
