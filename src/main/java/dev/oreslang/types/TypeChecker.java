@@ -592,11 +592,17 @@ public final class TypeChecker {
 
     private void checkCallableBlock(List<Ast.Stmt> body, Env parent, Set<String> generics, Type expectedReturn, Type self) {
         int previousLoopDepth = loopDepth;
+        boolean previousGenerator = currentGenerator;
+        boolean previousAsync = currentAsyncCallable;
         loopDepth = 0;
+        currentGenerator = false;
+        currentAsyncCallable = false;
         try {
             checkBlock(body, parent, generics, expectedReturn, self);
         } finally {
             loopDepth = previousLoopDepth;
+            currentGenerator = previousGenerator;
+            currentAsyncCallable = previousAsync;
         }
     }
 
@@ -1760,7 +1766,8 @@ public final class TypeChecker {
             throw new IllegalArgumentException(where + " is not actor-boundary sendable: " + type);
         }
 
-        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")) {
+        if (named.name().equals("Mutex") || named.name().equals("MutexGuard") || named.name().equals("Future")
+                || named.name().equals("Generator") || named.name().equals("AsyncGenerator")) {
             throw new IllegalArgumentException(
                     where + " cannot use " + named.name() + " across an actor boundary");
         }
@@ -1841,7 +1848,8 @@ public final class TypeChecker {
         if (!(type instanceof Named named)) return false;
 
         if (named.name().equals("Mutex") || named.name().equals("MutexGuard")
-                || named.name().equals("Future") || named.name().equals("SharedMutex")) return false;
+                || named.name().equals("Future") || named.name().equals("Generator")
+                || named.name().equals("AsyncGenerator") || named.name().equals("SharedMutex")) return false;
         if (named.name().equals("DynamicStruct")) {
             return named.arguments().size() == 1
                     && isSharedSafe(named.arguments().getFirst(), seen, genericBindings);
@@ -2295,13 +2303,23 @@ public final class TypeChecker {
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
-            for (Type element : tuple.elements()) result = result == Unknown.INSTANCE ? element : commonType(result, element);
+            for (Type element : tuple.elements()) {
+                result = result == Unknown.INSTANCE ? element : commonType(result, element);
+            }
             return result;
         }
         if (iterable instanceof Named named) {
+            if (named.name().equals("Generator") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            if (named.name().equals("AsyncGenerator")) {
+                throw new IllegalArgumentException(
+                        "ordinary for-of cannot consume AsyncGenerator<T>; use 'for await ... of ...'");
+            }
             Ast.ClassDecl klass = findClass(named.name());
             if (klass != null) {
-                ResolvedMethod iteratorTarget = findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
+                ResolvedMethod iteratorTarget =
+                        findMethodTarget(klass, named, "Symbol.iterator", 0, new LinkedHashSet<>());
                 if (iteratorTarget != null) {
                     Ast.MethodDecl iterator = iteratorTarget.method();
                     requireClassMemberVisible(
@@ -2312,14 +2330,59 @@ public final class TypeChecker {
                     Set<String> iteratorGenerics = new HashSet<>(iteratorTarget.owner().genericParameters());
                     iteratorGenerics.addAll(iterator.genericParameters());
                     Type result = resolve(iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
-                    result = substituteGenerics(result, classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
+                    result = substituteGenerics(
+                            result,
+                            classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
                     if (result instanceof ListType list) return list.element();
                     if (result instanceof Tuple tuple) return iterableElementType(tuple);
-                    throw new IllegalArgumentException("[Symbol.iterator]() must return Array<T>, List<T>, or a tuple in v0");
+                    if (result instanceof Named generated
+                            && generated.name().equals("Generator")
+                            && generated.arguments().size() == 1) {
+                        return generated.arguments().getFirst();
+                    }
+                    throw new IllegalArgumentException(
+                            "[Symbol.iterator]() must return Array<T>, List<T>, a tuple, or Generator<T>");
                 }
             }
         }
-        throw new IllegalArgumentException("for-of requires an array/list, tuple, or a class with [Symbol.iterator]()");
+        throw new IllegalArgumentException(
+                "for-of requires an array/list, tuple, Generator<T>, or a class with [Symbol.iterator]()");
+    }
+
+    private Type asyncIterableElementType(Type iterable) {
+        if (iterable instanceof Named named) {
+            if (named.name().equals("AsyncGenerator") && named.arguments().size() == 1) {
+                return named.arguments().getFirst();
+            }
+            Ast.ClassDecl klass = findClass(named.name());
+            if (klass != null) {
+                ResolvedMethod iteratorTarget =
+                        findMethodTarget(klass, named, "Symbol.asyncIterator", 0, new LinkedHashSet<>());
+                if (iteratorTarget != null) {
+                    Ast.MethodDecl iterator = iteratorTarget.method();
+                    requireClassMemberVisible(
+                            iterator.visibility(),
+                            iteratorTarget.owner(),
+                            "method",
+                            iterator.name());
+                    Set<String> iteratorGenerics = new HashSet<>(iteratorTarget.owner().genericParameters());
+                    iteratorGenerics.addAll(iterator.genericParameters());
+                    Type result = resolve(iterator.returnType(), iteratorGenerics, iteratorTarget.ownerType());
+                    result = substituteGenerics(
+                            result,
+                            classGenericBindings(iteratorTarget.owner(), iteratorTarget.ownerType()));
+                    if (result instanceof Named generated
+                            && generated.name().equals("AsyncGenerator")
+                            && generated.arguments().size() == 1) {
+                        return generated.arguments().getFirst();
+                    }
+                    throw new IllegalArgumentException(
+                            "[Symbol.asyncIterator]() must return AsyncGenerator<T>");
+                }
+            }
+        }
+        throw new IllegalArgumentException(
+                "for-await requires AsyncGenerator<T> or a class with [Symbol.asyncIterator]()");
     }
 
     private Type widenCollectionElement(Type type) {
@@ -2920,6 +2983,8 @@ public final class TypeChecker {
                 rejectStaticClassGenericReferences(destructure.initializer(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ReturnStmt returned) {
                 rejectStaticClassGenericReferences(returned.value(), classGenerics, klass, method);
+            } else if (statement instanceof Ast.YieldStmt yielded) {
+                rejectStaticClassGenericReferences(yielded.value(), classGenerics, klass, method);
             } else if (statement instanceof Ast.ExprStmt expression) {
                 rejectStaticClassGenericReferences(expression.expression(), classGenerics, klass, method);
             } else if (statement instanceof Ast.DeferStmt defer) {
