@@ -151,8 +151,6 @@ public final class ActorEventBus implements AutoCloseable {
             long dropped,
             long coalesced) { }
 
-    private static final int MAX_TOPICS = 1_024;
-
     private final ActorRuntime runtime;
     private final ActorRuntime.ActorGroup group;
     private final Map<String, TopicState> topics = new ConcurrentHashMap<>();
@@ -188,9 +186,10 @@ public final class ActorEventBus implements AutoCloseable {
 
         synchronized (definitionLock) {
             requireOpen();
-            if (topics.size() >= MAX_TOPICS && !topics.containsKey(topicName)) {
+            int topicLimit = group.eventTopicLimit();
+            if (topics.size() >= topicLimit && !topics.containsKey(topicName)) {
                 throw new IllegalStateException(
-                        "ActorGroup event topic limit exceeded: " + MAX_TOPICS);
+                        "ActorGroup event topic limit exceeded: " + topicLimit);
             }
 
             TopicState created = new TopicState(topicName, policy, capacity);
