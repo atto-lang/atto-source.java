@@ -1475,12 +1475,18 @@ public final class TypeChecker {
         if (source instanceof Named named) {
             Ast.ClassDecl klass = findClass(named.name());
             if (klass == null) throw new IllegalArgumentException("object destructuring requires a record/map-like value");
-            Record shape = (Record) substituteGenerics(
-                    publicClassShape(klass, new LinkedHashSet<>()),
-                    classGenericBindings(klass, named));
-            Type member = shape.members().get(memberName);
-            if (member == null) throw new IllegalArgumentException("object destructure requires member '" + memberName + "'");
-            return member;
+            ResolvedField field = findFieldTarget(
+                    klass, named, memberName, new LinkedHashSet<>());
+            if (field == null) {
+                throw new IllegalArgumentException(
+                        "object destructure requires field '" + memberName + "'");
+            }
+            requireClassMemberVisible(
+                    field.field().visibility(), field.owner(), "field", field.field().name());
+            Type pattern = classFieldType(field.owner(), field.field());
+            return substituteGenerics(
+                    pattern,
+                    classGenericBindings(field.owner(), field.ownerType()));
         }
         if (source instanceof Union union) {
             List<Type> alternatives = new ArrayList<>(union.options().size());
