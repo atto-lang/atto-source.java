@@ -16,6 +16,7 @@ import dev.oreslang.types.Types.Union;
 import dev.oreslang.types.Types.Type;
 import dev.oreslang.types.Types.Unknown;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -49,6 +50,8 @@ public final class TypeChecker {
     private final Set<Ast.TypeAliasDecl> resolvingAliases = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private Ast.ActorKind currentActorKind = Ast.ActorKind.NONE;
     private boolean currentMaySuspend;
+    private final ArrayDeque<LambdaReturnInference> lambdaReturnInferences =
+            new ArrayDeque<>();
 
     public static Ast.Program check(Ast.Program program) {
         TypeChecker checker = new TypeChecker();
@@ -474,6 +477,23 @@ public final class TypeChecker {
             Type actual = ret.value() == null
                     ? Primitive.VOID
                     : typeOfAgainstExpected(ret.value(), expectedReturn, env, generics, self);
+
+            if (expectedReturn == Unknown.INSTANCE && !lambdaReturnInferences.isEmpty()) {
+                LambdaReturnInference inference = lambdaReturnInferences.peek();
+                if (actual == Primitive.VOID) {
+                    inference.sawVoid = true;
+                } else {
+                    inference.sawValue = true;
+                    inference.result = inference.result == Unknown.INSTANCE
+                            ? actual
+                            : commonType(inference.result, actual);
+                }
+                if (inference.sawVoid && inference.sawValue) {
+                    throw new IllegalArgumentException(
+                            "lambda cannot mix bare return with value-returning paths");
+                }
+            }
+
             requireAssignable(actual, expectedReturn, "return value");
             return;
         }
@@ -1253,14 +1273,27 @@ public final class TypeChecker {
             if (lambda.expressionBody() != null) {
                 throw new IllegalArgumentException("expression-body lambdas are not supported; lambdas require braces and explicit return");
             }
+
+            LambdaReturnInference inference = new LambdaReturnInference();
             boolean previousMaySuspend = currentMaySuspend;
             currentMaySuspend = lambda.async();
+            lambdaReturnInferences.push(inference);
             try {
                 checkBlock(lambda.blockBody(), lambdaEnv, generics, Unknown.INSTANCE, self);
             } finally {
+                LambdaReturnInference popped = lambdaReturnInferences.pop();
+                if (popped != inference) {
+                    throw new IllegalStateException("lambda return inference stack corruption");
+                }
                 currentMaySuspend = previousMaySuspend;
             }
-            Type invocationResult = lambda.async() ? futureOf(Unknown.INSTANCE) : Unknown.INSTANCE;
+
+            Type logicalResult = inference.sawValue ? inference.result : Primitive.VOID;
+            if (logicalResult != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
+                throw new IllegalArgumentException(
+                        "non-void lambda must explicitly return on every path");
+            }
+            Type invocationResult = lambda.async() ? futureOf(logicalResult) : logicalResult;
             return new Function(parameters, invocationResult);
         }
         return Unknown.INSTANCE;
@@ -1406,6 +1439,12 @@ public final class TypeChecker {
         if (bodyResult != Primitive.VOID && !definitelyReturns(lambda.blockBody())) {
             throw new IllegalArgumentException("non-void lambda must explicitly return on every path");
         }
+    }
+
+    private static final class LambdaReturnInference {
+        private Type result = Unknown.INSTANCE;
+        private boolean sawValue;
+        private boolean sawVoid;
     }
 
     private Type deref(Type type) {
