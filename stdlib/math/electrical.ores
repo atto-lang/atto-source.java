@@ -1,0 +1,39 @@
+// Oreslang-native electrical-engineering formulas.
+//
+// These are ordinary Oreslang functions. The VM only supplies primitive numeric
+// operations/transcendentals; domain semantics live here rather than in Java.
+
+pub fnc omega(float hertz) => float {
+  return 2.0 * math.pi * hertz;
+}
+
+pub fnc phasor(float magnitude, float phase_radians) => complex {
+  return math.polar(magnitude, phase_radians);
+}
+
+pub fnc phasor_deg(float magnitude, float phase_degrees) => complex {
+  return math.polar(magnitude, phase_degrees * math.pi / 180.0);
+}
+
+pub fnc z_r(float ohms) => complex {
+  return complex(ohms, 0.0);
+}
+
+pub fnc z_l(float omega_radians_per_second, float henries) => complex {
+  return complex(0.0, omega_radians_per_second * henries);
+}
+
+// Unchecked primitive formula. The public checked ee.z_c facade currently keeps
+// its domain validation in the bootstrap runtime until Oreslang has a first-class
+// panic/assert/require primitive usable by stdlib source.
+pub fnc z_c_unchecked(float omega_radians_per_second, float farads) => complex {
+  return complex(0.0, -1.0 / (omega_radians_per_second * farads));
+}
+
+pub fnc admittance(complex impedance) => complex {
+  return complex(1.0, 0.0) / impedance;
+}
+
+pub fnc parallel(complex left, complex right) => complex {
+  return (left * right) / (left + right);
+}
