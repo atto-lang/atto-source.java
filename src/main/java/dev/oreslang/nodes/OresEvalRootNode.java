@@ -672,7 +672,10 @@ public final class OresEvalRootNode extends RootNode {
                 case "determinant" -> (Invokable) args -> { requireZero(args, "Matrix.determinant"); return value.determinant(); };
                 case "trace" -> (Invokable) args -> { requireZero(args, "Matrix.trace"); return value.trace(); };
                 case "norm" -> (Invokable) args -> { requireZero(args, "Matrix.norm"); return value.norm(); };
-                case "condition" -> (Invokable) args -> { requireZero(args, "Matrix.condition"); return value.condition(); };
+                case "condition_frobenius" -> (Invokable) args -> {
+                    requireZero(args, "Matrix.condition_frobenius");
+                    return value.conditionFrobenius();
+                };
                 case "diagonal" -> (Invokable) args -> { requireZero(args, "Matrix.diagonal"); return value.diagonal(); };
                 case "get" -> (Invokable) args -> {
                     if (args.size() != 2 || !(args.get(0) instanceof Number row) || !(args.get(1) instanceof Number col)) {
