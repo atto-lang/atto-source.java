@@ -2338,14 +2338,13 @@ public final class OresEvalRootNode extends RootNode {
                 };
             }
             if (!(left instanceof Number a) || !(right instanceof Number b)) throw new IllegalArgumentException("numeric operator requires numbers");
-            boolean integral = isIntegral(a) && isIntegral(b);
+            boolean integral = isIntegral(a) && isIntegral(b) && op != '/';
             if (integral) {
                 long x = a.longValue(), y = b.longValue();
                 return switch (op) {
                     case '+' -> x + y;
                     case '-' -> x - y;
                     case '*' -> x * y;
-                    case '/' -> x / y;
                     case '%' -> x % y;
                     default -> throw new IllegalArgumentException("bad numeric operator");
                 };
