@@ -308,7 +308,8 @@ final class ActorCapabilityIsolationTest {
 
     @Test
     void invalidOreslangPrivateActorSharingFixtureIsRejected() throws Exception {
-        String source = Files.readString(Path.of("examples/private-actor-sharing-invalid.ores"));
+        String source = Files.readString(Path.of("examples/private-actor-sharing-invalid.ores"))
+                .replace("actor InvalidPrivateCounter {", "isoactor InvalidPrivateCounter {");
         Ast.Program program = TypeChecker.check(Parser.parse(source));
 
         SecurityException error = assertThrows(
