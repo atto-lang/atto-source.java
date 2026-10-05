@@ -221,6 +221,24 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void doneCallableInsideDoDoneLoopIsNotAClosingDelimiter() throws Exception {
+        String output = run("""
+                fnc done(): void {
+                  stdio.stdout.write("d");
+                  return;
+                }
+
+                pub routine main() => void {
+                  for item of arr[1, 2] do
+                    done()
+                    stdio.stdout.write(item)
+                  done
+                }
+                """);
+        assertEquals("d1d2", output);
+    }
+
+    @Test
     void forOfSupportsSequenceDestructuring() throws Exception {
         String output = run("""
                 pub routine main() => void {
