@@ -47,10 +47,16 @@ public final class GpuRuntime {
         }
     }
 
-    /** Backend result for collecting a stream into a concrete device array. */
-    public record CollectedArray(Object backendToken, long length) {
+    /**
+     * Backend result for collecting a stream into a concrete device array.
+     *
+     * Native resource identifiers are opaque unsigned 64-bit IDs represented by
+     * Java long. Zero is permanently invalid. They are IDs, not guest-visible
+     * addresses and must not be dereferenceable by Oreslang code.
+     */
+    public record CollectedArray(long nativeHandle, long length) {
         public CollectedArray {
-            Objects.requireNonNull(backendToken, "backendToken");
+            requireNativeHandle(nativeHandle, "collected GpuArray");
             if (length < 0) {
                 throw new IllegalArgumentException("collected GpuArray length cannot be negative");
             }
@@ -67,55 +73,44 @@ public final class GpuRuntime {
         Object invoke(Invocation invocation);
 
         /**
-         * Legacy/untyped backend upload hook. Exact-ABI-aware backends should override the
-         * typed overload below; this hook remains as a compatibility bridge for existing
-         * backends while the typed GPU ABI is rolled out.
+         * Uploads a flat device buffer and returns a backend-owned opaque native
+         * resource ID. Zero is invalid. Implementations should use a generation-
+         * checked handle table rather than returning raw native addresses.
          */
-        default Object uploadArray(List<?> values) {
-            throw new GpuCapabilityUnavailableException(
-                    "GPU backend '" + name() + "' does not support GpuArray uploads");
+        long uploadArray(String elementAbiType, List<?> values);
+
+        List<?> downloadArray(String elementAbiType, long nativeHandle, long length);
+
+        default long openStream(String elementAbiType, long arrayNativeHandle, long length) {
+            return arrayNativeHandle;
         }
 
-        default Object uploadArray(String elementAbiType, List<?> values) {
-            return uploadArray(values);
-        }
-
-        /**
-         * Legacy/untyped backend download hook paired with uploadArray(List).
-         */
-        default List<?> downloadArray(Object backendToken, long length) {
-            throw new GpuCapabilityUnavailableException(
-                    "GPU backend '" + name() + "' does not support GpuArray downloads");
-        }
-
-        default List<?> downloadArray(String elementAbiType, Object backendToken, long length) {
-            return downloadArray(backendToken, length);
-        }
-
-        default Object openStream(String elementAbiType, Object arrayBackendToken, long length) {
-            return arrayBackendToken;
-        }
-
-        default CollectedArray collectStream(String elementAbiType, Object streamBackendToken, long lengthHint) {
+        default CollectedArray collectStream(String elementAbiType, long streamNativeHandle, long lengthHint) {
             if (lengthHint < 0) {
                 throw new GpuCapabilityUnavailableException(
                         "GPU backend '" + name()
                                 + "' must report a concrete length when collecting an unknown-length GpuStream");
             }
-            return new CollectedArray(streamBackendToken, lengthHint);
+            return new CollectedArray(streamNativeHandle, lengthHint);
         }
+
+        /**
+         * Releases a backend-owned native resource ID. Backends must make this
+         * idempotent or reject a stale/double release deterministically.
+         */
+        default void release(long nativeHandle) { }
     }
 
-    /** Opaque GPU-resident array resource. Guest code cannot access backendToken. */
+    /** Opaque GPU-resident array resource. Guest code cannot access the native handle. */
     public static final class ArrayHandle {
         private final Backend backend;
-        private final Object backendToken;
+        private final long nativeHandle;
         private final String elementAbiType;
         private final long length;
 
-        private ArrayHandle(Backend backend, Object backendToken, String elementAbiType, long length) {
+        private ArrayHandle(Backend backend, long nativeHandle, String elementAbiType, long length) {
             this.backend = Objects.requireNonNull(backend, "backend");
-            this.backendToken = Objects.requireNonNull(backendToken, "backendToken");
+            this.nativeHandle = requireNativeHandle(nativeHandle, "GpuArray");
             this.elementAbiType = normalizeDeviceScalarType(elementAbiType);
             if (length < 0) throw new IllegalArgumentException("GpuArray length cannot be negative");
             this.length = length;
@@ -124,9 +119,6 @@ public final class GpuRuntime {
         public String backendName() { return backend.name(); }
         public String elementAbiType() { return elementAbiType; }
         public long length() { return length; }
-
-        /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
-        public Object backendToken() { return backendToken; }
     }
 
     /** Opaque GPU-resident dense row-major matrix resource. */
@@ -168,13 +160,13 @@ public final class GpuRuntime {
     /** Opaque GPU-resident sequential stream resource. */
     public static final class StreamHandle {
         private final Backend backend;
-        private final Object backendToken;
+        private final long nativeHandle;
         private final String elementAbiType;
         private final long lengthHint;
 
-        private StreamHandle(Backend backend, Object backendToken, String elementAbiType, long lengthHint) {
+        private StreamHandle(Backend backend, long nativeHandle, String elementAbiType, long lengthHint) {
             this.backend = Objects.requireNonNull(backend, "backend");
-            this.backendToken = Objects.requireNonNull(backendToken, "backendToken");
+            this.nativeHandle = requireNativeHandle(nativeHandle, "GpuStream");
             this.elementAbiType = normalizeDeviceScalarType(elementAbiType);
             if (lengthHint < -1) {
                 throw new IllegalArgumentException("GpuStream length hint must be -1 or non-negative");
@@ -185,9 +177,6 @@ public final class GpuRuntime {
         public String backendName() { return backend.name(); }
         public String elementAbiType() { return elementAbiType; }
         public long lengthHint() { return lengthHint; }
-
-        /** Host/backend SPI only; Oreslang guest code has no reflective host access. */
-        public Object backendToken() { return backendToken; }
     }
 
     public record Invocation(String callable, CallableKind callableKind, List<?> arguments) {
@@ -207,24 +196,24 @@ public final class GpuRuntime {
     }
 
     public static ArrayHandle adoptArray(
-            Backend backend, Object backendToken, String elementAbiType, long length) {
-        return new ArrayHandle(backend, backendToken, elementAbiType, length);
+            Backend backend, long nativeHandle, String elementAbiType, long length) {
+        return new ArrayHandle(backend, nativeHandle, elementAbiType, length);
     }
 
     public static MatrixHandle adoptMatrix(
-            Backend backend, Object backendToken, String elementAbiType, long rows, long cols) {
+            Backend backend, long nativeHandle, String elementAbiType, long rows, long cols) {
         long length;
         try {
             length = Math.multiplyExact(rows, cols);
         } catch (ArithmeticException overflow) {
             throw new GpuTransferException("GpuMatrix dimensions overflow addressable length", overflow);
         }
-        return new MatrixHandle(new ArrayHandle(backend, backendToken, elementAbiType, length), rows, cols);
+        return new MatrixHandle(new ArrayHandle(backend, nativeHandle, elementAbiType, length), rows, cols);
     }
 
     public static StreamHandle adoptStream(
-            Backend backend, Object backendToken, String elementAbiType, long lengthHint) {
-        return new StreamHandle(backend, backendToken, elementAbiType, lengthHint);
+            Backend backend, long nativeHandle, String elementAbiType, long lengthHint) {
+        return new StreamHandle(backend, nativeHandle, elementAbiType, lengthHint);
     }
 
     public boolean available() {
@@ -266,15 +255,12 @@ public final class GpuRuntime {
         Backend backend = requireBackend("GpuArray.from_cpu()");
         List<?> frozen = freezeArguments(values);
         validateArrayElements(exactType, frozen);
-        Object token = backendCall(
+        long nativeHandle = backendCall(
                 backend,
                 "uploadArray(" + exactType + ")",
                 () -> backend.uploadArray(exactType, frozen));
-        if (token == null) {
-            throw new GpuExecutionException(
-                    "GPU backend '" + backend.name() + "' returned null from uploadArray", null);
-        }
-        return new ArrayHandle(backend, token, exactType, frozen.size());
+        requireNativeHandle(nativeHandle, "GpuArray upload from backend '" + backend.name() + "'");
+        return new ArrayHandle(backend, nativeHandle, exactType, frozen.size());
     }
 
     public List<?> downloadArray(ArrayHandle array) {
@@ -285,7 +271,7 @@ public final class GpuRuntime {
         }
         List<?> downloaded = backendCall(array.backend, "downloadArray",
                 () -> array.backend.downloadArray(
-                        array.elementAbiType, array.backendToken, array.length));
+                        array.elementAbiType, array.nativeHandle, array.length));
         Object frozen = freezeValue(downloaded, false);
         if (!(frozen instanceof List<?> list)) {
             throw new GpuTransferException(
@@ -373,34 +359,53 @@ public final class GpuRuntime {
 
     public StreamHandle stream(ArrayHandle array) {
         Objects.requireNonNull(array, "array");
-        Object token = backendCall(array.backend, "openStream",
+        long nativeHandle = backendCall(array.backend, "openStream",
                 () -> array.backend.openStream(
-                        array.elementAbiType, array.backendToken, array.length));
-        if (token == null) {
-            throw new GpuExecutionException(
-                    "GPU backend '" + array.backend.name() + "' returned null from openStream", null);
-        }
-        return new StreamHandle(array.backend, token, array.elementAbiType, array.length);
+                        array.elementAbiType, array.nativeHandle, array.length));
+        requireNativeHandle(nativeHandle, "GpuStream from backend '" + array.backend.name() + "'");
+        return new StreamHandle(array.backend, nativeHandle, array.elementAbiType, array.length);
     }
 
     public ArrayHandle collect(StreamHandle stream) {
         Objects.requireNonNull(stream, "stream");
         CollectedArray collected = backendCall(stream.backend, "collectStream",
                 () -> stream.backend.collectStream(
-                        stream.elementAbiType, stream.backendToken, stream.lengthHint));
+                        stream.elementAbiType, stream.nativeHandle, stream.lengthHint));
         if (collected == null) {
             throw new GpuExecutionException(
                     "GPU backend '" + stream.backend.name() + "' returned null from collectStream", null);
         }
         return new ArrayHandle(
                 stream.backend,
-                collected.backendToken(),
+                collected.nativeHandle(),
                 stream.elementAbiType,
                 collected.length());
     }
 
     public List<?> downloadStream(StreamHandle stream) {
         return downloadArray(collect(stream));
+    }
+
+    public void release(ArrayHandle array) {
+        Objects.requireNonNull(array, "array");
+        backendCallVoid(array.backend, "release(GpuArray)", () -> array.backend.release(array.nativeHandle));
+    }
+
+    public void release(MatrixHandle matrix) {
+        Objects.requireNonNull(matrix, "matrix");
+        release(matrix.array);
+    }
+
+    public void release(StreamHandle stream) {
+        Objects.requireNonNull(stream, "stream");
+        backendCallVoid(stream.backend, "release(GpuStream)", () -> stream.backend.release(stream.nativeHandle));
+    }
+
+    private static long requireNativeHandle(long nativeHandle, String where) {
+        if (nativeHandle == 0L) {
+            throw new GpuTransferException(where + " returned/contains invalid native resource handle 0");
+        }
+        return nativeHandle;
     }
 
     private static String inferDeviceScalarType(List<?> values) {
@@ -537,6 +542,17 @@ public final class GpuRuntime {
                     operation + " requires a GPU backend; none is installed and CPU fallback is forbidden");
         }
         return backend;
+    }
+
+    private static void backendCallVoid(Backend backend, String operation, Runnable call) {
+        try {
+            call.run();
+        } catch (GpuException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new GpuExecutionException(
+                    "GPU backend '" + backend.name() + "' failed during " + operation, failure);
+        }
     }
 
     private static <T> T backendCall(Backend backend, String operation, Supplier<T> call) {
