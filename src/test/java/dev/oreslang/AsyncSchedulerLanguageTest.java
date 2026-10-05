@@ -207,6 +207,86 @@ final class AsyncSchedulerLanguageTest {
     }
 
     @Test
+    void deepReturnAwaitRecursionUsesProperAsyncTailTransfer() throws Exception {
+        String program = """
+                async fnc bounce(int n) => int {
+                  if n == 0 do
+                    return 42;
+                  fi
+                  return await bounce(n - 1);
+                }
+
+                pub async routine main() => void {
+                  val value = await bounce(2000);
+                  stdio.println(value);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID,
+                        program,
+                        "async-tail-recursion.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertTrue(output.toString(StandardCharsets.UTF_8).contains("42"));
+    }
+
+    @Test
+    void pendingDeferPreventsTailFusionAndStillRunsCleanup() throws Exception {
+        String program = """
+                async fnc leaf() => int {
+                  return 41;
+                }
+
+                async fnc with_cleanup() => int {
+                  defer stdio.println("cleanup");
+                  return await leaf();
+                }
+
+                pub async routine main() => void {
+                  val value = await with_cleanup();
+                  stdio.println(value);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(
+                        OresLanguage.ID,
+                        program,
+                        "async-tail-cleanup.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        String rendered = output.toString(StandardCharsets.UTF_8);
+        assertTrue(rendered.contains("cleanup"));
+        assertTrue(rendered.contains("41"));
+        assertTrue(rendered.indexOf("cleanup") < rendered.indexOf("41"),
+                "defer must run before the return-await result leaves its caller");
+    }
+
+    @Test
     void schedulerStartRequiresInlineAsyncZeroArgumentLambda() {
         IllegalArgumentException synchronous = assertThrows(
                 IllegalArgumentException.class,
@@ -264,7 +344,7 @@ final class AsyncSchedulerLanguageTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc bad() => void {
+                        fnc invalid_capture() => void {
                           let counter = 0;
                           val scheduler = new OresScheduler(2);
                           val work = scheduler.start(async || -> {
@@ -288,7 +368,7 @@ final class AsyncSchedulerLanguageTest {
         IllegalArgumentException failure = assertThrows(
                 IllegalArgumentException.class,
                 () -> TypeChecker.check(Parser.parse("""
-                        fnc bad() => void {
+                        fnc invalid_guard_capture() => void {
                           val mutex = Mutex.new(1);
                           val guard = mutex.lock();
                           val scheduler = new OresScheduler(2);
