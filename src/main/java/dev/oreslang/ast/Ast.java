@@ -205,6 +205,8 @@ public final class Ast {
         }
     }
 
+    public enum ContractKind { INTERFACE, TRAIT }
+
     public sealed interface InterfaceMember permits InterfaceFunctionDecl, InterfaceFieldDecl { }
 
     public record InterfaceFunctionDecl(
@@ -220,19 +222,34 @@ public final class Ast {
 
     public record InterfaceFieldDecl(String name, TypeRef type) implements InterfaceMember { }
 
+    /**
+     * Shared contract declaration node for nominal interfaces and structural
+     * module traits. Keeping one member model makes callable/field shape
+     * checking identical while preserving the source-level distinction.
+     */
     public record InterfaceDecl(
             String name,
             Visibility visibility,
+            ContractKind contractKind,
             List<String> genericParameters,
             List<TypeRef> parents,
             List<InterfaceMember> members) implements Decl {
         public InterfaceDecl {
+            contractKind = java.util.Objects.requireNonNull(contractKind);
             genericParameters = List.copyOf(genericParameters);
             parents = List.copyOf(parents);
             members = List.copyOf(members);
         }
+        public InterfaceDecl(
+                String name,
+                Visibility visibility,
+                List<String> genericParameters,
+                List<TypeRef> parents,
+                List<InterfaceMember> members) {
+            this(name, visibility, ContractKind.INTERFACE, genericParameters, parents, members);
+        }
         public InterfaceDecl(String name, List<String> genericParameters, List<InterfaceMember> members) {
-            this(name, Visibility.PRIVATE, genericParameters, List.of(), members);
+            this(name, Visibility.PRIVATE, ContractKind.INTERFACE, genericParameters, List.of(), members);
         }
     }
 
