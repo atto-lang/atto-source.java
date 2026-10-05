@@ -14,6 +14,10 @@ import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
+import dev.oreslang.runtime.Awaitable;
+import dev.oreslang.runtime.OresFuture;
+import dev.oreslang.runtime.OresFutures;
+import dev.oreslang.runtime.OresScheduler;
 
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -336,6 +340,9 @@ public final class OresEvalRootNode extends RootNode {
             if (main == null) main = findFunction("main");
             if (main == null) return null;
             Object result = callFunction(main, List.of(arguments));
+            if (result instanceof OresFuture<?> future) {
+                return future.join();
+            }
             if (result instanceof CompletionStage<?> stage) {
                 return AsyncRuntime.await(stage);
             }
@@ -435,10 +442,7 @@ public final class OresEvalRootNode extends RootNode {
                 if (!fn.async()) return callFunctionBodyRaw(fn, normalized);
 
                 List<?> detached = detachAsyncArguments(normalized);
-                return context.asyncRuntime().submit(() ->
-                        detachAsyncValue(
-                                invoke(functionBodyInvocation(fn, detached)),
-                                new IdentityHashMap<>()));
+                return startAsyncFunction(fn, detached);
             }
 
             if (fn.async()) {
@@ -1687,10 +1691,7 @@ public final class OresEvalRootNode extends RootNode {
             if (!fn.async()) return callStaticFunctionBodyRaw(fn, args);
 
             List<?> detached = detachAsyncArguments(args);
-            return context.asyncRuntime().submit(() ->
-                    detachAsyncValue(
-                            invoke(staticFunctionBodyInvocation(fn, detached)),
-                            new IdentityHashMap<>()));
+            return startAsyncStaticFunction(fn, detached);
         }
 
         private Object callStaticFunctionBodyRaw(Ast.MethodDecl fn, List<?> args) {
