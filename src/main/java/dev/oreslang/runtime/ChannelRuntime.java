@@ -112,7 +112,8 @@ public final class ChannelRuntime {
             int start = policy == SelectPolicy.ROUND_ROBIN
                     ? (int) Math.floorMod(cursor.getAndIncrement(), cases.size())
                     : 0;
-            return new Selector(cases, policy, start).arm();
+            return ActorRuntime.trackCurrentFuture(
+                    new Selector(cases, policy, start).arm());
         }
 
         public List<SelectCase> cases() {
@@ -139,7 +140,8 @@ public final class ChannelRuntime {
             List<? extends SelectCase> cases,
             SelectPolicy policy) {
         List<SelectCase> checked = checkedCases(cases);
-        return new Selector(checked, Objects.requireNonNull(policy, "policy"), 0).arm();
+        return ActorRuntime.trackCurrentFuture(
+                new Selector(checked, Objects.requireNonNull(policy, "policy"), 0).arm());
     }
 
     /**
@@ -305,7 +307,7 @@ public final class ChannelRuntime {
                 }
             }
             runCompletions(completions);
-            return pending;
+            return ActorRuntime.trackCurrentFuture(pending);
         }
 
         /**
@@ -346,7 +348,7 @@ public final class ChannelRuntime {
                 }
             }
             runCompletions(completions);
-            return pending;
+            return ActorRuntime.trackCurrentFuture(pending);
         }
 
         /**
