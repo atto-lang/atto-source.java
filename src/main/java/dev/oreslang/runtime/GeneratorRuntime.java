@@ -239,6 +239,7 @@ public final class GeneratorRuntime {
             done = true;
             if (producerTask != null) producerTask.cancel(true);
             resumes.offer(RESUME);
+            events.offer(new DoneEvent<>());
         }
     }
 }
