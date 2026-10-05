@@ -295,7 +295,11 @@ public final class OresEvalRootNode extends RootNode {
             Ast.FunctionDecl main = functions.get(Parser.ROOT_MODULE + ".main");
             if (main == null) main = findFunction("main");
             if (main == null) return null;
-            return callFunction(main, List.of(arguments));
+            Object result = callFunction(main, List.of(arguments));
+            if (result instanceof CompletionStage<?> stage) {
+                return AsyncRuntime.await(stage);
+            }
+            return result;
         }
 
         private Object invokePublic(String name, Object[] arguments) {
