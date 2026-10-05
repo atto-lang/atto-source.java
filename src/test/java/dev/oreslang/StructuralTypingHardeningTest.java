@@ -330,13 +330,12 @@ final class StructuralTypingHardeningTest {
                     pub update(Box value): void { return; }
                   end
 
-                  fnc use(structural Mutating candidate, Box value): void {
-                    candidate.update(value);
+                  fnc use(structural Mutating candidate): void {
                     return;
                   }
 
-                  fnc bad(Box value): void {
-                    use(new ReadOnlyCandidate(), value);
+                  fnc bad(): void {
+                    use(new ReadOnlyCandidate());
                     return;
                   }
                 end
@@ -356,13 +355,12 @@ final class StructuralTypingHardeningTest {
                     pub update(Box mut value): void { return; }
                   end
 
-                  fnc use(structural ReadOnly candidate, Box value): void {
-                    candidate.update(value);
+                  fnc use(structural ReadOnly candidate): void {
                     return;
                   }
 
-                  fnc bad(Box value): void {
-                    use(new MutatingCandidate(), value);
+                  fnc bad(): void {
+                    use(new MutatingCandidate());
                     return;
                   }
                 end
