@@ -108,8 +108,9 @@ type_return_spec= [ "=>" type_ref ] ;
 generic_params  = "<" IDENT { "," IDENT } ">" ;
 param_list      = param { "," param } ;
 param           = type_ref [ "mut" ] IDENT
-                | "@Structural" type_ref [ "mut" ] IDENT
-                | IDENT "structural" type_ref [ "mut" ] ;
+                | "structural" type_ref IDENT
+                | "@Structural" type_ref IDENT
+                | IDENT "structural" type_ref ;
 
 binding_decl    = binding_kind [ type_ref ] IDENT "=" expression stmt_terminator ;
 binding_kind    = "val" | "const" | "let" ;
@@ -384,14 +385,19 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
    - Lambdas always have braces. Non-void lambdas must use explicit return and
      return on every path when a contextual function result type is known.
    - named class/interface types are nominal by default.
-   - @Structural, name structural Type, or @AllowStructural(name) opt a
-     parameter into public-shape compatibility.
+   - structural Type name is the canonical opt-in for structural parameter
+     typing. @Structural, name structural Type, and @AllowStructural(name) remain
+     accepted compatibility spellings. Compatibility is directional: the
+     argument may have extra public members but must provide every required
+     public field and method with a compatible signature.
    - every loop iteration contains an injected scheduler safepoint.
    - [Symbol.iterator]() may provide iterator behavior for for-of.
    - standalone null values are illegal.
    - null is a type marker only directly inside Option<null>.
    - inline obj{} / arr[] values cannot be subclassed; extend Object/List.
    - "structural" is contextual in parameter position, not globally reserved.
+     Structural views are read-only borrows: they cannot be mut, cross async
+     suspension, cross actor mailbox boundaries, or erase actor identity.
    - self is an immutable receiver borrow and cannot be rebound.
    - Parameters are immutable by default. Type "mut" name grants mutation of an
      owned parameter inside the callee, e.g. Bar mut b.
