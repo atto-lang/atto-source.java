@@ -158,7 +158,7 @@ for_init        = binding_kind [ type_ref ] IDENT "=" expression
 for_update      = IDENT ( "++" | "--" )
                 | expression ;
 
-while_stmt      = "while" [ expression ] loop_body ;
+while_stmt      = "while" expression loop_body ;
 do_while_stmt   = "do" block "while" expression [ ";" ] ;
 
 expression      = assignment ;
