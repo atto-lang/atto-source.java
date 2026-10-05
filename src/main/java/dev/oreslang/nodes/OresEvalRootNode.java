@@ -1391,9 +1391,15 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
-                    if (klass == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export class '" + name + "'");
+                    if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export ordinary class '" + name + "'");
+                    }
                     yield new ClassFacade(this, klass);
                 }
+                case ACTOR, INTERFACE, TRAIT, STRUCT, TYPE, TYPES ->
+                        throw new IllegalArgumentException(
+                                "import " + kind.name().toLowerCase()
+                                        + " is a type-only selector and cannot be evaluated as a runtime value");
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
                     if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
