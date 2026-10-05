@@ -447,8 +447,25 @@ public final class Parser {
         Ast.TypeRef receiverType = null;
         List<Ast.Param> params;
         if (mods.isStatic && check(SELF)) throw error(peek(), "static class functions do not have a self receiver");
-        if (match(SELF)) {
-            receiverType = parseTypeRef();
+
+        // `self` is both the receiver keyword and a receiver-polymorphic type.
+        // Disambiguate by the explicit-receiver form's second parameter list:
+        //   method(self Foo)(int x)  -> explicit receiver
+        //   method(self other)       -> ordinary parameter typed `self`
+        int parameterStart = current;
+        boolean explicitReceiver = false;
+        if (check(SELF)) {
+            advance();
+            Ast.TypeRef candidateReceiver = parseTypeRef();
+            if (check(RPAREN) && checkNext(LPAREN)) {
+                receiverType = candidateReceiver;
+                explicitReceiver = true;
+            } else {
+                current = parameterStart;
+            }
+        }
+
+        if (explicitReceiver) {
             consume(RPAREN, "expected ')' after explicit self receiver");
             consume(LPAREN, "explicit receiver form is method(self Type)(params)");
             params = parseParametersUntil(RPAREN);
