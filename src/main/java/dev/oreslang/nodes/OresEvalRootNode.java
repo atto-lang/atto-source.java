@@ -12,6 +12,7 @@ import dev.oreslang.runtime.OresContext;
 import dev.oreslang.runtime.CapabilityChecker;
 import dev.oreslang.runtime.IsolatePolicy;
 import dev.oreslang.runtime.OresMutex;
+import dev.oreslang.runtime.OresChannel;
 import dev.oreslang.runtime.ActorRuntime;
 import dev.oreslang.runtime.AsyncRuntime;
 
@@ -25,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
 
@@ -814,6 +816,78 @@ public final class OresEvalRootNode extends RootNode {
                         inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
                 return;
             }
+            if (stmt instanceof Ast.SelectStmt selected) {
+                ArrayList<OresChannel.SelectEntry> entries = new ArrayList<>(selected.cases().size());
+                for (int i = 0; i < selected.cases().size(); i++) {
+                    Ast.SelectCase arm = selected.cases().get(i);
+                    Object rawChannel = eval(arm.channel(), env);
+                    if (!(rawChannel instanceof OresChannel<?> channel)) {
+                        throw new IllegalArgumentException(
+                                "select " + arm.operation().name().toLowerCase()
+                                        + " case requires Channel<T>");
+                    }
+                    if (arm.operation() == Ast.SelectOperation.READ) {
+                        entries.add(OresChannel.readCase(channel));
+                    } else {
+                        Object value = eval(arm.value(), env);
+                        entries.add(writeSelectCase(channel, value));
+                    }
+                }
+
+                boolean immediate = selected.nonBlocking() || selected.hasDefault();
+                Optional<OresChannel.SelectionResult> result = immediate
+                        ? OresChannel.trySelect(entries)
+                        : Optional.of(OresChannel.select(entries));
+
+                if (result.isEmpty()) {
+                    if (selected.defaultBody() != null) {
+                        executeBlock(
+                                selected.defaultBody(),
+                                env,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                    }
+                    return;
+                }
+
+                OresChannel.SelectionResult committed = result.get();
+                Ast.SelectCase arm = selected.cases().get(committed.index());
+                Env armEnv = new Env(env);
+                if (arm.operation() == Ast.SelectOperation.READ && arm.bindingName() != null) {
+                    armEnv.define(arm.bindingName(), committed.value(), Ast.BindingKind.VAL);
+                }
+                executeBlock(
+                        arm.body(),
+                        armEnv,
+                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                return;
+            }
+            if (stmt instanceof Ast.DynamicSelectStmt selected) {
+                Object entries = eval(selected.entries(), env);
+                boolean immediate = selected.nonBlocking() || selected.hasDefault();
+                Optional<OresChannel.SelectionResult> result = immediate
+                        ? OresChannel.trySelectDynamic(entries)
+                        : Optional.of(OresChannel.selectDynamic(entries));
+
+                if (result.isEmpty()) {
+                    if (selected.defaultBody() != null) {
+                        executeBlock(
+                                selected.defaultBody(),
+                                env,
+                                inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                    }
+                    return;
+                }
+
+                Env bodyEnv = new Env(env);
+                if (selected.resultBinding() != null) {
+                    bodyEnv.define(selected.resultBinding(), result.get(), Ast.BindingKind.VAL);
+                }
+                executeBlock(
+                        selected.body(),
+                        bodyEnv,
+                        inheritedTailBarrier || !deferred.isEmpty() || env.hasLiveMutexGuards());
+                return;
+            }
             if (stmt instanceof Ast.TryStmt tried) {
                 // A call under catch/finally is not a proper tail call: the
                 // caller still owns exception/cleanup semantics after the call.
@@ -1077,6 +1151,42 @@ public final class OresEvalRootNode extends RootNode {
                 if (name.name().equals("stdio")) return new StdioFacade(context);
                 if (name.name().equals("process")) return new ProcessFacade(context);
                 if (name.name().equals("actor")) return new ActorFacade(context);
+                if (name.name().equals("select")) return new SelectFacade();
+                if (name.name().equals("channel")) return (Invokable) args -> {
+                    if (args.size() > 1) {
+                        throw new IllegalArgumentException("channel<T>(capacity?) accepts zero or one capacity argument");
+                    }
+                    int capacity = 64;
+                    if (!args.isEmpty()) {
+                        Object raw = args.getFirst();
+                        if (!(raw instanceof Number number)) {
+                            throw new IllegalArgumentException("channel capacity must be an integer");
+                        }
+                        long candidate = number.longValue();
+                        if (candidate < 0 || candidate > Integer.MAX_VALUE) {
+                            throw new IllegalArgumentException("channel capacity must be between 0 and " + Integer.MAX_VALUE);
+                        }
+                        capacity = (int) candidate;
+                    }
+                    return new OresChannel<>(capacity);
+                };
+                if (name.name().equals("readch")) return (Invokable) args -> {
+                    requireOne(args, "readch");
+                    if (!(args.getFirst() instanceof OresChannel<?> channel)) {
+                        throw new IllegalArgumentException("readch expects Channel<T>");
+                    }
+                    return channel.read();
+                };
+                if (name.name().equals("writech")) return (Invokable) args -> {
+                    if (args.size() != 2) {
+                        throw new IllegalArgumentException("writech expects Channel<T> and one value");
+                    }
+                    if (!(args.get(0) instanceof OresChannel<?> channel)) {
+                        throw new IllegalArgumentException("writech expects Channel<T> as its first argument");
+                    }
+                    writeChannel(channel, args.get(1));
+                    return null;
+                };
                 if (name.name().equals("Mutex")) return new MutexFactory(false, context);
                 if (name.name().equals("SharedMutex")) return new MutexFactory(true, context);
                 if (name.name().equals("print")) return (Invokable) args -> {
@@ -1414,6 +1524,37 @@ public final class OresEvalRootNode extends RootNode {
                     default -> throw new IllegalArgumentException("unknown actor member " + name);
                 };
             }
+            if (receiver instanceof SelectFacade) {
+                return switch (name) {
+                    case "readch" -> (Invokable) args -> {
+                        requireOne(args, "select.readch");
+                        if (!(args.getFirst() instanceof OresChannel<?> channel)) {
+                            throw new IllegalArgumentException("select.readch expects Channel<T>");
+                        }
+                        yield OresChannel.readCase(channel);
+                    };
+                    case "writech" -> (Invokable) args -> {
+                        if (args.size() != 2) {
+                            throw new IllegalArgumentException("select.writech expects Channel<T> and one value");
+                        }
+                        if (!(args.get(0) instanceof OresChannel<?> channel)) {
+                            throw new IllegalArgumentException("select.writech expects Channel<T> as its first argument");
+                        }
+                        yield writeSelectCase(channel, args.get(1));
+                    };
+                    default -> throw new IllegalArgumentException("unknown select member " + name);
+                };
+            }
+            if (receiver instanceof OresChannel.SelectionResult result) {
+                return switch (name) {
+                    case "index" -> (long) result.index();
+                    case "key" -> result.key();
+                    case "kind" -> result.operation().name().toLowerCase(java.util.Locale.ROOT);
+                    case "value" -> result.value();
+                    case "channel" -> result.channel();
+                    default -> throw new IllegalArgumentException("unknown SelectResult member " + name);
+                };
+            }
             if (receiver instanceof MutexFactory factory) {
                 if (!name.equals("new")) throw new IllegalArgumentException("unknown mutex factory member " + name);
                 return (Invokable) factory::create;
@@ -1553,6 +1694,16 @@ public final class OresEvalRootNode extends RootNode {
 
         private RuntimeException hostInteropError(String operation, Exception failure) {
             return new IllegalArgumentException(operation + " failed: " + failure.getMessage(), failure);
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private static void writeChannel(OresChannel<?> channel, Object value) {
+            ((OresChannel) channel).write(value);
+        }
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private static OresChannel.SelectEntry writeSelectCase(OresChannel<?> channel, Object value) {
+            return OresChannel.writeCase((OresChannel) channel, value);
         }
 
         private Object optionMember(OptionValue option, String name) {
@@ -2751,6 +2902,7 @@ public final class OresEvalRootNode extends RootNode {
 
     private record ImportedBinding(Ast.ImportDecl declaration, String sourceName) { }
     private record ImportedNamespace(Evaluator owner, Ast.ImportKind kind) { }
+    private record SelectFacade() { }
     private record ModuleFacade(Evaluator owner, Ast.ModuleDecl module) { }
     private record ClassFacade(Evaluator owner, Ast.ClassDecl klass) { }
     private record HostClassFacade(String className, Object symbol, boolean constructible) { }
