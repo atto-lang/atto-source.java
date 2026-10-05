@@ -1,5 +1,6 @@
 package dev.oreslang;
 
+import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
 import org.junit.jupiter.api.Test;
@@ -188,4 +189,129 @@ final class StructuralTypingHardeningTest {
                 end
                 """)));
     }
+    @Test
+    void structuralCallableKeywordAndAnnotationNormalizeToOneAstFlag() {
+        Ast.Program program = Parser.parse("""
+                define module app
+                  structural fnc by_keyword(): int { return 1; }
+
+                  @structural
+                  routine by_annotation(): int { return 2; }
+
+                  define class Worker as
+                    structural run(): int { return 3; }
+
+                    @structural
+                    pub static fnc build(): int { return 4; }
+                  end
+
+                  define interface Api
+                    structural fnc call(int value) => int;
+                  end
+                end
+                """);
+
+        Ast.ModuleDecl module = program.modules().getFirst();
+
+        Ast.FunctionDecl byKeyword = (Ast.FunctionDecl) module.declarations().get(0);
+        Ast.FunctionDecl byAnnotation = (Ast.FunctionDecl) module.declarations().get(1);
+        Ast.ClassDecl worker = (Ast.ClassDecl) module.declarations().get(2);
+        Ast.InterfaceDecl api = (Ast.InterfaceDecl) module.declarations().get(3);
+
+        assertTrue(byKeyword.structural());
+        assertTrue(byAnnotation.structural());
+        assertEquals(Ast.CallableKind.ROUTINE, byAnnotation.kind());
+        assertTrue(byAnnotation.annotations().stream().noneMatch(a -> a.name().equalsIgnoreCase("structural")));
+
+        assertTrue(worker.methods().get(0).structural());
+        assertTrue(worker.methods().get(1).structural());
+        assertTrue(worker.methods().get(1).annotations().stream().noneMatch(a -> a.name().equalsIgnoreCase("structural")));
+
+        Ast.InterfaceFunctionDecl call = (Ast.InterfaceFunctionDecl) api.members().getFirst();
+        assertTrue(call.structural());
+    }
+
+    @Test
+    void structuralCallableMetadataIsSeparateFromStructuralParameterMatching() {
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  define interface Shape
+                    value: int;
+                  end
+
+                  define class Candidate as
+                    pub val int value = 1;
+                  end
+
+                  structural fnc take(Shape value): int {
+                    return value.value;
+                  }
+
+                  fnc bad(): int {
+                    return take(new Candidate());
+                  }
+                end
+                """)));
+    }
+
+    @Test
+    void structuralCallableSyntaxRejectsDuplicatesArgumentsAndNonCallableTargets() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  @structural
+                  structural fnc duplicate(): void { return; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  @structural(int)
+                  fnc bad_annotation(): void { return; }
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  define class Bad as
+                    structural val int value = 1;
+                  end
+                end
+                """));
+
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("""
+                define module app
+                  @structural
+                  val int value = 1;
+                end
+                """));
+    }
+
+    @Test
+    void structuralCallableMetadataDoesNotEraseActorIdentity() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define module app
+                  actor Worker {
+                    structural pub run(): int { return 1; }
+                  }
+
+                  @structural
+                  actor fnc invoke(int value): int {
+                    return value;
+                  }
+                end
+                """)));
+
+        assertThrows(IllegalArgumentException.class, () -> TypeChecker.check(Parser.parse("""
+                define module app
+                  actor Worker {
+                    structural pub run(): int { return 1; }
+                  }
+
+                  fnc bad(structural Worker worker): int {
+                    return worker.run();
+                  }
+                end
+                """)));
+    }
+
 }
