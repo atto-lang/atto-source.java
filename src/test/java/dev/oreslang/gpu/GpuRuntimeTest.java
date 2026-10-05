@@ -4,7 +4,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -216,12 +219,13 @@ final class GpuRuntimeTest {
         GpuRuntime.installBackend(new GpuRuntime.Backend() {
             @Override public String name() { return "bad-length"; }
             @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
-            @Override public Object uploadArray(String elementAbiType, List<?> values) {
+            @Override public long uploadArray(String elementAbiType, List<?> values) {
                 assertEquals("i64", elementAbiType);
-                return List.copyOf(values);
+                return 1L;
             }
-            @Override public List<?> downloadArray(String elementAbiType, Object token, long length) {
+            @Override public List<?> downloadArray(String elementAbiType, long nativeHandle, long length) {
                 assertEquals("i64", elementAbiType);
+                assertEquals(1L, nativeHandle);
                 return List.of(1L);
             }
         });
@@ -233,6 +237,43 @@ final class GpuRuntimeTest {
                 GpuRuntime.GpuTransferException.class,
                 () -> runtime.downloadArray(array));
         assertTrue(failure.getMessage().contains("returned 1 element(s) for GpuArray length 2"));
+    }
+
+    @Test
+    void nativeResourceHandleZeroIsAlwaysRejected() {
+        GpuRuntime.installBackend(new GpuRuntime.Backend() {
+            @Override public String name() { return "zero-handle"; }
+            @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+            @Override public long uploadArray(String elementAbiType, List<?> values) { return 0L; }
+        });
+
+        GpuRuntime.GpuTransferException failure = assertThrows(
+                GpuRuntime.GpuTransferException.class,
+                () -> new GpuRuntime().uploadArray("i64", List.of(1L)));
+        assertTrue(failure.getMessage().contains("handle 0"));
+    }
+
+    @Test
+    void resourceReleaseUsesOpaqueNativeHandle() {
+        TransferBackend backend = new TransferBackend("release-test");
+        GpuRuntime.installBackend(backend);
+        GpuRuntime runtime = new GpuRuntime();
+
+        GpuRuntime.ArrayHandle array = runtime.uploadArray("i64", List.of(1L, 2L));
+        assertEquals(List.of(1L, 2L), runtime.downloadArray(array));
+
+        runtime.release(array);
+        assertThrows(GpuRuntime.GpuExecutionException.class, () -> runtime.downloadArray(array));
+    }
+
+    @Test
+    void guestHandlesExposeNoRawBackendTokenAccessor() {
+        assertThrows(NoSuchMethodException.class,
+                () -> GpuRuntime.ArrayHandle.class.getMethod("backendToken"));
+        assertThrows(NoSuchMethodException.class,
+                () -> GpuRuntime.MatrixHandle.class.getMethod("backendToken"));
+        assertThrows(NoSuchMethodException.class,
+                () -> GpuRuntime.StreamHandle.class.getMethod("backendToken"));
     }
 
     @Test
@@ -252,13 +293,35 @@ final class GpuRuntimeTest {
         assertTrue(failure.getMessage().contains("invoke(test.boom)"));
     }
 
-    private record TransferBackend(String name) implements GpuRuntime.Backend {
-        @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
-        @Override public Object uploadArray(String elementAbiType, List<?> values) {
-            return List.copyOf(values);
+    private static final class TransferBackend implements GpuRuntime.Backend {
+        private final String name;
+        private final AtomicLong nextHandle = new AtomicLong(1L);
+        private final Map<Long, List<?>> buffers = new HashMap<>();
+
+        private TransferBackend(String name) {
+            this.name = name;
         }
-        @Override public List<?> downloadArray(String elementAbiType, Object token, long length) {
-            return (List<?>) token;
+
+        @Override public String name() { return name; }
+        @Override public Object invoke(GpuRuntime.Invocation invocation) { return null; }
+
+        @Override
+        public synchronized long uploadArray(String elementAbiType, List<?> values) {
+            long handle = nextHandle.getAndIncrement();
+            buffers.put(handle, List.copyOf(values));
+            return handle;
+        }
+
+        @Override
+        public synchronized List<?> downloadArray(String elementAbiType, long nativeHandle, long length) {
+            List<?> values = buffers.get(nativeHandle);
+            if (values == null) throw new IllegalStateException("stale native test handle " + nativeHandle);
+            return values;
+        }
+
+        @Override
+        public synchronized void release(long nativeHandle) {
+            buffers.remove(nativeHandle);
         }
     }
 }
