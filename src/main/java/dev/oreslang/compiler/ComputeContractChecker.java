@@ -509,6 +509,11 @@ public final class ComputeContractChecker {
         if (!(loop.initializer() instanceof Ast.BindingStmt initializer)) {
             throw unsafe(owner, "non-canonical compute for-loop initializer");
         }
+        if (initializer.declaredType() == null
+                || initializer.declaredType().isBorrow()
+                || !initializer.declaredType().name().equals("int")) {
+            throw unsafe(owner, "compute for-loop induction variable must be declared int");
+        }
         if (!(loop.condition() instanceof Ast.BinaryExpr condition)) {
             throw unsafe(owner, "compute for-loop without a provable monotonic bound");
         }
@@ -519,6 +524,18 @@ public final class ComputeContractChecker {
         BoundedForShape shape = boundedForShape(initializer.name(), condition, incomingLocals);
         if (shape == null) {
             throw unsafe(owner, "compute for-loop without a canonical finite induction bound");
+        }
+        if (shape.boundName() != null
+                && !isIntParameter(scope.function(), shape.boundName())) {
+            throw unsafe(
+                    owner,
+                    "dynamic compute for-loop bound must be an int parameter in the v0 device-safe subset");
+        }
+        if (initializer.initializer() instanceof Ast.NameExpr startName
+                && !isIntParameter(scope.function(), startName.name())) {
+            throw unsafe(
+                    owner,
+                    "dynamic compute for-loop start must be an int parameter in the v0 device-safe subset");
         }
         if (!hasUnitStep(loop.update(), shape.inductionVariable(), shape.direction())) {
             throw unsafe(
@@ -582,6 +599,17 @@ public final class ComputeContractChecker {
             return new BoundedForShape(induction, direction, bound, name.name(), inclusive);
         }
         return null;
+    }
+
+    private static boolean isIntParameter(
+            Ast.FunctionDecl function,
+            String name) {
+        for (Ast.Param parameter : function.parameters()) {
+            if (!parameter.name().equals(name)) continue;
+            Ast.TypeRef type = parameter.type();
+            return type != null && !type.isBorrow() && type.name().equals("int");
+        }
+        return false;
     }
 
     private static boolean hasUnitStep(
