@@ -4,6 +4,7 @@ import dev.oreslang.ast.AnnotationExpander;
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
 import dev.oreslang.types.TypeChecker;
+import dev.oreslang.types.Types.ModuleType;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -107,7 +108,31 @@ public final class IncrementalCompiler {
 
             Map<String, Ast.InterfaceDecl> importedInterfaces =
                     ImportGraph.resolveImportedInterfaces(id, parsed, normalizedImportResolutions);
-            Ast.Program checked = TypeChecker.check(parsed.get(id), importedInterfaces);
+
+            Map<String, ImportGraph.ResolvedModuleImport> importedModules =
+                    ImportGraph.resolveImportedModules(id, parsed, normalizedImportResolutions);
+            LinkedHashMap<String, ModuleType> importedModuleTypes = new LinkedHashMap<>();
+            for (Map.Entry<String, ImportGraph.ResolvedModuleImport> entry : importedModules.entrySet()) {
+                ImportGraph.ResolvedModuleImport resolved = entry.getValue();
+                Ast.Program provider = parsed.get(resolved.targetUnitId());
+                if (provider == null) {
+                    throw new IllegalArgumentException(
+                            "imported module provider was not supplied: '" + resolved.targetUnitId() + "'");
+                }
+                Map<String, Ast.InterfaceDecl> providerContracts =
+                        ImportGraph.resolveImportedInterfaces(
+                                resolved.targetUnitId(), parsed, normalizedImportResolutions);
+                ModuleType moduleType = TypeChecker.exportedModuleType(
+                        provider, providerContracts, resolved.module().name());
+                ModuleType previous = importedModuleTypes.putIfAbsent(entry.getKey(), moduleType);
+                if (previous != null && !previous.equals(moduleType)) {
+                    throw new IllegalArgumentException(
+                            "imported module type binding '" + entry.getKey() + "' is ambiguous in '" + id + "'");
+                }
+            }
+
+            Ast.Program checked = TypeChecker.check(
+                    parsed.get(id), importedInterfaces, Map.copyOf(importedModuleTypes));
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
