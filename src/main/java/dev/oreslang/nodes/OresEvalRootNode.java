@@ -661,6 +661,18 @@ public final class OresEvalRootNode extends RootNode {
                 }
             }
 
+            if (call.callee() instanceof Ast.NameExpr importedName
+                    && env.lookup(importedName.name()) == Env.MISSING) {
+                ImportedBinding imported = namedImports.get(importedName.name());
+                if (imported != null && imported.declaration().kind() == Ast.ImportKind.ACTOR) {
+                    List<Object> args = evaluateArguments(call.arguments(), env);
+                    return importedTarget(imported.declaration()).prepareImportedInvocation(
+                            Ast.ImportKind.ACTOR,
+                            imported.sourceName(),
+                            args);
+                }
+            }
+
             if (call.callee() instanceof Ast.MemberExpr methodCall) {
                 Object receiver = eval(methodCall.receiver(), env);
                 List<Object> args = evaluateArguments(call.arguments(), env);
@@ -1389,6 +1401,13 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 return functionInvocation(fn, args);
             }
+            if (kind == Ast.ImportKind.ACTOR) {
+                if (fn.actorKind() == Ast.ActorKind.NONE) {
+                    throw new IllegalArgumentException(
+                            "import actor requires an actor callable; '" + name + "' is not actor-dispatched");
+                }
+                return functionInvocation(fn, args);
+            }
             if (kind == Ast.ImportKind.ALL) {
                 return functionInvocation(fn, args);
             }
@@ -1421,14 +1440,36 @@ public final class OresEvalRootNode extends RootNode {
                 }
                 case CLASS -> {
                     Ast.ClassDecl klass = findClass(name);
-                    if (klass == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export class '" + name + "'");
+                    if (klass == null || klass.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "code unit '" + codeUnitId + "' does not export ordinary class '" + name + "'");
+                    }
                     yield new ClassFacade(this, klass);
+                }
+                case ACTOR -> {
+                    Ast.ClassDecl klass = findClass(name);
+                    if (klass != null && klass.actorKind() != Ast.ActorKind.NONE) {
+                        yield new ClassFacade(this, klass);
+                    }
+                    Ast.FunctionDecl fn = findFunction(name);
+                    if (fn != null
+                            && fn.visibility() == Ast.Visibility.PUBLIC
+                            && fn.actorKind() != Ast.ActorKind.NONE) {
+                        throw new IllegalArgumentException(
+                                "actor callable '" + name
+                                        + "' is scheduler-dispatched and cannot be extracted as a first-class value");
+                    }
+                    throw new IllegalArgumentException(
+                            "code unit '" + codeUnitId + "' does not export actor '" + name + "'");
                 }
                 case MODULE -> {
                     Ast.ModuleDecl module = modules.get(name);
                     if (module == null) throw new IllegalArgumentException("code unit '" + codeUnitId + "' does not export module '" + name + "'");
                     yield new ModuleFacade(this, module);
                 }
+                case INTERFACE, TYPE, TRAIT, STRUCT, TYPES ->
+                        throw new IllegalArgumentException(
+                                "type-only import '" + name + "' cannot be used as a runtime value");
                 case ALL -> exportAny(name);
             };
         }
