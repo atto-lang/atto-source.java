@@ -2056,8 +2056,38 @@ public final class TypeChecker {
         return type instanceof Borrow borrow ? borrow.target() : type;
     }
 
+    /** Nominal/structural view used only to resolve members on an exact receiver. */
+    private Type receiverDispatchType(Type type) {
+        return type instanceof SelfType receiverSelf ? receiverSelf.bound() : type;
+    }
+
+    /**
+     * Replace receiver-polymorphic markers in a signature/result with the
+     * actual static receiver type.  This also supports nested forms such as
+     * Option<self> without turning an arbitrary nominal value into SelfType.
+     */
+    private Type bindReceiverSelf(Type type, Type receiver) {
+        if (type instanceof SelfType) return receiver;
+        if (type instanceof Borrow borrow) return new Borrow(bindReceiverSelf(borrow.target(), receiver), borrow.mutable());
+        if (type instanceof ListType list) return new ListType(bindReceiverSelf(list.element(), receiver));
+        if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Union union) return Types.unionOf(union.options().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Named named) return new Named(
+                named.name(), named.arguments().stream().map(t -> bindReceiverSelf(t, receiver)).toList());
+        if (type instanceof Function fn) return new Function(
+                fn.parameters().stream().map(t -> bindReceiverSelf(t, receiver)).toList(),
+                bindReceiverSelf(fn.result(), receiver));
+        if (type instanceof Record record) {
+            Map<String, Type> members = new LinkedHashMap<>();
+            record.members().forEach((name, member) -> members.put(name, bindReceiverSelf(member, receiver)));
+            return new Record(members);
+        }
+        return type;
+    }
+
     private Type memberType(Ast.MemberExpr member, Env env, Set<String> generics, Type self) {
-        Type receiver = unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self)));
+        Type receiver = receiverDispatchType(
+                unwrapMutexGuard(deref(typeOf(member.receiver(), env, generics, self))));
         if (receiver instanceof Record record) {
             Type result = record.members().get(member.member());
             if (result == null) throw new IllegalArgumentException("unknown structural member '" + member.member() + "'");
@@ -2694,6 +2724,7 @@ public final class TypeChecker {
     }
 
     private Type iterableElementType(Type iterable) {
+        iterable = receiverDispatchType(iterable);
         if (iterable instanceof ListType list) return list.element();
         if (iterable instanceof Tuple tuple) {
             Type result = Unknown.INSTANCE;
@@ -2744,6 +2775,7 @@ public final class TypeChecker {
     }
 
     private Type asyncIterableElementType(Type iterable) {
+        iterable = receiverDispatchType(iterable);
         if (iterable instanceof Named named) {
             if (named.name().equals("AsyncIterator") && named.arguments().size() == 1) {
                 return named.arguments().getFirst();
