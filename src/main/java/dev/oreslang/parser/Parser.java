@@ -518,14 +518,11 @@ public final class Parser {
             }
         }
 
-        if (check(FAT_ARROW)) {
-            throw error(peek(),
-                    "fat arrow '=>' is reserved for function types/interface callable signatures; "
-                            + "named executable callables use ': ReturnType' or '-> ReturnType'");
-        }
-
         Ast.TypeRef declared = null;
-        if (match(COLON) || match(ARROW)) {
+        if (match(COLON) || match(ARROW) || match(FAT_ARROW)) {
+            // ':' and '->' are the current callable spellings. Keep legacy
+            // '=>' accepted on this older native-core stack so the collections
+            // PR does not force an unrelated whole-repository syntax migration.
             declared = parseTypeRef();
         }
         if (annotated != null && declared != null && !sameType(annotated, declared)) {
