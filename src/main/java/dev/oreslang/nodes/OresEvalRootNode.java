@@ -670,6 +670,9 @@ public final class OresEvalRootNode extends RootNode {
                 Evaluator owner = this;
                 if (klass == null) {
                     Object imported = importedValue(created.type().name());
+                    if (imported == Env.MISSING) {
+                        imported = importedQualifiedClass(created.type().name());
+                    }
                     if (imported instanceof ClassFacade externalClass) {
                         owner = externalClass.owner();
                         klass = externalClass.klass();
@@ -1057,6 +1060,31 @@ public final class OresEvalRootNode extends RootNode {
             }
             Ast.ImportDecl namespace = namespaceImports.get(name);
             if (namespace != null) return new ImportedNamespace(importedTarget(namespace), namespace.kind());
+            return Env.MISSING;
+        }
+
+        /**
+         * Resolves a class reached through an imported module/wildcard namespace,
+         * e.g. `new collections.ArrayList<int>()`. Module names are flat in
+         * Oreslang, so exactly one namespace separator is sufficient here.
+         */
+        private Object importedQualifiedClass(String qualifiedName) {
+            int dot = qualifiedName.indexOf('.');
+            if (dot <= 0 || dot != qualifiedName.lastIndexOf('.')) return Env.MISSING;
+
+            String namespaceName = qualifiedName.substring(0, dot);
+            String className = qualifiedName.substring(dot + 1);
+            Object namespace = importedValue(namespaceName);
+
+            if (namespace instanceof ModuleFacade module) {
+                Object value = module.owner().moduleMember(module.module(), className);
+                return value instanceof ClassFacade ? value : Env.MISSING;
+            }
+            if (namespace instanceof ImportedNamespace importedNamespace) {
+                Object value = importedNamespace.owner()
+                        .exportValue(importedNamespace.kind(), className);
+                return value instanceof ClassFacade ? value : Env.MISSING;
+            }
             return Env.MISSING;
         }
 
