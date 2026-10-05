@@ -123,6 +123,7 @@ public final class Ast {
             CallableKind kind,
             Visibility visibility,
             boolean async,
+            boolean structural,
             boolean nonLexical,
             ActorKind actorKind,
             List<String> genericParameters,
@@ -136,19 +137,29 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+
+        /** Compatibility constructor for callables that do not use declaration-level structural matching. */
+        public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
+                            boolean nonLexical, ActorKind actorKind, List<String> genericParameters,
+                            List<Param> parameters, TypeRef returnType, List<Annotation> annotations,
+                            List<Stmt> body) {
+            this(name, kind, visibility, async, false, nonLexical, actorKind,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
+
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             ActorKind actorKind, List<String> genericParameters, List<Param> parameters,
                             TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, actorKind, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, actorKind, genericParameters, parameters, returnType, annotations, body);
         }
         public FunctionDecl(String name, CallableKind kind, Visibility visibility, boolean async,
                             List<String> genericParameters, List<Param> parameters, TypeRef returnType,
                             List<Annotation> annotations, List<Stmt> body) {
-            this(name, kind, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, kind, visibility, async, false, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
         }
         public FunctionDecl(String name, Visibility visibility, boolean async, List<String> genericParameters,
                             List<Param> parameters, TypeRef returnType, List<Annotation> annotations, List<Stmt> body) {
-            this(name, CallableKind.FNC, visibility, async, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
+            this(name, CallableKind.FNC, visibility, async, false, false, ActorKind.NONE, genericParameters, parameters, returnType, annotations, body);
         }
     }
 
@@ -183,12 +194,22 @@ public final class Ast {
 
     public record InterfaceFunctionDecl(
             String name,
+            boolean structural,
             List<String> genericParameters,
             List<Param> parameters,
             TypeRef returnType) implements InterfaceMember {
         public InterfaceFunctionDecl {
             genericParameters = List.copyOf(genericParameters);
             parameters = List.copyOf(parameters);
+        }
+
+        /** Compatibility constructor for nominal interface callable contracts. */
+        public InterfaceFunctionDecl(
+                String name,
+                List<String> genericParameters,
+                List<Param> parameters,
+                TypeRef returnType) {
+            this(name, false, genericParameters, parameters, returnType);
         }
     }
 
@@ -229,6 +250,7 @@ public final class Ast {
             boolean isStatic,
             boolean isAbstract,
             boolean async,
+            boolean structural,
             TypeRef explicitReceiverType,
             List<String> genericParameters,
             List<Param> parameters,
@@ -241,6 +263,24 @@ public final class Ast {
             annotations = List.copyOf(annotations);
             body = List.copyOf(body);
         }
+
+        /** Compatibility constructor for methods that do not use declaration-level structural matching. */
+        public MethodDecl(
+                String name,
+                Visibility visibility,
+                boolean isStatic,
+                boolean isAbstract,
+                boolean async,
+                TypeRef explicitReceiverType,
+                List<String> genericParameters,
+                List<Param> parameters,
+                TypeRef returnType,
+                List<Annotation> annotations,
+                List<Stmt> body) {
+            this(name, visibility, isStatic, isAbstract, async, false, explicitReceiverType,
+                    genericParameters, parameters, returnType, annotations, body);
+        }
+
         public int arity() { return parameters.size(); }
     }
 
