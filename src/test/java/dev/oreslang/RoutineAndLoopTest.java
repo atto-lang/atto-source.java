@@ -207,7 +207,7 @@ final class RoutineAndLoopTest {
                     n = n + 1;
                     if n == 2 {
                       break;
-                    }
+                    } fi
                   done
 
                   stdio.stdout.write(n);

@@ -12,6 +12,7 @@ public final class Parser {
 
     private final List<Token> tokens;
     private int current;
+    private boolean suppressRefinementOperators;
 
     public Parser(List<Token> tokens) {
         this.tokens = List.copyOf(tokens);
@@ -1226,8 +1227,17 @@ public final class Parser {
     }
 
     private Ast.MatchStmt parseMatch() {
-        boolean ordered = match(FIRST);
-        Ast.Expr subject = parseExpression();
+        boolean ordered = check(IDENT) && peek().lexeme().equals("first");
+        if (ordered) advance();
+
+        boolean previousSuppression = suppressRefinementOperators;
+        suppressRefinementOperators = true;
+        Ast.Expr subject;
+        try {
+            subject = parseExpression();
+        } finally {
+            suppressRefinementOperators = previousSuppression;
+        }
         match(SEMICOLON);
 
         List<Ast.MatchArm> arms = new ArrayList<>();
@@ -1411,17 +1421,17 @@ public final class Parser {
                 expr = new Ast.BinaryExpr(op, expr, parseShift());
                 continue;
             }
-            if (match(IS)) {
+            if (!suppressRefinementOperators && match(IS)) {
                 Ast.TypeRef target = parseTypeRef();
                 String binding = check(IDENT) && !peek().lexeme().equals("_") ? advance().lexeme() : null;
                 expr = new Ast.TypeTestExpr(expr, target, binding);
                 continue;
             }
-            if (match(MATCHES)) {
+            if (!suppressRefinementOperators && match(MATCHES)) {
                 expr = new Ast.PatternTestExpr(expr, parsePattern());
                 continue;
             }
-            if (match(AS)) {
+            if (!suppressRefinementOperators && match(AS)) {
                 boolean optional = match(QUESTION);
                 expr = new Ast.CastExpr(expr, parseTypeRef(),
                         optional ? Ast.CastMode.OPTIONAL : Ast.CastMode.CHECKED);

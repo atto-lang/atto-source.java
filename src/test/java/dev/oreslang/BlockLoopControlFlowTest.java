@@ -59,11 +59,11 @@ final class BlockLoopControlFlowTest {
                   for (val item of arr[1, 2, 3, 4]) {
                     if item == 2 {
                       continue;
-                    }
+                    } fi
                     stdio.stdout.write(item);
                     if item == 3 {
                       break;
-                    }
+                    } fi
                   }
                 }
                 """);
@@ -78,7 +78,7 @@ final class BlockLoopControlFlowTest {
                   block {
                     if remaining == 0 {
                       return 7;
-                    }
+                    } fi
                     loop {
                       return countdown(remaining - 1);
                     }
@@ -102,10 +102,10 @@ final class BlockLoopControlFlowTest {
                     i = i + 1;
                     if i == 2 {
                       continue;
-                    }
+                    } fi
                     if i == 4 {
                       break;
-                    }
+                    } fi
                     stdio.stdout.write(i);
                   }
                   stdio.stdout.write(process.descriptor.scheduler_safepoints);
@@ -184,13 +184,13 @@ final class BlockLoopControlFlowTest {
                       inner = inner + 1;
                       if inner == 1 {
                         continue;
-                      }
+                      } fi
                       break;
                     }
                     stdio.stdout.write(outer);
                     if outer == 2 {
                       break;
-                    }
+                    } fi
                   }
                 }
                 """);
@@ -206,7 +206,7 @@ final class BlockLoopControlFlowTest {
                   for (let i = 0; i < 3; i = i + 1) {
                     if i < 2 {
                       continue;
-                    }
+                    } fi
                     seen = i;
                   }
                   stdio.stdout.write(seen);
@@ -253,7 +253,7 @@ final class BlockLoopControlFlowTest {
                     defer stdio.stdout.write(i);
                     if i == 1 {
                       continue;
-                    }
+                    } fi
                     break;
                   }
                   finish();
@@ -296,7 +296,7 @@ final class BlockLoopControlFlowTest {
                     stdio.stdout.write("b");
                   } else {
                     stdio.stdout.write("c");
-                  }
+                  } fi
                 }
                 """);
         assertEquals("b", braces);
