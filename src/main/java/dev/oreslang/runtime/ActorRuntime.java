@@ -2067,12 +2067,22 @@ public final class ActorRuntime implements AutoCloseable {
         Thread.yield();
     }
 
+    record FrozenActorGroupEventPayload(Object value, long reservedBytes) {
+        FrozenActorGroupEventPayload {
+            Objects.requireNonNull(value, "value");
+            if (reservedBytes < 0) {
+                throw new IllegalArgumentException("reservedBytes cannot be negative");
+            }
+        }
+    }
+
     /**
-     * Freeze a data-only ActorGroup event payload once and apply the sender's
-     * actor heap ceiling as a conservative per-event bound. Event payloads do
-     * not admit live capabilities or mutable host aliases.
+     * Freeze a data-only ActorGroup event payload once and reserve its retained
+     * bus memory against the same OresVM aggregate budget used by actor
+     * mailboxes/shared runtime state. The bus releases this reservation after
+     * the final queued delivery no longer retains the payload.
      */
-    Object freezeActorGroupEventPayload(Object value) {
+    FrozenActorGroupEventPayload freezeActorGroupEventPayload(Object value) {
         requireCallerRuntimeAffinity("publish ActorGroup event payloads");
         if (closed.get()) throw new IllegalStateException("actor runtime is closed");
         Objects.requireNonNull(value, "Oreslang events cannot carry null; use Option<T>");
@@ -2085,7 +2095,12 @@ public final class ActorRuntime implements AutoCloseable {
                     "ActorGroup event payload exceeds sender memory policy: bytes="
                             + bytes + " limit=" + limit);
         }
-        return frozen;
+        reserveSharedRuntimeBytes(bytes, "ActorGroup event payload");
+        return new FrozenActorGroupEventPayload(frozen, bytes);
+    }
+
+    void releaseActorGroupEventPayload(long bytes) {
+        releaseSharedRuntimeBytes(bytes);
     }
 
     @SuppressWarnings("unchecked")
