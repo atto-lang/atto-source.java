@@ -135,7 +135,29 @@ AUTO may consider:
 - memory capacity;
 - NUMA/device locality.
 
-Explicit GPU placement fails closed when no GPU backend/eligible variant exists.
+When the runtime knows the physical working-set size, GPU admission also checks
+that the working set fits the device memory budget. AUTO falls back to an
+eligible CPU variant when it does not fit. Explicit GPU placement fails closed
+rather than silently oversubscribing device memory.
+
+Explicit GPU placement also fails closed when no GPU backend/eligible variant exists.
+
+## CPU chunk scheduling
+
+Data-oriented CPU execution is scheduled at **chunk/tile granularity**, never as
+one scheduler task per entity. The runtime planner can derive a
+`CpuChunkPlan` from work-item count, available CPU parallelism, SIMD width, and
+a minimum useful chunk size.
+
+Chunk boundaries are rounded to SIMD width where practical. This keeps dense
+SoA/AoSoA traversals vector-friendly while bounding scheduler overhead. The last
+chunk may contain a scalar/vector tail.
+
+A CPU backend may additionally prefer a carrier, NUMA node, processor group, or
+cache domain for a chunk whose physical region instance is already local there.
+That locality is a scheduling preference only. If the preferred worker is busy,
+bounded stealing is allowed; effects and region dependencies—not affinity—define
+correctness.
 
 ## Parallel and SIMD loops
 
@@ -183,6 +205,22 @@ backend/compiler can add verified pure intrinsics without weakening it.
 
 Compute functions remain finite data transformations. Actors remain the
 stateful identity/lifecycle/supervision abstraction.
+
+## GPU batching and actor interaction
+
+GPU kernels are not actor turns and do not execute on SHARED/ISOACTOR/UNTRUSTED
+actor carrier pools. A heterogeneous backend should batch compatible work by
+kernel/variant, device, physical layout, region residency, and transfer/writeback
+requirements.
+
+Kernel launch is asynchronous from Oreslang's scheduler perspective. An actor
+that initiates GPU compute receives/awaits a Future; `await` releases the actor
+execution lease and carrier. Device completion only settles the Future and
+re-enqueues the continuation onto the actor's owning scheduler domain.
+
+This avoids occupying actor carriers during device execution and preserves the
+same single-executor actor semantics whether the compute variant runs on scalar
+CPU, SIMD CPU, multicore CPU, or GPU.
 
 ## Dataflow declarations
 
