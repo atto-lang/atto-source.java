@@ -2,6 +2,7 @@ package dev.oreslang.compiler;
 
 import dev.oreslang.ast.Ast;
 import dev.oreslang.parser.Parser;
+import dev.oreslang.types.TypeChecker;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -94,7 +95,9 @@ public final class IncrementalCompiler {
                 continue;
             }
 
-            Ast.Program checked = OresCompiler.parseAndTypeCheck(normalized.get(id));
+            Ast.Program checked = TypeChecker.check(
+                    parsed.get(id),
+                    linkedImportsFor(id, parsed.get(id), parsed));
             CompiledUnit unit = new CompiledUnit(
                     id,
                     packageId(id, checked),
@@ -115,6 +118,149 @@ public final class IncrementalCompiler {
                 Set.copyOf(rebuilt),
                 Set.copyOf(reused),
                 linkBarrierGroups);
+    }
+
+    private static TypeChecker.LinkedImports linkedImportsFor(
+            String unitId,
+            Ast.Program program,
+            Map<String, Ast.Program> programs) {
+        LinkedHashMap<String, Ast.ClassDecl> actors = new LinkedHashMap<>();
+        Set<String> available = programs.keySet();
+
+        for (Ast.ImportDecl imported : program.imports()) {
+            if (imported.kind() != Ast.ImportKind.ACTOR) continue;
+
+            String targetId = ImportGraph.resolveImportUnitId(unitId, imported, available);
+            if (targetId == null) {
+                // Non-relative/package imports are resolved by the package
+                // linker. Do not invent a weak/Unknown actor contract here.
+                continue;
+            }
+
+            Ast.Program target = programs.get(targetId);
+            if (target == null) {
+                throw new IllegalStateException(
+                        "resolved actor import target is missing from parsed units: " + targetId);
+            }
+
+            if (imported.wildcard()) {
+                Map<String, Ast.ClassDecl> exported = exportedActors(target);
+                for (Map.Entry<String, Ast.ClassDecl> entry : exported.entrySet()) {
+                    String localName = imported.namespace() + "." + entry.getKey();
+                    putLinkedActorContract(
+                            actors,
+                            localName,
+                            actorContractProxy(localName, entry.getValue()),
+                            imported);
+                }
+                continue;
+            }
+
+            for (String sourceName : imported.names()) {
+                Ast.ClassDecl sourceActor = exportedActor(target, sourceName);
+                String localName = imported.localName(sourceName);
+                putLinkedActorContract(
+                        actors,
+                        localName,
+                        actorContractProxy(localName, sourceActor),
+                        imported);
+            }
+        }
+
+        return new TypeChecker.LinkedImports(actors);
+    }
+
+    private static void putLinkedActorContract(
+            Map<String, Ast.ClassDecl> actors,
+            String localName,
+            Ast.ClassDecl actor,
+            Ast.ImportDecl imported) {
+        Ast.ClassDecl previous = actors.putIfAbsent(localName, actor);
+        if (previous != null) {
+            throw new IllegalArgumentException(
+                    "duplicate linked actor import binding '" + localName
+                            + "' from '" + imported.path() + "'");
+        }
+    }
+
+    private static Ast.ClassDecl exportedActor(Ast.Program target, String name) {
+        Ast.ClassDecl result = null;
+        for (Ast.ModuleDecl module : target.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.ClassDecl klass)
+                        || klass.actorKind() == Ast.ActorKind.NONE
+                        || !klass.name().equals(name)) {
+                    continue;
+                }
+                if (result != null) {
+                    throw new IllegalArgumentException(
+                            "actor export '" + name + "' is ambiguous in linked code unit");
+                }
+                result = klass;
+            }
+        }
+        if (result == null) {
+            throw new IllegalArgumentException(
+                    "linked code unit does not export actor '" + name + "'");
+        }
+        return result;
+    }
+
+    private static Map<String, Ast.ClassDecl> exportedActors(Ast.Program target) {
+        LinkedHashMap<String, Ast.ClassDecl> result = new LinkedHashMap<>();
+        for (Ast.ModuleDecl module : target.modules()) {
+            for (Ast.Decl decl : module.declarations()) {
+                if (!(decl instanceof Ast.ClassDecl klass)
+                        || klass.actorKind() == Ast.ActorKind.NONE) {
+                    continue;
+                }
+                Ast.ClassDecl previous = result.putIfAbsent(klass.name(), klass);
+                if (previous != null) {
+                    throw new IllegalArgumentException(
+                            "wildcard actor import is ambiguous because linked code unit exports multiple actors named '"
+                                    + klass.name() + "'");
+                }
+            }
+        }
+        return Map.copyOf(result);
+    }
+
+    private static Ast.ClassDecl actorContractProxy(
+            String localName,
+            Ast.ClassDecl source) {
+        List<Ast.MethodDecl> methods = new ArrayList<>();
+        for (Ast.MethodDecl method : source.methods()) {
+            boolean constructor = !method.isStatic()
+                    && method.name().equals("constructor");
+            boolean receive = !method.isStatic()
+                    && method.visibility() == Ast.Visibility.PUBLIC
+                    && method.name().equals("receive");
+            if (!constructor && !receive) continue;
+
+            methods.add(new Ast.MethodDecl(
+                    method.name(),
+                    method.visibility(),
+                    false,
+                    false,
+                    false,
+                    null,
+                    method.genericParameters(),
+                    method.parameters(),
+                    method.returnType(),
+                    List.of(),
+                    List.of()));
+        }
+
+        return new Ast.ClassDecl(
+                localName,
+                false,
+                source.actorKind(),
+                source.genericParameters(),
+                List.of(),
+                List.of(),
+                List.of(),
+                methods,
+                source.actorProtocolTypes());
     }
 
     public synchronized void clear() {
