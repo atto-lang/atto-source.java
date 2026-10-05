@@ -1297,9 +1297,10 @@ public final class ActorRuntime implements AutoCloseable {
      * Physical carrier/control executors.
      *
      * OresContext instances in one OS process share PROCESS_DISPATCHERS so hot
-     * reload generations do not multiply the three actor carrier pools. Direct
-     * ActorRuntime construction intentionally owns a dedicated group for tests
-     * and explicit host isolation.
+     * reload generations do not multiply scheduler infrastructure. One OresVM
+     * owns four bulkheads: CONTROL/root+supervisor+mailman, SHARED_ACTOR,
+     * ISOACTOR/private, and UNTRUSTED_ACTOR. Direct ActorRuntime construction
+     * intentionally owns a dedicated group for tests and explicit host isolation.
      */
     static final class DispatcherGroup {
         private final DispatcherConfig config;
