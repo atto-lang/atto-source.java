@@ -826,6 +826,12 @@ public final class Parser {
             Ast.BindingKind kind = isBindingKind(peek().type())
                     ? parseBindingKind()
                     : Ast.BindingKind.VAL;
+            if (check(LBRACKET)) {
+                List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
+                consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
+                Ast.Expr iterable = parseExpression();
+                return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+            }
             String name = consume(IDENT, "iterator for-loop requires a binding name").lexeme();
             consume(OF, "iterator for-loop shorthand uses 'for x of iterable'");
             Ast.Expr iterable = parseExpression();
@@ -834,6 +840,13 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
+            if (check(LBRACKET)) {
+                List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
+                consume(OF, "expected 'of' after for-of destructure pattern");
+                Ast.Expr iterable = parseExpression();
+                consume(RPAREN, "expected ')' after for-of header");
+                return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+            }
             if (check(IDENT) && checkNext(OF)) {
                 String name = advance().lexeme();
                 consume(OF, "expected 'of' in for-of loop");
@@ -860,6 +873,14 @@ public final class Parser {
             return new Ast.ForStmt(init, condition, update, parseLoopBody());
         }
 
+        if (check(LBRACKET)) {
+            List<Ast.DestructureBinding> bindings = parseForSequenceBindings(Ast.BindingKind.VAL);
+            consume(OF, "expected 'of' after for-of destructure pattern");
+            Ast.Expr iterable = parseExpression();
+            consume(RPAREN, "expected ')' after for-of header");
+            return new Ast.ForOfDestructureStmt(bindings, iterable, parseLoopBody());
+        }
+
         if (check(IDENT) && checkNext(OF)) {
             String name = advance().lexeme();
             consume(OF, "expected 'of' in for-of loop");
@@ -876,6 +897,27 @@ public final class Parser {
         Ast.Expr update = check(RPAREN) ? null : parseExpression();
         consume(RPAREN, "expected ')' after for header");
         return new Ast.ForStmt(initializer, condition, update, parseLoopBody());
+    }
+
+    private List<Ast.DestructureBinding> parseForSequenceBindings(Ast.BindingKind inheritedKind) {
+        consume(LBRACKET, "expected '[' to start for-of destructure pattern");
+        if (check(RBRACKET)) throw error(peek(), "for-of destructure pattern cannot be empty");
+
+        List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        Ast.BindingKind currentKind = inheritedKind == null ? Ast.BindingKind.VAL : inheritedKind;
+        do {
+            if (isBindingKind(peek().type())) currentKind = parseBindingKind();
+            if (isDiscardToken(peek())) {
+                advance();
+                bindings.add(Ast.DestructureBinding.discard());
+            } else {
+                String name = consume(IDENT, "expected binding name in for-of destructure pattern").lexeme();
+                bindings.add(new Ast.DestructureBinding(currentKind, name));
+            }
+        } while (match(COMMA));
+
+        consume(RBRACKET, "expected ']' after for-of destructure pattern");
+        return List.copyOf(bindings);
     }
 
     private List<Ast.Stmt> parseLoopBody() {
