@@ -412,4 +412,23 @@ final class FutureLanguageTest {
     }
 
 
+    @Test
+    void ownershipCheckerUsesAwaitablePayloadTypeAfterAwait() {
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse("""
+                define class IntBox implements Awaitable<int> as
+                  pub getAwait() => Future<int> {
+                    return Future.completed(7);
+                  }
+                end
+
+                fnc use_twice(IntBox box) => int {
+                  val value = await box;
+                  val first = value;
+                  val second = value;
+                  return first + second;
+                }
+                """)));
+    }
+
+
 }
