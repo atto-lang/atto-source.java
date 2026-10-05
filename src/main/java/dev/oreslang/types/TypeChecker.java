@@ -1089,7 +1089,6 @@ public final class TypeChecker {
                             return Primitive.BOOL;
                         }
                         if (member.member().equals("send")
-                                || member.member().equals("receive")
                                 || member.member().equals("mailbox")) {
                             throw new IllegalArgumentException(
                                     "raw ActorRef mailbox operations are runtime-private; "
@@ -2121,7 +2120,7 @@ public final class TypeChecker {
                     }
                     yield new Function(List.of(), Primitive.BOOL);
                 }
-                case "send", "receive", "mailbox" -> throw new IllegalArgumentException(
+                case "send", "mailbox" -> throw new IllegalArgumentException(
                         "raw ActorRef mailbox operations are runtime-private; "
                                 + "invoke a declared typed actor protocol method instead");
                 default -> {
@@ -3368,7 +3367,7 @@ public final class TypeChecker {
 
     private boolean isReservedActorRefMember(String name) {
         return switch (name) {
-            case "id", "is_alive", "send", "receive", "mailbox" -> true;
+            case "id", "is_alive", "send", "mailbox" -> true;
             default -> false;
         };
     }
