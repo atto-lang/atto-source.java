@@ -207,6 +207,46 @@ final class AsyncSchedulerLanguageTest {
     }
 
     @Test
+    void asyncPlannerExecutesNewLoopFormsAndDestructuring() throws Exception {
+        String program = """
+                pub async routine main() => void {
+                  let i = 0;
+                  while i < 2 do
+                    stdio.stdout.write(i);
+                    i = i + 1
+                  done
+
+                  for [k, v] of arr[arr[2, 20], arr[3, 30]] {
+                    stdio.stdout.write(k);
+                    stdio.stdout.write(v);
+                  }
+
+                  do {
+                    stdio.stdout.write(i);
+                    i = i + 1;
+                  } while (i < 3);
+                  return;
+                }
+                """;
+
+        assertDoesNotThrow(() -> TypeChecker.check(Parser.parse(program)));
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        Source source = Source.newBuilder(OresLanguage.ID, program, "async-loops.ores")
+                .mimeType(OresLanguage.MIME_TYPE)
+                .build();
+
+        try (Context context = Context.newBuilder(OresLanguage.ID)
+                .allowAllAccess(false)
+                .out(output)
+                .build()) {
+            context.eval(source);
+        }
+
+        assertEquals("012203302", output.toString(StandardCharsets.UTF_8));
+    }
+
+    @Test
     void deepReturnAwaitRecursionUsesProperAsyncTailTransfer() throws Exception {
         String program = """
                 async fnc bounce(int n) => int {
