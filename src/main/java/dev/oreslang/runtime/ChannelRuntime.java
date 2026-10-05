@@ -639,7 +639,9 @@ public final class ChannelRuntime {
         for (Runnable completion : completions) {
             try {
                 completion.run();
-            } catch (RuntimeException | Error ignored) {
+            } catch (VirtualMachineError | ThreadDeath | LinkageError fatal) {
+                throw fatal;
+            } catch (RuntimeException ignored) {
                 // Runtime waiter/readiness plumbing is best-effort notification.
                 // State has already committed and guest code is never run here.
             }
