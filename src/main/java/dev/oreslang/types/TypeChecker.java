@@ -3774,6 +3774,7 @@ public final class TypeChecker {
 
     private Type substituteGenerics(Type type, Map<String, Type> bindings) {
         if (type instanceof Generic generic) return bindings.getOrDefault(generic.name(), type);
+        if (type instanceof SelfType receiverSelf) return new SelfType(substituteGenerics(receiverSelf.bound(), bindings));
         if (type instanceof Borrow borrow) return new Borrow(substituteGenerics(borrow.target(), bindings), borrow.mutable());
         if (type instanceof ListType list) return new ListType(substituteGenerics(list.element(), bindings));
         if (type instanceof Tuple tuple) return new Tuple(tuple.elements().stream().map(t -> substituteGenerics(t, bindings)).toList());
@@ -3792,6 +3793,7 @@ public final class TypeChecker {
 
     private boolean containsUnknown(Type type) {
         if (type == Unknown.INSTANCE) return true;
+        if (type instanceof SelfType receiverSelf) return containsUnknown(receiverSelf.bound());
         if (type instanceof Borrow borrow) return containsUnknown(borrow.target());
         if (type instanceof ListType list) return containsUnknown(list.element());
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(this::containsUnknown);
@@ -3806,6 +3808,7 @@ public final class TypeChecker {
     private boolean containsGenericNamed(Type type, Set<String> names) {
         if (names.isEmpty()) return false;
         if (type instanceof Generic generic) return names.contains(generic.name());
+        if (type instanceof SelfType receiverSelf) return containsGenericNamed(receiverSelf.bound(), names);
         if (type instanceof Borrow borrow) return containsGenericNamed(borrow.target(), names);
         if (type instanceof ListType list) return containsGenericNamed(list.element(), names);
         if (type instanceof Tuple tuple) return tuple.elements().stream().anyMatch(t -> containsGenericNamed(t, names));
@@ -3991,6 +3994,14 @@ public final class TypeChecker {
     }
 
     private boolean assignable(Type actual, Type expected) {
+        if (expected instanceof SelfType expectedSelf) {
+            if (!(actual instanceof SelfType actualSelf)) return false;
+            return assignable(actualSelf.bound(), expectedSelf.bound())
+                    && assignable(expectedSelf.bound(), actualSelf.bound());
+        }
+        if (actual instanceof SelfType actualSelf) {
+            return assignable(actualSelf.bound(), expected);
+        }
         if (expected instanceof Generic expectedGeneric) {
             return actual instanceof Generic actualGeneric
                     && actualGeneric.name().equals(expectedGeneric.name());
