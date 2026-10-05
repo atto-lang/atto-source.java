@@ -865,6 +865,7 @@ public final class TypeChecker {
                 case "stream" -> new GpuStreamType(array.element());
                 case "copy_to_cpu" -> new ListType(array.element());
                 case "length" -> Primitive.INT;
+                case "release" -> Primitive.VOID;
                 default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
             };
         }
@@ -876,6 +877,7 @@ public final class TypeChecker {
             return switch (member) {
                 case "copy_to_cpu" -> new ListType(new ListType(matrix.element()));
                 case "rows", "cols", "length" -> Primitive.INT;
+                case "release" -> Primitive.VOID;
                 default -> throw new IllegalArgumentException("unknown GpuMatrix member '" + member + "'");
             };
         }
@@ -887,6 +889,7 @@ public final class TypeChecker {
             return switch (member) {
                 case "collect" -> new GpuArrayType(stream.element());
                 case "copy_to_cpu" -> new ListType(stream.element());
+                case "release" -> Primitive.VOID;
                 default -> throw new IllegalArgumentException("unknown GpuStream member '" + member + "'");
             };
         }
@@ -919,6 +922,7 @@ public final class TypeChecker {
                 case "stream" -> new Function(List.of(), new GpuStreamType(array.element()));
                 case "copy_to_cpu" -> new Function(List.of(), new ListType(array.element()));
                 case "length" -> new Function(List.of(), Primitive.INT);
+                case "release" -> new Function(List.of(), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown GpuArray member '" + member + "'");
             };
         }
@@ -929,6 +933,7 @@ public final class TypeChecker {
             return switch (member) {
                 case "copy_to_cpu" -> new Function(List.of(), new ListType(new ListType(matrix.element())));
                 case "rows", "cols", "length" -> new Function(List.of(), Primitive.INT);
+                case "release" -> new Function(List.of(), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown GpuMatrix member '" + member + "'");
             };
         }
@@ -939,6 +944,7 @@ public final class TypeChecker {
             return switch (member) {
                 case "collect" -> new Function(List.of(), new GpuArrayType(stream.element()));
                 case "copy_to_cpu" -> new Function(List.of(), new ListType(stream.element()));
+                case "release" -> new Function(List.of(), Primitive.VOID);
                 default -> throw new IllegalArgumentException("unknown GpuStream member '" + member + "'");
             };
         }
