@@ -5,6 +5,7 @@ import org.ejml.data.Complex_F64;
 import org.ejml.data.MatrixType;
 import org.ejml.simple.SimpleMatrix;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -226,6 +227,10 @@ public final class OresMatrix implements ImmutableGuestValue {
     }
 
     private static void requireScalar(Object value) {
+        if (value instanceof BigDecimal) {
+            throw new IllegalArgumentException(
+                    "decimal matrix elements require a separate exact backend; refusing silent decimal -> f64 coercion");
+        }
         if (!(value instanceof Number) && !(value instanceof OresComplex)) {
             throw new IllegalArgumentException("matrix elements must be real or complex numbers");
         }
