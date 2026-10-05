@@ -1623,8 +1623,17 @@ public final class OresEvalRootNode extends RootNode {
                 return map.get(name);
             }
             if (value instanceof OresObject object) {
-                if (!object.fields.containsKey(name)) throw new IllegalArgumentException("object destructure missing field " + name);
-                return object.fields.get(name);
+                if (!object.fields.containsKey(name)) {
+                    throw new IllegalArgumentException(
+                            "object destructure missing field " + name);
+                }
+                Object field = object.fields.get(name);
+                if (field == UninitializedActorField.INSTANCE) {
+                    throw new IllegalStateException(
+                            "actor/class field '" + object.klass.name() + "." + name
+                                    + "' was destructured before initialization");
+                }
+                return field;
             }
             throw new IllegalArgumentException("value is not object-destructurable");
         }
