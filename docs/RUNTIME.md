@@ -161,7 +161,7 @@ Compiler-generated/context-aware `BehaviorFactory` values are capture-free for b
 
 ## Async task runtime
 
-Ordinary `async` callables are separate from actor dispatchers. The reference interpreter owns one context-local async scheduler and returns `CompletionStage`/language `Future<T>` values immediately. Its first backend uses Java virtual threads so blocking host/runtime operations do not consume the bounded private/shared actor worker pools. This is a transitional execution strategy: Oreslang source semantics are future/continuation based, not virtual-thread based.
+Ordinary `async` callables are separate from actor dispatchers. The reference interpreter owns one context-local async scheduler and returns runtime-owned `OresFuture<T>` / language `Future<T>` values immediately. Java `CompletionStage` is host interop only and is normalized one-way into `OresFuture`; it does not define guest continuation scheduling. The current compatibility execution bridge still uses Java virtual threads so blocking host/runtime operations do not consume the bounded private/shared actor worker pools. This is transitional: Oreslang source semantics are future/continuation based, not virtual-thread based.
 
 The design intentionally mirrors the strongest C# async/await practices:
 
