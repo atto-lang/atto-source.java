@@ -990,7 +990,9 @@ public final class TypeChecker {
             if (name.name().equals("stdio") || name.name().equals("process") || name.name().equals("actor")) return new Named(name.name(), List.of());
             if (name.name().equals("Mutex") || name.name().equals("SharedMutex")) return new Named("$" + name.name() + "Factory", List.of());
             if (name.name().equals("Future")) return new Named("$FutureFactory", List.of());
-            if (name.name().equals("BooleanOps")) return new Named("$BooleanOps", List.of());
+            if (name.name().equals("BooleanOps") && !modules.containsKey("BooleanOps")) {
+                return new Named("$BooleanOps", List.of());
+            }
             if (name.name().equals("print")) return new Function(List.of(Unknown.INSTANCE), Primitive.VOID);
             if (name.name().equals("None")) return new Named("Option", List.of(Unknown.INSTANCE));
             Ast.ModuleDecl moduleNamespace = modules.get(name.name());
@@ -1530,6 +1532,7 @@ public final class TypeChecker {
         if (expr instanceof Ast.MemberExpr member) {
             if (member.receiver() instanceof Ast.NameExpr namespace
                     && namespace.name().equals("BooleanOps")
+                    && !modules.containsKey("BooleanOps")
                     && isBooleanIntrinsicName(member.member())) {
                 throw new IllegalArgumentException(
                         "overloaded builtin BooleanOps." + member.member()
