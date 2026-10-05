@@ -196,6 +196,7 @@ public final class ChannelRuntime {
                                 () -> cancelRead(registered),
                                 () -> { });
                         readers.addLast(waiter);
+                        wake = selectSnapshot();
                     }
                 }
             }
