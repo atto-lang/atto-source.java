@@ -25,16 +25,40 @@ end
 Imports are explicit about what kind of symbol is entering the compilation unit:
 
 ```ores
+import * as package from "./xyz";
 import module foo from "../xyz";
 import module foo as apiFoo from "../xyz";
-import module {foo, bar} from "../xyz";
+import actor Worker from "../xyz";
 import class Widget as ApiWidget from "../xyz";
 import fnc add as apiAdd from "../xyz";
-import fnc * as funcs from "../xyz";
-import * as package from "./xyz";
+import interface ServiceApi from "../xyz";
+import type UserId from "../xyz";
+import types ServiceApi, UserId from "../xyz";
+import types (ServiceApi, UserId) from "../xyz";
+import trait Retryable from "../xyz";
+import struct Point from "../xyz";
 ```
 
-Wildcard imports always require a namespace alias. A single named module/class/function import may use `as` to choose its local binding; the original source name still controls export resolution. `import fnc` specifically imports a **reifiable non-generic, non-actor `fnc` value**. Generic `fnc<T>` declarations require direct-call specialization and therefore are not valid `import fnc` targets until Oreslang gains polymorphic function values. This avoids namespace pollution while supporting Kotlin-style disambiguation. Import paths are part of the AST/compiler contract; filesystem/package resolution is a host build/bundling concern so strict isolates do not gain ambient filesystem access merely by using `import`.
+Comma-separated and parenthesized named selections are equivalent, so
+`import types X, Y, Z from "../foo";` and
+`import types (X, Y, Z) from "../foo";` produce the same import selection.
+The existing brace form remains accepted for compatibility. `types` is the
+union selector for type-like declarations: `trait`, `struct`, `interface`,
+and `type`. On the current v0.6 AST, interface and type-alias declarations are
+available; trait/struct selectors are reserved and fail closed at link
+validation until those declaration kinds land on the current compiler branch.
+
+Wildcard imports always require a namespace alias. A single named import may use
+`as` to choose its local binding; the original source name still controls export
+resolution. `import fnc` specifically imports a **reifiable non-generic,
+non-actor `fnc` value**. Generic `fnc<T>` declarations require direct-call
+specialization and therefore are not valid `import fnc` targets until Oreslang
+gains polymorphic function values. `class` and `actor` are deliberately
+distinct selectors: an actor class does not satisfy an `import class`, and an
+ordinary class does not satisfy an `import actor`. Import paths are part of the
+AST/compiler contract; filesystem/package resolution is a host build/bundling
+concern so strict isolates do not gain ambient filesystem access merely by using
+`import`.
 
 Java host classes use an explicit `java:` URI and the same alias syntax:
 
