@@ -817,6 +817,18 @@ Iterator variables are declarations, so every `for ... of ...` header must expli
 
 Bare forms such as `for item of values` are rejected at compile time with `variable used before declared`. `val` is not accepted as a for-of binder; the iterator surface intentionally uses only `const` and `let`.
 
+`const` in a for-of header means that the compiler/runtime initializes a fresh immutable iteration slot on each turn. It does **not** claim that the element value is a compile-time constant; the ordinary compile-time-constant initializer rule for standalone `const` declarations does not apply to this compiler-initialized slot. `let` creates the same per-iteration slot but permits rebinding that local.
+
+Parentheses may fence the entire iterator header when that improves readability or avoids syntactic ambiguity:
+
+```ores
+for (const item of complex_iterable()) do
+  work(item);
+done
+```
+
+Parentheses never make a bare name into a declaration: `for (item of values)` is still an error. Element types are inferred from the iterable in the current grammar; write `for const item of values`, not `for const int item of values`. Constrain or cast the iterable when a stronger element type is required.
+
 A bare `done` closes a `do` loop body. An invocation such as `done()` inside that body remains an ordinary callable use and does not terminate the loop.
 
 Classes can expose a JavaScript-like iterator symbol:

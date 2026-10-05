@@ -259,6 +259,85 @@ final class RoutineAndLoopTest {
     }
 
     @Test
+    void forOfParenthesesMutabilityAndDiagnosticsAreUnambiguous() throws Exception {
+        String output = run("""
+                pub routine main(): void {
+                  for (const item of arr[1, 2]) do
+                    stdio.stdout.write(item);
+                  done
+
+                  for let item of arr[3, 4] do
+                    item = item + 10;
+                    stdio.stdout.write(item);
+                  done
+                  return;
+                }
+                """);
+        assertEquals("121314", output);
+
+        IllegalArgumentException parenthesizedBare = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for (item of arr[1, 2]) do
+                            stdio.stdout.write(item);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(parenthesizedBare.getMessage().contains("variable used before declared"));
+
+        IllegalArgumentException shadowedBare = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          let item = 99;
+                          for item of arr[1, 2] do
+                            stdio.stdout.write(item);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(shadowedBare.getMessage().contains("variable used before declared"));
+
+        IllegalArgumentException immutable = assertThrows(
+                IllegalArgumentException.class,
+                () -> TypeChecker.check(Parser.parse("""
+                        pub routine main(): void {
+                          for const item of arr[1, 2] do
+                            item = item + 1;
+                          done
+                          return;
+                        }
+                        """)));
+        assertTrue(immutable.getMessage().contains("cannot reassign const binding 'item'"));
+
+        IllegalArgumentException typed = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for (const int item of arr[1, 2]) do
+                            stdio.stdout.write(item);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(typed.getMessage().contains("for-of element types are inferred"));
+
+        IllegalArgumentException duplicate = assertThrows(
+                IllegalArgumentException.class,
+                () -> Parser.parse("""
+                        pub routine main(): void {
+                          for const [item, item] of arr[(1, 2)] do
+                            stdio.stdout.write(item);
+                          done
+                          return;
+                        }
+                        """));
+        assertTrue(duplicate.getMessage().contains("duplicate binding 'item'"));
+    }
+
+    @Test
     void forOfSequencePatternsDestructureTupleElements() throws Exception {
         String output = run("""
                 pub routine main(): void {

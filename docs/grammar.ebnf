@@ -306,6 +306,11 @@ member_terminator = ";" | INTERFACE_CLOSING_BOUNDARY ;
      change the binding kind for subsequent names. "_" discards one sequence
      position. Bare forms such as "for x of iterable" are compile errors with
      "variable used before declared"; val is not a for-of binding kind.
+     const is compiler-initialized once per iteration and makes that iteration
+     slot immutable; it does not require the produced element to be a
+     compile-time constant. Parentheses may fence the complete for-of header
+     but do not relax the declaration rule. Element types are inferred; typed
+     for-of binders are intentionally not part of the current grammar.
    - "loop" accepts either "{ ... }" or "do ... done". Iterator and
      conventional for-loops accept the same body forms. The canonical iterator
      shorthand is "for const x of iterable do ... done"; parenthesized headers

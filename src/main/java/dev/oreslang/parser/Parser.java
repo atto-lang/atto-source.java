@@ -853,6 +853,9 @@ public final class Parser {
                     throw forOfUndeclaredBindingError();
                 }
                 Ast.BindingKind kind = parseForOfBindingKind();
+                if (looksLikeTypedForOfBinding()) {
+                    throw typedForOfBindingError();
+                }
                 if (looksLikeForOfDestructurePattern()) {
                     List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
                     consume(OF, "iterator destructuring uses 'for [a, b] of iterable'");
@@ -875,6 +878,10 @@ public final class Parser {
 
         if (isBindingKind(peek().type())) {
             Ast.BindingKind kind = parseBindingKind();
+            if (looksLikeTypedForOfBinding()) {
+                requireForOfBindingKind(kind);
+                throw typedForOfBindingError();
+            }
             if (check(LBRACKET)) {
                 requireForOfBindingKind(kind);
                 List<Ast.DestructureBinding> bindings = parseForSequenceBindings(kind);
@@ -948,12 +955,33 @@ public final class Parser {
     private boolean looksLikeUnparenthesizedForOf() {
         int mark = current;
         try {
-            if (isBindingKind(peek().type())) parseBindingKind();
+            if (isBindingKind(peek().type())) {
+                parseBindingKind();
+                if (looksLikeTypedForOfBinding()) return true;
+            }
             if (looksLikeForOfDestructurePattern()) return true;
             return check(IDENT) && checkNext(OF);
         } finally {
             current = mark;
         }
+    }
+
+    private boolean looksLikeTypedForOfBinding() {
+        int mark = current;
+        try {
+            parseTypeRef();
+            return check(IDENT) && checkNext(OF);
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        } finally {
+            current = mark;
+        }
+    }
+
+    private IllegalArgumentException typedForOfBindingError() {
+        return error(peek(),
+                "for-of element types are inferred; use 'for const name of iterable' or "
+                        + "'for let name of iterable' and constrain/cast the iterable instead");
     }
 
     private boolean looksLikeForOfDestructurePattern() {
@@ -1041,6 +1069,7 @@ public final class Parser {
         }
 
         List<Ast.DestructureBinding> bindings = new ArrayList<>();
+        java.util.Set<String> names = new java.util.HashSet<>();
         Ast.BindingKind currentKind = inheritedKind;
         do {
             if (isBindingKind(peek().type())) currentKind = parseForOfBindingKind();
@@ -1049,6 +1078,9 @@ public final class Parser {
                 bindings.add(Ast.DestructureBinding.discard());
             } else {
                 String name = consume(IDENT, "expected binding name in for-of destructure pattern").lexeme();
+                if (!names.add(name)) {
+                    throw error(previous(), "duplicate binding '" + name + "' in for-of destructure pattern");
+                }
                 bindings.add(new Ast.DestructureBinding(currentKind, name));
             }
         } while (match(COMMA));
