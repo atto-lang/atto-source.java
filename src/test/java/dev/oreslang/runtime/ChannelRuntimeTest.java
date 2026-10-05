@@ -209,4 +209,17 @@ final class ChannelRuntimeTest {
     }
 
 
+    @Test
+    void selectOnClosedReadChannelFailsInsteadOfHanging() {
+        var channel = ChannelRuntime.<String>channel(1);
+        channel.close();
+
+        var selected = ChannelRuntime.select(List.of(
+                new ChannelRuntime.ReadCase<>(channel, "closed")));
+
+        assertTrue(selected.isDone());
+        assertTrue(selected.isCompletedExceptionally());
+    }
+
+
 }
