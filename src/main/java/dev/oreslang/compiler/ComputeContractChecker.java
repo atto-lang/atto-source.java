@@ -483,7 +483,8 @@ public final class ComputeContractChecker {
             String inductionVariable,
             ForDirection direction,
             Ast.Expr boundExpression,
-            String boundName) { }
+            String boundName,
+            boolean inclusive) { }
 
     /**
      * Device/AOT compute loops must expose a finite iteration space that a
@@ -519,8 +520,15 @@ public final class ComputeContractChecker {
         if (shape == null) {
             throw unsafe(owner, "compute for-loop without a canonical finite induction bound");
         }
-        if (!hasMonotonicStep(loop.update(), shape.inductionVariable(), shape.direction())) {
-            throw unsafe(owner, "compute for-loop update does not monotonically approach its bound");
+        if (!hasUnitStep(loop.update(), shape.inductionVariable(), shape.direction())) {
+            throw unsafe(
+                    owner,
+                    "compute for-loop requires unit-step induction in the v0 device-safe subset");
+        }
+        if (!hasRepresentableTripCount(initializer.initializer(), shape)) {
+            throw unsafe(
+                    owner,
+                    "compute for-loop trip count is not provably finite within signed 64-bit induction");
         }
 
         LinkedHashSet<String> protectedNames = new LinkedHashSet<>();
@@ -540,6 +548,7 @@ public final class ComputeContractChecker {
         Ast.Expr bound;
         ForDirection direction;
 
+        boolean inclusive;
         if (isName(condition.left(), induction)) {
             bound = condition.right();
             direction = switch (condition.operator()) {
@@ -547,6 +556,8 @@ public final class ComputeContractChecker {
                 case ">", ">=" -> ForDirection.DOWN;
                 default -> null;
             };
+            inclusive = condition.operator().equals("<=")
+                    || condition.operator().equals(">=");
         } else if (isName(condition.right(), induction)) {
             bound = condition.left();
             direction = switch (condition.operator()) {
@@ -554,6 +565,8 @@ public final class ComputeContractChecker {
                 case "<", "<=" -> ForDirection.DOWN;
                 default -> null;
             };
+            inclusive = condition.operator().equals("<=")
+                    || condition.operator().equals(">=");
         } else {
             return null;
         }
@@ -561,17 +574,17 @@ public final class ComputeContractChecker {
 
         if (bound instanceof Ast.LiteralExpr literal) {
             if (!(literal.value() instanceof Long)) return null;
-            return new BoundedForShape(induction, direction, bound, null);
+            return new BoundedForShape(induction, direction, bound, null, inclusive);
         }
         if (bound instanceof Ast.NameExpr name
                 && incomingLocals.contains(name.name())
                 && !name.name().equals(induction)) {
-            return new BoundedForShape(induction, direction, bound, name.name());
+            return new BoundedForShape(induction, direction, bound, name.name(), inclusive);
         }
         return null;
     }
 
-    private static boolean hasMonotonicStep(
+    private static boolean hasUnitStep(
             Ast.Expr update,
             String induction,
             ForDirection direction) {
@@ -582,23 +595,72 @@ public final class ComputeContractChecker {
         }
 
         if (direction == ForDirection.UP && binary.operator().equals("+")) {
-            return (isName(binary.left(), induction) && isPositiveLong(binary.right()))
-                    || (isPositiveLong(binary.left()) && isName(binary.right(), induction));
+            return (isName(binary.left(), induction) && isLongLiteral(binary.right(), 1L))
+                    || (isLongLiteral(binary.left(), 1L) && isName(binary.right(), induction));
         }
         if (direction == ForDirection.DOWN && binary.operator().equals("-")) {
-            return isName(binary.left(), induction) && isPositiveLong(binary.right());
+            return isName(binary.left(), induction) && isLongLiteral(binary.right(), 1L);
         }
         return false;
+    }
+
+    private static boolean hasRepresentableTripCount(
+            Ast.Expr startExpression,
+            BoundedForShape shape) {
+        Long start = longLiteral(startExpression);
+        Long bound = longLiteral(shape.boundExpression());
+
+        if (start != null && bound != null) {
+            try {
+                long distance;
+                if (shape.direction() == ForDirection.UP) {
+                    if (start > bound || (!shape.inclusive() && start.equals(bound))) return true;
+                    distance = Math.subtractExact(bound, start);
+                } else {
+                    if (start < bound || (!shape.inclusive() && start.equals(bound))) return true;
+                    distance = Math.subtractExact(start, bound);
+                }
+                if (shape.inclusive()) Math.addExact(distance, 1L);
+                return true;
+            } catch (ArithmeticException overflow) {
+                return false;
+            }
+        }
+
+        // Dynamic upper bounds are safe for the canonical 0-or-positive start,
+        // exclusive ascending unit-step shape: max trip count is Long.MAX_VALUE.
+        if (shape.direction() == ForDirection.UP
+                && !shape.inclusive()
+                && start != null
+                && start >= 0L
+                && shape.boundName() != null) {
+            return true;
+        }
+
+        // Dynamic starts are safe against a non-negative exclusive lower bound:
+        // max(start - bound) cannot exceed Long.MAX_VALUE.
+        return shape.direction() == ForDirection.DOWN
+                && !shape.inclusive()
+                && start == null
+                && startExpression instanceof Ast.NameExpr
+                && bound != null
+                && bound >= 0L;
     }
 
     private static boolean isName(Ast.Expr expr, String name) {
         return expr instanceof Ast.NameExpr candidate && candidate.name().equals(name);
     }
 
-    private static boolean isPositiveLong(Ast.Expr expr) {
+    private static Long longLiteral(Ast.Expr expr) {
         return expr instanceof Ast.LiteralExpr literal
                 && literal.value() instanceof Long value
-                && value > 0L;
+                ? value
+                : null;
+    }
+
+    private static boolean isLongLiteral(Ast.Expr expr, long expected) {
+        Long value = longLiteral(expr);
+        return value != null && value == expected;
     }
 
     private static boolean statementsMutateAny(
