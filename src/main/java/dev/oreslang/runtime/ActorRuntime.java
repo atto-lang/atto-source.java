@@ -2180,13 +2180,12 @@ public final class ActorRuntime implements AutoCloseable {
             awaitableCompletion.completeFromRuntime(value);
         }
 
-        private void completeFailure(Throwable failure) {
+        private boolean completeFailure(Throwable failure) {
             Throwable nonNull = Objects.requireNonNull(failure, "failure");
             if (nonNull instanceof CancellationException cancellation) {
-                awaitableCompletion.cancelFromRuntime(cancellation);
-            } else {
-                awaitableCompletion.failFromRuntime(nonNull);
+                return awaitableCompletion.cancelFromRuntime(cancellation);
             }
+            return awaitableCompletion.failFromRuntime(nonNull);
         }
 
         private void suspendOn(
@@ -2367,21 +2366,21 @@ public final class ActorRuntime implements AutoCloseable {
         private void expireRootTask() {
             if (!deadlineExpired.compareAndSet(false, true)) return;
 
-            vm.rootTaskScheduler().recordOverrun();
             CancellationException timeout = new CancellationException(
                     "root/main process exceeded max wall time "
                             + policyCeiling.maxWallTime());
 
             for (;;) {
                 int observed = phase.get();
-                if (observed == FINISHED) return;
+                if (observed == FINISHED || awaitableCompletion.isDone()) return;
 
                 if (observed == RUNNING) {
+                    if (!completeFailure(timeout)) return;
+                    vm.rootTaskScheduler().recordOverrun();
                     if (compensationClaimed.compareAndSet(false, true)
                             && !vm.rootTaskScheduler().claimCompensatingThread()) {
                         compensationClaimed.set(false);
                     }
-                    completeFailure(timeout);
                     Thread running = carrier;
                     if (running != null) running.interrupt();
                     return;
@@ -2391,7 +2390,8 @@ public final class ActorRuntime implements AutoCloseable {
                 if (!phase.compareAndSet(observed, FINISHED)) continue;
 
                 if (observed == QUEUED) vm.rootTaskScheduler().remove(this);
-                completeFailure(timeout);
+                boolean timedOut = completeFailure(timeout);
+                if (timedOut) vm.rootTaskScheduler().recordOverrun();
                 detachAwaitRegistration();
                 releaseRootTask(this);
                 return;
